@@ -979,6 +979,12 @@ export function ResourceUsageStatusSegment({
         sideOffset={8}
         className="w-[26rem] p-0"
         onOpenAutoFocus={(event) => event.preventDefault()}
+        // Why: clicking a terminal row calls setActiveTab, which causes
+        // xterm to programmatically focus the terminal DOM node. Radix
+        // would interpret that as a focus-outside event and close the
+        // popover. Suppress focus-driven closes; the popover still closes
+        // on outside-click (onPointerDownOutside default) and Escape.
+        onFocusOutside={(event) => event.preventDefault()}
       >
         {/* Why: header strip — title on the left, daemon-control icons on
             the right. The tab switcher was removed because a single unified
