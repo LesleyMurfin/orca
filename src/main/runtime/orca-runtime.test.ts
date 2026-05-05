@@ -1119,7 +1119,8 @@ describe('OrcaRuntimeService', () => {
       focusTerminal: vi.fn(),
       closeTerminal: vi.fn(),
       sleepWorktree: vi.fn(),
-      terminalFitOverrideChanged: vi.fn()
+      terminalFitOverrideChanged: vi.fn(),
+      terminalDriverChanged: vi.fn()
     })
     runtime.attachWindow(1)
 
