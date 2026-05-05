@@ -1307,14 +1307,7 @@ export type WorktreeCardProperty =
   // view options.
   | 'inline-agents'
 
-export type StatusBarItem =
-  | 'claude'
-  | 'codex'
-  | 'gemini'
-  | 'opencode-go'
-  | 'ssh'
-  | 'sessions'
-  | 'memory'
+export type StatusBarItem = 'claude' | 'codex' | 'gemini' | 'opencode-go' | 'ssh' | 'resource-usage'
 
 export type TaskResumeState = {
   githubMode?: 'items' | 'project'

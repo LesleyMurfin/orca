@@ -40,6 +40,22 @@ import {
   DEFAULT_STATUS_BAR_ITEMS,
   DEFAULT_WORKTREE_CARD_PROPERTIES
 } from '../../../../shared/constants'
+
+// Why: persisted UI state pre-dated the consolidation of `memory` + `sessions`
+// into a single `resource-usage` entry. Rewrite legacy ids in place and
+// de-duplicate. We leave unknown ids alone so a downgrade→upgrade cycle
+// doesn't strip a newer build's ids out of the user's settings.
+function migrateStatusBarItems(items: readonly string[] | undefined): StatusBarItem[] {
+  const source = items ?? DEFAULT_STATUS_BAR_ITEMS
+  const out: string[] = []
+  for (const id of source) {
+    const mapped = id === 'memory' || id === 'sessions' ? 'resource-usage' : id
+    if (!out.includes(mapped)) {
+      out.push(mapped)
+    }
+  }
+  return out as StatusBarItem[]
+}
 import type { OrcaHookScriptKind } from '../../lib/orca-hook-trust'
 import { DEFAULT_SIDEKICK_ID, isBundledSidekickId } from '../../components/sidekick/sidekick-models'
 import { revokeCustomSidekickBlobUrl } from '../../components/sidekick/sidekick-blob-cache'
@@ -648,7 +664,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
         uiZoomLevel: ui.uiZoomLevel ?? 0,
         editorFontZoomLevel: ui.editorFontZoomLevel ?? 0,
         worktreeCardProperties: ui.worktreeCardProperties ?? [...DEFAULT_WORKTREE_CARD_PROPERTIES],
-        statusBarItems: ui.statusBarItems ?? [...DEFAULT_STATUS_BAR_ITEMS],
+        statusBarItems: migrateStatusBarItems(ui.statusBarItems),
         statusBarVisible: ui.statusBarVisible ?? true,
         // Why: absent → true so existing users see the sidekick the first time
         // they enable the experimental flag. Only an explicit Hide sidekick
