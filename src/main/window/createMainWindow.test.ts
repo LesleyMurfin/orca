@@ -201,14 +201,13 @@ describe('createMainWindow', () => {
       expect(preventDefault).toHaveBeenCalledTimes(1)
     }
 
-    // Why: each intercepted chord emits `ui:shortcutConsumed` alongside the
-    // forwarded action so the renderer's useModifierHint can clear stale
-    // number-badge state. See src/main/window/emit-consumed-shortcut.ts.
-    expect(webContents.send).toHaveBeenCalledTimes(12)
-    for (let i = 0; i < 6; i++) {
-      expect(webContents.send).toHaveBeenNthCalledWith(i * 2 + 1, 'ui:shortcutConsumed')
-      expect(webContents.send).toHaveBeenNthCalledWith(i * 2 + 2, 'terminal:zoom', 'out')
-    }
+    expect(webContents.send).toHaveBeenCalledTimes(6)
+    expect(webContents.send).toHaveBeenNthCalledWith(1, 'terminal:zoom', 'out')
+    expect(webContents.send).toHaveBeenNthCalledWith(2, 'terminal:zoom', 'out')
+    expect(webContents.send).toHaveBeenNthCalledWith(3, 'terminal:zoom', 'out')
+    expect(webContents.send).toHaveBeenNthCalledWith(4, 'terminal:zoom', 'out')
+    expect(webContents.send).toHaveBeenNthCalledWith(5, 'terminal:zoom', 'out')
+    expect(webContents.send).toHaveBeenNthCalledWith(6, 'terminal:zoom', 'out')
   })
 
   it('routes Electron zoom command events to terminal zoom', () => {
@@ -248,13 +247,9 @@ describe('createMainWindow', () => {
     onZoomChanged({ preventDefault } as never, 'in')
 
     expect(preventDefault).toHaveBeenCalledTimes(2)
-    // Why: zoom-changed also fires ui:shortcutConsumed — the renderer never
-    // saw the chord's keydown so useModifierHint needs an explicit clear.
-    expect(webContents.send).toHaveBeenCalledTimes(4)
-    expect(webContents.send).toHaveBeenNthCalledWith(1, 'ui:shortcutConsumed')
-    expect(webContents.send).toHaveBeenNthCalledWith(2, 'terminal:zoom', 'out')
-    expect(webContents.send).toHaveBeenNthCalledWith(3, 'ui:shortcutConsumed')
-    expect(webContents.send).toHaveBeenNthCalledWith(4, 'terminal:zoom', 'in')
+    expect(webContents.send).toHaveBeenCalledTimes(2)
+    expect(webContents.send).toHaveBeenNthCalledWith(1, 'terminal:zoom', 'out')
+    expect(webContents.send).toHaveBeenNthCalledWith(2, 'terminal:zoom', 'in')
   })
 
   it('does not intercept ctrl/cmd+r in before-input-event', () => {
@@ -363,11 +358,9 @@ describe('createMainWindow', () => {
       expect(preventDefault).toHaveBeenCalledTimes(1)
     }
 
-    expect(webContents.send).toHaveBeenCalledTimes(4)
-    expect(webContents.send).toHaveBeenNthCalledWith(1, 'ui:shortcutConsumed')
+    expect(webContents.send).toHaveBeenCalledTimes(2)
+    expect(webContents.send).toHaveBeenNthCalledWith(1, 'ui:toggleWorktreePalette')
     expect(webContents.send).toHaveBeenNthCalledWith(2, 'ui:toggleWorktreePalette')
-    expect(webContents.send).toHaveBeenNthCalledWith(3, 'ui:shortcutConsumed')
-    expect(webContents.send).toHaveBeenNthCalledWith(4, 'ui:toggleWorktreePalette')
   })
 
   it('toggles devtools on F12 in development', () => {

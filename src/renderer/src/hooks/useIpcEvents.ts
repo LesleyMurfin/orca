@@ -19,7 +19,6 @@ import {
   handleSwitchTabAcrossAllTypes,
   handleSwitchTerminalTab
 } from './ipc-tab-switch'
-import { dispatchClearModifierHints } from './useModifierHint'
 import { normalizeAgentStatusPayload } from '../../../shared/agent-status-types'
 import { isGitRepoKind } from '../../../shared/repo-kind'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
@@ -34,19 +33,6 @@ const ZOOM_STEP = 0.5
 export function useIpcEvents(): void {
   useEffect(() => {
     const unsubs: (() => void)[] = []
-
-    // Why: single authoritative clear for modifier-hint badges. Main fires
-    // `ui:shortcutConsumed` whenever it intercepts a Cmd/Ctrl chord via
-    // before-input-event preventDefault or a native menu accelerator, so
-    // the chord's non-modifier key never reaches useModifierHint's keydown
-    // listener. One subscriber here covers every current and future
-    // main-intercepted shortcut — individual IPC handlers do not need to
-    // remember to dispatch a clear. See src/main/window/emit-consumed-shortcut.ts.
-    unsubs.push(
-      window.api.ui.onShortcutConsumed(() => {
-        dispatchClearModifierHints()
-      })
-    )
 
     unsubs.push(
       window.api.repos.onChanged(() => {

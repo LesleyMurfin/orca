@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { screenGetCursorScreenPointMock } = vi.hoisted(() => ({
   screenGetCursorScreenPointMock: vi.fn(() => ({ x: 0, y: 0 }))
@@ -9,7 +9,7 @@ vi.mock('electron', () => ({
   webContents: { fromId: vi.fn() }
 }))
 
-import { setupGuestContextMenu, setupGuestShortcutForwarding } from './browser-guest-ui'
+import { setupGuestContextMenu } from './browser-guest-ui'
 
 describe('setupGuestContextMenu', () => {
   const browserTabId = 'tab-1'
@@ -215,131 +215,5 @@ describe('setupGuestContextMenu', () => {
 
       expect(rendererSendMock).not.toHaveBeenCalled()
     })
-  })
-})
-
-describe('setupGuestShortcutForwarding', () => {
-  const browserTabId = 'tab-1'
-  let rendererSendMock: ReturnType<typeof vi.fn>
-  let guestOnMock: ReturnType<typeof vi.fn>
-  let guestOffMock: ReturnType<typeof vi.fn>
-  const originalPlatform = process.platform
-
-  function makeGuest() {
-    return {
-      on: guestOnMock,
-      off: guestOffMock
-    } as unknown as Electron.WebContents
-  }
-
-  function makeRenderer() {
-    return { send: rendererSendMock } as unknown as Electron.WebContents
-  }
-
-  beforeEach(() => {
-    rendererSendMock = vi.fn()
-    guestOnMock = vi.fn()
-    guestOffMock = vi.fn()
-    // Why: resolveWindowShortcutAction branches on platform; pin darwin so the
-    // Cmd+J chord below resolves to toggleWorktreePalette deterministically.
-    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
-  })
-
-  afterEach(() => {
-    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
-  })
-
-  function triggerBeforeInput(input: Partial<Electron.Input>): void {
-    const handler = guestOnMock.mock.calls.find((call) => call[0] === 'before-input-event')?.[1] as
-      | ((event: { preventDefault: () => void }, input: Electron.Input) => void)
-      | undefined
-
-    expect(handler).toBeTypeOf('function')
-    handler!({ preventDefault: vi.fn() }, {
-      type: 'keyDown',
-      key: 'j',
-      code: 'KeyJ',
-      meta: false,
-      control: false,
-      alt: false,
-      shift: false,
-      ...input
-    } as Electron.Input)
-  }
-
-  it('emits ui:shortcutConsumed before the forwarded action IPC for Cmd+J', () => {
-    const guest = makeGuest()
-    const renderer = makeRenderer()
-
-    setupGuestShortcutForwarding({
-      browserTabId,
-      guest,
-      resolveRenderer: () => renderer
-    })
-
-    triggerBeforeInput({ key: 'j', code: 'KeyJ', meta: true })
-
-    const channels = rendererSendMock.mock.calls.map((call) => call[0])
-    expect(channels).toContain('ui:shortcutConsumed')
-    expect(channels).toContain('ui:toggleWorktreePalette')
-    // Why: the consumed-shortcut signal must precede the action so the
-    // renderer's useModifierHint overlay clears before the action handler runs.
-    expect(channels.indexOf('ui:shortcutConsumed')).toBeLessThan(
-      channels.indexOf('ui:toggleWorktreePalette')
-    )
-  })
-
-  it('emits ui:shortcutConsumed before ui:worktreeHistoryNavigate on Cmd+Alt+Left', () => {
-    const guest = makeGuest()
-    const renderer = makeRenderer()
-
-    setupGuestShortcutForwarding({
-      browserTabId,
-      guest,
-      resolveRenderer: () => renderer
-    })
-
-    // Why: Cmd+Alt+Left is the Alt-exempt worktreeHistoryNavigate chord,
-    // structurally different from the modifier-chord ladder covered above.
-    triggerBeforeInput({ key: 'ArrowLeft', code: 'ArrowLeft', meta: true, alt: true })
-
-    const channels = rendererSendMock.mock.calls.map((call) => call[0])
-    expect(channels).toContain('ui:shortcutConsumed')
-    expect(channels).toContain('ui:worktreeHistoryNavigate')
-    expect(channels.indexOf('ui:shortcutConsumed')).toBeLessThan(
-      channels.indexOf('ui:worktreeHistoryNavigate')
-    )
-  })
-
-  it('preventDefaults Cmd+Alt+Left without emitting when renderer is unavailable', () => {
-    const guest = makeGuest()
-    const preventDefaultMock = vi.fn()
-
-    setupGuestShortcutForwarding({
-      browserTabId,
-      guest,
-      resolveRenderer: () => null
-    })
-
-    const handler = guestOnMock.mock.calls.find((call) => call[0] === 'before-input-event')?.[1] as
-      | ((event: { preventDefault: () => void }, input: Electron.Input) => void)
-      | undefined
-    expect(handler).toBeTypeOf('function')
-
-    handler!({ preventDefault: preventDefaultMock }, {
-      type: 'keyDown',
-      key: 'ArrowLeft',
-      code: 'ArrowLeft',
-      meta: true,
-      control: false,
-      alt: true,
-      shift: false
-    } as Electron.Input)
-
-    // Why: preventDefault fires unconditionally so Chromium/guest doesn't
-    // handle the chord as its own navigation. No IPC sends because renderer
-    // is null — emitConsumedShortcut no-ops on undefined.
-    expect(preventDefaultMock).toHaveBeenCalledTimes(1)
-    expect(rendererSendMock).not.toHaveBeenCalled()
   })
 })

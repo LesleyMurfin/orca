@@ -7,7 +7,6 @@ import {
   isWindowShortcutModifierChord,
   resolveWindowShortcutAction
 } from '../../shared/window-shortcut-policy'
-import { emitConsumedShortcut } from '../window/emit-consumed-shortcut'
 
 type ResolveRenderer = (browserTabId: string) => Electron.WebContents | null
 
@@ -235,12 +234,6 @@ export function setupGuestShortcutForwarding(args: {
       // only by suppressing the event here too.
       event.preventDefault()
       const renderer = resolveRenderer(browserTabId)
-      // Why: the chord's non-modifier key never reaches the renderer's
-      // window-level listener when focus is inside a guest webContents, so
-      // useModifierHint cannot self-clear. Emit the consumed-shortcut signal
-      // so the renderer's single ui:shortcutConsumed subscriber clears the
-      // modifier-hint overlay. emitConsumedShortcut no-ops on undefined.
-      emitConsumedShortcut(renderer ?? undefined)
       renderer?.send('ui:worktreeHistoryNavigate', action.direction)
       return
     }
@@ -257,7 +250,6 @@ export function setupGuestShortcutForwarding(args: {
     ) {
       event.preventDefault()
       const renderer = resolveRenderer(browserTabId)
-      emitConsumedShortcut(renderer ?? undefined)
       renderer?.send('ui:switchTabAcrossAllTypes', input.code === 'BracketRight' ? 1 : -1)
       return
     }
@@ -268,7 +260,6 @@ export function setupGuestShortcutForwarding(args: {
     if (isTerminalTabSwitchChord(input)) {
       event.preventDefault()
       const renderer = resolveRenderer(browserTabId)
-      emitConsumedShortcut(renderer ?? undefined)
       renderer?.send('ui:switchTerminalTab', input.code === 'PageDown' ? 1 : -1)
       return
     }
@@ -286,81 +277,53 @@ export function setupGuestShortcutForwarding(args: {
       return
     }
 
-    // Why: resolve which forwarded-action IPC this chord maps to BEFORE
-    // actually sending it. This lets us emit the consumed-shortcut signal
-    // ONCE, immediately before the action send, for every matched branch
-    // (honoring the main→renderer ordering requirement documented on
-    // emitConsumedShortcut). The unmatched null return exits without emit
-    // so main doesn't claim it consumed a chord it's going to let through.
-    const dispatch = ((): (() => void) | null => {
-      if (input.code === 'KeyB' && input.shift) {
-        return () => renderer.send('ui:newBrowserTab')
-      }
-      if (input.code === 'KeyT' && !input.shift) {
-        // Why: once focus is inside a browser guest, Cmd/Ctrl+T should extend
-        // the current browser workspace with another internal page instead of
-        // creating a sibling Orca terminal tab. The renderer still decides
-        // whether that means "new page in this workspace" or "new workspace"
-        // based on the current active surface.
-        return () => renderer.send('ui:newBrowserTab')
-      }
-      if (input.code === 'KeyL' && !input.shift) {
-        // Why: the address bar lives in the renderer chrome, not the guest
-        // page. Forward Cmd/Ctrl+L out of the guest so the active BrowserPane
-        // can focus its own input just like a standalone browser would.
-        return () => renderer.send('ui:focusBrowserAddressBar')
-      }
-      if (input.code === 'KeyR' && input.shift) {
-        // Why: Cmd/Ctrl+Shift+R is the browser convention for hard reload
-        // (bypass cache). The guest would handle it natively, but Orca's
-        // webview reloadIgnoringCache() call must come from the renderer side
-        // so it goes through the same parked-webview ref that owns the guest.
-        return () => renderer.send('ui:hardReloadBrowserPage')
-      }
-      if (input.code === 'KeyR' && !input.shift) {
-        // Why: same as above for soft reload — Cmd/Ctrl+R must be forwarded so
-        // the renderer can call reload() on its own webview ref rather than
-        // relying on the guest's built-in shortcut, which may not reach the
-        // parked-webview eviction logic.
-        return () => renderer.send('ui:reloadBrowserPage')
-      }
-      if (input.code === 'KeyF' && !input.shift) {
-        // Why: Cmd/Ctrl+F must be forwarded out of the guest so the renderer
-        // can open its own find-in-page bar and call webview.findInPage().
-        // Letting the guest handle it natively would open Chromium's built-in
-        // find UI inside the guest frame, which is invisible behind Orca's
-        // chrome.
-        return () => renderer.send('ui:findInBrowserPage')
-      }
-      if (input.code === 'KeyW' && !input.shift) {
-        return () => renderer.send('ui:closeActiveTab')
-      }
-      if (input.shift && (input.code === 'BracketRight' || input.code === 'BracketLeft')) {
-        return () => renderer.send('ui:switchTab', input.code === 'BracketRight' ? 1 : -1)
-      }
-      if (action?.type === 'toggleWorktreePalette') {
-        return () => renderer.send('ui:toggleWorktreePalette')
-      }
-      if (action?.type === 'openQuickOpen') {
-        return () => renderer.send('ui:openQuickOpen')
-      }
-      if (action?.type === 'openNewWorkspace') {
-        return () => renderer.send('ui:openNewWorkspace')
-      }
-      if (action?.type === 'jumpToWorktreeIndex') {
-        return () => renderer.send('ui:jumpToWorktreeIndex', action.index)
-      }
-      return null
-    })()
-    if (!dispatch) {
+    if (input.code === 'KeyB' && input.shift) {
+      renderer.send('ui:newBrowserTab')
+    } else if (input.code === 'KeyT' && !input.shift) {
+      // Why: once focus is inside a browser guest, Cmd/Ctrl+T should extend
+      // the current browser workspace with another internal page instead of
+      // creating a sibling Orca terminal tab. The renderer still decides
+      // whether that means "new page in this workspace" or "new workspace"
+      // based on the current active surface.
+      renderer.send('ui:newBrowserTab')
+    } else if (input.code === 'KeyL' && !input.shift) {
+      // Why: the address bar lives in the renderer chrome, not the guest
+      // page. Forward Cmd/Ctrl+L out of the guest so the active BrowserPane
+      // can focus its own input just like a standalone browser would.
+      renderer.send('ui:focusBrowserAddressBar')
+    } else if (input.code === 'KeyR' && input.shift) {
+      // Why: Cmd/Ctrl+Shift+R is the browser convention for hard reload
+      // (bypass cache). The guest would handle it natively, but Orca's webview
+      // reloadIgnoringCache() call must come from the renderer side so it goes
+      // through the same parked-webview ref that owns the guest surface.
+      renderer.send('ui:hardReloadBrowserPage')
+    } else if (input.code === 'KeyR' && !input.shift) {
+      // Why: same as above for soft reload — Cmd/Ctrl+R must be forwarded so
+      // the renderer can call reload() on its own webview ref rather than
+      // relying on the guest's built-in shortcut, which may not reach the
+      // parked-webview eviction logic.
+      renderer.send('ui:reloadBrowserPage')
+    } else if (input.code === 'KeyF' && !input.shift) {
+      // Why: Cmd/Ctrl+F must be forwarded out of the guest so the renderer can
+      // open its own find-in-page bar and call webview.findInPage(). Letting the
+      // guest handle it natively would open Chromium's built-in find UI inside
+      // the guest frame, which is invisible behind Orca's chrome.
+      renderer.send('ui:findInBrowserPage')
+    } else if (input.code === 'KeyW' && !input.shift) {
+      renderer.send('ui:closeActiveTab')
+    } else if (input.shift && (input.code === 'BracketRight' || input.code === 'BracketLeft')) {
+      renderer.send('ui:switchTab', input.code === 'BracketRight' ? 1 : -1)
+    } else if (action?.type === 'toggleWorktreePalette') {
+      renderer.send('ui:toggleWorktreePalette')
+    } else if (action?.type === 'openQuickOpen') {
+      renderer.send('ui:openQuickOpen')
+    } else if (action?.type === 'openNewWorkspace') {
+      renderer.send('ui:openNewWorkspace')
+    } else if (action?.type === 'jumpToWorktreeIndex') {
+      renderer.send('ui:jumpToWorktreeIndex', action.index)
+    } else {
       return
     }
-    // Why: the chord's non-modifier key never reaches the renderer's
-    // window-level listener when focus is inside a guest webContents, so
-    // useModifierHint cannot self-clear. Emit the consumed-shortcut signal
-    // before the action send (single call covers every matched branch above).
-    emitConsumedShortcut(renderer)
-    dispatch()
     // Why: preventDefault stops the guest page from also processing the chord
     // (e.g. Cmd+T opening a browser-internal new-tab page).
     event.preventDefault()

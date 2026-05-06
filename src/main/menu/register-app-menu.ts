@@ -1,5 +1,4 @@
 import { BrowserWindow, Menu, app } from 'electron'
-import { emitConsumedShortcut } from '../window/emit-consumed-shortcut'
 
 export type AppearanceMenuState = {
   showTasksButton: boolean
@@ -86,11 +85,7 @@ function buildAndApplyMenu(options: RegisterAppMenuOptions): void {
       // needing to reason about surface state. Using
       // BrowserWindow.getFocusedWindow() rather than the menu's
       // focusedWindow param avoids the BaseWindow typing gap.
-      const webContents = BrowserWindow.getFocusedWindow()?.webContents
-      // Why: menu accelerator chord is intercepted at the OS level. See
-      // emit-consumed-shortcut.ts.
-      emitConsumedShortcut(webContents)
-      webContents?.send('export:requestPdf')
+      BrowserWindow.getFocusedWindow()?.webContents.send('export:requestPdf')
     }
   }
 

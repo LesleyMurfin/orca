@@ -13,7 +13,6 @@ import {
 } from '../../shared/browser-url'
 import { resolveWindowShortcutAction } from '../../shared/window-shortcut-policy'
 import { getMainE2EConfig } from '../e2e-config'
-import { emitConsumedShortcut } from './emit-consumed-shortcut'
 
 function forceRepaint(window: BrowserWindow): void {
   if (window.isDestroyed()) {
@@ -481,12 +480,6 @@ export function createMainWindow(
 
     event.preventDefault()
 
-    // Why: the chord's non-modifier key never reaches the renderer, so
-    // useModifierHint cannot clear pending number-badge state via its normal
-    // keydown path. One signal covers every action below — individual IPC
-    // handlers no longer need to remember to dispatch a clear.
-    emitConsumedShortcut(mainWindow.webContents)
-
     if (action.type === 'zoom') {
       mainWindow.webContents.send('terminal:zoom', action.direction)
       return
@@ -545,10 +538,8 @@ export function createMainWindow(
     // reroute that command to terminal zoom so zoom-out remains reachable.
     event.preventDefault()
     if (zoomDirection === 'in') {
-      emitConsumedShortcut(mainWindow.webContents)
       mainWindow.webContents.send('terminal:zoom', 'in')
     } else if (zoomDirection === 'out') {
-      emitConsumedShortcut(mainWindow.webContents)
       mainWindow.webContents.send('terminal:zoom', 'out')
     }
   })

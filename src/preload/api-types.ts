@@ -1046,7 +1046,6 @@ export type PreloadApi = {
     ) => () => void
     onSleepWorktree: (callback: (data: { worktreeId: string }) => void) => () => void
     onTerminalZoom: (callback: (direction: 'in' | 'out' | 'reset') => void) => () => void
-    onShortcutConsumed: (callback: () => void) => () => void
     readClipboardText: () => Promise<string>
     saveClipboardImageAsTempFile: () => Promise<string | null>
     writeClipboardText: (text: string) => Promise<void>

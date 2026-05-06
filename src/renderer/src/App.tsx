@@ -43,7 +43,6 @@ import {
   canGoBackWorktreeHistory,
   canGoForwardWorktreeHistory
 } from '@/store/slices/worktree-nav-history'
-import { dispatchClearModifierHints } from './hooks/useModifierHint'
 
 const isMac = navigator.userAgent.includes('Mac')
 const Landing = lazy(() => import('./components/Landing'))
@@ -610,7 +609,6 @@ function App(): React.JSX.Element {
         if (activeView !== 'terminal' && activeView !== 'tasks') {
           return
         }
-        dispatchClearModifierHints()
         e.preventDefault()
         const store = useAppStore.getState()
         if (e.code === 'ArrowLeft') {
@@ -627,7 +625,6 @@ function App(): React.JSX.Element {
 
       // Cmd/Ctrl+B — toggle left sidebar
       if (!e.altKey && !e.shiftKey && e.key.toLowerCase() === 'b') {
-        dispatchClearModifierHints()
         e.preventDefault()
         actions.toggleSidebar()
         return
@@ -647,7 +644,6 @@ function App(): React.JSX.Element {
 
       // Cmd/Ctrl+L — toggle right sidebar
       if (!e.altKey && !e.shiftKey && e.key.toLowerCase() === 'l') {
-        dispatchClearModifierHints()
         e.preventDefault()
         actions.toggleRightSidebar()
         return
@@ -655,7 +651,6 @@ function App(): React.JSX.Element {
 
       // Cmd/Ctrl+Shift+E — toggle right sidebar / explorer tab
       if (e.shiftKey && !e.altKey && e.key.toLowerCase() === 'e') {
-        dispatchClearModifierHints()
         e.preventDefault()
         actions.setRightSidebarTab('explorer')
         actions.setRightSidebarOpen(true)
@@ -664,7 +659,6 @@ function App(): React.JSX.Element {
 
       // Cmd/Ctrl+Shift+F — toggle right sidebar / search tab
       if (e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
-        dispatchClearModifierHints()
         e.preventDefault()
         actions.setRightSidebarTab('search')
         actions.setRightSidebarOpen(true)
@@ -680,7 +674,6 @@ function App(): React.JSX.Element {
         if (document.querySelector('[data-terminal-search-root]')) {
           return
         }
-        dispatchClearModifierHints()
         e.preventDefault()
         actions.setRightSidebarTab('source-control')
         actions.setRightSidebarOpen(true)
@@ -691,7 +684,6 @@ function App(): React.JSX.Element {
       // Why: Ctrl+Shift+I is the built-in DevTools accelerator on Windows/Linux;
       // intercepting it would break an essential developer tool.
       if (isMac && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'i') {
-        dispatchClearModifierHints()
         e.preventDefault()
         actions.setRightSidebarTab('ports')
         actions.setRightSidebarOpen(true)

@@ -1837,16 +1837,6 @@ const api = {
       ipcRenderer.on('terminal:zoom', listener)
       return () => ipcRenderer.removeListener('terminal:zoom', listener)
     },
-    onShortcutConsumed: (callback: () => void): (() => void) => {
-      // Why: main fires this whenever it intercepts a platform-modifier chord
-      // (before-input-event preventDefault, native menu accelerator). Renderer
-      // uses it to clear useModifierHint's number-badge overlay — the chord's
-      // non-modifier key never reached the renderer, so the hook can't
-      // self-clear via its keydown listener.
-      const listener = (): void => callback()
-      ipcRenderer.on('ui:shortcutConsumed', listener)
-      return () => ipcRenderer.removeListener('ui:shortcutConsumed', listener)
-    },
     readClipboardText: (): Promise<string> => ipcRenderer.invoke('clipboard:readText'),
     saveClipboardImageAsTempFile: (): Promise<string | null> =>
       ipcRenderer.invoke('clipboard:saveImageAsTempFile'),

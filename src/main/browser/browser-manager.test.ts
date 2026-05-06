@@ -1092,27 +1092,15 @@ describe('browserManager', () => {
       expect(preventDefault).toHaveBeenCalledTimes(1)
     }
 
-    // Why: each forwarded chord emits ui:shortcutConsumed immediately before
-    // the action IPC so the renderer's single ui:shortcutConsumed subscriber
-    // clears useModifierHint's badge overlay. See emit-consumed-shortcut.ts.
-    expect(rendererSendMock).toHaveBeenNthCalledWith(1, 'ui:shortcutConsumed')
+    expect(rendererSendMock).toHaveBeenNthCalledWith(1, 'ui:newBrowserTab')
     expect(rendererSendMock).toHaveBeenNthCalledWith(2, 'ui:newBrowserTab')
-    expect(rendererSendMock).toHaveBeenNthCalledWith(3, 'ui:shortcutConsumed')
-    expect(rendererSendMock).toHaveBeenNthCalledWith(4, 'ui:newBrowserTab')
-    expect(rendererSendMock).toHaveBeenNthCalledWith(5, 'ui:shortcutConsumed')
-    expect(rendererSendMock).toHaveBeenNthCalledWith(6, 'ui:closeActiveTab')
-    expect(rendererSendMock).toHaveBeenNthCalledWith(7, 'ui:shortcutConsumed')
-    expect(rendererSendMock).toHaveBeenNthCalledWith(8, 'ui:switchTab', 1)
-    expect(rendererSendMock).toHaveBeenNthCalledWith(9, 'ui:shortcutConsumed')
-    expect(rendererSendMock).toHaveBeenNthCalledWith(10, 'ui:switchTerminalTab', 1)
-    expect(rendererSendMock).toHaveBeenNthCalledWith(11, 'ui:shortcutConsumed')
-    expect(rendererSendMock).toHaveBeenNthCalledWith(12, 'ui:openQuickOpen')
-    expect(rendererSendMock).toHaveBeenNthCalledWith(13, 'ui:shortcutConsumed')
-    expect(rendererSendMock).toHaveBeenNthCalledWith(14, 'ui:focusBrowserAddressBar')
-    expect(rendererSendMock).toHaveBeenNthCalledWith(15, 'ui:shortcutConsumed')
-    expect(rendererSendMock).toHaveBeenNthCalledWith(16, 'ui:reloadBrowserPage')
-    expect(rendererSendMock).toHaveBeenNthCalledWith(17, 'ui:shortcutConsumed')
-    expect(rendererSendMock).toHaveBeenNthCalledWith(18, 'ui:hardReloadBrowserPage')
+    expect(rendererSendMock).toHaveBeenNthCalledWith(3, 'ui:closeActiveTab')
+    expect(rendererSendMock).toHaveBeenNthCalledWith(4, 'ui:switchTab', 1)
+    expect(rendererSendMock).toHaveBeenNthCalledWith(5, 'ui:switchTerminalTab', 1)
+    expect(rendererSendMock).toHaveBeenNthCalledWith(6, 'ui:openQuickOpen')
+    expect(rendererSendMock).toHaveBeenNthCalledWith(7, 'ui:focusBrowserAddressBar')
+    expect(rendererSendMock).toHaveBeenNthCalledWith(8, 'ui:reloadBrowserPage')
+    expect(rendererSendMock).toHaveBeenNthCalledWith(9, 'ui:hardReloadBrowserPage')
   })
 
   it('cleans up prior guest listeners before re-registering the same tab', () => {
