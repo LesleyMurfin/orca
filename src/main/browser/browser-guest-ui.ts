@@ -345,7 +345,7 @@ export function setupGuestShortcutForwarding(args: {
         return () => renderer.send('ui:openQuickOpen')
       }
       if (action?.type === 'openNewWorkspace') {
-        return () => renderer.send('ui:openNewWorkspace', action.tab)
+        return () => renderer.send('ui:openNewWorkspace')
       }
       if (action?.type === 'jumpToWorktreeIndex') {
         return () => renderer.send('ui:jumpToWorktreeIndex', action.index)

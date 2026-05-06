@@ -159,7 +159,41 @@ const XTERM_HTML = `<!DOCTYPE html>
     }
   }
 
+  // Why: on cold start (first WebView load + first scrollback) xterm's DOM
+  // and canvas need several frames to reflow after term.open(). If we
+  // computeFitScale() too eagerly we read scrollWidth=0 or a stale width
+  // from before the new cols took effect, scrollWidth/vpWidth >= 1, and
+  // currentScale snaps to 1 — which is exactly the "didn't zoom to fit"
+  // bug users see on first load. Retry across frames until we get a
+  // positive, stable scrollWidth, then commit. Capped to keep this from
+  // spinning forever if the WebView never lays out (e.g. backgrounded).
+  var FIT_RETRY_MAX_FRAMES = 30;
+  var fitRetryToken = 0;
   function applyFitScale() {
+    if (!term || !term.element) return;
+    var token = ++fitRetryToken;
+    var attempts = 0;
+    var lastWidth = -1;
+    function attempt() {
+      if (token !== fitRetryToken) return;
+      if (!term || !term.element) return;
+      var w = term.element.scrollWidth;
+      attempts++;
+      if (w > 0 && w === lastWidth) {
+        commitFitScale();
+        return;
+      }
+      lastWidth = w;
+      if (attempts >= FIT_RETRY_MAX_FRAMES) {
+        commitFitScale();
+        return;
+      }
+      requestAnimationFrame(attempt);
+    }
+    requestAnimationFrame(attempt);
+  }
+
+  function commitFitScale() {
     if (!term || !term.element) return;
     currentScale = computeFitScale();
     // Why: when the scale is very close to 1 (e.g. 0.97 due to xterm
@@ -316,12 +350,15 @@ const XTERM_HTML = `<!DOCTYPE html>
       ? containerHeightPx
       : window.innerHeight;
     var cols = Math.floor(vpWidth / cellWidth);
-    // Why: subtract 2 rows after dividing. The WebView's reported height
-    // can slightly overstate the usable area (layout timing, subpixel
-    // rounding, safe-area insets). Subtracting 2 guarantees the last
-    // visible row plus the shell prompt (which often wraps on narrow
-    // screens) stays fully above the accessory bar.
-    var rows = Math.max(8, Math.floor(vpHeight / cellHeight) - 2);
+    // Why: the rows we report become the PTY's actual row count after the
+    // server fits to viewport, and xterm renders exactly that many lines
+    // anchored top-left of the WebView. Subtracting rows here would leave
+    // dead xterm-background space at the bottom of the container and make
+    // the last PTY rows visually appear above an "invisible line." Any
+    // safety margin between the prompt and the accessory bar must come
+    // from RN layout (terminalFrame's flex bounds), not from undersizing
+    // the PTY.
+    var rows = Math.max(8, Math.floor(vpHeight / cellHeight));
     notify({ type: 'measure-result', cols: cols, rows: rows });
   }
 

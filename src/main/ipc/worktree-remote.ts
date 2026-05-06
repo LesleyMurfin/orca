@@ -37,6 +37,7 @@ import {
   areWorktreePathsEqual
 } from './worktree-logic'
 import { invalidateAuthorizedRootsCache } from './filesystem-auth'
+import { createWorktreeSymlinks } from './worktree-symlinks'
 import { normalizeSparseDirectories } from './sparse-checkout-directories'
 
 export function notifyWorktreesChanged(mainWindow: BrowserWindow, repoId: string): void {
@@ -203,14 +204,28 @@ export async function createRemoteWorktree(
   }
 
   const worktreeId = `${repo.id}::${created.path}`
+  const now = Date.now()
   const metaUpdates: Partial<WorktreeMeta> = {
-    lastActivityAt: Date.now(),
+    lastActivityAt: now,
+    // Why: grants the new worktree a short grace window at the top of the
+    // Recent sort. During worktree creation (git fetch + add can take several
+    // seconds) other worktrees get ambient PTY bumps that would otherwise
+    // leave the newly-created one below them; the Recent comparator uses
+    // max(lastActivityAt, createdAt + GRACE_MS) to keep it on top until the
+    // window elapses. See smart-sort.ts `CREATE_GRACE_MS`.
+    createdAt: now,
     ...(shouldSetDisplayName(requestedName, branchName, sanitizedName)
       ? { displayName: requestedName }
       : {})
   }
   const meta = store.setWorktreeMeta(worktreeId, metaUpdates)
   const worktree = mergeWorktree(repo.id, created, meta)
+
+  // Why: `experimentalWorktreeSymlinks` is intentionally not wired up for
+  // remote (SSH) worktrees. Creating symlinks on the remote host would
+  // require a new relay method and authorization surface; the feature is
+  // local-only until that protocol work is in scope. Remote repos with
+  // `symlinkPaths` configured have them silently ignored here.
 
   notifyWorktreesChanged(mainWindow, repo.id)
   return { worktree }
@@ -427,11 +442,15 @@ export async function createLocalWorktree(
   }
 
   const worktreeId = `${repo.id}::${created.path}`
+  const now = Date.now()
   const metaUpdates: Partial<WorktreeMeta> = {
     // Stamp activity so the worktree sorts into its final position
     // immediately — prevents scroll-to-reveal racing with a later
     // bumpWorktreeActivity that would re-sort the list.
-    lastActivityAt: Date.now(),
+    lastActivityAt: now,
+    // See createRemoteWorktree above: createdAt protects the newly-created
+    // worktree from ambient PTY bumps in other worktrees for CREATE_GRACE_MS.
+    createdAt: now,
     ...(shouldSetDisplayName(effectiveRequestedName, branchName, effectiveSanitizedName)
       ? { displayName: effectiveRequestedName }
       : {}),
@@ -451,6 +470,15 @@ export async function createLocalWorktree(
   // an immediate rebuild, which can spawn `git worktree list` per repo and
   // adds 100ms+ to every create.
   invalidateAuthorizedRootsCache()
+
+  // Why: create user-configured symlinks from the primary checkout into the
+  // new worktree before any setup script runs, so scripts that reuse shared
+  // state (e.g. `node_modules`, `.env`) see the links already in place.
+  // Gated on the experimental flag so disabling the feature globally skips
+  // the work even when a repo still has paths configured.
+  if (settings.experimentalWorktreeSymlinks && repo.symlinkPaths && repo.symlinkPaths.length > 0) {
+    await createWorktreeSymlinks(repo.path, created.path, repo.symlinkPaths)
+  }
 
   // Why: the worktree's own `orca.yaml` (at the tip of the base branch) is
   // authoritative for what runs post-creation. The repo-level trust already

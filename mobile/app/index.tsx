@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { View, Text, StyleSheet, Pressable, FlatList } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter, useFocusEffect } from 'expo-router'
 import {
   Monitor,
@@ -11,19 +11,37 @@ import {
   GitPullRequest,
   ChevronRight,
   Terminal,
-  Plus
+  Plus,
+  RefreshCw,
+  PowerOff,
+  Edit3
 } from 'lucide-react-native'
+import { ClaudeIcon, OpenAIIcon } from '../src/components/AgentIcons'
+import {
+  type AccountsSnapshot,
+  type ProviderKey,
+  getActiveProviderRateLimits,
+  UsageBar
+} from '../src/components/AccountUsage'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { loadHosts, removeHost, renameHost } from '../src/transport/host-store'
-import { connect, type RpcClient } from '../src/transport/rpc-client'
+import type { RpcClient } from '../src/transport/rpc-client'
+import {
+  useAllHostClients,
+  useCloseHost,
+  useForceReconnect,
+  usePrimeHosts
+} from '../src/transport/client-context'
 import { subscribeToDesktopNotifications } from '../src/notifications/mobile-notifications'
 import type { ConnectionState, HostProfile } from '../src/transport/types'
 import { triggerMediumImpact } from '../src/platform/haptics'
 import { OrcaLogo } from '../src/components/OrcaLogo'
+import { StatusDot } from '../src/components/StatusDot'
 import { TextInputModal } from '../src/components/TextInputModal'
-import { ActionSheetModal } from '../src/components/ActionSheetModal'
+import { ActionSheetModal, type ActionSheetAction } from '../src/components/ActionSheetModal'
 import { ConfirmModal } from '../src/components/ConfirmModal'
 import { setCachedWorktrees, getCachedWorktrees } from '../src/cache/worktree-cache'
+import { loadHomeSnapshot, saveHomeSnapshot } from '../src/cache/home-snapshot-cache'
 import { colors, spacing, radii } from '../src/theme/mobile-theme'
 
 function endpointLabel(endpoint: string): string {
@@ -42,6 +60,23 @@ const STATUS_LABELS: Record<ConnectionState, string> = {
   reconnecting: 'Reconnecting…',
   handshaking: 'Connecting…',
   'auth-failed': 'Auth failed'
+}
+
+// Why: a few quick reconnects are normal (laptop wake, brief network blip).
+// After this many failed attempts in a row, the user almost certainly has
+// a real problem (wrong port, server down, network change), so escalate
+// the label and color so it's obvious something's wrong.
+const RECONNECT_FAILURE_THRESHOLD = 3
+
+function getStatusDisplay(
+  state: ConnectionState,
+  attempts: number
+): { label: string; isError: boolean } {
+  if (state === 'auth-failed') return { label: 'Auth failed', isError: true }
+  if (state === 'reconnecting' && attempts >= RECONNECT_FAILURE_THRESHOLD) {
+    return { label: "Can't connect", isError: true }
+  }
+  return { label: STATUS_LABELS[state], isError: false }
 }
 
 type StatsSummary = {
@@ -102,16 +137,24 @@ function fetchWorktreeInfo(
   ) => void,
   disposed: () => boolean
 ) {
-  const markLoaded = () => {
-    setInfo((prev) => ({
-      ...prev,
-      [hostId]: {
-        hostId,
-        totalWorktrees: 0,
-        activeCount: 0,
-        lastActiveWorktree: null
+  // Why: only seed an empty zeroed entry when this host has no prior info
+  // at all (e.g., first ever load before any cache hydration). On a
+  // transient failure for a host that already has cached data, leave the
+  // cached entry alone so the Resume card and host-meta line don't
+  // momentarily flip to "0 worktrees" / disappear during reconnects.
+  const markLoadedIfMissing = () => {
+    setInfo((prev) => {
+      if (prev[hostId]) return prev
+      return {
+        ...prev,
+        [hostId]: {
+          hostId,
+          totalWorktrees: 0,
+          activeCount: 0,
+          lastActiveWorktree: null
+        }
       }
-    }))
+    })
   }
 
   client
@@ -135,12 +178,32 @@ function fetchWorktreeInfo(
           }
         }))
       } else {
-        markLoaded()
+        markLoadedIfMissing()
       }
     })
     .catch(() => {
-      if (!disposed()) markLoaded()
+      if (!disposed()) markLoadedIfMissing()
     })
+}
+
+function fetchAccountsSnapshot(
+  client: RpcClient,
+  hostId: string,
+  setSnapshots: (
+    updater: (prev: Record<string, AccountsSnapshot>) => Record<string, AccountsSnapshot>
+  ) => void,
+  disposed: () => boolean
+) {
+  client
+    .sendRequest('accounts.list')
+    .then((response) => {
+      if (disposed()) return
+      if (response.ok) {
+        const snapshot = response.result as AccountsSnapshot
+        setSnapshots((prev) => ({ ...prev, [hostId]: snapshot }))
+      }
+    })
+    .catch(() => {})
 }
 
 // Why: repo names get a stable color derived from hashing, matching the
@@ -156,17 +219,83 @@ function repoColor(name: string): string {
 
 export default function HomeScreen() {
   const router = useRouter()
+  const insets = useSafeAreaInsets()
   const [hosts, setHosts] = useState<HostProfile[]>([])
   const [actionTarget, setActionTarget] = useState<HostProfile | null>(null)
   const [renameTarget, setRenameTarget] = useState<HostProfile | null>(null)
   const [confirmRemove, setConfirmRemove] = useState<HostProfile | null>(null)
   const [hostStates, setHostStates] = useState<Record<string, ConnectionState>>({})
+  const [hostAttempts, setHostAttempts] = useState<Record<string, number>>({})
   const [stats, setStats] = useState<StatsSummary | null>(null)
   const [worktreeInfo, setWorktreeInfo] = useState<Record<string, HostWorktreeInfo>>({})
+  const [accountsByHost, setAccountsByHost] = useState<Record<string, AccountsSnapshot>>({})
   const [lastVisited, setLastVisited] = useState<{ hostId: string; worktreeId: string } | null>(
     null
   )
-  const clientsRef = useRef<Array<{ hostId: string; client: RpcClient }>>([])
+
+  // Why: read shared clients from the per-host store. Replaces the prior
+  // pattern of opening N independent WebSockets here. See
+  // docs/mobile-shared-client-per-host.md.
+  const hostIds = useMemo(() => hosts.map((h) => h.id), [hosts])
+  const allClients = useAllHostClients(hostIds)
+  const closeHostClient = useCloseHost()
+  const forceReconnectHost = useForceReconnect()
+  const primeHosts = usePrimeHosts()
+  // Why: feed the loaded HostProfiles into the provider's prime cache as
+  // soon as we have them. This avoids a second Keychain pass inside
+  // openEntry on cold start (which serialised behind the first one and
+  // showed up as multi-second connect latency).
+  useEffect(() => {
+    if (hosts.length > 0) primeHosts(hosts)
+  }, [hosts, primeHosts])
+  const allClientsRef = useRef<Array<{ hostId: string; client: RpcClient }>>([])
+  useEffect(() => {
+    allClientsRef.current = allClients.map((entry) => ({
+      hostId: entry.hostId,
+      client: entry.client
+    }))
+  }, [allClients])
+
+  // Why: hydrate the home page from a persisted snapshot on cold-start so
+  // Resume + Account-usage cards paint immediately with last-known data
+  // instead of flashing empty for ~1s while the WebSocket reconnects.
+  // Stream/list responses overwrite this seed in place when they arrive.
+  const hydratedRef = useRef(false)
+  useEffect(() => {
+    if (hydratedRef.current) return
+    hydratedRef.current = true
+    let cancelled = false
+    void loadHomeSnapshot().then((snap) => {
+      if (cancelled || !snap) return
+      setWorktreeInfo((prev) => (Object.keys(prev).length > 0 ? prev : snap.worktreeInfo))
+      setAccountsByHost((prev) => (Object.keys(prev).length > 0 ? prev : snap.accountsByHost))
+      for (const [hostId, info] of Object.entries(snap.worktreeInfo)) {
+        const wt = info.lastActiveWorktree
+        if (wt) {
+          // Why: also seed the in-memory worktree cache so resumeWorktree's
+          // lastVisited fast-path can find the cached worktree object.
+          setCachedWorktrees(hostId, [wt])
+        }
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Why: persist the merged snapshot whenever either piece updates so the
+  // next cold-start has fresh seed data. The cache module debounces writes
+  // internally so a flurry of streamed updates doesn't hammer disk.
+  useEffect(() => {
+    if (Object.keys(worktreeInfo).length === 0 && Object.keys(accountsByHost).length === 0) {
+      return
+    }
+    saveHomeSnapshot({
+      worktreeInfo,
+      accountsByHost,
+      savedAt: Date.now()
+    })
+  }, [worktreeInfo, accountsByHost])
 
   useFocusEffect(
     useCallback(() => {
@@ -180,10 +309,11 @@ export default function HomeScreen() {
           setLastVisited(JSON.parse(raw))
         } catch {}
       })
-      for (const entry of clientsRef.current) {
+      for (const entry of allClientsRef.current) {
         if (entry.client.getState() === 'connected') {
           fetchStats(entry.client, setStats, () => stale)
           fetchWorktreeInfo(entry.client, entry.hostId, setWorktreeInfo, () => stale)
+          fetchAccountsSnapshot(entry.client, entry.hostId, setAccountsByHost, () => stale)
         }
       }
       return () => {
@@ -197,75 +327,153 @@ export default function HomeScreen() {
     [hosts]
   )
 
+  // Why: mirror per-host connection state into hostStates so existing
+  // render code (status dots, connecting indicators) keeps working.
   useEffect(() => {
-    let disposed = false
-    const notifCleanups: Array<() => void> = []
-    const entries = hosts.flatMap((host) => {
-      if (!host.publicKeyB64 || !host.deviceToken) {
-        setHostStates((prev) => ({ ...prev, [host.id]: 'auth-failed' }))
-        return []
+    setHostAttempts((prev) => {
+      const next: Record<string, number> = { ...prev }
+      let changed = false
+      for (const entry of allClients) {
+        const a = entry.client.getReconnectAttempt()
+        if (next[entry.hostId] !== a) {
+          next[entry.hostId] = a
+          changed = true
+        }
       }
-      setHostStates((prev) => ({
-        ...prev,
-        [host.id]: prev[host.id] ?? 'connecting'
-      }))
-      let client: ReturnType<typeof connect>
-      try {
-        client = connect(host.endpoint, host.deviceToken, host.publicKeyB64, (state) => {
-          if (disposed) return
-          setHostStates((prev) => ({ ...prev, [host.id]: state }))
-        })
-      } catch {
-        setHostStates((prev) => ({ ...prev, [host.id]: 'auth-failed' }))
-        return []
+      return changed ? next : prev
+    })
+    setHostStates((prev) => {
+      const next: Record<string, ConnectionState> = { ...prev }
+      let changed = false
+      const liveIds = new Set(allClients.map((e) => e.hostId))
+      for (const entry of allClients) {
+        if (next[entry.hostId] !== entry.state) {
+          next[entry.hostId] = entry.state
+          changed = true
+        }
       }
+      // Why: when a paired host disappears from allClients (because the
+      // user tapped Disconnect, or the host record was invalid) the card
+      // must reflect that. We only force-update hosts whose state was
+      // already tracked — otherwise the initial-acquire frame (entry not
+      // yet materialised) would briefly flip every host to 'disconnected'.
+      for (const host of hosts) {
+        if (liveIds.has(host.id)) continue
+        if (!host.publicKeyB64 || !host.deviceToken) {
+          if (next[host.id] !== 'auth-failed') {
+            next[host.id] = 'auth-failed'
+            changed = true
+          }
+          continue
+        }
+        const prevState = next[host.id]
+        if (prevState && prevState !== 'disconnected' && prevState !== 'auth-failed') {
+          next[host.id] = 'disconnected'
+          changed = true
+        }
+      }
+      // Drop entries for hosts we no longer track at all.
+      for (const id of Object.keys(next)) {
+        if (!liveIds.has(id) && hosts.some((h) => h.id === id) === false) {
+          delete next[id]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [allClients, hosts])
 
+  // Why: per-host streaming subscriptions (notifications + accounts) and
+  // one-shot stats fetches when each host transitions to 'connected'.
+  // Runs once per (hostId, client) pair and tears down when that pair
+  // changes. The provider keeps the underlying socket open across
+  // resubscription cycles so this is cheap.
+  useEffect(() => {
+    const cleanups: Array<() => void> = []
+    for (const entry of allClients) {
       let unsubNotif: (() => void) | null = null
+      let unsubAccounts: (() => void) | null = null
       let statsFetched = false
-      const unsubState = client.onStateChange((state) => {
+      const wireUp = (state: ConnectionState) => {
         if (state === 'connected') {
           if (!unsubNotif) {
-            unsubNotif = subscribeToDesktopNotifications(client)
+            unsubNotif = subscribeToDesktopNotifications(entry.client)
+          }
+          if (!unsubAccounts) {
+            unsubAccounts = entry.client.subscribe('accounts.subscribe', null, (payload) => {
+              if (!payload || typeof payload !== 'object') return
+              const evt = payload as { type?: string; snapshot?: AccountsSnapshot }
+              if ((evt.type === 'ready' || evt.type === 'snapshot') && evt.snapshot) {
+                setAccountsByHost((prev) => ({ ...prev, [entry.hostId]: evt.snapshot! }))
+              }
+            })
           }
           if (!statsFetched) {
             statsFetched = true
-            fetchStats(client, setStats, () => disposed)
-            fetchWorktreeInfo(client, host.id, setWorktreeInfo, () => disposed)
+            fetchStats(entry.client, setStats, () => false)
+            fetchWorktreeInfo(entry.client, entry.hostId, setWorktreeInfo, () => false)
           }
-        } else if (unsubNotif) {
-          unsubNotif()
-          unsubNotif = null
+        } else {
+          if (unsubNotif) {
+            unsubNotif()
+            unsubNotif = null
+          }
+          if (unsubAccounts) {
+            unsubAccounts()
+            unsubAccounts = null
+          }
         }
-      })
-      notifCleanups.push(() => {
+      }
+      wireUp(entry.state)
+      const unsubState = entry.client.onStateChange(wireUp)
+      cleanups.push(() => {
         unsubState()
         unsubNotif?.()
+        unsubAccounts?.()
       })
-
-      return [{ hostId: host.id, client }]
-    })
-
-    clientsRef.current = entries
-
-    return () => {
-      disposed = true
-      clientsRef.current = []
-      for (const cleanup of notifCleanups) cleanup()
-      for (const entry of entries) entry.client.close()
     }
-  }, [hosts])
+    return () => {
+      for (const c of cleanups) c()
+    }
+    // Why: depend on the host-id set, not the whole allClients array, so
+    // resubscriptions don't fire on every render that produces a new
+    // array reference. Client identity is stable per hostId for the
+    // lifetime of the underlying transport.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    allClients
+      .map((e) => e.hostId)
+      .sort()
+      .join(',')
+  ])
 
   // Why: prefer the worktree the user last opened on this device so the
   // "Resume" card reflects their mobile session history, not just the
   // desktop's most-recently-outputting worktree.
+  // Why: rendering used to be gated on hostStates === 'connected', which
+  // caused the Resume card to vanish for ~1s on every cold-start /
+  // resume-from-background while the WebSocket reconnected, even though we
+  // had perfectly good cached worktree data. Now the card stays visible as
+  // long as we have a cached lastActiveWorktree for any known host; the
+  // tap target is still the same and a fresher snapshot from the live RPC
+  // overwrites the card's contents in place when it lands.
   const resumeWorktree = useMemo(() => {
-    if (lastVisited && hostStates[lastVisited.hostId] === 'connected') {
+    if (lastVisited && sortedHosts.some((h) => h.id === lastVisited.hostId)) {
       const cached = getCachedWorktrees(lastVisited.hostId) as WorktreeSummary[] | null
       const match = cached?.find((w) => w.worktreeId === lastVisited.worktreeId)
       if (match) return { hostId: lastVisited.hostId, worktree: match }
     }
+    // Prefer a currently-connected host's data when we have it.
     for (const host of sortedHosts) {
       if (hostStates[host.id] !== 'connected') continue
+      const info = worktreeInfo[host.id]
+      if (info?.lastActiveWorktree) {
+        return { hostId: host.id, worktree: info.lastActiveWorktree }
+      }
+    }
+    // Fall back to whichever known host has cached data, regardless of
+    // current connection state.
+    for (const host of sortedHosts) {
       const info = worktreeInfo[host.id]
       if (info?.lastActiveWorktree) {
         return { hostId: host.id, worktree: info.lastActiveWorktree }
@@ -288,6 +496,23 @@ export default function HomeScreen() {
     [sortedHosts, hostStates, worktreeInfo]
   )
 
+  // Why: only show the Account usage section for hosts that have at least
+  // one Claude or Codex account configured. Render whenever cached data
+  // exists, regardless of current connection state, so the cards don't
+  // disappear for ~1s on resume while the WebSocket reconnects. Streamed
+  // updates from the live RPC overwrite the snapshot in place when ready.
+  const accountsHosts = useMemo(() => {
+    const items: Array<{ host: HostProfile; snapshot: AccountsSnapshot }> = []
+    for (const host of sortedHosts) {
+      const snap = accountsByHost[host.id]
+      if (!snap) continue
+      const hasClaude = snap.claude.accounts.length > 0
+      const hasCodex = snap.codex.accounts.length > 0
+      if (hasClaude || hasCodex) items.push({ host, snapshot: snap })
+    }
+    return items
+  }, [sortedHosts, hostStates, accountsByHost])
+
   async function handleRename(newName: string) {
     if (!renameTarget) return
     try {
@@ -302,6 +527,9 @@ export default function HomeScreen() {
   async function handleRemove() {
     if (!confirmRemove) return
     try {
+      // Why: close the shared client first so the WebSocket is gone
+      // before the host record disappears from loadHosts().
+      closeHostClient(confirmRemove.id)
       await removeHost(confirmRemove.id)
       setConfirmRemove(null)
       setHosts(await loadHosts())
@@ -330,16 +558,16 @@ export default function HomeScreen() {
 
       {hosts.length === 0 ? (
         /* ─── Empty state: onboarding ─── */
-        <View style={styles.emptyContainer}>
+        <View style={[styles.emptyContainer, { paddingBottom: insets.bottom }]}>
           <View style={styles.emptyHero}>
             <Text style={styles.emptyTitle}>Connect your desktop</Text>
             <Text style={styles.emptyBody}>
-              Pair with Orca on your computer to monitor worktrees, watch agents work, and manage
-              terminals — all from your phone.
+              Pair with Orca on your computer to check on your agents, jump into any terminal, and
+              drive work from your phone.
             </Text>
             <Pressable style={styles.primaryButton} onPress={() => router.push('/pair-scan')}>
               <QrCode size={17} color={colors.bgBase} />
-              <Text style={styles.primaryButtonText}>Scan Pairing Code</Text>
+              <Text style={styles.primaryButtonText}>Pair Desktop</Text>
             </Pressable>
           </View>
 
@@ -363,7 +591,10 @@ export default function HomeScreen() {
         <FlatList
           data={sortedHosts}
           keyExtractor={(h) => h.id}
-          contentContainerStyle={styles.list}
+          // Why: edge-to-edge — let the list scroll under the system nav bar
+          // but reserve insets.bottom so the last row stays reachable above
+          // the Samsung 3-button nav / iOS home indicator.
+          contentContainerStyle={[styles.list, { paddingBottom: spacing.xl + insets.bottom }]}
           ListHeaderComponent={
             <View>
               <View style={styles.hero}>
@@ -404,8 +635,10 @@ export default function HomeScreen() {
           ItemSeparatorComponent={CardGap}
           renderItem={({ item }) => {
             const state = hostStates[item.id] ?? 'connecting'
+            const attempts = hostAttempts[item.id] ?? 0
             const connected = state === 'connected'
             const info = worktreeInfo[item.id]
+            const status = getStatusDisplay(state, attempts)
             return (
               <Pressable
                 style={({ pressed }) => [styles.hostCard, pressed && styles.hostCardPressed]}
@@ -430,14 +663,11 @@ export default function HomeScreen() {
                     {item.name}
                   </Text>
                   <View style={styles.hostMeta}>
-                    <View
-                      style={[
-                        styles.statusDot,
-                        { backgroundColor: connected ? colors.statusGreen : colors.textMuted }
-                      ]}
-                    />
-                    <Text style={styles.hostMetaItem}>
-                      {STATUS_LABELS[state]}
+                    <StatusDot state={state} />
+                    <Text
+                      style={[styles.hostMetaItem, status.isError && { color: colors.statusRed }]}
+                    >
+                      {status.label}
                       {connected && info
                         ? ` · ${info.totalWorktrees} worktree${info.totalWorktrees !== 1 ? 's' : ''}${info.activeCount > 0 ? ` · ${info.activeCount} active` : ''}`
                         : ''}
@@ -499,6 +729,85 @@ export default function HomeScreen() {
                 </>
               ) : null}
 
+              {/* ─── Account usage ─── */}
+              {accountsHosts.length > 0 ? (
+                <>
+                  <Text style={[styles.sectionHeading, { marginTop: spacing.xl }]}>
+                    Account usage
+                  </Text>
+                  {accountsHosts.map(({ host, snapshot }) => {
+                    const claudeActiveId = snapshot.claude.activeAccountId
+                    const claudeActive =
+                      snapshot.claude.accounts.find((a) => a.id === claudeActiveId) ?? null
+                    const codexActiveId = snapshot.codex.activeAccountId
+                    const codexActive =
+                      snapshot.codex.accounts.find((a) => a.id === codexActiveId) ?? null
+                    const showHostName = accountsHosts.length > 1
+                    return (
+                      <Pressable
+                        key={host.id}
+                        style={({ pressed }) => [
+                          styles.accountsCard,
+                          pressed && styles.hostCardPressed
+                        ]}
+                        onPress={() => router.push(`/h/${host.id}/accounts`)}
+                      >
+                        {showHostName ? (
+                          <Text style={styles.accountsHostLabel} numberOfLines={1}>
+                            {host.name}
+                          </Text>
+                        ) : null}
+                        {(['claude', 'codex'] as ProviderKey[]).map((provider) => {
+                          const active = provider === 'claude' ? claudeActive : codexActive
+                          const accounts =
+                            provider === 'claude'
+                              ? snapshot.claude.accounts
+                              : snapshot.codex.accounts
+                          if (accounts.length === 0) return null
+                          const limits = getActiveProviderRateLimits(snapshot, provider)
+                          const isFetching =
+                            limits?.status === 'fetching' || limits?.status === 'idle'
+                          const unavailable =
+                            limits == null ||
+                            limits.status === 'unavailable' ||
+                            limits.status === 'error'
+                          return (
+                            <View key={provider} style={styles.accountsRow}>
+                              <View style={styles.accountsIcon}>
+                                {provider === 'claude' ? (
+                                  <ClaudeIcon size={18} />
+                                ) : (
+                                  <OpenAIIcon size={18} color={colors.textPrimary} />
+                                )}
+                              </View>
+                              <View style={styles.accountsInfo}>
+                                <Text style={styles.accountsEmail} numberOfLines={1}>
+                                  {active?.email ?? 'System default'}
+                                </Text>
+                                <View style={styles.accountsBars}>
+                                  <UsageBar
+                                    label="5h"
+                                    usedPercent={limits?.session?.usedPercent ?? null}
+                                    unavailable={unavailable}
+                                    loading={isFetching && limits?.session == null}
+                                  />
+                                  <UsageBar
+                                    label="7d"
+                                    usedPercent={limits?.weekly?.usedPercent ?? null}
+                                    unavailable={unavailable}
+                                    loading={isFetching && limits?.weekly == null}
+                                  />
+                                </View>
+                              </View>
+                            </View>
+                          )
+                        })}
+                      </Pressable>
+                    )
+                  })}
+                </>
+              ) : null}
+
               {/* ─── Quick actions ─── */}
               <Text style={[styles.sectionHeading, { marginTop: spacing.xl }]}>Quick Actions</Text>
               <View style={styles.quickActions}>
@@ -507,7 +816,7 @@ export default function HomeScreen() {
                   onPress={() => router.push('/pair-scan')}
                 >
                   <View style={styles.quickActionIcon}>
-                    <QrCode size={20} color={colors.textSecondary} />
+                    <QrCode size={16} color={colors.textSecondary} />
                   </View>
                   <Text style={styles.quickActionLabel}>Pair Desktop</Text>
                 </Pressable>
@@ -521,7 +830,7 @@ export default function HomeScreen() {
                   }}
                 >
                   <View style={styles.quickActionIcon}>
-                    <Plus size={20} color={colors.textSecondary} />
+                    <Plus size={16} color={colors.textSecondary} />
                   </View>
                   <Text style={styles.quickActionLabel}>New Worktree</Text>
                 </Pressable>
@@ -536,25 +845,52 @@ export default function HomeScreen() {
         visible={actionTarget != null}
         title={actionTarget?.name}
         message={actionTarget ? endpointLabel(actionTarget.endpoint) : undefined}
-        actions={[
-          {
-            label: 'Rename',
+        actions={(() => {
+          const host = actionTarget
+          if (!host) return []
+          const state = hostStates[host.id] ?? 'connecting'
+          const isLive =
+            state === 'connected' ||
+            state === 'connecting' ||
+            state === 'handshaking' ||
+            state === 'reconnecting'
+          const items: ActionSheetAction[] = []
+          items.push({
+            label: 'Reconnect',
+            icon: RefreshCw,
             onPress: () => {
-              const host = actionTarget
               setActionTarget(null)
-              if (host) setRenameTarget(host)
+              void forceReconnectHost(host.id)
             }
-          },
-          {
+          })
+          if (isLive) {
+            items.push({
+              label: 'Disconnect',
+              icon: PowerOff,
+              onPress: () => {
+                setActionTarget(null)
+                closeHostClient(host.id)
+              }
+            })
+          }
+          items.push({
+            label: 'Rename',
+            icon: Edit3,
+            onPress: () => {
+              setActionTarget(null)
+              setRenameTarget(host)
+            }
+          })
+          items.push({
             label: 'Remove',
             destructive: true,
             onPress: () => {
-              const host = actionTarget
               setActionTarget(null)
-              if (host) setConfirmRemove(host)
+              setConfirmRemove(host)
             }
-          }
-        ]}
+          })
+          return items
+        })()}
         onClose={() => setActionTarget(null)}
       />
 
@@ -663,20 +999,21 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.borderSubtle,
     borderRadius: 10,
-    padding: spacing.md
+    paddingVertical: 10,
+    paddingHorizontal: spacing.md
   },
   statIcon: {
-    width: 30,
-    height: 30,
-    borderRadius: 7,
+    width: 26,
+    height: 26,
+    borderRadius: 6,
     backgroundColor: 'rgba(255,255,255,0.04)',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 10
+    marginBottom: 6
   },
   statValue: {
     color: colors.textPrimary,
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
     letterSpacing: -0.3
   },
@@ -684,7 +1021,7 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 11,
     fontWeight: '500',
-    marginTop: 3
+    marginTop: 2
   },
 
   /* ─── Section heading ─── */
@@ -813,6 +1150,53 @@ const styles = StyleSheet.create({
     flex: 1
   },
 
+  /* ─── Account usage ─── */
+  accountsCard: {
+    backgroundColor: colors.bgPanel,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    borderRadius: radii.card,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm + 2,
+    gap: spacing.sm,
+    marginBottom: spacing.sm
+  },
+  accountsHostLabel: {
+    fontSize: 11,
+    color: colors.textMuted,
+    fontWeight: '500',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4
+  },
+  accountsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm + 2
+  },
+  accountsIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    backgroundColor: colors.bgRaised,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  accountsInfo: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2
+  },
+  accountsEmail: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.textPrimary
+  },
+  accountsBars: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    marginTop: 4
+  },
+
   /* ─── Skeleton ─── */
   skeletonBlock: {
     backgroundColor: colors.bgRaised,
@@ -832,18 +1216,20 @@ const styles = StyleSheet.create({
   },
   quickAction: {
     flex: 1,
+    flexDirection: 'row',
     backgroundColor: colors.bgPanel,
     borderWidth: 1,
     borderColor: colors.borderSubtle,
     borderRadius: radii.card,
-    padding: spacing.lg,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     alignItems: 'center',
     gap: 10
   },
   quickActionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+    width: 28,
+    height: 28,
+    borderRadius: 9,
     backgroundColor: 'rgba(255,255,255,0.04)',
     alignItems: 'center',
     justifyContent: 'center'
@@ -851,8 +1237,7 @@ const styles = StyleSheet.create({
   quickActionLabel: {
     fontSize: 12,
     fontWeight: '600',
-    color: colors.textSecondary,
-    textAlign: 'center'
+    color: colors.textSecondary
   },
 
   /* ─── Empty state ─── */

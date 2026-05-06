@@ -6,16 +6,18 @@ import {
   ScrollView,
   TextInput,
   Pressable,
-  KeyboardAvoidingView,
+  Keyboard,
   Platform,
-  ActivityIndicator
+  ActivityIndicator,
+  type KeyboardEvent
 } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { ArrowUp, ChevronLeft, Monitor, Plus, Smartphone } from 'lucide-react-native'
-import { connect, type RpcClient } from '../../../../src/transport/rpc-client'
+import type { RpcClient } from '../../../../src/transport/rpc-client'
 import { loadHosts } from '../../../../src/transport/host-store'
+import { useHostClient } from '../../../../src/transport/client-context'
 import type { ConnectionState, RpcSuccess } from '../../../../src/transport/types'
 import { triggerMediumImpact } from '../../../../src/platform/haptics'
 import {
@@ -121,8 +123,10 @@ export default function SessionScreen() {
     created?: string
   }>()
   const router = useRouter()
-  const [client, setClient] = useState<RpcClient | null>(null)
-  const [connState, setConnState] = useState<ConnectionState>('disconnected')
+  const insets = useSafeAreaInsets()
+  // Why: shared client per host owned by RpcClientProvider. See
+  // docs/mobile-shared-client-per-host.md.
+  const { client, state: connState } = useHostClient(hostId)
   const [terminals, setTerminals] = useState<Terminal[]>([])
   const [terminalsLoaded, setTerminalsLoaded] = useState(false)
   const [input, setInput] = useState('')
@@ -134,6 +138,11 @@ export default function SessionScreen() {
   const [customKeys, setCustomKeys] = useState<CustomKey[]>([])
   const [showCustomKeyModal, setShowCustomKeyModal] = useState(false)
   const [deleteKeyTarget, setDeleteKeyTarget] = useState<CustomKey | null>(null)
+  // Why: in Expo SDK 55 edge-to-edge mode the OS does NOT resize the window when
+  // the IME opens — the keyboard draws on top of the app. We track the keyboard
+  // height ourselves and apply it as paddingBottom on the input/accessory area
+  // so the input lifts above the IME and the terminal flex container shrinks.
+  const [keyboardHeight, setKeyboardHeight] = useState(0)
   // Why: server-authoritative display mode per terminal. The runtime is the
   // single source of truth — this state is populated from subscribe responses.
   const [terminalModes, setTerminalModes] = useState<Map<string, MobileDisplayMode>>(new Map())
@@ -217,10 +226,6 @@ export default function SessionScreen() {
       const seq = (subscribeSeqRef.current.get(handle) ?? 0) + 1
       subscribeSeqRef.current.set(handle, seq)
 
-      console.log(
-        `[mobile-fit] subscribeToTerminal handle=${handle} seq=${seq} viewport=${viewportRef.current ? `${viewportRef.current.cols}x${viewportRef.current.rows}` : 'none'} measured=${viewportMeasuredRef.current}`
-      )
-
       // Why: server handles auto-fit on subscribe — no terminal.focus call needed.
       // The viewport is embedded in the subscribe params so the server resizes
       // the PTY before serializing scrollback. This eliminates the focus→safeFit
@@ -236,9 +241,6 @@ export default function SessionScreen() {
           if (subscribeSeqRef.current.get(handle) !== seq) return
           const data = result as Record<string, unknown>
           if (data.type === 'scrollback') {
-            console.log(
-              `[mobile-fit] scrollback handle=${handle} cols=${data.cols} rows=${data.rows} displayMode=${data.displayMode} hasSerialized=${!!data.serialized} alreadyInit=${initializedHandlesRef.current.has(handle)}`
-            )
             if (initializedHandlesRef.current.has(handle)) return
             const cols = (data.cols as number) || 80
             const rows = (data.rows as number) || 24
@@ -253,6 +255,14 @@ export default function SessionScreen() {
                 new Map(prev).set(handle, data.displayMode as MobileDisplayMode)
               )
             }
+            // Why: cold-start fit-to-screen guard. The first init() runs
+            // before xterm's DOM/canvas has fully laid out, so the
+            // applyFitScale that init queues internally can land while
+            // term.element.scrollWidth is still stale or zero — leaving
+            // the terminal un-zoomed until the user toggles the resize
+            // button. Re-fire resetZoom after a short delay so it runs
+            // against a settled DOM. Mirrors the 'resized' handler below.
+            setTimeout(() => getTerminalRef(handle)?.resetZoom(), 200)
             // Why: viewport measurement needs xterm to be initialized (cell
             // dimensions come from the renderer). On the first subscribe the
             // WebView hasn't loaded yet, so viewportRef is null and the server
@@ -275,9 +285,6 @@ export default function SessionScreen() {
           } else if (data.type === 'data') {
             getTerminalRef(handle)?.write(data.chunk as string)
           } else if (data.type === 'resized') {
-            console.log(
-              `[mobile-fit] resized handle=${handle} cols=${data.cols} rows=${data.rows} displayMode=${data.displayMode} reason=${(data as Record<string, unknown>).reason}`
-            )
             // Why: inline resize event — the server changed the PTY dimensions
             // (mode toggle or desktop restore). Reinitialize xterm at the new
             // dims with fresh scrollback. No resubscribe needed.
@@ -320,7 +327,15 @@ export default function SessionScreen() {
       const next: MobileDisplayMode = current === 'auto' || current === 'phone' ? 'desktop' : 'auto'
       toggleInFlightRef.current.add(handle)
       try {
-        await client.sendRequest('terminal.setDisplayMode', { terminal: handle, mode: next })
+        await client.sendRequest('terminal.setDisplayMode', {
+          terminal: handle,
+          mode: next,
+          // Why: presence-lock take-floor signal. Sending mode=auto/phone
+          // is a deliberate "I want to drive at phone dims" gesture.
+          ...(deviceTokenRef.current
+            ? { client: { id: deviceTokenRef.current, type: 'mobile' as const } }
+            : {})
+        })
       } catch {
         // Mode change failed — server state unchanged, UI stays in sync.
       } finally {
@@ -343,9 +358,6 @@ export default function SessionScreen() {
         })
         if (response.ok) {
           const result = (response as RpcSuccess).result as { terminals: Terminal[] }
-          console.log(
-            `[mobile-fit] fetchTerminals count=${result.terminals.length} allowEmpty=${allowEmptyLoaded} activeHandle=${activeHandleRef.current} lastKnown=${lastKnownTerminalCountRef.current}`
-          )
 
           if (result.terminals.length === 0 && !allowEmptyLoaded) {
             return
@@ -357,9 +369,6 @@ export default function SessionScreen() {
           // rapid interactions while still allowing genuine cleanup.
           if (result.terminals.length === 0 && lastKnownTerminalCountRef.current > 0) {
             lastKnownTerminalCountRef.current = 0
-            console.log(
-              `[mobile-fit] fetchTerminals SKIP first empty — will clear on next fetch if still empty`
-            )
             return
           }
 
@@ -374,7 +383,19 @@ export default function SessionScreen() {
           lastKnownTerminalCountRef.current = result.terminals.length
           const current = activeHandleRef.current
 
-          setTerminals(result.terminals)
+          // Why: defense-in-depth dedupe. If the server ever returns a list
+          // with the same handle twice (race during rename/split, or stale
+          // process tracking), React would throw 'two children with same
+          // key' on render. Keep the first occurrence — list order matters
+          // for the tab strip, and createParams puts new tabs at the end.
+          const seen = new Set<string>()
+          const deduped = result.terminals.filter((t) => {
+            if (seen.has(t.handle)) return false
+            seen.add(t.handle)
+            return true
+          })
+
+          setTerminals(deduped)
           setTerminalsLoaded(true)
 
           if (!current || !result.terminals.some((t) => t.handle === current)) {
@@ -396,38 +417,123 @@ export default function SessionScreen() {
     [client, worktreeId, subscribeToTerminal, unsubscribeTerminal]
   )
 
+  // Why: keep clientRef in sync with the shared client from
+  // useHostClient() so the existing imperative call sites
+  // (clientRef.current.sendRequest...) keep working without churn.
   useEffect(() => {
-    let disposed = false
-    let rpcClient: RpcClient | null = null
-
-    void (async () => {
-      const hosts = await loadHosts()
-      const host = hosts.find((h) => h.id === hostId)
-      if (!host || disposed) return
-
-      deviceTokenRef.current = host.deviceToken
-      rpcClient = connect(host.endpoint, host.deviceToken, host.publicKeyB64, setConnState)
-      if (disposed) {
-        rpcClient.close()
-        return
-      }
-      setClient(rpcClient)
-      clientRef.current = rpcClient
-    })()
-
+    clientRef.current = client
     return () => {
-      disposed = true
       clearTerminalCache()
-      rpcClient?.close()
-      if (clientRef.current === rpcClient) {
-        clientRef.current = null
-      }
     }
-  }, [clearTerminalCache, hostId])
+  }, [client, clearTerminalCache])
+
+  // Why: deviceToken is read from host record so feature code can pass
+  // `client.id` on subscribe/send for driver-state-machine identity.
+  // The shared client itself stays alive across screens; we just need
+  // the token alongside the client.
+  useEffect(() => {
+    if (!hostId) return
+    let stale = false
+    void loadHosts().then((hosts) => {
+      if (stale) return
+      const host = hosts.find((h) => h.id === hostId)
+      if (host) deviceTokenRef.current = host.deviceToken
+    })
+    return () => {
+      stale = true
+    }
+  }, [hostId])
 
   useEffect(() => {
     void loadCustomKeys().then(setCustomKeys)
   }, [])
+
+  // Why: drive the bottom padding from the keyboard height (edge-to-edge mode
+  // doesn't resize the window) and refit xterm once the layout settles so the
+  // terminal grid matches the new visible area. iOS exposes 'will' events that
+  // animate in sync with the IME; Android only fires 'did' events reliably.
+  // Also drives re-measurement when other layout-affecting state changes
+  // (e.g. tab strip toggling visibility when the terminal count crosses
+  // 0↔1 — without this, a freshly-created 2nd tab subscribes with a
+  // stale viewport that doesn't account for the now-visible tab strip,
+  // and the server phone-fits to dims a few rows too tall).
+  const refitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scheduleViewportRefit = useCallback(() => {
+    if (refitTimerRef.current) clearTimeout(refitTimerRef.current)
+    refitTimerRef.current = setTimeout(() => {
+      const handle = activeHandleRef.current
+      if (!handle) return
+      const ref = terminalRefs.current.get(handle)
+      if (!ref) return
+      void (async () => {
+        const dims = await ref.measureFitDimensions(terminalFrameHeightRef.current || undefined)
+        if (!dims) return
+        const prev = viewportRef.current
+        if (prev && prev.cols === dims.cols && prev.rows === dims.rows) return
+        viewportRef.current = dims
+        viewportMeasuredRef.current = true
+        // Why: prefer the in-place viewport update RPC over the legacy
+        // unsubscribe → subscribe cycle. This keeps the server-side
+        // mobile subscriber record alive (no driver=idle blip on the
+        // desktop banner; no false phone-fit baseline capture on the
+        // re-subscribe). See docs/mobile-presence-lock.md.
+        const rpc = clientRef.current
+        const deviceToken = deviceTokenRef.current
+        if (rpc && deviceToken) {
+          try {
+            const response = await rpc.sendRequest('terminal.updateViewport', {
+              terminal: handle,
+              client: { id: deviceToken, type: 'mobile' as const },
+              viewport: dims
+            })
+            if (response.ok) return
+          } catch {
+            // Fall through to legacy resubscribe.
+          }
+        }
+        unsubscribeTerminal(handle)
+        initializedHandlesRef.current.delete(handle)
+        subscribeToTerminal(handle)
+      })()
+    }, 150)
+  }, [subscribeToTerminal, unsubscribeTerminal])
+
+  useEffect(() => {
+    const onShow = (e: KeyboardEvent) => {
+      setKeyboardHeight(e.endCoordinates?.height ?? 0)
+      scheduleViewportRefit()
+    }
+    const onHide = () => {
+      setKeyboardHeight(0)
+      scheduleViewportRefit()
+    }
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
+    const showSub = Keyboard.addListener(showEvent, onShow)
+    const hideSub = Keyboard.addListener(hideEvent, onHide)
+    return () => {
+      if (refitTimerRef.current) clearTimeout(refitTimerRef.current)
+      showSub.remove()
+      hideSub.remove()
+    }
+  }, [scheduleViewportRefit])
+
+  // Why: the tab strip is hidden when only one terminal exists and shown
+  // once a second is created. Crossing the 1↔2 boundary changes the
+  // visible terminal area by ~40px, so the cached viewport dims in
+  // viewportRef become stale. Mark the viewport as un-measured so the
+  // next subscribe path's self-correcting loop (init → measure →
+  // resubscribe-with-fresh-viewport, see the !viewportMeasuredRef branch
+  // above) re-runs against the new layout. Also schedule an explicit
+  // refit to cover the case where no new subscribe is happening.
+  const tabStripVisible = terminals.length > 1
+  const prevTabStripVisibleRef = useRef(tabStripVisible)
+  useEffect(() => {
+    if (prevTabStripVisibleRef.current === tabStripVisible) return
+    prevTabStripVisibleRef.current = tabStripVisible
+    viewportMeasuredRef.current = false
+    scheduleViewportRefit()
+  }, [tabStripVisible, scheduleViewportRefit])
 
   useEffect(() => {
     if (hostId && worktreeId) {
@@ -519,9 +625,6 @@ export default function SessionScreen() {
   const switchTab = useCallback(
     (handle: string) => {
       const prev = activeHandleRef.current
-      console.log(
-        `[mobile-fit] switchTab prev=${prev} next=${handle} hasUnsub=${terminalUnsubsRef.current.has(handle)} hasRef=${!!terminalRefs.current.get(handle)}`
-      )
       activeHandleRef.current = handle
       setActiveHandle(handle)
       if (prev && prev !== handle) {
@@ -548,9 +651,6 @@ export default function SessionScreen() {
   const setTerminalWebViewRef = useCallback((handle: string, ref: TerminalWebViewHandle | null) => {
     if (ref) {
       terminalRefs.current.set(handle, ref)
-      console.log(
-        `[mobile-fit] setTerminalWebViewRef handle=${handle} isActive=${handle === activeHandleRef.current} webReady=${webReadyHandlesRef.current.has(handle)}`
-      )
     } else {
       terminalRefs.current.delete(handle)
     }
@@ -560,9 +660,6 @@ export default function SessionScreen() {
     (handle: string) => {
       const wasAlreadyReady = webReadyHandlesRef.current.has(handle)
       webReadyHandlesRef.current.add(handle)
-      console.log(
-        `[mobile-fit] handleTerminalWebReady handle=${handle} isActive=${handle === activeHandleRef.current} wasAlreadyReady=${wasAlreadyReady} wasInitialized=${initializedHandlesRef.current.has(handle)}`
-      )
       if (wasAlreadyReady && initializedHandlesRef.current.has(handle)) {
         // Why: the native WebView reloaded (Metro hot reload or Android
         // process churn). The old xterm buffer is gone, so force a fresh
@@ -599,7 +696,13 @@ export default function SessionScreen() {
       await client.sendRequest('terminal.send', {
         terminal: activeHandle,
         text,
-        enter: true
+        enter: true,
+        // Why: presence-lock take-floor signal. Identifies this phone as
+        // the active mobile actor so the runtime can resolve multi-mobile
+        // contention (most-recent-actor's viewport wins).
+        ...(deviceTokenRef.current
+          ? { client: { id: deviceTokenRef.current, type: 'mobile' as const } }
+          : {})
       })
     } catch {
       setInput(text)
@@ -615,7 +718,10 @@ export default function SessionScreen() {
       await client.sendRequest('terminal.send', {
         terminal: activeHandle,
         text: bytes,
-        enter: false
+        enter: false,
+        ...(deviceTokenRef.current
+          ? { client: { id: deviceTokenRef.current, type: 'mobile' as const } }
+          : {})
       })
     } catch {
       // Transient failure
@@ -645,10 +751,17 @@ export default function SessionScreen() {
         }
         activeHandleRef.current = created.handle
         setActiveHandle(created.handle)
-        setTerminals((prev) => [
-          ...prev,
-          { handle: created.handle, title: created.title || 'Terminal', isActive: true }
-        ])
+        setTerminals((prev) => {
+          // Why: guard against duplicates if a parallel fetchTerminals()
+          // already inserted this handle. Without this, React throws
+          // 'two children with the same key' when both the optimistic
+          // insert and a canonical refetch race during creation.
+          if (prev.some((t) => t.handle === created.handle)) return prev
+          return [
+            ...prev,
+            { handle: created.handle, title: created.title || 'Terminal', isActive: true }
+          ]
+        })
         subscribeToTerminal(created.handle)
         setTimeout(() => void fetchTerminals(), 500)
       } else {
@@ -733,13 +846,21 @@ export default function SessionScreen() {
           : `${terminals.length} terminals`
       : STATUS_LABELS[connState]
 
+  // Why: on Android (Samsung 3-button) the keyboard event reports only the IME
+  // height; the system nav bar sits below the keyboard and adds its own height
+  // on top, so we must add insets.bottom too or the input stays clipped behind
+  // the nav bar. On iOS the keyboard coordinates already include the home
+  // indicator region, so adding insets.bottom would double-count.
+  const bottomPadding =
+    keyboardHeight > 0
+      ? Platform.OS === 'ios'
+        ? keyboardHeight
+        : keyboardHeight + insets.bottom
+      : insets.bottom
+
   return (
     <View style={styles.container}>
-      <KeyboardAvoidingView
-        style={styles.kavInner}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={0}
-      >
+      <View style={styles.kavInner}>
         <SafeAreaView style={styles.sessionChrome} edges={['top']}>
           <View style={styles.sessionTopBar}>
             <Pressable
@@ -845,113 +966,120 @@ export default function SessionScreen() {
           </View>
         )}
 
-        {/* Accessory keys */}
-        <View style={styles.accessoryBar}>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.accessoryContent}
-          >
-            <Pressable
-              style={({ pressed }) => [
-                styles.accessoryKey,
-                pressed && styles.accessoryKeyPressed,
-                !canSend && styles.accessoryKeyDisabled
-              ]}
-              disabled={!canSend}
-              onPress={() => {
-                if (activeHandle) {
-                  void toggleDisplayMode(activeHandle)
-                }
-              }}
-              accessibilityLabel={
-                isPhoneMode(activeHandle) ? 'Switch to desktop mode' : 'Switch to phone mode'
-              }
+        {/* Why: bottomPadding lifts the entire input region above the keyboard
+            (when shown) or above the system nav bar / home indicator (when hidden). */}
+        <View style={{ paddingBottom: bottomPadding }}>
+          {/* Accessory keys */}
+          <View style={styles.accessoryBar}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.accessoryContent}
             >
-              {isPhoneMode(activeHandle) ? (
-                <Monitor size={14} color={canSend ? colors.textSecondary : colors.textMuted} />
-              ) : (
-                <Smartphone size={14} color={canSend ? colors.textSecondary : colors.textMuted} />
-              )}
-            </Pressable>
-            {ACCESSORY_KEYS.map((key) => (
               <Pressable
-                key={key.label}
                 style={({ pressed }) => [
                   styles.accessoryKey,
                   pressed && styles.accessoryKeyPressed,
                   !canSend && styles.accessoryKeyDisabled
                 ]}
                 disabled={!canSend}
-                onPress={() => void handleAccessoryKey(key.bytes)}
-                accessibilityLabel={key.accessibilityLabel ?? `Send ${key.label}`}
-              >
-                <Text
-                  style={[styles.accessoryKeyText, !canSend && styles.accessoryKeyTextDisabled]}
-                >
-                  {key.label}
-                </Text>
-              </Pressable>
-            ))}
-            {customKeys.map((key) => (
-              <Pressable
-                key={key.id}
-                style={({ pressed }) => [
-                  styles.accessoryKey,
-                  styles.customAccessoryKey,
-                  pressed && styles.accessoryKeyPressed,
-                  !canSend && styles.accessoryKeyDisabled
-                ]}
-                disabled={!canSend}
-                onPress={() => void handleAccessoryKey(key.bytes)}
-                onLongPress={() => {
-                  triggerMediumImpact()
-                  setDeleteKeyTarget(key)
+                onPress={() => {
+                  if (activeHandle) {
+                    void toggleDisplayMode(activeHandle)
+                  }
                 }}
-                delayLongPress={400}
-                accessibilityLabel={`Send ${key.label}`}
+                accessibilityLabel={
+                  isPhoneMode(activeHandle) ? 'Switch to desktop mode' : 'Switch to phone mode'
+                }
               >
-                <Text
-                  style={[styles.accessoryKeyText, !canSend && styles.accessoryKeyTextDisabled]}
-                >
-                  {key.label}
-                </Text>
+                {isPhoneMode(activeHandle) ? (
+                  <Monitor size={14} color={canSend ? colors.textSecondary : colors.textMuted} />
+                ) : (
+                  <Smartphone size={14} color={canSend ? colors.textSecondary : colors.textMuted} />
+                )}
               </Pressable>
-            ))}
-            <Pressable
-              style={({ pressed }) => [styles.accessoryKey, pressed && styles.accessoryKeyPressed]}
-              onPress={() => setShowCustomKeyModal(true)}
-              accessibilityLabel="Add custom shortcut"
-            >
-              <Plus size={14} color={colors.textSecondary} strokeWidth={2.2} />
-            </Pressable>
-          </ScrollView>
-        </View>
+              {ACCESSORY_KEYS.map((key) => (
+                <Pressable
+                  key={key.label}
+                  style={({ pressed }) => [
+                    styles.accessoryKey,
+                    pressed && styles.accessoryKeyPressed,
+                    !canSend && styles.accessoryKeyDisabled
+                  ]}
+                  disabled={!canSend}
+                  onPress={() => void handleAccessoryKey(key.bytes)}
+                  accessibilityLabel={key.accessibilityLabel ?? `Send ${key.label}`}
+                >
+                  <Text
+                    style={[styles.accessoryKeyText, !canSend && styles.accessoryKeyTextDisabled]}
+                  >
+                    {key.label}
+                  </Text>
+                </Pressable>
+              ))}
+              {customKeys.map((key) => (
+                <Pressable
+                  key={key.id}
+                  style={({ pressed }) => [
+                    styles.accessoryKey,
+                    styles.customAccessoryKey,
+                    pressed && styles.accessoryKeyPressed,
+                    !canSend && styles.accessoryKeyDisabled
+                  ]}
+                  disabled={!canSend}
+                  onPress={() => void handleAccessoryKey(key.bytes)}
+                  onLongPress={() => {
+                    triggerMediumImpact()
+                    setDeleteKeyTarget(key)
+                  }}
+                  delayLongPress={400}
+                  accessibilityLabel={`Send ${key.label}`}
+                >
+                  <Text
+                    style={[styles.accessoryKeyText, !canSend && styles.accessoryKeyTextDisabled]}
+                  >
+                    {key.label}
+                  </Text>
+                </Pressable>
+              ))}
+              <Pressable
+                style={({ pressed }) => [
+                  styles.accessoryKey,
+                  pressed && styles.accessoryKeyPressed
+                ]}
+                onPress={() => setShowCustomKeyModal(true)}
+                accessibilityLabel="Add custom shortcut"
+              >
+                <Plus size={14} color={colors.textSecondary} strokeWidth={2.2} />
+              </Pressable>
+            </ScrollView>
+          </View>
 
-        {/* Input bar */}
-        <View style={styles.inputBar}>
-          <TextInput
-            style={styles.textInput}
-            value={input}
-            onChangeText={setInput}
-            placeholder="Type a command…"
-            placeholderTextColor={colors.textMuted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            returnKeyType="send"
-            editable={canSend}
-            onSubmitEditing={() => void handleSend()}
-          />
-          <Pressable
-            style={[styles.sendButton, !canSend && styles.sendButtonDisabled]}
-            disabled={!canSend}
-            onPress={() => void handleSend()}
-            accessibilityLabel="Send command"
-          >
-            <ArrowUp size={18} color={colors.textSecondary} strokeWidth={2.5} />
-          </Pressable>
+          {/* Input bar */}
+          <View style={styles.inputBar}>
+            <TextInput
+              style={styles.textInput}
+              value={input}
+              onChangeText={setInput}
+              placeholder="Type a command…"
+              placeholderTextColor={colors.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="send"
+              editable={canSend}
+              onSubmitEditing={() => void handleSend()}
+            />
+            <Pressable
+              style={[styles.sendButton, !canSend && styles.sendButtonDisabled]}
+              disabled={!canSend}
+              onPress={() => void handleSend()}
+              accessibilityLabel="Send command"
+            >
+              <ArrowUp size={18} color={colors.textSecondary} strokeWidth={2.5} />
+            </Pressable>
+          </View>
         </View>
-      </KeyboardAvoidingView>
+      </View>
 
       <ActionSheetModal
         visible={actionTarget != null}
