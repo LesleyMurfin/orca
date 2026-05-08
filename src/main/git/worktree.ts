@@ -212,14 +212,31 @@ export async function addWorktree(
   //   error and the user runs `git push -u` once.
   // - Failures here are warn-only: config writes are best-effort and a
   //   missing write degrades to the same fallback as old git.
-  // - The write is unconditional and does not preserve a pre-existing
-  //   user value, including push.autoSetupRemote=false.
+  // - The write is skipped when any value is already set (local, global,
+  //   or system) so a deliberate user `false` is preserved.
   try {
-    await gitExecFileAsync(['config', '--local', 'push.autoSetupRemote', 'true'], {
-      cwd: worktreePath
-    })
+    // Why: `--get` (not `--local --get`) so a value set at any scope
+    // (local/global/system) counts as "user already chose" and we don't
+    // overwrite it. `gitExecFileAsync` throws on non-zero exit; exit 1
+    // means the key is unset, which is the only case where we write.
+    let alreadySet = false
+    try {
+      await gitExecFileAsync(['config', '--get', 'push.autoSetupRemote'], {
+        cwd: worktreePath
+      })
+      alreadySet = true
+    } catch {
+      // Key is unset (or read failed for another reason). Fall through to
+      // the write attempt; if the underlying problem is e.g. a locked
+      // config, the write will fail too and the outer catch will warn.
+    }
+    if (!alreadySet) {
+      await gitExecFileAsync(['config', '--local', 'push.autoSetupRemote', 'true'], {
+        cwd: worktreePath
+      })
+    }
   } catch (error) {
-    console.warn('addWorktree: failed to set push.autoSetupRemote', error)
+    console.warn(`addWorktree: failed to set push.autoSetupRemote for ${worktreePath}`, error)
   }
 }
 
