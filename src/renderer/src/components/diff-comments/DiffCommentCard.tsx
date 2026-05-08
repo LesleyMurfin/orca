@@ -239,7 +239,6 @@ export function DiffCommentCard({
           <div className="orca-diff-comment-popover-footer">
             <Button variant="ghost" size="sm" onClick={handleCancel} disabled={submitting}>
               Cancel
-              <kbd className="orca-diff-comment-kbd">Esc</kbd>
             </Button>
             <Button
               size="sm"
