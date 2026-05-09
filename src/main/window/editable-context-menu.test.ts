@@ -80,7 +80,8 @@ describe('buildEditableContextMenuTemplate', () => {
         replaceMisspelling: vi.fn(),
         send,
         session: { addWordToSpellCheckerDictionary: vi.fn() } as unknown as Electron.Session
-      }
+      },
+      { richMarkdownFocused: true }
     )
 
     expect(template.map((item) => item.label ?? item.role ?? item.type)).toEqual([
@@ -137,6 +138,40 @@ describe('buildEditableContextMenuTemplate', () => {
         webContents
       )
     ).toEqual([])
+  })
+
+  it('omits markdown items for non-rich-markdown contenteditable surfaces', () => {
+    const template = buildEditableContextMenuTemplate(contextParams(), {
+      replaceMisspelling: vi.fn(),
+      send: vi.fn(),
+      session: { addWordToSpellCheckerDictionary: vi.fn() } as unknown as Electron.Session
+    })
+
+    expect(template.map((item) => item.label ?? item.role ?? item.type)).toEqual([
+      'reference',
+      'reverence',
+      'separator',
+      'Add to dictionary',
+      'separator',
+      'cut',
+      'copy',
+      'paste',
+      'Paste as plain text',
+      'selectAll'
+    ])
+  })
+
+  it('returns no menu for non-rich contenteditable with no spellcheck info', () => {
+    const template = buildEditableContextMenuTemplate(
+      contextParams({ misspelledWord: '', dictionarySuggestions: [] }),
+      {
+        replaceMisspelling: vi.fn(),
+        send: vi.fn(),
+        session: { addWordToSpellCheckerDictionary: vi.fn() } as unknown as Electron.Session
+      }
+    )
+
+    expect(template).toEqual([])
   })
 
   it('keeps regular text inputs to spelling and native edit actions', () => {

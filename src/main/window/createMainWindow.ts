@@ -436,13 +436,15 @@ export function createMainWindow(
   ipcMain.on(markdownFocusChannel, onMarkdownEditorFocused)
 
   const onMainContextMenu = (_event: Electron.Event, params: Electron.ContextMenuParams): void => {
-    const template = buildEditableContextMenuTemplate(params, mainWindow.webContents)
+    const template = buildEditableContextMenuTemplate(params, mainWindow.webContents, {
+      richMarkdownFocused: markdownEditorFocused
+    })
     if (template.length === 0) {
       return
     }
-    // Why: right-click can produce a Chromium context-menu event before our
-    // renderer focus mirror updates, so trust Electron's editable/spellcheck
-    // params here instead of gating on markdownEditorFocused.
+    // Why: spellcheck/native-edit items always trust Electron's params, but
+    // the markdown command branch is gated on the renderer's focus mirror so
+    // other contenteditable surfaces don't get dead markdown items.
     Menu.buildFromTemplate(template).popup({ window: mainWindow, x: params.x, y: params.y })
   }
   mainWindow.webContents.on('context-menu', onMainContextMenu)

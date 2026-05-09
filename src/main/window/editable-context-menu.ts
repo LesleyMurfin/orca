@@ -85,14 +85,21 @@ function buildNativeEditMenuTemplate(): Electron.MenuItemConstructorOptions[] {
 
 export function buildEditableContextMenuTemplate(
   params: Electron.ContextMenuParams,
-  webContents: EditableContextMenuWebContents
+  webContents: EditableContextMenuWebContents,
+  options: { richMarkdownFocused?: boolean } = {}
 ): Electron.MenuItemConstructorOptions[] {
   if (!params.isEditable) {
     return []
   }
 
   const suggestions = params.dictionarySuggestions.slice(0, 5)
-  const isRichMarkdownSurface = params.formControlType === 'none'
+  // Why: `formControlType === 'none'` matches any contenteditable, not just
+  // the rich markdown editor. Gate the markdown branch on the renderer's
+  // focus mirror so other contenteditable surfaces (composer inputs, other
+  // TipTap instances) get the native edit menu instead of dead markdown
+  // commands that the renderer-side IPC guard silently drops.
+  const isRichMarkdownSurface =
+    params.formControlType === 'none' && options.richMarkdownFocused === true
   if (!isRichMarkdownSurface && suggestions.length === 0 && !params.misspelledWord) {
     return []
   }
