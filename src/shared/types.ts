@@ -111,6 +111,7 @@ export type Worktree = {
   linkedIssue: number | null
   linkedPR: number | null
   linkedLinearIssue: string | null
+  linkedArtifactUrl?: string | null
   isArchived: boolean
   isUnread: boolean
   isPinned: boolean
@@ -138,6 +139,7 @@ export type WorktreeMeta = {
   linkedIssue: number | null
   linkedPR: number | null
   linkedLinearIssue: string | null
+  linkedArtifactUrl?: string | null
   isArchived: boolean
   isUnread: boolean
   isPinned: boolean
@@ -867,6 +869,10 @@ export type CreateWorktreeArgs = {
   baseBranch?: string
   setupDecision?: SetupDecision
   sparseCheckout?: CreateSparseCheckoutRequest
+  /** Link metadata that must exist before the first worktree refresh. */
+  initialMeta?: Partial<
+    Pick<WorktreeMeta, 'linkedIssue' | 'linkedPR' | 'linkedLinearIssue' | 'linkedArtifactUrl'>
+  >
   /** Telemetry-only: which UI surface initiated this create. Threaded from
    *  the renderer entry point so main can emit `workspace_created` with the
    *  correct `source`. `unknown` is a valid wire value — an unrecognized

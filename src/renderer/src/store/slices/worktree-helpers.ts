@@ -69,7 +69,10 @@ export type WorktreeSlice = {
      *  so existing callers default to `unknown`; specify when the surface
      *  matters for the activation funnel. */
     telemetrySource?: WorkspaceCreateTelemetrySource,
-    displayName?: string
+    displayName?: string,
+    initialMeta?: Partial<
+      Pick<WorktreeMeta, 'linkedIssue' | 'linkedPR' | 'linkedLinearIssue' | 'linkedArtifactUrl'>
+    >
   ) => Promise<CreateWorktreeResult>
   removeWorktree: (
     worktreeId: string,

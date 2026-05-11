@@ -260,6 +260,30 @@ describe('createWorktree base status merge', () => {
       behind: 2
     })
   })
+
+  it('passes linked artifact metadata through create worktree requests', async () => {
+    const store = createTestStore()
+    const wt = makeWorktree({ id: 'repo1::/path/wt1', repoId: 'repo1', path: '/path/wt1' })
+    mockApi.worktrees.create.mockResolvedValue({ worktree: wt })
+
+    await store
+      .getState()
+      .createWorktree('repo1', 'feature', undefined, 'inherit', undefined, 'sidebar', undefined, {
+        linkedPR: 1687,
+        linkedArtifactUrl: 'https://github.com/stablyai/orca/pull/1687'
+      })
+
+    expect(mockApi.worktrees.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repoId: 'repo1',
+        name: 'feature',
+        initialMeta: {
+          linkedPR: 1687,
+          linkedArtifactUrl: 'https://github.com/stablyai/orca/pull/1687'
+        }
+      })
+    )
+  })
 })
 
 describe('removeWorktree state cleanup', () => {

@@ -1,7 +1,12 @@
 /* eslint-disable max-lines */
 import type { StateCreator } from 'zustand'
 import type { AppState } from '../types'
-import type { Worktree, WorkspaceVisibleTabType, WorktreeMeta } from '../../../../shared/types'
+import type {
+  Worktree,
+  WorkspaceVisibleTabType,
+  WorktreeMeta,
+  CreateWorktreeArgs
+} from '../../../../shared/types'
 import {
   findWorktreeById,
   applyWorktreeUpdates,
@@ -42,6 +47,8 @@ function areWorktreesEqual(current: Worktree[] | undefined, next: Worktree[]): b
       worktree.comment === candidate.comment &&
       worktree.linkedIssue === candidate.linkedIssue &&
       worktree.linkedPR === candidate.linkedPR &&
+      worktree.linkedLinearIssue === candidate.linkedLinearIssue &&
+      worktree.linkedArtifactUrl === candidate.linkedArtifactUrl &&
       worktree.isArchived === candidate.isArchived &&
       worktree.isUnread === candidate.isUnread &&
       worktree.isPinned === candidate.isPinned &&
@@ -224,7 +231,8 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
     setupDecision = 'inherit',
     sparseCheckout,
     telemetrySource,
-    displayName
+    displayName,
+    initialMeta
   ) => {
     const retryableConflictPatterns = [
       /already exists locally/i,
@@ -245,6 +253,9 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
             setupDecision,
             sparseCheckout,
             ...(displayName ? { displayName } : {}),
+            ...(initialMeta
+              ? { initialMeta: initialMeta as CreateWorktreeArgs['initialMeta'] }
+              : {}),
             ...(telemetrySource ? { telemetrySource } : {})
           })
           // Why: a file watcher (worktrees.onChanged) can fire between the

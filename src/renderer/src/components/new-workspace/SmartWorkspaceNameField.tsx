@@ -480,7 +480,10 @@ export default function SmartWorkspaceNameField({
     if (/^#\d+$/.test(trimmed) || parseGitHubIssueOrPRLink(trimmed) !== null) {
       return 'github'
     }
-    if (/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(trimmed)) {
+    if (
+      /^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(trimmed) ||
+      /(?:^|[^A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*-\d+)(?=$|[^A-Za-z0-9_])/i.test(trimmed)
+    ) {
       return 'linear'
     }
     return null

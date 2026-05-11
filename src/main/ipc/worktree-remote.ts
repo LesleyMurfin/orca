@@ -90,6 +90,7 @@ export async function createRemoteWorktree(
   const requestedDisplayName = args.displayName
     ? sanitizeWorktreeDisplayName(args.displayName)
     : undefined
+  const initialMeta = args.initialMeta ?? {}
 
   // Get git username from remote
   let username = ''
@@ -211,6 +212,7 @@ export async function createRemoteWorktree(
   const worktreeId = `${repo.id}::${created.path}`
   const now = Date.now()
   const metaUpdates: Partial<WorktreeMeta> = {
+    ...initialMeta,
     lastActivityAt: now,
     // Why: grants the new worktree a short grace window at the top of the
     // Recent sort. During worktree creation (git fetch + add can take several
@@ -253,6 +255,7 @@ export async function createLocalWorktree(
   const requestedDisplayName = args.displayName
     ? sanitizeWorktreeDisplayName(args.displayName)
     : undefined
+  const initialMeta = args.initialMeta ?? {}
 
   // Why (§3.3): determine the base branch (and therefore the remote we need to
   // fetch) FIRST, so the fetch can overlap all pre-create work below. Neither
@@ -470,6 +473,7 @@ export async function createLocalWorktree(
   const worktreeId = `${repo.id}::${created.path}`
   const now = Date.now()
   const metaUpdates: Partial<WorktreeMeta> = {
+    ...initialMeta,
     // Stamp activity so the worktree sorts into its final position
     // immediately — prevents scroll-to-reveal racing with a later
     // bumpWorktreeActivity that would re-sort the list.

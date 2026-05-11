@@ -974,6 +974,7 @@ function getDefaultWorktreeMeta(): WorktreeMeta {
     linkedIssue: null,
     linkedPR: null,
     linkedLinearIssue: null,
+    linkedArtifactUrl: null,
     isArchived: false,
     isUnread: false,
     isPinned: false,

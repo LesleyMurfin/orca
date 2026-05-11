@@ -344,6 +344,42 @@ describe('registerWorktreeHandlers', () => {
     })
   })
 
+  it('persists initial linked artifact metadata during local worktree creation', async () => {
+    listWorktreesMock.mockResolvedValue([
+      {
+        path: '/workspace/improve-dashboard',
+        head: 'abc123',
+        branch: 'improve-dashboard',
+        isBare: false,
+        isMainWorktree: false
+      }
+    ])
+    store.setWorktreeMeta.mockImplementation((_worktreeId, meta) => meta)
+
+    const result = await handlers['worktrees:create'](null, {
+      repoId: 'repo-1',
+      name: 'improve-dashboard',
+      initialMeta: {
+        linkedPR: 1687,
+        linkedArtifactUrl: 'https://github.com/stablyai/orca/pull/1687'
+      }
+    })
+
+    expect(store.setWorktreeMeta).toHaveBeenCalledWith(
+      'repo-1::/workspace/improve-dashboard',
+      expect.objectContaining({
+        linkedPR: 1687,
+        linkedArtifactUrl: 'https://github.com/stablyai/orca/pull/1687'
+      })
+    )
+    expect(result).toEqual({
+      worktree: expect.objectContaining({
+        linkedPR: 1687,
+        linkedArtifactUrl: 'https://github.com/stablyai/orca/pull/1687'
+      })
+    })
+  })
+
   it('does not await a cold fetch when the remote-tracking base exists locally', async () => {
     const remoteBase = {
       remote: 'origin',

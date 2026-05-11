@@ -38,7 +38,7 @@ import {
   EMPTY_BROWSER_TABS,
   FilledBellIcon
 } from './WorktreeCardHelpers'
-import { IssueSection, PrSection, CommentSection } from './WorktreeCardMeta'
+import { IssueSection, PrSection, LinearSection, CommentSection } from './WorktreeCardMeta'
 import {
   selectLivePtyIdsForWorktree,
   selectRuntimePaneTitlesForWorktree
@@ -66,7 +66,9 @@ const WorktreeCard = React.memo(function WorktreeCard({
   const updateWorktreeMeta = useAppStore((s) => s.updateWorktreeMeta)
   const fetchPRForBranch = useAppStore((s) => s.fetchPRForBranch)
   const fetchIssue = useAppStore((s) => s.fetchIssue)
+  const fetchLinearIssue = useAppStore((s) => s.fetchLinearIssue)
   const cardProps = useAppStore((s) => s.worktreeCardProperties)
+  const currentArtifactUrl = worktree.linkedArtifactUrl ?? null
   const handleEditIssue = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation()
@@ -74,11 +76,14 @@ const WorktreeCard = React.memo(function WorktreeCard({
         worktreeId: worktree.id,
         currentDisplayName: worktree.displayName,
         currentIssue: worktree.linkedIssue,
+        currentPR: worktree.linkedPR,
+        currentLinearIssue: worktree.linkedLinearIssue,
+        currentArtifactUrl,
         currentComment: worktree.comment,
         focus: 'issue'
       })
     },
-    [worktree, openModal]
+    [worktree, currentArtifactUrl, openModal]
   )
 
   const handleEditComment = useCallback(
@@ -88,11 +93,14 @@ const WorktreeCard = React.memo(function WorktreeCard({
         worktreeId: worktree.id,
         currentDisplayName: worktree.displayName,
         currentIssue: worktree.linkedIssue,
+        currentPR: worktree.linkedPR,
+        currentLinearIssue: worktree.linkedLinearIssue,
+        currentArtifactUrl,
         currentComment: worktree.comment,
         focus: 'comment'
       })
     },
-    [worktree, openModal]
+    [worktree, currentArtifactUrl, openModal]
   )
 
   const deleteState = useAppStore((s) => s.deleteStateByWorktreeId[worktree.id])
@@ -148,10 +156,14 @@ const WorktreeCard = React.memo(function WorktreeCard({
   const isFolder = repo ? isFolderRepo(repo) : false
   const prCacheKey = repo && branch ? `${repo.path}::${branch}` : ''
   const issueCacheKey = repo && worktree.linkedIssue ? `${repo.path}::${worktree.linkedIssue}` : ''
+  const linearCacheKey = worktree.linkedLinearIssue ?? ''
 
   // Subscribe to ONLY the specific cache entry, not entire prCache/issueCache
   const prEntry = useAppStore((s) => (prCacheKey ? s.prCache[prCacheKey] : undefined))
   const issueEntry = useAppStore((s) => (issueCacheKey ? s.issueCache[issueCacheKey] : undefined))
+  const linearEntry = useAppStore((s) =>
+    linearCacheKey ? s.linearIssueCache[linearCacheKey] : undefined
+  )
 
   const pr: PRInfo | null | undefined = prEntry !== undefined ? prEntry.data : undefined
   const issue: IssueInfo | null | undefined = worktree.linkedIssue
@@ -167,7 +179,34 @@ const WorktreeCard = React.memo(function WorktreeCard({
           // Why: linked metadata is persisted immediately, but GitHub details
           // arrive asynchronously. Show the durable link number instead of
           // making the worktree look unlinked while the cache warms.
-          title: issue === null ? 'Issue details unavailable' : 'Loading issue...'
+          title: issue === null ? 'Issue details unavailable' : 'Loading issue...',
+          url: currentArtifactUrl ?? undefined
+        }
+      : null)
+  const prDisplay =
+    pr ??
+    (worktree.linkedPR
+      ? {
+          number: worktree.linkedPR,
+          // Why: PR details can be delayed or unavailable when the branch does
+          // not match the PR head. The persisted PR number/URL should still be
+          // visible on the workspace card.
+          title: pr === null ? 'PR details unavailable' : 'Loading PR...',
+          url: currentArtifactUrl ?? undefined
+        }
+      : null)
+  const linearIssue = worktree.linkedLinearIssue
+    ? linearEntry !== undefined
+      ? linearEntry.data
+      : undefined
+    : null
+  const linearDisplay =
+    linearIssue ??
+    (worktree.linkedLinearIssue
+      ? {
+          identifier: worktree.linkedLinearIssue,
+          title: linearIssue === null ? 'Linear details unavailable' : 'Loading Linear issue...',
+          url: currentArtifactUrl ?? undefined
         }
       : null)
 
@@ -318,6 +357,14 @@ const WorktreeCard = React.memo(function WorktreeCard({
     return () => clearInterval(interval)
   }, [repo, isFolder, worktree.linkedIssue, fetchIssue, issueCacheKey, showIssue])
 
+  useEffect(() => {
+    if (!worktree.linkedLinearIssue || !showIssue) {
+      return
+    }
+
+    fetchLinearIssue(worktree.linkedLinearIssue)
+  }, [worktree.linkedLinearIssue, fetchLinearIssue, showIssue])
+
   // Stable click handler – ignore clicks that are really text selections.
   const handleClick = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
@@ -355,9 +402,21 @@ const WorktreeCard = React.memo(function WorktreeCard({
       worktreeId: worktree.id,
       currentDisplayName: worktree.displayName,
       currentIssue: worktree.linkedIssue,
+      currentPR: worktree.linkedPR,
+      currentLinearIssue: worktree.linkedLinearIssue,
+      currentArtifactUrl,
       currentComment: worktree.comment
     })
-  }, [worktree.id, worktree.displayName, worktree.linkedIssue, worktree.comment, openModal])
+  }, [
+    worktree.id,
+    worktree.displayName,
+    worktree.linkedIssue,
+    worktree.linkedPR,
+    worktree.linkedLinearIssue,
+    currentArtifactUrl,
+    worktree.comment,
+    openModal
+  ])
 
   const handleToggleUnreadQuick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -589,14 +648,19 @@ const WorktreeCard = React.memo(function WorktreeCard({
         {/* Meta section: Issue / PR Links / Comment
              Layout coupling: spacing here is used to derive size estimates in
              WorktreeList's estimateSize. Update that function if changing spacing. */}
-        {((cardProps.includes('issue') && issueDisplay) ||
-          (cardProps.includes('pr') && pr) ||
+        {((cardProps.includes('issue') && (issueDisplay || linearDisplay)) ||
+          (cardProps.includes('pr') && prDisplay) ||
           (cardProps.includes('comment') && worktree.comment)) && (
           <div className="flex flex-col gap-[3px] mt-0.5">
             {cardProps.includes('issue') && issueDisplay && (
               <IssueSection issue={issueDisplay} onClick={handleEditIssue} />
             )}
-            {cardProps.includes('pr') && pr && <PrSection pr={pr} onClick={handleEditIssue} />}
+            {cardProps.includes('pr') && prDisplay && (
+              <PrSection pr={prDisplay} onClick={handleEditIssue} />
+            )}
+            {cardProps.includes('issue') && linearDisplay && (
+              <LinearSection issue={linearDisplay} onClick={handleEditIssue} />
+            )}
             {cardProps.includes('comment') && worktree.comment && (
               <CommentSection comment={worktree.comment} onDoubleClick={handleEditComment} />
             )}

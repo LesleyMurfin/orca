@@ -1760,7 +1760,8 @@ export default function TaskPage(): React.JSX.Element {
         type: 'issue',
         number: 0,
         title: issue.title,
-        url: issue.url
+        url: issue.url,
+        linearIdentifier: issue.identifier
       }
       openModal('new-workspace-composer', {
         linkedWorkItem,

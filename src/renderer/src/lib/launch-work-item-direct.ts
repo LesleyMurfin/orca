@@ -212,6 +212,23 @@ export async function launchWorkItemDirect(args: LaunchWorkItemDirectArgs): Prom
   let startupPlan: ReturnType<typeof buildAgentStartupPlan> = null
   let effectiveAgent: TuiAgent | null = null
   let draftLaunchedNatively = false
+  const linkedMeta: {
+    linkedIssue?: number
+    linkedPR?: number
+    linkedLinearIssue?: string
+    linkedArtifactUrl?: string | null
+  } = {
+    linkedArtifactUrl: item.url
+  }
+  if (item.type === 'issue' && item.number) {
+    linkedMeta.linkedIssue = item.number
+  } else if (item.type === 'pr' && item.number) {
+    linkedMeta.linkedPR = item.number
+  }
+  if (item.linearIdentifier) {
+    linkedMeta.linkedLinearIssue = item.linearIdentifier
+  }
+
   try {
     const result = await store.createWorktree(
       repoId,
@@ -220,33 +237,11 @@ export async function launchWorkItemDirect(args: LaunchWorkItemDirectArgs): Prom
       finalSetupDecision,
       undefined,
       telemetrySource,
-      item.title
+      item.title,
+      linkedMeta
     )
     worktreeId = result.worktree.id
     const worktreePath = result.worktree.path
-    const meta: {
-      linkedIssue?: number
-      linkedPR?: number
-      linkedLinearIssue?: string
-    } = {}
-    if (item.type === 'issue' && item.number) {
-      meta.linkedIssue = item.number
-    } else if (item.type === 'pr' && item.number) {
-      meta.linkedPR = item.number
-    }
-    if (item.linearIdentifier) {
-      meta.linkedLinearIssue = item.linearIdentifier
-    }
-    if (Object.keys(meta).length > 0) {
-      // Why: the Project direct-launch path activates the new workspace
-      // immediately. Persist the link first so the first sidebar render can
-      // show the issue/PR association instead of briefly looking unlinked.
-      // Best-effort: the worktree is already created on disk, so a meta
-      // write failure must not abort activation and orphan it.
-      void store.updateWorktreeMeta(worktreeId, meta).catch(() => {
-        // Non-critical: continue into activation without the link metadata.
-      })
-    }
 
     const detectedIds = new Set(await detectedAgentsPromise)
     effectiveAgent = pickAgent(settings?.defaultTuiAgent, detectedIds)

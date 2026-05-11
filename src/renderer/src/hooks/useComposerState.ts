@@ -25,7 +25,8 @@ import type {
   SetupRunPolicy,
   SparsePreset,
   TuiAgent,
-  WorkspaceCreateTelemetrySource
+  WorkspaceCreateTelemetrySource,
+  WorktreeMeta
 } from '../../../shared/types'
 import {
   ADD_ATTACHMENT_SHORTCUT,
@@ -173,6 +174,17 @@ export type UseComposerStateResult = {
 const composerDropStack: symbol[] = []
 const EMPTY_SPARSE_PRESETS: SparsePreset[] = []
 
+function sameRepoSlug(a: { owner: string; repo: string }, b: { owner: string; repo: string }) {
+  return (
+    a.owner.toLowerCase() === b.owner.toLowerCase() && a.repo.toLowerCase() === b.repo.toLowerCase()
+  )
+}
+
+function parseLinearIssueIdentifier(input: string): string | null {
+  const match = /(?:^|[^A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*-\d+)(?=$|[^A-Za-z0-9_])/i.exec(input)
+  return match ? match[1].toUpperCase() : null
+}
+
 export function useComposerState(options: UseComposerStateOptions): UseComposerStateResult {
   const {
     initialRepoId,
@@ -272,7 +284,7 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
     if (persistDraft && newWorkspaceDraft?.linkedIssue) {
       return newWorkspaceDraft.linkedIssue
     }
-    if (initialLinkedWorkItem?.type === 'issue') {
+    if (initialLinkedWorkItem?.type === 'issue' && initialLinkedWorkItem.number > 0) {
       return String(initialLinkedWorkItem.number)
     }
     return ''
@@ -448,6 +460,28 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
     () => (linkedIssue.trim() ? parseGitHubIssueOrPRNumber(linkedIssue) : null),
     [linkedIssue]
   )
+  const parsedGitHubLinkFromName = useMemo(() => parseGitHubIssueOrPRLink(name), [name])
+  const nameGitHubLinkMatchesSelectedRepo =
+    parsedGitHubLinkFromName !== null &&
+    selectedRepoSlug !== null &&
+    sameRepoSlug(parsedGitHubLinkFromName.slug, selectedRepoSlug)
+  const effectiveLinkedIssueNumber = useMemo<number | null>(() => {
+    if (parsedLinkedIssueNumber !== null && parsedLinkedIssueNumber > 0) {
+      return parsedLinkedIssueNumber
+    }
+    if (linkedWorkItem?.type === 'issue' && linkedWorkItem.number > 0) {
+      return linkedWorkItem.number
+    }
+    if (parsedGitHubLinkFromName?.type === 'issue' && nameGitHubLinkMatchesSelectedRepo) {
+      return parsedGitHubLinkFromName.number
+    }
+    return null
+  }, [
+    linkedWorkItem,
+    nameGitHubLinkMatchesSelectedRepo,
+    parsedGitHubLinkFromName,
+    parsedLinkedIssueNumber
+  ])
   // Why: when the user pastes a PR URL straight into the workspace name field
   // (without picking from the source picker), `linkedPR` stays null and the
   // worktree card has no PR strip. Recover the PR number from the name on
@@ -456,36 +490,44 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
     if (linkedPR !== null) {
       return linkedPR
     }
-    const fromName = parseGitHubIssueOrPRLink(name)
-    if (fromName && fromName.type === 'pr') {
+    if (parsedGitHubLinkFromName && parsedGitHubLinkFromName.type === 'pr') {
       // Why: only adopt a number when the URL's owner/repo matches the
       // selected repo. Pasting `github.com/other/repo/pull/1234` must not
       // mislink the worktree to an unrelated PR #1234 in the current repo.
       // If the slug hasn't resolved yet, suppress recovery rather than
       // risking a cross-repo mislink.
-      if (
-        selectedRepoSlug &&
-        fromName.slug.owner.toLowerCase() === selectedRepoSlug.owner.toLowerCase() &&
-        fromName.slug.repo.toLowerCase() === selectedRepoSlug.repo.toLowerCase()
-      ) {
-        return fromName.number
+      if (nameGitHubLinkMatchesSelectedRepo) {
+        return parsedGitHubLinkFromName.number
       }
     }
     return null
-  }, [linkedPR, name, selectedRepoSlug])
+  }, [linkedPR, nameGitHubLinkMatchesSelectedRepo, parsedGitHubLinkFromName])
+  const effectiveLinkedLinearIssue = useMemo<string | null>(() => {
+    if (!linkedWorkItem || linkedWorkItem.url.includes('github.com')) {
+      return null
+    }
+    return (
+      linkedWorkItem.linearIdentifier ??
+      parseLinearIssueIdentifier(linkedWorkItem.url) ??
+      parseLinearIssueIdentifier(linkedWorkItem.title)
+    )
+  }, [linkedWorkItem])
+  const effectiveLinkedArtifactUrl =
+    linkedWorkItem?.url ??
+    (parsedGitHubLinkFromName !== null && nameGitHubLinkMatchesSelectedRepo ? name.trim() : null)
   const setupConfig = useMemo(
     () => getSetupConfig(selectedRepo, yamlHooks),
     [selectedRepo, yamlHooks]
   )
   const setupPolicy: SetupRunPolicy = selectedRepo?.hookSettings?.setupRunPolicy ?? 'run-by-default'
   const hasIssueAutomationConfig = issueCommandTemplate.length > 0
-  const canOfferIssueAutomation = parsedLinkedIssueNumber !== null && hasIssueAutomationConfig
+  const canOfferIssueAutomation = effectiveLinkedIssueNumber !== null && hasIssueAutomationConfig
   // Why: the "no prompt + linked item" path below rehydrates the issueCommand
   // template into the main startup prompt. When that happens we suppress the
   // separate split pane that would otherwise run the same command twice.
   const willApplyIssueCommandAsPrompt = !agentPrompt.trim() && Boolean(linkedWorkItem)
   const shouldWaitForIssueAutomationCheck =
-    (parsedLinkedIssueNumber !== null || willApplyIssueCommandAsPrompt) && !hasLoadedIssueCommand
+    (effectiveLinkedIssueNumber !== null || willApplyIssueCommandAsPrompt) && !hasLoadedIssueCommand
   const shouldRunIssueAutomation = canOfferIssueAutomation && !willApplyIssueCommandAsPrompt
   const requiresExplicitSetupChoice = Boolean(setupConfig) && setupPolicy === 'ask'
   const resolvedSetupDecision =
@@ -511,11 +553,11 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
       getWorkspaceSeedName({
         explicitName: name,
         prompt: agentPrompt,
-        linkedIssueNumber: parsedLinkedIssueNumber,
+        linkedIssueNumber: effectiveLinkedIssueNumber,
         linkedPR,
         fallbackName: fallbackCreatureName
       }),
-    [agentPrompt, fallbackCreatureName, linkedPR, name, parsedLinkedIssueNumber]
+    [agentPrompt, effectiveLinkedIssueNumber, fallbackCreatureName, linkedPR, name]
   )
   // Why: when the user links an issue/PR but has not typed any prompt text
   // (attachments don't count), swap the generic "Linked work items:" context
@@ -1172,7 +1214,8 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
         // numeric metadata empty and carry the real source through the URL.
         number: 0,
         title: issue.title,
-        url: issue.url
+        url: issue.url,
+        linearIdentifier: issue.identifier
       })
       const suggestedName = issue.title
       if (!name.trim() || name === lastAutoNameRef.current) {
@@ -1239,6 +1282,8 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
       meta: {
         linkedIssue?: number
         linkedPR?: number
+        linkedLinearIssue?: string
+        linkedArtifactUrl?: string | null
         comment?: string
       }
     ): Promise<void> => {
@@ -1285,6 +1330,19 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
             : await ensureHooksConfirmed(useAppStore.getState(), repoId, 'issueCommand')
       }
 
+      const initialLinkedMeta: Partial<
+        Pick<WorktreeMeta, 'linkedIssue' | 'linkedPR' | 'linkedLinearIssue' | 'linkedArtifactUrl'>
+      > = {
+        ...(effectiveLinkedIssueNumber !== null ? { linkedIssue: effectiveLinkedIssueNumber } : {}),
+        ...(effectiveLinkedPR !== null ? { linkedPR: effectiveLinkedPR } : {}),
+        ...(effectiveLinkedLinearIssue !== null
+          ? { linkedLinearIssue: effectiveLinkedLinearIssue }
+          : {}),
+        ...(effectiveLinkedArtifactUrl !== null
+          ? { linkedArtifactUrl: effectiveLinkedArtifactUrl }
+          : {})
+      }
+
       const result = await createWorktree(
         repoId,
         workspaceName,
@@ -1297,22 +1355,22 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
             }
           : undefined,
         telemetrySource,
-        linkedWorkItem?.title
+        linkedWorkItem?.title,
+        initialLinkedMeta
       )
       const worktree = result.worktree
 
-      await applyWorktreeMeta(worktree.id, {
-        ...(parsedLinkedIssueNumber !== null ? { linkedIssue: parsedLinkedIssueNumber } : {}),
-        ...(effectiveLinkedPR !== null ? { linkedPR: effectiveLinkedPR } : {}),
-        ...(note.trim() ? { comment: note.trim() } : {})
-      })
+      const trimmedNote = note.trim()
+      if (trimmedNote) {
+        await applyWorktreeMeta(worktree.id, { comment: trimmedNote })
+      }
 
       const issueCommand =
         shouldRunIssueAutomation && issueCommandTrustDecision === 'run'
           ? {
               command: renderIssueCommandTemplate(issueCommandTemplate, {
-                issueNumber: parsedLinkedIssueNumber,
-                artifactUrl: linkedWorkItem?.url ?? null
+                issueNumber: effectiveLinkedIssueNumber,
+                artifactUrl: effectiveLinkedArtifactUrl
               })
             }
           : undefined
@@ -1378,11 +1436,12 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
     issueCommandTemplate,
     effectiveLinkedPR,
     linkedWorkItem?.title,
-    linkedWorkItem?.url,
     normalizedSparseDirectories,
     note,
     onCreated,
-    parsedLinkedIssueNumber,
+    effectiveLinkedIssueNumber,
+    effectiveLinkedLinearIssue,
+    effectiveLinkedArtifactUrl,
     persistDraft,
     repoId,
     requiresExplicitSetupChoice,
@@ -1411,7 +1470,7 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
       const workspaceName = getWorkspaceSeedName({
         explicitName: name,
         prompt: '',
-        linkedIssueNumber: parsedLinkedIssueNumber,
+        linkedIssueNumber: effectiveLinkedIssueNumber,
         linkedPR,
         fallbackName: fallbackCreatureName
       })
@@ -1435,6 +1494,21 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
             ? 'skip'
             : ((resolvedSetupDecision ?? 'inherit') as SetupDecision)
 
+        const initialLinkedMeta: Partial<
+          Pick<WorktreeMeta, 'linkedIssue' | 'linkedPR' | 'linkedLinearIssue' | 'linkedArtifactUrl'>
+        > = {
+          ...(effectiveLinkedIssueNumber !== null
+            ? { linkedIssue: effectiveLinkedIssueNumber }
+            : {}),
+          ...(effectiveLinkedPR !== null ? { linkedPR: effectiveLinkedPR } : {}),
+          ...(effectiveLinkedLinearIssue !== null
+            ? { linkedLinearIssue: effectiveLinkedLinearIssue }
+            : {}),
+          ...(effectiveLinkedArtifactUrl !== null
+            ? { linkedArtifactUrl: effectiveLinkedArtifactUrl }
+            : {})
+        }
+
         const result = await createWorktree(
           repoId,
           workspaceName,
@@ -1447,16 +1521,15 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
               }
             : undefined,
           telemetrySource,
-          linkedWorkItem?.title
+          linkedWorkItem?.title,
+          initialLinkedMeta
         )
         const worktree = result.worktree
 
         const trimmedNote = note.trim()
-        await applyWorktreeMeta(worktree.id, {
-          ...(parsedLinkedIssueNumber !== null ? { linkedIssue: parsedLinkedIssueNumber } : {}),
-          ...(effectiveLinkedPR !== null ? { linkedPR: effectiveLinkedPR } : {}),
-          ...(trimmedNote ? { comment: trimmedNote } : {})
-        })
+        if (trimmedNote) {
+          await applyWorktreeMeta(worktree.id, { comment: trimmedNote })
+        }
 
         // Why: when a linked work item is selected in the quick flow, launch
         // the agent with a blank prompt and type the URL into its input as a
@@ -1578,6 +1651,9 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
       clearNewWorkspaceDraft,
       createWorktree,
       fallbackCreatureName,
+      effectiveLinkedIssueNumber,
+      effectiveLinkedLinearIssue,
+      effectiveLinkedArtifactUrl,
       effectiveLinkedPR,
       linkedPR,
       linkedWorkItem,
@@ -1585,7 +1661,6 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
       normalizedSparseDirectories,
       note,
       onCreated,
-      parsedLinkedIssueNumber,
       persistDraft,
       repoId,
       requiresExplicitSetupChoice,

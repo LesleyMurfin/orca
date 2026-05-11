@@ -187,6 +187,7 @@ export type UISlice = {
       number: number
       title: string
       url: string
+      linearIdentifier?: string
     } | null
     agent: TuiAgent
     linkedIssue: string

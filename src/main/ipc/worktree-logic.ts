@@ -186,6 +186,7 @@ export function mergeWorktree(
     linkedIssue: meta?.linkedIssue ?? null,
     linkedPR: meta?.linkedPR ?? null,
     linkedLinearIssue: meta?.linkedLinearIssue ?? null,
+    linkedArtifactUrl: meta?.linkedArtifactUrl ?? null,
     isArchived: meta?.isArchived ?? false,
     isUnread: meta?.isUnread ?? false,
     isPinned: meta?.isPinned ?? false,

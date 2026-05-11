@@ -49,6 +49,7 @@ const WorktreeContextMenu = React.memo(function WorktreeContextMenu({
   const [menuPoint, setMenuPoint] = useState({ x: 0, y: 0 })
   const isDeleting = deleteState?.isDeleting ?? false
   const isFolder = repo ? isFolderRepo(repo) : false
+  const currentArtifactUrl = worktree.linkedArtifactUrl ?? null
 
   useEffect(() => {
     const closeMenu = (): void => setMenuOpen(false)
@@ -77,30 +78,66 @@ const WorktreeContextMenu = React.memo(function WorktreeContextMenu({
       worktreeId: worktree.id,
       currentDisplayName: worktree.displayName,
       currentIssue: worktree.linkedIssue,
+      currentPR: worktree.linkedPR,
+      currentLinearIssue: worktree.linkedLinearIssue,
+      currentArtifactUrl,
       currentComment: worktree.comment,
       focus: 'displayName'
     })
-  }, [worktree.id, worktree.displayName, worktree.linkedIssue, worktree.comment, openModal])
+  }, [
+    worktree.id,
+    worktree.displayName,
+    worktree.linkedIssue,
+    worktree.linkedPR,
+    worktree.linkedLinearIssue,
+    currentArtifactUrl,
+    worktree.comment,
+    openModal
+  ])
 
   const handleLinkIssue = useCallback(() => {
     openModal('edit-meta', {
       worktreeId: worktree.id,
       currentDisplayName: worktree.displayName,
       currentIssue: worktree.linkedIssue,
+      currentPR: worktree.linkedPR,
+      currentLinearIssue: worktree.linkedLinearIssue,
+      currentArtifactUrl,
       currentComment: worktree.comment,
       focus: 'issue'
     })
-  }, [worktree.id, worktree.displayName, worktree.linkedIssue, worktree.comment, openModal])
+  }, [
+    worktree.id,
+    worktree.displayName,
+    worktree.linkedIssue,
+    worktree.linkedPR,
+    worktree.linkedLinearIssue,
+    currentArtifactUrl,
+    worktree.comment,
+    openModal
+  ])
 
   const handleComment = useCallback(() => {
     openModal('edit-meta', {
       worktreeId: worktree.id,
       currentDisplayName: worktree.displayName,
       currentIssue: worktree.linkedIssue,
+      currentPR: worktree.linkedPR,
+      currentLinearIssue: worktree.linkedLinearIssue,
+      currentArtifactUrl,
       currentComment: worktree.comment,
       focus: 'comment'
     })
-  }, [worktree.id, worktree.displayName, worktree.linkedIssue, worktree.comment, openModal])
+  }, [
+    worktree.id,
+    worktree.displayName,
+    worktree.linkedIssue,
+    worktree.linkedPR,
+    worktree.linkedLinearIssue,
+    currentArtifactUrl,
+    worktree.comment,
+    openModal
+  ])
 
   const handleCloseTerminals = useCallback(async () => {
     await runSleepWorktree(worktree.id)
@@ -175,7 +212,9 @@ const WorktreeContextMenu = React.memo(function WorktreeContextMenu({
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={handleLinkIssue} disabled={isDeleting}>
             <Link className="size-3.5" />
-            {worktree.linkedIssue ? 'Edit GH Issue' : 'Link GH Issue'}
+            {worktree.linkedIssue || worktree.linkedPR || worktree.linkedLinearIssue
+              ? 'Edit Linked Artifact'
+              : 'Link Artifact'}
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={handleComment} disabled={isDeleting}>
             <MessageSquare className="size-3.5" />

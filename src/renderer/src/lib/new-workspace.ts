@@ -42,6 +42,7 @@ export type LinkedWorkItemSummary = {
   number: number
   title: string
   url: string
+  linearIdentifier?: string
 }
 
 // Why: when a repo has no `orca.yaml` issueCommand and no per-user override,

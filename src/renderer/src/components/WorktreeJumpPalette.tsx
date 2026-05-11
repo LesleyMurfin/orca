@@ -667,7 +667,7 @@ export default function WorktreeJumpPalette(): React.JSX.Element | null {
       // composer once the lookup returns.
       closeModal()
       void window.api.gh
-        .workItem({ repoPath: repoForLookup.path, number })
+        .workItem({ repoPath: repoForLookup.path, number, type: ghLink.type })
         .then((item) => {
           const data: Record<string, unknown> = { initialRepoId: repoForLookup.id }
           if (item) {
@@ -680,7 +680,14 @@ export default function WorktreeJumpPalette(): React.JSX.Element | null {
             data.linkedWorkItem = linkedWorkItem
             data.prefilledName = getLinkedWorkItemSuggestedName({ title: item.title })
           } else {
-            // Fallback: we couldn't resolve the URL, just seed the name.
+            // Why: preserve the pasted artifact as a linked source even if the
+            // network lookup fails, instead of demoting it to a plain note/name.
+            data.linkedWorkItem = {
+              type: ghLink.type,
+              number,
+              title: `${slug.owner}/${slug.repo}#${number}`,
+              url: trimmed
+            } satisfies LinkedWorkItemSummary
             data.prefilledName = `${slug.owner}-${slug.repo}-${number}`
           }
           queueMicrotask(() =>
