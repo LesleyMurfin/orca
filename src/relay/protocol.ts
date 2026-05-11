@@ -43,6 +43,16 @@ export function parseHandshakeMessage(payload: Buffer): HandshakeMessage {
 export const KEEPALIVE_SEND_MS = 5_000
 export const TIMEOUT_MS = 20_000
 
+// ── Streaming constants (see docs/relay-file-stream-design.md) ─────
+
+export const STREAM_CHUNK_SIZE = 256 * 1024
+export const MAX_CONCURRENT_STREAMS = 16
+
+export const RelayErrorCode = {
+  TooManyStreams: -33006,
+  StreamProtocolError: -33007
+} as const
+
 export type JsonRpcRequest = {
   jsonrpc: '2.0'
   id: number
