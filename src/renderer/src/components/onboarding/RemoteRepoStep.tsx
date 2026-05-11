@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ChevronLeft } from 'lucide-react'
 import { toast } from 'sonner'
-import { useAppStore } from '@/store'
 import { RemoteStepBody, useRemoteRepo } from '../sidebar/AddRepoSteps'
 import { SshTargetForm, EMPTY_FORM, type EditingTarget } from '../settings/SshTargetForm'
 import type { Repo } from '../../../../shared/types'
@@ -13,14 +12,21 @@ type RemoteRepoStepProps = {
   // (mirrors the local 'Open a folder' fallback at use-onboarding-flow.ts).
   // The wizard caller decides what to do with the resulting folder repo.
   onRetryAsFolder: (args: { connectionId: string; remotePath: string }) => Promise<void>
+  // Why: the silent folder-retry path runs in the wizard controller (not in
+  // useRemoteRepo), so its busy/error state lives on `flow.*`. Surface it
+  // here or the user gets no feedback while the retry is in flight, and no
+  // visible error if it fails.
+  busyLabel: string | null
+  error: string | null
 }
 
 export function RemoteRepoStep({
   onBack,
   onRemoteAdded,
-  onRetryAsFolder
+  onRetryAsFolder,
+  busyLabel,
+  error
 }: RemoteRepoStepProps): React.JSX.Element {
-  const fetchWorktrees = useAppStore((s) => s.fetchWorktrees)
   // Why: nested form view replaces the Settings deep-link the dialog uses,
   // because deep-linking out of the wizard would render Settings under the
   // wizard's z-[100] overlay.
@@ -39,7 +45,7 @@ export function RemoteRepoStep({
     handleOpenRemoteStep,
     handleAddRemoteRepo,
     handleConnectTarget
-  } = useRemoteRepo(fetchWorktrees, {
+  } = useRemoteRepo({
     onRemoteAdded,
     onNonGitFolder: ({ connectionId, remotePath }) => {
       void onRetryAsFolder({ connectionId, remotePath })
@@ -174,6 +180,17 @@ export function RemoteRepoStep({
           </div>
         )}
       />
+
+      {busyLabel && (
+        <div className="rounded-lg border border-blue-400/30 bg-blue-400/10 px-4 py-2.5 text-sm text-blue-700 dark:text-blue-200">
+          {busyLabel}
+        </div>
+      )}
+      {error && (
+        <div className="rounded-lg border border-red-400/30 bg-red-400/10 px-4 py-2.5 text-sm text-red-700 dark:text-red-200">
+          {error}
+        </div>
+      )}
     </div>
   )
 }

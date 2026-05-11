@@ -14,7 +14,10 @@ import type { GlobalSettings, TuiAgent } from '../../src/shared/types'
 
 type OnboardingState = {
   closedAt: number | null
-  outcome: 'completed' | 'dismissed' | null
+  // Why: production type narrowed to `'completed' | null` after the gate
+  // landed; legacy `'dismissed'` rows on disk are coerced to `null` at the
+  // persistence boundary, so the renderer-visible shape never sees it.
+  outcome: 'completed' | null
   lastCompletedStep: number
   checklist: Record<string, boolean>
 }
@@ -340,6 +343,20 @@ test.describe('Onboarding flow', () => {
     // Why: exact match — any unrelated "Skip…" button could give a false
     // negative (mirrors the 'Back' exact-match rationale above).
     await expect(orcaPage.getByRole('button', { name: 'Skip', exact: true })).toHaveCount(0)
+    // Why: the SSH CTA is the gate's escape valve for SSH-only users (P0 of
+    // the design doc). Its presence on this step is part of the gate's
+    // contract — without it, SSH users would be unable to complete the
+    // wizard. Pin it here so a regression that drops the third path is
+    // caught alongside the no-skip assertion above.
+    await expect(orcaPage.getByRole('button', { name: /Connect a remote/i })).toBeVisible()
+
+    // Why: pressing Escape must not close the wizard while gated. The
+    // unskippable contract holds for keyboard close-vectors too, not just
+    // the absence of skip buttons. (The wizard is a fullscreen overlay
+    // with no backdrop, so click-outside isn't a real vector here.)
+    await orcaPage.keyboard.press('Escape')
+    await expect(orcaPage.getByRole('heading', { name: /Add your first project/i })).toBeVisible()
+    expect((await getOnboardingState(orcaPage)).closedAt).toBeNull()
 
     // Why: the previous Skip click flushes persistence async via IPC, so poll
     // for lastCompletedStep === 3 before snapshotting the rest of the state.

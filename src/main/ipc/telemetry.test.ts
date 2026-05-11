@@ -115,7 +115,7 @@ describe('telemetry IPC handlers', () => {
     vi.restoreAllMocks()
   })
 
-  it('registers all four channels', () => {
+  it('registers all five channels', () => {
     registerWith({
       installId: 'x',
       existedBeforeTelemetryRelease: false,
@@ -125,6 +125,9 @@ describe('telemetry IPC handlers', () => {
     expect(handlers.has('telemetry:setOptIn')).toBe(true)
     expect(handlers.has('telemetry:acknowledgeBanner')).toBe(true)
     expect(handlers.has('telemetry:getConsentState')).toBe(true)
+    // Why: synchronous variant uses `ipcMain.on` (not `handle`) so it lives
+    // in `syncHandlers`. The shutdown-time abandonment event depends on it.
+    expect(syncHandlers.has('telemetry:track-sync')).toBe(true)
   })
 
   // ── telemetry:track ──────────────────────────────────────────────────
@@ -281,6 +284,62 @@ describe('telemetry IPC handlers', () => {
     expect(trackMock).toHaveBeenCalledTimes(2)
     expect(trackMock).toHaveBeenNthCalledWith(1, 'app_opened', { nth_repo_added: 0 })
     expect(trackMock).toHaveBeenNthCalledWith(2, 'app_opened', { nth_repo_added: 0 })
+  })
+
+  // ── telemetry:track-sync ─────────────────────────────────────────────
+  // Why: shutdown-time abandonment emit (OnboardingFlow.tsx beforeunload)
+  // routes through the synchronous channel because async IPC is cancelled
+  // before delivery on real shutdown. The validation/cohort discipline must
+  // match the async path bit-for-bit, and the handler must NEVER leave the
+  // renderer blocked on `sendSync` — pin both invariants here.
+
+  it('forwards a well-typed sync track call to track() and injects cohort', () => {
+    registerWith({ installId: 'x', existedBeforeTelemetryRelease: false, optedIn: true })
+    getOnboardingCohortAtEmitMock.mockReturnValue({ cohort: 'fresh_install' })
+    const handler = syncHandlers.get('telemetry:track-sync')!
+    const event: { returnValue: unknown } = { returnValue: undefined }
+    handler(event, 'onboarding_step4_abandoned', { duration_ms: 1234, path_revealed_ssh: true })
+    expect(trackMock).toHaveBeenCalledTimes(1)
+    expect(trackMock).toHaveBeenCalledWith('onboarding_step4_abandoned', {
+      duration_ms: 1234,
+      path_revealed_ssh: true,
+      cohort: 'fresh_install'
+    })
+    expect(event.returnValue).toBe(true)
+  })
+
+  it('drops sync track calls with a non-string name and signals returnValue=false', () => {
+    registerWith({ installId: 'x', existedBeforeTelemetryRelease: false, optedIn: true })
+    const handler = syncHandlers.get('telemetry:track-sync')!
+    const event: { returnValue: unknown } = { returnValue: undefined }
+    handler(event, 42, {})
+    expect(trackMock).not.toHaveBeenCalled()
+    expect(event.returnValue).toBe(false)
+  })
+
+  it('drops sync track calls with non-object props and signals returnValue=false', () => {
+    registerWith({ installId: 'x', existedBeforeTelemetryRelease: false, optedIn: true })
+    const handler = syncHandlers.get('telemetry:track-sync')!
+    const event: { returnValue: unknown } = { returnValue: undefined }
+    handler(event, 'onboarding_step4_abandoned', 'not-an-object')
+    expect(trackMock).not.toHaveBeenCalled()
+    expect(event.returnValue).toBe(false)
+  })
+
+  // Why: a thrown handler on the async `ipcMain.handle` path auto-rejects
+  // the invoke promise; on the sync `ipcMain.on` path it would freeze the
+  // renderer thread on `sendSync` until the IPC socket times out. The
+  // try/catch in the handler MUST always set returnValue, even on throw —
+  // a future refactor that drops the try/catch must fail this test.
+  it('sets returnValue=false and does not throw if track() throws on the sync path', () => {
+    registerWith({ installId: 'x', existedBeforeTelemetryRelease: false, optedIn: true })
+    trackMock.mockImplementationOnce(() => {
+      throw new Error('boom')
+    })
+    const handler = syncHandlers.get('telemetry:track-sync')!
+    const event: { returnValue: unknown } = { returnValue: undefined }
+    expect(() => handler(event, 'app_opened', {})).not.toThrow()
+    expect(event.returnValue).toBe(false)
   })
 
   // ── telemetry:setOptIn — input narrowing ─────────────────────────────

@@ -33,10 +33,7 @@ export type UseRemoteRepoCallbacks = {
   onNonGitFolder: (args: { remotePath: string; connectionId: string }) => void
 }
 
-export function useRemoteRepo(
-  fetchWorktrees: (repoId: string) => Promise<void>,
-  callbacks: UseRemoteRepoCallbacks
-) {
+export function useRemoteRepo(callbacks: UseRemoteRepoCallbacks) {
   const { onOpenRemoteStep, onRemoteAdded, onNonGitFolder } = callbacks
   const [sshTargets, setSshTargets] = useState<(SshTarget & { state?: SshConnectionState })[]>([])
   const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null)
@@ -138,7 +135,10 @@ export function useRemoteRepo(
       }
 
       toast.success('Remote project added', { description: repo.displayName })
-      await fetchWorktrees(repo.id)
+      // Why: worktree fetching is caller-owned. Both onboarding's
+      // `completeRepoFromRemote` and AddRepoDialog's `onRemoteAdded` already
+      // fetch via their own paths, so doing it here would be a redundant
+      // SSH round-trip on the success path.
       await onRemoteAdded(repo)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -150,7 +150,7 @@ export function useRemoteRepo(
     } finally {
       setIsAddingRemote(false)
     }
-  }, [selectedTargetId, remotePath, fetchWorktrees, onRemoteAdded, onNonGitFolder])
+  }, [selectedTargetId, remotePath, onRemoteAdded, onNonGitFolder])
 
   return {
     sshTargets,
@@ -233,12 +233,7 @@ export function RemoteStepBody({
         {sshTargets.length === 0 ? (
           <div className="space-y-1.5 py-1">
             <p className="text-xs text-muted-foreground">No SSH targets configured.</p>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={onOpenSshSettings}
-            >
+            <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onOpenSshSettings}>
               <Settings className="size-3.5" />
               Add in Settings
             </Button>

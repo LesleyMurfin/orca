@@ -67,6 +67,12 @@ export default function OnboardingFlow({
       sshRevealedRef.current = true
       track('onboarding_step4_path_revealed', { path: 'ssh' })
     }
+    // Why: the SSH substep is only reachable from step 4. When the user
+    // navigates Back from step 4 to an earlier step, drop them at the entry
+    // RepoStep view on re-entry rather than landing them in the SSH form.
+    if (currentStep.id !== 'repo') {
+      setRepoSubstep('main')
+    }
   }, [currentStep.id])
   // Why: depend on stable callbacks + step id only so the listener doesn't
   // re-bind on every render of the parent (flow object identity changes).
@@ -227,6 +233,8 @@ export default function OnboardingFlow({
               onRetryAsFolder={async ({ connectionId, remotePath }) => {
                 await flow.retryRemoteAsFolder({ connectionId, remotePath })
               }}
+              busyLabel={flow.busyLabel}
+              error={flow.error}
             />
           )}
         </div>

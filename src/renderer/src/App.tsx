@@ -280,17 +280,23 @@ function App(): React.JSX.Element {
             // started onboarding under the previous soft-skip build are
             // marked legacySoftSkipEligible by the persistence migration so
             // shouldShowOnboarding can auto-suppress the wizard for them.
-            // Persist closedAt + clear the flag so the auto-suppression
-            // sticks across launches without re-running the migration.
+            // Persist closedAt so the suppression sticks across launches;
+            // main-side updateOnboarding clears the eligibility flag
+            // automatically on the closedAt transition (the flag is
+            // rejected from renderer-supplied IPC updates by design).
+            // If the persist write throws, the outer try/catch logs and
+            // we leave onboarding null — next launch hits this path again
+            // (idempotent), which is benign.
             if (
               onboardingState.legacySoftSkipEligible === true &&
               onboardingState.closedAt === null
             ) {
               const sealed = await window.api.onboarding.update({
-                closedAt: Date.now(),
-                legacySoftSkipEligible: false
+                closedAt: Date.now()
               })
-              setOnboarding(sealed)
+              if (!cancelled) {
+                setOnboarding(sealed)
+              }
             } else {
               setOnboarding(onboardingState)
             }

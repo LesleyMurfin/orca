@@ -162,8 +162,18 @@ export function registerTelemetryHandlers(store: Store): void {
   // event reaches the validator and PostHog client before window close.
   // Same validation discipline as the async path; consult eventReturnValue
   // only as a debug aid (the renderer fires-and-forgets either way).
+  // Why: try/catch around `trackOne` is load-bearing on this channel —
+  // `ipcMain.handle` auto-rejects on a thrown handler, but `ipcMain.on` with
+  // `event.returnValue` does not. A throw before `returnValue` is set would
+  // freeze the renderer thread on `sendSync` until the IPC socket times out,
+  // exactly during shutdown.
   ipcMain.on('telemetry:track-sync', (event, name: unknown, props: unknown) => {
-    event.returnValue = trackOne(name, props)
+    try {
+      event.returnValue = trackOne(name, props)
+    } catch (err) {
+      event.returnValue = false
+      console.warn('[telemetry] sync track threw', err)
+    }
   })
 
   ipcMain.handle('telemetry:setOptIn', (_event, optedIn: unknown): Promise<void> | void => {

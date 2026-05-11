@@ -326,8 +326,14 @@ export function useOnboardingFlow(
         }
         await completeRepo(result.repo.id, false, 'ssh')
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
-        track('onboarding_step4_path_failed', { path: 'ssh', reason: 'invalid_path' })
+        const message = err instanceof Error ? err.message : String(err)
+        setError(message)
+        // Why: this branch only runs once the original git-add already failed
+        // with "Not a valid git repository" — the retry uses kind: 'folder'
+        // which skips the git check, so any failure here is an SSH connect
+        // drop, perm error, or disk fault rather than path-shape. Tag
+        // `'unknown'` rather than poison the `'invalid_path'` bucket.
+        track('onboarding_step4_path_failed', { path: 'ssh', reason: 'unknown' })
       } finally {
         setBusyLabel(null)
       }

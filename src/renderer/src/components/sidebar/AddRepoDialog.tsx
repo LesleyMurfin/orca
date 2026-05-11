@@ -62,9 +62,13 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
     handleOpenRemoteStep,
     handleAddRemoteRepo,
     handleConnectTarget
-  } = useRemoteRepo(fetchWorktrees, {
+  } = useRemoteRepo({
     onOpenRemoteStep: () => setStep('remote'),
-    onRemoteAdded: (repo) => {
+    onRemoteAdded: async (repo) => {
+      // Why: setup step reads worktreesByRepo for the repo, so populate the
+      // store before navigating. The hook no longer fetches on its own —
+      // worktree ownership is caller-side.
+      await fetchWorktrees(repo.id)
       setAddedRepo(repo)
       setStep('setup')
     },

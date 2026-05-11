@@ -968,4 +968,108 @@ describe('Store', () => {
       existedBeforeTelemetryRelease: false
     })
   })
+
+  // ── Onboarding gate-bypass guard ────────────────────────────────────
+  //
+  // PR #1677 made the repo step unskippable. The migration from the prior
+  // soft-skip build relies on two main-only fields: `legacySoftSkipEligible`
+  // (the predicate `shouldShowOnboarding` checks to auto-suppress trapped
+  // legacy users) and `_legacySoftSkipMigrationDone` (the one-shot
+  // discriminator). The renderer is in the threat model — a renderer that
+  // could write `legacySoftSkipEligible: true` over IPC would self-grant the
+  // auto-suppression and bypass the unskippable gate. These tests pin that
+  // (a) the IPC sanitizer rejects both keys by default, (b) the load path
+  // can still round-trip them via `allowInternal: true`, and (c) the
+  // main-side `updateOnboarding` durably reaps the eligibility flag once the
+  // wizard is sealed (so the renderer never has to write the cleanup).
+
+  it('sanitizeOnboardingUpdate drops legacySoftSkipEligible and the migration discriminator by default', async () => {
+    const { sanitizeOnboardingUpdate } = await import('./persistence')
+    const out = sanitizeOnboardingUpdate({
+      closedAt: 123,
+      legacySoftSkipEligible: true,
+      _legacySoftSkipMigrationDone: false
+    })
+    // closedAt round-trips because it is a renderer-writable field; the
+    // two internal fields must NOT.
+    expect(out).toEqual({ closedAt: 123 })
+  })
+
+  it('sanitizeOnboardingUpdate accepts the internal fields with allowInternal: true', async () => {
+    const { sanitizeOnboardingUpdate } = await import('./persistence')
+    const out = sanitizeOnboardingUpdate(
+      {
+        legacySoftSkipEligible: true,
+        _legacySoftSkipMigrationDone: false
+      },
+      { allowInternal: true }
+    )
+    expect(out).toEqual({
+      legacySoftSkipEligible: true,
+      _legacySoftSkipMigrationDone: false
+    })
+  })
+
+  it('sanitizeOnboardingUpdate drops non-boolean internal values even when allowInternal is true', async () => {
+    const { sanitizeOnboardingUpdate } = await import('./persistence')
+    const out = sanitizeOnboardingUpdate(
+      {
+        legacySoftSkipEligible: 'yes',
+        _legacySoftSkipMigrationDone: 1
+      },
+      { allowInternal: true }
+    )
+    expect(out).toEqual({})
+  })
+
+  it('updateOnboarding clears legacySoftSkipEligible when closedAt transitions to non-null', async () => {
+    // Seed a legacy in-flight row and let the load-path migration mark it
+    // eligible (closedAt === null && no migration discriminator on disk).
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: {},
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {},
+      onboarding: {
+        closedAt: null,
+        outcome: null,
+        lastCompletedStep: 3,
+        checklist: {}
+      }
+    })
+    const store = await createStore()
+    expect(store.getOnboarding().legacySoftSkipEligible).toBe(true)
+    const sealed = store.updateOnboarding({ closedAt: 999 })
+    expect(sealed.closedAt).toBe(999)
+    // The eligibility flag is reaped on the closedAt transition so the
+    // post-seal state is coherent.
+    expect(sealed.legacySoftSkipEligible).toBe(false)
+  })
+
+  it('updateOnboarding does not touch legacySoftSkipEligible when closedAt is not in the update', async () => {
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: {},
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {},
+      onboarding: {
+        closedAt: null,
+        outcome: null,
+        lastCompletedStep: 3,
+        checklist: {}
+      }
+    })
+    const store = await createStore()
+    expect(store.getOnboarding().legacySoftSkipEligible).toBe(true)
+    const updated = store.updateOnboarding({ lastCompletedStep: 2 })
+    // No closedAt transition → the flag must remain true so the renderer
+    // can still observe the trapped-legacy-user state.
+    expect(updated.legacySoftSkipEligible).toBe(true)
+  })
 })

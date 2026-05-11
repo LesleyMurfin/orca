@@ -115,8 +115,15 @@ function normalizeSshTarget(t: SshTarget): SshTarget {
 // merges over current state without wiping previously-true keys. Invalid
 // top-level fields are OMITTED (not coerced to fallbacks) so partial updates
 // don't clobber valid persisted state; the load-path caller spreads defaults.
+// Why: `allowInternal` lets the load path accept the legacy-soft-skip
+// migration fields off disk while the IPC path (the renderer is in the
+// threat model) rejects them. A renderer that could write
+// `legacySoftSkipEligible: true` could auto-suppress the now-unskippable
+// repo gate; writing `_legacySoftSkipMigrationDone: false` would replay the
+// migration. Both keys are main-only.
 export function sanitizeOnboardingUpdate(
-  input: unknown
+  input: unknown,
+  options: { allowInternal?: boolean } = {}
 ): Partial<Omit<OnboardingState, 'checklist'>> & { checklist?: Partial<OnboardingChecklistState> } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return {}
@@ -158,13 +165,17 @@ export function sanitizeOnboardingUpdate(
     }
     // else: omit.
   }
-  if ('legacySoftSkipEligible' in raw) {
+  // Why: gate these two keys on `allowInternal` so the IPC handler (renderer
+  // input) cannot bypass the unskippable repo gate by forging the migration
+  // discriminator or eligibility flag. Only the load-path caller passes
+  // `allowInternal: true` to round-trip the values off disk.
+  if (options.allowInternal && 'legacySoftSkipEligible' in raw) {
     if (typeof raw.legacySoftSkipEligible === 'boolean') {
       out.legacySoftSkipEligible = raw.legacySoftSkipEligible
     }
     // else: omit.
   }
-  if ('_legacySoftSkipMigrationDone' in raw) {
+  if (options.allowInternal && '_legacySoftSkipMigrationDone' in raw) {
     if (typeof raw._legacySoftSkipMigrationDone === 'boolean') {
       out._legacySoftSkipMigrationDone = raw._legacySoftSkipMigrationDone
     }
@@ -391,7 +402,7 @@ export class Store {
             // field on disk (string where number expected, unknown checklist
             // key) is dropped or coerced to the default rather than poisoning
             // in-memory state.
-            const sanitized = sanitizeOnboardingUpdate(parsed.onboarding)
+            const sanitized = sanitizeOnboardingUpdate(parsed.onboarding, { allowInternal: true })
             // Why: read the migration discriminator off the *raw* parsed
             // value, not the merged-with-defaults shape — defaults stamp it
             // true for new rows, which would otherwise short-circuit the
@@ -831,7 +842,7 @@ export class Store {
     }
   ): PersistedState['onboarding'] {
     const current = this.getOnboarding()
-    this.state.onboarding = {
+    const merged: PersistedState['onboarding'] = {
       ...current,
       ...updates,
       checklist: {
@@ -839,6 +850,21 @@ export class Store {
         ...updates.checklist
       }
     }
+    // Why: clear the legacy-soft-skip eligibility flag whenever closedAt
+    // transitions to a non-null value. The flag is main-only (the IPC
+    // sanitizer rejects it from renderer input), so this is the single
+    // place that durably reaps it once the wizard is sealed. Keeping the
+    // post-seal state coherent (closedAt !== null && eligible !== true)
+    // means a subsequent code path that reads only the eligibility flag
+    // can't be misled.
+    if (
+      merged.closedAt !== null &&
+      merged.legacySoftSkipEligible === true &&
+      'closedAt' in updates
+    ) {
+      merged.legacySoftSkipEligible = false
+    }
+    this.state.onboarding = merged
     this.scheduleSave()
     return this.getOnboarding()
   }
