@@ -167,6 +167,22 @@ describe('FsHandler readFileStream', () => {
     expect(meta.isBinary).toBe(true)
   })
 
+  it('returns empty:true for small binary files under the probe threshold', async () => {
+    const filePath = path.join(tmpDir, 'small.bin')
+    const content = Buffer.from([0x41, 0x00, 0x42])
+    writeFileSync(filePath, content)
+
+    const meta = (await dispatcher.callRequest(
+      'fs.readFileStream',
+      { filePath },
+      { isStale: () => false }
+    )) as { totalSize: number; empty: boolean; isBinary: boolean; streamId?: number }
+    expect(meta.empty).toBe(true)
+    expect(meta.isBinary).toBe(true)
+    expect(meta.totalSize).toBe(0)
+    expect(meta.streamId).toBeUndefined()
+  })
+
   it('rejects when totalSize exceeds the binary cap', async () => {
     const filePath = path.join(tmpDir, 'huge.png')
     writeFileSync(filePath, Buffer.alloc(51 * 1024 * 1024))

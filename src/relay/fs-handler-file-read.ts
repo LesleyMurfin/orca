@@ -76,7 +76,10 @@ export async function readRelayFileStreamMetadata(
       empty: true
     }
   }
-  if (!mimeType && stats.size > BINARY_PROBE_BYTES && (await isBinaryFilePrefix(filePath))) {
+  // Why: unlike the legacy single-shot path, streaming does not read the full
+  // buffer before classifying content. Probe every unknown file so small binary
+  // files do not get decoded as UTF-8 text over SSH.
+  if (!mimeType && (await isBinaryFilePrefix(filePath))) {
     return { totalSize: 0, isBinary: true, empty: true }
   }
 
