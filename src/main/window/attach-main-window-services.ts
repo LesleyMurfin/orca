@@ -270,6 +270,7 @@ function registerRuntimeWindowLifecycle(
     },
     renameTerminal: (tabId, title) => send('ui:renameTerminal', { tabId, title }),
     focusTerminal: (tabId, worktreeId) => send('ui:focusTerminal', { tabId, worktreeId }),
+    focusEditorTab: (tabId, worktreeId) => send('ui:focusEditorTab', { tabId, worktreeId }),
     closeTerminal: (tabId, paneRuntimeId) => send('ui:closeTerminal', { tabId, paneRuntimeId }),
     sleepWorktree: (worktreeId) => send('ui:sleepWorktree', { worktreeId }),
     terminalFitOverrideChanged: (ptyId, mode, cols, rows) =>

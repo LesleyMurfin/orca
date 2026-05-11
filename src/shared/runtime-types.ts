@@ -61,6 +61,74 @@ export type RuntimeSyncedLeaf = {
 export type RuntimeSyncWindowGraph = {
   tabs: RuntimeSyncedTab[]
   leaves: RuntimeSyncedLeaf[]
+  mobileSessionTabs?: RuntimeMobileSessionTabsSnapshot[]
+}
+
+export type RuntimeMobileSessionTerminalTab = {
+  type: 'terminal'
+  id: string
+  title: string
+  terminalTabId: string
+  isActive: boolean
+}
+
+export type RuntimeMobileSessionMarkdownTab = {
+  type: 'markdown'
+  id: string
+  title: string
+  filePath: string
+  relativePath: string
+  language: 'markdown'
+  mode: 'edit' | 'markdown-preview'
+  isDirty: boolean
+  isActive: boolean
+  sourceFileId: string
+  sourceFilePath: string
+  sourceRelativePath: string
+  documentVersion: string
+}
+
+export type RuntimeMobileSessionSnapshotTab =
+  | RuntimeMobileSessionTerminalTab
+  | RuntimeMobileSessionMarkdownTab
+
+export type RuntimeMobileSessionTerminalClientTab = Omit<
+  RuntimeMobileSessionTerminalTab,
+  'terminalTabId'
+> & {
+  terminal: string
+}
+
+export type RuntimeMobileSessionClientTab =
+  | RuntimeMobileSessionTerminalClientTab
+  | RuntimeMobileSessionMarkdownTab
+
+export type RuntimeMobileSessionTabsSnapshot = {
+  worktree: string
+  snapshotVersion: number
+  activeGroupId: string | null
+  activeTabId: string | null
+  activeTabType: 'terminal' | 'markdown' | null
+  tabs: RuntimeMobileSessionSnapshotTab[]
+}
+
+export type RuntimeMobileSessionTabsResult = {
+  worktree: string
+  snapshotVersion: number
+  activeGroupId: string | null
+  activeTabId: string | null
+  activeTabType: 'terminal' | 'markdown' | null
+  tabs: RuntimeMobileSessionClientTab[]
+}
+
+export type RuntimeMarkdownReadTabResult = {
+  tabId: string
+  filePath: string
+  relativePath: string
+  content: string
+  isDirty: boolean
+  version: string
+  source: 'draft' | 'file'
 }
 
 export type RuntimeTerminalSummary = {

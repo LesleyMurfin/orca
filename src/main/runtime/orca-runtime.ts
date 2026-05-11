@@ -11,7 +11,7 @@ import { gitExecFileAsync } from '../git/runner'
 import { isWslPath, parseWslPath, getWslHome } from '../wsl'
 import { randomUUID } from 'crypto'
 import { join } from 'path'
-import { rm } from 'fs/promises'
+import { readFile, stat, rm } from 'fs/promises'
 import { OrchestrationDb } from './orchestration/db'
 import { formatMessagesForInjection } from './orchestration/formatter'
 import type {
@@ -50,6 +50,11 @@ import type {
   RuntimeTerminalSummary,
   RuntimeSyncedLeaf,
   RuntimeSyncedTab,
+  RuntimeMarkdownReadTabResult,
+  RuntimeMobileSessionClientTab,
+  RuntimeMobileSessionMarkdownTab,
+  RuntimeMobileSessionTabsResult,
+  RuntimeMobileSessionTabsSnapshot,
   RuntimeSyncWindowGraph,
   RuntimeWorktreeListResult,
   BrowserSnapshotResult,
@@ -138,6 +143,7 @@ import {
   areWorktreePathsEqual
 } from '../ipc/worktree-logic'
 import { invalidateAuthorizedRootsCache } from '../ipc/filesystem-auth'
+import { getSshFilesystemProvider } from '../providers/ssh-filesystem-dispatch'
 import { HeadlessEmulator } from '../daemon/headless-emulator'
 import { killAllProcessesForWorktree } from './worktree-teardown'
 import { MOBILE_SUBSCRIBE_SCROLLBACK_ROWS } from './scrollback-limits'
@@ -289,6 +295,7 @@ type RuntimeNotifier = {
   ): void
   renameTerminal(tabId: string, title: string | null): void
   focusTerminal(tabId: string, worktreeId: string): void
+  focusEditorTab(tabId: string, worktreeId: string): void
   closeTerminal(tabId: string, paneRuntimeId?: number): void
   sleepWorktree(worktreeId: string): void
   terminalFitOverrideChanged(
@@ -427,6 +434,8 @@ export class OrcaRuntimeService {
   private graphStatus: RuntimeGraphStatus = 'unavailable'
   private authoritativeWindowId: number | null = null
   private tabs = new Map<string, RuntimeSyncedTab>()
+  private mobileSessionTabsByWorktree = new Map<string, RuntimeMobileSessionTabsSnapshot>()
+  private mobileSessionTabListeners = new Set<(snapshot: RuntimeMobileSessionTabsResult) => void>()
   private leaves = new Map<string, RuntimeLeafRecord>()
   private handles = new Map<string, TerminalHandleRecord>()
   private handleByLeafKey = new Map<string, string>()
@@ -438,6 +447,7 @@ export class OrcaRuntimeService {
   private notifier: RuntimeNotifier | null = null
   private agentBrowserBridge: AgentBrowserBridge | null = null
   private resolvedWorktreeCache: ResolvedWorktreeCache | null = null
+  private resolvedWorktreeInFlight: Promise<ResolvedWorktree[]> | null = null
   private agentDetector: AgentDetector | null = null
   private _orchestrationDb: OrchestrationDb | null = null
   private messageWaitersByHandle = new Map<string, Set<MessageWaiter>>()
@@ -758,6 +768,7 @@ export class OrcaRuntimeService {
     }
 
     this.tabs = new Map(graph.tabs.map((tab) => [tab.tabId, tab]))
+    this.syncMobileSessionTabs(graph.mobileSessionTabs ?? [])
     const nextLeaves = new Map<string, RuntimeLeafRecord>()
 
     // Why: renderer reloads can briefly republish the same leaf with no ptyId;
@@ -835,6 +846,7 @@ export class OrcaRuntimeService {
     }
 
     this.leaves = nextLeaves
+    this.notifyMobileSessionTabSnapshots()
     this.graphStatus = 'ready'
     this.refreshWritableFlags()
     for (const leaf of this.leaves.values()) {
@@ -848,6 +860,75 @@ export class OrcaRuntimeService {
     }
 
     return this.getStatus()
+  }
+
+  async listMobileSessionTabs(worktreeSelector: string): Promise<RuntimeMobileSessionTabsResult> {
+    const explicitWorktreeId = getExplicitWorktreeIdSelector(worktreeSelector)
+    if (explicitWorktreeId) {
+      return this.getMobileSessionTabsForWorktree(explicitWorktreeId)
+    }
+    const worktree = await this.resolveWorktreeSelector(worktreeSelector)
+    return this.getMobileSessionTabsForWorktree(worktree.id)
+  }
+
+  async activateMobileSessionTab(
+    worktreeSelector: string,
+    tabId: string
+  ): Promise<RuntimeMobileSessionTabsResult> {
+    const explicitWorktreeId = getExplicitWorktreeIdSelector(worktreeSelector)
+    const worktreeId =
+      explicitWorktreeId ?? (await this.resolveWorktreeSelector(worktreeSelector)).id
+    const snapshot = this.mobileSessionTabsByWorktree.get(worktreeId)
+    const tab = snapshot?.tabs.find((candidate) => candidate.id === tabId)
+    if (!tab) {
+      throw new Error('tab_not_found')
+    }
+
+    if (tab.type === 'terminal') {
+      this.notifier?.focusTerminal(tab.terminalTabId, worktreeId)
+    } else {
+      this.notifier?.focusEditorTab(tab.id, worktreeId)
+    }
+    return this.getMobileSessionTabsForWorktree(worktreeId)
+  }
+
+  async readMobileMarkdownTab(
+    worktreeSelector: string,
+    tabId: string
+  ): Promise<RuntimeMarkdownReadTabResult> {
+    const worktree = await this.resolveWorktreeSelector(worktreeSelector)
+    const snapshot = this.mobileSessionTabsByWorktree.get(worktree.id)
+    const tab = snapshot?.tabs.find(
+      (candidate): candidate is RuntimeMobileSessionMarkdownTab =>
+        candidate.type === 'markdown' && candidate.id === tabId
+    )
+    if (!tab) {
+      throw new Error('tab_not_found')
+    }
+
+    if (tab.isDirty) {
+      throw new Error('draft_unavailable')
+    }
+
+    const content = await this.readMarkdownFileForMobile(worktree, tab.sourceFilePath)
+    return {
+      tabId: tab.id,
+      filePath: tab.sourceFilePath,
+      relativePath: tab.sourceRelativePath,
+      content,
+      isDirty: false,
+      version: `file:${content.length}`,
+      source: 'file'
+    }
+  }
+
+  onMobileSessionTabsChanged(
+    listener: (snapshot: RuntimeMobileSessionTabsResult) => void
+  ): () => void {
+    this.mobileSessionTabListeners.add(listener)
+    return () => {
+      this.mobileSessionTabListeners.delete(listener)
+    }
   }
 
   // Why: terminal handles are normally created lazily when first referenced via
@@ -2858,7 +2939,8 @@ export class OrcaRuntimeService {
     }
     const graphEpoch = this.captureReadyGraphEpoch()
     const targetWorktreeId = worktreeSelector
-      ? (await this.resolveWorktreeSelector(worktreeSelector)).id
+      ? (getExplicitWorktreeIdSelector(worktreeSelector) ??
+        (await this.resolveWorktreeSelector(worktreeSelector)).id)
       : null
     const worktreesById = await this.getResolvedWorktreeMap()
     this.assertStableReadyGraph(graphEpoch)
@@ -4646,32 +4728,56 @@ export class OrcaRuntimeService {
     if (this.resolvedWorktreeCache && this.resolvedWorktreeCache.expiresAt > now) {
       return this.resolvedWorktreeCache.worktrees
     }
-
-    const metaById = this.store.getAllWorktreeMeta()
-    const worktrees: ResolvedWorktree[] = []
-    for (const repo of this.store.getRepos()) {
-      const gitWorktrees = await listRepoWorktrees(repo)
-      for (const gitWorktree of gitWorktrees) {
-        const worktreeId = `${repo.id}::${gitWorktree.path}`
-        const merged = mergeWorktree(repo.id, gitWorktree, metaById[worktreeId], repo.displayName)
-        worktrees.push({
-          id: merged.id,
-          repoId: repo.id,
-          path: merged.path,
-          branch: merged.branch,
-          linkedIssue: metaById[worktreeId]?.linkedIssue ?? null,
-          git: {
-            path: gitWorktree.path,
-            head: gitWorktree.head,
-            branch: gitWorktree.branch,
-            isBare: gitWorktree.isBare,
-            isMainWorktree: gitWorktree.isMainWorktree
-          },
-          displayName: merged.displayName,
-          comment: merged.comment
-        })
-      }
+    if (this.resolvedWorktreeInFlight) {
+      return this.resolvedWorktreeInFlight
     }
+
+    this.resolvedWorktreeInFlight = this.computeResolvedWorktrees()
+    try {
+      return await this.resolvedWorktreeInFlight
+    } finally {
+      this.resolvedWorktreeInFlight = null
+    }
+  }
+
+  private async computeResolvedWorktrees(): Promise<ResolvedWorktree[]> {
+    if (!this.store) {
+      return []
+    }
+    const now = Date.now()
+    const metaById = this.store.getAllWorktreeMeta()
+    const perRepoWorktrees = await Promise.all(
+      this.store.getRepos().map(async (repo) => {
+        // Why: mobile startup RPCs share this path. A slow repo scan should
+        // degrade one repo's metadata, not block all terminal/session loading.
+        const gitWorktrees = await withTimeout(
+          listRepoWorktrees(repo),
+          RESOLVED_WORKTREE_REPO_TIMEOUT_MS,
+          []
+        )
+        return gitWorktrees.map((gitWorktree) => {
+          const worktreeId = `${repo.id}::${gitWorktree.path}`
+          const merged = mergeWorktree(repo.id, gitWorktree, metaById[worktreeId], repo.displayName)
+          return {
+            id: merged.id,
+            repoId: repo.id,
+            path: merged.path,
+            branch: merged.branch,
+            linkedIssue: metaById[worktreeId]?.linkedIssue ?? null,
+            git: {
+              path: gitWorktree.path,
+              head: gitWorktree.head,
+              branch: gitWorktree.branch,
+              isBare: gitWorktree.isBare,
+              isMainWorktree: gitWorktree.isMainWorktree
+            },
+            displayName: merged.displayName,
+            comment: merged.comment
+          }
+        })
+      })
+    )
+    const worktrees = perRepoWorktrees.flat()
     // Why: terminal polling can be frequent, but git worktree state is still
     // allowed to change outside Orca. A short TTL avoids shelling out on every
     // read without pretending the cache is authoritative for long.
@@ -4749,7 +4855,11 @@ export class OrcaRuntimeService {
     if (!this.ptyController?.listProcesses) {
       return
     }
-    const sessions = await this.ptyController.listProcesses().catch(() => [])
+    const sessions = await withTimeout(
+      this.ptyController.listProcesses(),
+      PTY_CONTROLLER_LIST_TIMEOUT_MS,
+      []
+    )
     const livePtyIds = new Set(sessions.map((session) => session.id))
     for (const session of sessions) {
       const worktreeId =
@@ -4816,6 +4926,113 @@ export class OrcaRuntimeService {
       lastOutputAt: leaf.lastOutputAt,
       preview: leaf.preview
     }
+  }
+
+  private syncMobileSessionTabs(snapshots: RuntimeMobileSessionTabsSnapshot[]): void {
+    const nextWorktrees = new Set<string>()
+    for (const snapshot of snapshots) {
+      nextWorktrees.add(snapshot.worktree)
+      const existing = this.mobileSessionTabsByWorktree.get(snapshot.worktree)
+      if (!existing || snapshot.snapshotVersion >= existing.snapshotVersion) {
+        this.mobileSessionTabsByWorktree.set(snapshot.worktree, snapshot)
+      }
+    }
+    for (const worktreeId of this.mobileSessionTabsByWorktree.keys()) {
+      if (!nextWorktrees.has(worktreeId)) {
+        this.mobileSessionTabsByWorktree.delete(worktreeId)
+      }
+    }
+  }
+
+  private notifyMobileSessionTabSnapshots(): void {
+    if (this.mobileSessionTabListeners.size === 0) {
+      return
+    }
+    for (const snapshot of this.mobileSessionTabsByWorktree.values()) {
+      const result = this.toMobileSessionTabsResult(snapshot)
+      for (const listener of this.mobileSessionTabListeners) {
+        listener(result)
+      }
+    }
+  }
+
+  private getMobileSessionTabsForWorktree(worktreeId: string): RuntimeMobileSessionTabsResult {
+    const snapshot = this.mobileSessionTabsByWorktree.get(worktreeId)
+    if (!snapshot) {
+      return {
+        worktree: worktreeId,
+        snapshotVersion: 0,
+        activeGroupId: null,
+        activeTabId: null,
+        activeTabType: null,
+        tabs: []
+      }
+    }
+    return this.toMobileSessionTabsResult(snapshot)
+  }
+
+  private toMobileSessionTabsResult(
+    snapshot: RuntimeMobileSessionTabsSnapshot
+  ): RuntimeMobileSessionTabsResult {
+    const tabs: RuntimeMobileSessionClientTab[] = []
+    for (const tab of snapshot.tabs) {
+      if (tab.type === 'markdown') {
+        tabs.push(tab)
+        continue
+      }
+      const syncedTab = this.tabs.get(tab.terminalTabId)
+      const activeLeafId = syncedTab?.activeLeafId ?? null
+      const leaf =
+        activeLeafId != null
+          ? this.leaves.get(this.getLeafKey(tab.terminalTabId, activeLeafId))
+          : null
+      if (!leaf) {
+        continue
+      }
+      tabs.push({
+        type: 'terminal',
+        id: tab.id,
+        title: syncedTab?.title ?? tab.title,
+        terminal: this.issueHandle(leaf),
+        isActive: tab.isActive
+      })
+    }
+    const active = tabs.find((tab) => tab.isActive) ?? null
+    return {
+      worktree: snapshot.worktree,
+      snapshotVersion: snapshot.snapshotVersion,
+      activeGroupId: snapshot.activeGroupId,
+      activeTabId: active?.id ?? null,
+      activeTabType: active?.type ?? null,
+      tabs
+    }
+  }
+
+  private async readMarkdownFileForMobile(
+    worktree: ResolvedWorktree,
+    filePath: string
+  ): Promise<string> {
+    if (!isPathInsideWorktree(filePath, worktree.path)) {
+      throw new Error('path_outside_worktree')
+    }
+    const repo = this.store?.getRepo(worktree.repoId)
+    if (repo?.connectionId) {
+      const provider = getSshFilesystemProvider(repo.connectionId)
+      if (!provider) {
+        throw new Error('filesystem_provider_unavailable')
+      }
+      const result = await provider.readFile(filePath)
+      if (result.isBinary) {
+        throw new Error('binary_file')
+      }
+      return result.content
+    }
+
+    const stats = await stat(filePath)
+    if (stats.size > 512 * 1024) {
+      throw new Error('file_too_large')
+    }
+    return await readFile(filePath, 'utf8')
   }
 
   // Why: group address resolution (Section 4.5) needs to query per-handle agent
@@ -6742,6 +6959,8 @@ const DEFAULT_TERMINAL_LIST_LIMIT = 200
 const DEFAULT_WORKTREE_LIST_LIMIT = 200
 const DEFAULT_WORKTREE_PS_LIMIT = 200
 const RESOLVED_WORKTREE_CACHE_TTL_MS = 1000
+const RESOLVED_WORKTREE_REPO_TIMEOUT_MS = 5000
+const PTY_CONTROLLER_LIST_TIMEOUT_MS = 3000
 // Why (§3.3): 30s freshness window. A second worktree-create or dispatch-probe
 // against the same repo+remote within this window reuses the previous successful
 // fetch instead of repeating the round-trip. Chosen so rapid "new worktree"
@@ -6749,6 +6968,30 @@ const RESOLVED_WORKTREE_CACHE_TTL_MS = 1000
 // short enough that a genuinely-changed remote is observed on the next action.
 const FETCH_FRESHNESS_MS = 30_000
 const DRIFT_PROBE_SUBJECT_LIMIT = 5
+
+function getExplicitWorktreeIdSelector(selector: string | undefined): string | null {
+  if (!selector?.startsWith('id:')) {
+    return null
+  }
+  const id = selector.slice(3)
+  return id.length > 0 ? id : null
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null
+  return new Promise<T>((resolve) => {
+    timeout = setTimeout(() => resolve(fallback), timeoutMs)
+    promise.then(
+      (value) => resolve(value),
+      () => resolve(fallback)
+    )
+  }).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout)
+    }
+  })
+}
+
 function buildPreview(lines: string[], partialLine: string): string {
   const previewLines = buildTailLines(lines, partialLine)
     .map((line) => line.trim())

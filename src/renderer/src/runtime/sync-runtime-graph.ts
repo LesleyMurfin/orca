@@ -2,7 +2,13 @@ import { paneLeafId, serializePaneTree } from '@/components/terminal-pane/layout
 import { warnTerminalLifecycleAnomaly } from '@/components/terminal-pane/terminal-lifecycle-diagnostics'
 import type { PaneManager } from '@/lib/pane-manager/pane-manager'
 import type { AppState } from '@/store/types'
-import type { RuntimeSyncWindowGraph } from '../../../shared/runtime-types'
+import type {
+  RuntimeMobileSessionMarkdownTab,
+  RuntimeMobileSessionSnapshotTab,
+  RuntimeMobileSessionTabsSnapshot,
+  RuntimeSyncWindowGraph
+} from '../../../shared/runtime-types'
+import { getActiveTabNavOrder } from '../components/tab-bar/group-tab-order'
 
 type RegisteredTerminalTab = {
   tabId: string
@@ -23,6 +29,7 @@ const NO_TRANSPORT_GRACE_MS = 10_000
 let syncScheduled = false
 let syncEnabled = false
 let getStoreState: (() => AppState) | null = null
+let mobileSessionSnapshotVersion = 0
 
 export function setRuntimeGraphStoreStateGetter(getter: (() => AppState) | null): void {
   getStoreState = getter
@@ -68,7 +75,8 @@ async function syncRuntimeGraph(): Promise<void> {
   const state = getStoreState()
   const graph: RuntimeSyncWindowGraph = {
     tabs: [],
-    leaves: []
+    leaves: [],
+    mobileSessionTabs: buildMobileSessionTabSnapshots(state)
   }
 
   for (const [tabId, registeredTab] of registeredTabs) {
@@ -126,4 +134,114 @@ async function syncRuntimeGraph(): Promise<void> {
   } catch (error) {
     console.error('[runtime] Failed to sync renderer graph:', error)
   }
+}
+
+function buildMobileSessionTabSnapshots(state: AppState): RuntimeMobileSessionTabsSnapshot[] {
+  const worktreeIds = new Set<string>([
+    ...Object.keys(state.tabsByWorktree),
+    ...Object.keys(state.groupsByWorktree),
+    ...Object.keys(state.unifiedTabsByWorktree),
+    ...state.openFiles.map((file) => file.worktreeId)
+  ])
+
+  const snapshots: RuntimeMobileSessionTabsSnapshot[] = []
+  for (const worktreeId of worktreeIds) {
+    const activeGroupId = state.activeGroupIdByWorktree[worktreeId] ?? null
+    const order = getActiveTabNavOrder(state, worktreeId)
+    const tabs: RuntimeMobileSessionSnapshotTab[] = []
+
+    for (const item of order) {
+      if (item.type === 'terminal') {
+        const terminal = (state.tabsByWorktree[worktreeId] ?? []).find((tab) => tab.id === item.id)
+        if (!terminal) {
+          continue
+        }
+        tabs.push({
+          type: 'terminal',
+          id: terminal.id,
+          title: terminal.customTitle ?? terminal.title ?? 'Terminal',
+          terminalTabId: terminal.id,
+          isActive: item.tabId
+            ? state.groupsByWorktree[worktreeId]?.some(
+                (group) => group.id === activeGroupId && group.activeTabId === item.tabId
+              ) === true
+            : state.activeTabId === terminal.id
+        })
+      } else if (item.type === 'editor') {
+        const file = state.openFiles.find(
+          (candidate) => candidate.id === item.id && candidate.worktreeId === worktreeId
+        )
+        const markdown = file ? buildMobileMarkdownTab(state, file.id, item.tabId) : null
+        if (markdown) {
+          tabs.push(markdown)
+        }
+      }
+    }
+
+    const active = tabs.find((tab) => tab.isActive) ?? null
+    snapshots.push({
+      worktree: worktreeId,
+      snapshotVersion: ++mobileSessionSnapshotVersion,
+      activeGroupId,
+      activeTabId: active?.id ?? null,
+      activeTabType: active?.type ?? null,
+      tabs
+    })
+  }
+
+  return snapshots
+}
+
+function buildMobileMarkdownTab(
+  state: AppState,
+  fileId: string,
+  unifiedTabId?: string
+): RuntimeMobileSessionMarkdownTab | null {
+  const file = state.openFiles.find((candidate) => candidate.id === fileId)
+  if (!file) {
+    return null
+  }
+  if (file.mode !== 'edit' && file.mode !== 'markdown-preview') {
+    return null
+  }
+  if (file.language !== 'markdown' && file.mode !== 'markdown-preview') {
+    return null
+  }
+
+  const sourceFile =
+    file.mode === 'markdown-preview' && file.markdownPreviewSourceFileId
+      ? (state.openFiles.find((candidate) => candidate.id === file.markdownPreviewSourceFileId) ??
+        file)
+      : file
+  const draftContent = state.editorDrafts[sourceFile.id]
+  const title = file.relativePath.split(/[\\/]/).pop() || file.relativePath || 'Markdown'
+
+  return {
+    type: 'markdown',
+    id: unifiedTabId ?? file.id,
+    title,
+    filePath: file.filePath,
+    relativePath: file.relativePath,
+    language: 'markdown',
+    mode: file.mode,
+    isDirty: file.isDirty || sourceFile.isDirty,
+    isActive: unifiedTabId
+      ? state.groupsByWorktree[file.worktreeId]?.some(
+          (group) => group.activeTabId === unifiedTabId
+        ) === true
+      : state.activeFileId === file.id,
+    sourceFileId: sourceFile.id,
+    sourceFilePath: sourceFile.filePath,
+    sourceRelativePath: sourceFile.relativePath,
+    documentVersion: draftContent !== undefined ? hashString(draftContent) : `file:${sourceFile.id}`
+  }
+}
+
+function hashString(value: string): string {
+  let hash = 2166136261
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return `draft:${value.length}:${(hash >>> 0).toString(16)}`
 }

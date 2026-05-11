@@ -1120,6 +1120,9 @@ export type PreloadApi = {
       callback: (data: { tabId: string; title: string | null }) => void
     ) => () => void
     onFocusTerminal: (callback: (data: { tabId: string; worktreeId: string }) => void) => () => void
+    onFocusEditorTab: (
+      callback: (data: { tabId: string; worktreeId: string }) => void
+    ) => () => void
     onCloseTerminal: (
       callback: (data: { tabId: string; paneRuntimeId?: number }) => void
     ) => () => void

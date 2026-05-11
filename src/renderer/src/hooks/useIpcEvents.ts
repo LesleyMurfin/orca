@@ -347,6 +347,26 @@ export function useIpcEvents(): void {
     )
 
     unsubs.push(
+      window.api.ui.onFocusEditorTab(({ tabId, worktreeId }) => {
+        const store = useAppStore.getState()
+        const tab = (store.unifiedTabsByWorktree[worktreeId] ?? []).find(
+          (item) => item.id === tabId
+        )
+        if (!tab) {
+          return
+        }
+        store.setActiveWorktree(worktreeId)
+        store.markWorktreeVisited(worktreeId)
+        store.setActiveView('terminal')
+        store.focusGroup(worktreeId, tab.groupId)
+        store.activateTab(tab.id)
+        store.setActiveFile(tab.entityId)
+        store.setActiveTabType('editor')
+        store.revealWorktreeInSidebar(worktreeId)
+      })
+    )
+
+    unsubs.push(
       window.api.ui.onCloseTerminal(({ tabId, paneRuntimeId }) => {
         if (paneRuntimeId != null) {
           // Why: when targeting a specific pane in a split layout, dispatch to the
