@@ -60,7 +60,15 @@ export function createSessionWriteSubscriber({
     }
     timer = setTimeout(() => {
       timer = null
-      persist(buildWorkspaceSessionPayload(state))
+      // Why: rebuild from the freshest store state rather than the snapshot
+      // captured when this timer was scheduled. Today this is equivalent
+      // because buildWorkspaceSessionPayload reads only SESSION_RELEVANT_FIELDS
+      // (the same fields gating the timer reset), so the captured `state` is
+      // already current for those fields. Calling getState() guards against a
+      // future refactor that adds a non-relevant field read to the payload
+      // builder — without this, such a change would silently start emitting
+      // stale values for that field.
+      persist(buildWorkspaceSessionPayload(store.getState()))
     }, debounceMs)
   })
 

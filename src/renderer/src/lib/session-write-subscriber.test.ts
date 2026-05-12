@@ -127,5 +127,13 @@ describe('createSessionWriteSubscriber', () => {
     vi.advanceTimersByTime(200)
 
     expect(persist).not.toHaveBeenCalled()
+
+    // Why: without this second mutation, the assertion above only proves the
+    // pending timer was cancelled — a regression where cleanup() forgot to
+    // unsub() would still pass. Mutating after cleanup verifies the listener
+    // was detached and no new timer is queued.
+    useAppStore.setState({ activeTabId: 'tab-2' })
+    vi.advanceTimersByTime(200)
+    expect(persist).not.toHaveBeenCalled()
   })
 })
