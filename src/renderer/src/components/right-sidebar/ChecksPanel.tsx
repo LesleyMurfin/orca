@@ -101,13 +101,22 @@ export default function ChecksPanel(): React.JSX.Element {
   // differs from the PR's head ref) resolve via the number-based fallback.
   const linkedPR = activeWorktree?.linkedPR ?? null
   useEffect(() => {
-    if (repo && !isFolder && branch) {
-      void fetchPRForBranch(repo.path, branch, { linkedPRNumber: linkedPR })
+    if (isPanelVisible && repo && !isFolder && branch) {
+      if (activeWorktreeId) {
+        enqueueGitHubPRRefresh(activeWorktreeId, 'swr', 30)
+      }
     }
-  }, [repo, isFolder, branch, linkedPR, fetchPRForBranch])
+  }, [repo, isFolder, branch, activeWorktreeId, enqueueGitHubPRRefresh, isPanelVisible])
 
   useEffect(() => {
-    if (!repo || isFolder || !branch || !pr || pr.mergeable !== 'CONFLICTING') {
+    if (
+      !repo ||
+      isFolder ||
+      !branch ||
+      !pr ||
+      pr.mergeable !== 'CONFLICTING' ||
+      !activeWorktreeId
+    ) {
       conflictSummaryRefreshKeyRef.current = null
       return
     }
@@ -122,8 +131,8 @@ export default function ChecksPanel(): React.JSX.Element {
     // them so we don't keep rendering cached branch summaries or empty file
     // lists from an older payload.
     conflictSummaryRefreshKeyRef.current = refreshKey
-    void fetchPRForBranch(repo.path, branch, { force: true, linkedPRNumber: linkedPR })
-  }, [repo, isFolder, branch, pr, linkedPR, fetchPRForBranch])
+    void enqueueGitHubPRRefresh(activeWorktreeId, 'active', 80)
+  }, [repo, isFolder, branch, pr, activeWorktreeId, enqueueGitHubPRRefresh])
 
   // Fetch checks via cached store method
   const fetchChecks = useCallback(

@@ -199,7 +199,7 @@ function SourceControlInner(): React.JSX.Element {
   const isRemoteOperationActive = useAppStore((s) => s.isRemoteOperationActive)
   const inFlightRemoteOpKind = useAppStore((s) => s.inFlightRemoteOpKind)
   const prCache = useAppStore((s) => s.prCache)
-  const fetchPRForBranch = useAppStore((s) => s.fetchPRForBranch)
+  const enqueueGitHubPRRefresh = useAppStore((s) => s.enqueueGitHubPRRefresh)
   const updateRepo = useAppStore((s) => s.updateRepo)
   const beginGitBranchCompareRequest = useAppStore((s) => s.beginGitBranchCompareRequest)
   const setGitBranchCompareResult = useAppStore((s) => s.setGitBranchCompareResult)
@@ -366,19 +366,24 @@ function SourceControlInner(): React.JSX.Element {
   const prCacheKey = activeRepo && branchName ? `${activeRepo.path}::${branchName}` : null
   const prInfo: PRInfo | null = prCacheKey ? (prCache[prCacheKey]?.data ?? null) : null
 
-  const linkedPR = activeWorktree?.linkedPR ?? null
   useEffect(() => {
-    if (!isBranchVisible || !activeRepo || isFolder || !branchName || branchName === 'HEAD') {
+    if (
+      !isBranchVisible ||
+      !activeRepo ||
+      isFolder ||
+      !branchName ||
+      branchName === 'HEAD' ||
+      !activeWorktreeId
+    ) {
       return
     }
 
     // Why: the Source Control panel renders the branch's PR badge directly.
     // When a terminal checkout moves this worktree onto a new branch, we need
-    // to fetch that branch's PR immediately instead of waiting for the user to
-    // reselect the worktree or open the separate Checks panel. Pass linkedPR
-    // so create-from-PR worktrees resolve via the number-based fallback.
-    void fetchPRForBranch(activeRepo.path, branchName, { linkedPRNumber: linkedPR })
-  }, [activeRepo, branchName, fetchPRForBranch, isBranchVisible, isFolder, linkedPR])
+    // to refresh that branch's PR without bypassing the coordinator's
+    // rate-limit guard.
+    enqueueGitHubPRRefresh(activeWorktreeId, 'swr', 30)
+  }, [activeRepo, activeWorktreeId, branchName, enqueueGitHubPRRefresh, isBranchVisible, isFolder])
 
   const grouped = useMemo(() => {
     const groups = {
