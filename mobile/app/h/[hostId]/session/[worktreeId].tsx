@@ -471,6 +471,9 @@ export default function SessionScreen() {
       if (!getTerminalRef(handle)) {
         return
       }
+      if (!webReadyHandlesRef.current.has(handle)) {
+        return
+      }
 
       subscribingHandlesRef.current.add(handle)
       const seq = (subscribeSeqRef.current.get(handle) ?? 0) + 1
@@ -820,6 +823,9 @@ export default function SessionScreen() {
         }))
       setTerminals(terminalTabs)
       lastKnownTerminalCountRef.current = terminalTabs.length
+      if (nextTabs.length > 0) {
+        setTerminalsLoaded(true)
+      }
 
       const snapshotActive = nextTabs.find((tab) => tab.isActive) ?? nextTabs[0] ?? null
       const pendingActiveSessionTabId = pendingActiveSessionTabIdRef.current
@@ -1798,7 +1804,7 @@ export default function SessionScreen() {
           isActive: terminal.handle === activeHandle
         }))
   const activeMarkdownTab = activeSessionTab?.type === 'markdown' ? activeSessionTab : null
-  const showLoadingState = connState === 'connected' && !terminalsLoaded
+  const showLoadingState = connState === 'connected' && !terminalsLoaded && visibleTabs.length === 0
   const showEmptyState =
     connState === 'connected' && terminalsLoaded && visibleTabs.length === 0 && !activeHandle
   const terminalSummary =
