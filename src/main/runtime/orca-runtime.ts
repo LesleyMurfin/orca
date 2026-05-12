@@ -11,7 +11,7 @@ import { gitExecFileAsync } from '../git/runner'
 import { isWslPath, parseWslPath, getWslHome } from '../wsl'
 import { randomUUID } from 'crypto'
 import { join } from 'path'
-import { readFile, stat, rm } from 'fs/promises'
+import { rm } from 'fs/promises'
 import { OrchestrationDb } from './orchestration/db'
 import { formatMessagesForInjection } from './orchestration/formatter'
 import type {
@@ -51,6 +51,7 @@ import type {
   RuntimeSyncedLeaf,
   RuntimeSyncedTab,
   RuntimeMarkdownReadTabResult,
+  RuntimeMarkdownSaveTabResult,
   RuntimeMobileSessionClientTab,
   RuntimeMobileSessionMarkdownTab,
   RuntimeMobileSessionTabsResult,
@@ -143,7 +144,6 @@ import {
   areWorktreePathsEqual
 } from '../ipc/worktree-logic'
 import { invalidateAuthorizedRootsCache } from '../ipc/filesystem-auth'
-import { getSshFilesystemProvider } from '../providers/ssh-filesystem-dispatch'
 import { HeadlessEmulator } from '../daemon/headless-emulator'
 import { killAllProcessesForWorktree } from './worktree-teardown'
 import { MOBILE_SUBSCRIBE_SCROLLBACK_ROWS } from './scrollback-limits'
@@ -295,7 +295,14 @@ type RuntimeNotifier = {
   ): void
   renameTerminal(tabId: string, title: string | null): void
   focusTerminal(tabId: string, worktreeId: string): void
-  focusEditorTab(tabId: string, worktreeId: string): void
+  focusEditorTab?(tabId: string, worktreeId: string): void
+  readMobileMarkdownTab?(worktreeId: string, tabId: string): Promise<RuntimeMarkdownReadTabResult>
+  saveMobileMarkdownTab?(
+    worktreeId: string,
+    tabId: string,
+    baseVersion: string,
+    content: string
+  ): Promise<RuntimeMarkdownSaveTabResult>
   closeTerminal(tabId: string, paneRuntimeId?: number): void
   sleepWorktree(worktreeId: string): void
   terminalFitOverrideChanged(
@@ -887,7 +894,7 @@ export class OrcaRuntimeService {
     if (tab.type === 'terminal') {
       this.notifier?.focusTerminal(tab.terminalTabId, worktreeId)
     } else {
-      this.notifier?.focusEditorTab(tab.id, worktreeId)
+      this.notifier?.focusEditorTab?.(tab.id, worktreeId)
     }
     return this.getMobileSessionTabsForWorktree(worktreeId)
   }
@@ -896,30 +903,24 @@ export class OrcaRuntimeService {
     worktreeSelector: string,
     tabId: string
   ): Promise<RuntimeMarkdownReadTabResult> {
-    const worktree = await this.resolveWorktreeSelector(worktreeSelector)
-    const snapshot = this.mobileSessionTabsByWorktree.get(worktree.id)
-    const tab = snapshot?.tabs.find(
-      (candidate): candidate is RuntimeMobileSessionMarkdownTab =>
-        candidate.type === 'markdown' && candidate.id === tabId
-    )
-    if (!tab) {
-      throw new Error('tab_not_found')
+    const worktreeId = await this.resolveMobileMarkdownWorktreeId(worktreeSelector, tabId)
+    if (!this.notifier?.readMobileMarkdownTab) {
+      throw new Error('renderer_unavailable')
     }
+    return await this.notifier.readMobileMarkdownTab(worktreeId, tabId)
+  }
 
-    if (tab.isDirty) {
-      throw new Error('draft_unavailable')
+  async saveMobileMarkdownTab(
+    worktreeSelector: string,
+    tabId: string,
+    baseVersion: string,
+    content: string
+  ): Promise<RuntimeMarkdownSaveTabResult> {
+    const worktreeId = await this.resolveMobileMarkdownWorktreeId(worktreeSelector, tabId)
+    if (!this.notifier?.saveMobileMarkdownTab) {
+      throw new Error('renderer_unavailable')
     }
-
-    const content = await this.readMarkdownFileForMobile(worktree, tab.sourceFilePath)
-    return {
-      tabId: tab.id,
-      filePath: tab.sourceFilePath,
-      relativePath: tab.sourceRelativePath,
-      content,
-      isDirty: false,
-      version: `file:${content.length}`,
-      source: 'file'
-    }
+    return await this.notifier.saveMobileMarkdownTab(worktreeId, tabId, baseVersion, content)
   }
 
   onMobileSessionTabsChanged(
@@ -4971,6 +4972,24 @@ export class OrcaRuntimeService {
     return this.toMobileSessionTabsResult(snapshot)
   }
 
+  private async resolveMobileMarkdownWorktreeId(
+    worktreeSelector: string,
+    tabId: string
+  ): Promise<string> {
+    const worktreeId =
+      getExplicitWorktreeIdSelector(worktreeSelector) ??
+      (await this.resolveWorktreeSelector(worktreeSelector)).id
+    const snapshot = this.mobileSessionTabsByWorktree.get(worktreeId)
+    const tab = snapshot?.tabs.find(
+      (candidate): candidate is RuntimeMobileSessionMarkdownTab =>
+        candidate.type === 'markdown' && candidate.id === tabId
+    )
+    if (!tab) {
+      throw new Error('tab_not_found')
+    }
+    return worktreeId
+  }
+
   private toMobileSessionTabsResult(
     snapshot: RuntimeMobileSessionTabsSnapshot
   ): RuntimeMobileSessionTabsResult {
@@ -5006,33 +5025,6 @@ export class OrcaRuntimeService {
       activeTabType: active?.type ?? null,
       tabs
     }
-  }
-
-  private async readMarkdownFileForMobile(
-    worktree: ResolvedWorktree,
-    filePath: string
-  ): Promise<string> {
-    if (!isPathInsideWorktree(filePath, worktree.path)) {
-      throw new Error('path_outside_worktree')
-    }
-    const repo = this.store?.getRepo(worktree.repoId)
-    if (repo?.connectionId) {
-      const provider = getSshFilesystemProvider(repo.connectionId)
-      if (!provider) {
-        throw new Error('filesystem_provider_unavailable')
-      }
-      const result = await provider.readFile(filePath)
-      if (result.isBinary) {
-        throw new Error('binary_file')
-      }
-      return result.content
-    }
-
-    const stats = await stat(filePath)
-    if (stats.size > 512 * 1024) {
-      throw new Error('file_too_large')
-    }
-    return await readFile(filePath, 'utf8')
   }
 
   // Why: group address resolution (Section 4.5) needs to query per-handle agent

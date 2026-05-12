@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Animated, AppState, type AppStateStatus } from 'react-native'
+import { Alert, Animated, AppState, type AppStateStatus } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import {
+  BackHandler,
   View,
   Text,
   StyleSheet,
@@ -29,7 +30,7 @@ import {
 import type { RpcClient } from '../../../../src/transport/rpc-client'
 import { loadHosts } from '../../../../src/transport/host-store'
 import { useHostClient } from '../../../../src/transport/client-context'
-import type { ConnectionState, RpcSuccess } from '../../../../src/transport/types'
+import type { ConnectionState, RpcFailure, RpcSuccess } from '../../../../src/transport/types'
 import {
   triggerMediumImpact,
   triggerSelection,
@@ -87,7 +88,18 @@ type SessionTabsResult = {
 
 type MarkdownDocState =
   | { status: 'loading' }
-  | { status: 'ready'; content: string; version: string; isDirty: boolean; stale?: boolean }
+  | {
+      status: 'ready'
+      content: string
+      localContent: string
+      baseVersion: string
+      isDirty: boolean
+      editable: boolean
+      stale?: boolean
+      saving?: boolean
+      saveError?: string
+      readOnlyReason?: string
+    }
   | { status: 'error'; message: string }
 
 type TerminalCreateResult = {
@@ -191,11 +203,19 @@ function TerminalPaneView({
 function MarkdownReader({
   doc,
   tab,
-  onRefresh
+  onRefresh,
+  onChange,
+  onSave,
+  onCopy,
+  onDiscard
 }: {
   doc: MarkdownDocState | undefined
   tab: Extract<MobileSessionTab, { type: 'markdown' }>
   onRefresh: () => void
+  onChange: (content: string) => void
+  onSave: () => void
+  onCopy: () => void
+  onDiscard: () => void
 }) {
   if (!doc || doc.status === 'loading') {
     return (
@@ -216,58 +236,72 @@ function MarkdownReader({
     )
   }
 
-  const lines = doc.content.split(/\r?\n/)
   return (
-    <ScrollView style={styles.markdownReader} contentContainerStyle={styles.markdownContent}>
+    <View style={styles.markdownEditor}>
       <View style={styles.markdownHeader}>
-        <Text style={styles.markdownTitle} numberOfLines={1}>
-          {tab.relativePath || tab.title}
-        </Text>
-        {(tab.isDirty || doc.stale) && <Text style={styles.markdownMeta}>Updated on desktop</Text>}
-        {(tab.isDirty || doc.stale) && (
+        <View style={styles.markdownTitleRow}>
+          <View style={styles.markdownTitleBlock}>
+            <Text style={styles.markdownTitle} numberOfLines={1}>
+              {tab.relativePath || tab.title}
+            </Text>
+            {doc.saveError ? (
+              <Text style={styles.markdownError} numberOfLines={2}>
+                {doc.saveError}
+              </Text>
+            ) : doc.readOnlyReason ? (
+              <Text style={styles.markdownMeta}>Read only</Text>
+            ) : doc.stale ? (
+              <Text style={styles.markdownMeta}>Changed on desktop</Text>
+            ) : doc.isDirty ? (
+              <Text style={styles.markdownMeta}>Unsaved on phone</Text>
+            ) : null}
+          </View>
+          <View style={styles.markdownActions}>
+            {(doc.saveError || !doc.editable) && (
+              <Pressable style={styles.markdownRefreshButton} onPress={onCopy}>
+                <Text style={styles.markdownRefreshText}>Copy</Text>
+              </Pressable>
+            )}
+            {doc.isDirty && (
+              <Pressable style={styles.markdownRefreshButton} onPress={onDiscard}>
+                <Text style={styles.markdownRefreshText}>Discard</Text>
+              </Pressable>
+            )}
+            <Pressable
+              style={[
+                styles.markdownRefreshButton,
+                (!doc.editable || !doc.isDirty || doc.saving) && styles.markdownButtonDisabled
+              ]}
+              disabled={!doc.editable || !doc.isDirty || doc.saving}
+              onPress={onSave}
+            >
+              {doc.saving ? (
+                <ActivityIndicator size="small" color={colors.textPrimary} />
+              ) : (
+                <Text style={styles.markdownRefreshText}>Save</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+        {(doc.stale && !doc.isDirty) || !doc.editable ? (
           <Pressable style={styles.markdownRefreshButton} onPress={onRefresh}>
             <RefreshCw size={14} color={colors.textPrimary} />
             <Text style={styles.markdownRefreshText}>Refresh</Text>
           </Pressable>
-        )}
+        ) : null}
       </View>
-      {lines.map((line, index) => {
-        const key = `${index}:${line}`
-        if (line.startsWith('# ')) {
-          return (
-            <Text key={key} style={styles.markdownH1}>
-              {line.slice(2)}
-            </Text>
-          )
-        }
-        if (line.startsWith('## ')) {
-          return (
-            <Text key={key} style={styles.markdownH2}>
-              {line.slice(3)}
-            </Text>
-          )
-        }
-        if (line.startsWith('```')) {
-          return null
-        }
-        if (line.startsWith('- ') || line.startsWith('* ')) {
-          return (
-            <Text key={key} style={styles.markdownBody}>
-              {'\u2022 '}
-              {line.slice(2)}
-            </Text>
-          )
-        }
-        if (line.trim().length === 0) {
-          return <View key={key} style={styles.markdownSpacer} />
-        }
-        return (
-          <Text key={key} style={styles.markdownBody}>
-            {line}
-          </Text>
-        )
-      })}
-    </ScrollView>
+      <TextInput
+        style={styles.markdownTextInput}
+        value={doc.localContent}
+        onChangeText={onChange}
+        editable={doc.editable && !doc.saving}
+        multiline
+        textAlignVertical="top"
+        autoCapitalize="none"
+        autoCorrect={false}
+        spellCheck={false}
+      />
+    </View>
   )
 }
 
@@ -341,6 +375,8 @@ export default function SessionScreen() {
   const activeHandleRef = useRef<string | null>(null)
   const activeSessionTabTypeRef = useRef<'terminal' | 'markdown' | null>(null)
   const pendingActiveSessionTabIdRef = useRef<string | null>(null)
+  const markdownSaveSeqRef = useRef<Map<string, number>>(new Map())
+  const markdownSaveInFlightRef = useRef<Set<string>>(new Set())
   const subscribeSeqRef = useRef<Map<string, number>>(new Map())
   // Why: server-side layout state machine emits a monotonic seq on every
   // applyLayout. Track the highest seq we've observed per handle and drop
@@ -358,6 +394,23 @@ export default function SessionScreen() {
   const activeSessionTab = sessionTabs.find((tab) => tab.id === activeSessionTabId) ?? null
   const canSend =
     connState === 'connected' && activeHandle != null && activeSessionTab?.type !== 'markdown'
+
+  const showToast = useCallback((message: string, durationMs = 1200) => {
+    setToastMessage(message)
+    Animated.timing(toastOpacityRef.current, {
+      toValue: 1,
+      duration: 150,
+      useNativeDriver: true
+    }).start(() => {
+      setTimeout(() => {
+        Animated.timing(toastOpacityRef.current, {
+          toValue: 0,
+          duration: 200,
+          useNativeDriver: true
+        }).start(() => setToastMessage(null))
+      }, durationMs)
+    })
+  }, [])
 
   useEffect(() => {
     activeSessionTabTypeRef.current = activeSessionTab?.type ?? null
@@ -735,7 +788,26 @@ export default function SessionScreen() {
 
   const applySessionTabs = useCallback(
     (result: SessionTabsResult) => {
-      const nextTabs = result.tabs
+      let nextTabs = result.tabs
+      const presentTabIds = new Set(nextTabs.map((tab) => tab.id))
+      const orphanedDraftTabs: MobileSessionTab[] = []
+      for (const [tabId, doc] of markdownDocs) {
+        if (doc.status !== 'ready' || !doc.isDirty || presentTabIds.has(tabId)) {
+          continue
+        }
+        const draftTab = sessionTabs.find(
+          (tab): tab is Extract<MobileSessionTab, { type: 'markdown' }> =>
+            tab.type === 'markdown' && tab.id === tabId
+        )
+        if (draftTab) {
+          // Why: save-only mobile edits live only on the phone until Save. If the
+          // desktop tab disappears, keep every local draft reachable for copy/discard.
+          orphanedDraftTabs.push({ ...draftTab, isActive: tabId === activeSessionTabId })
+        }
+      }
+      if (orphanedDraftTabs.length > 0) {
+        nextTabs = [...orphanedDraftTabs, ...nextTabs]
+      }
       setSessionTabs(nextTabs)
       const terminalTabs = nextTabs
         .filter(
@@ -787,7 +859,7 @@ export default function SessionScreen() {
         setActiveHandle(null)
       }
     },
-    [subscribeToTerminal, unsubscribeTerminal]
+    [activeSessionTabId, markdownDocs, sessionTabs, subscribeToTerminal, unsubscribeTerminal]
   )
 
   const readMarkdownTab = useCallback(
@@ -806,13 +878,19 @@ export default function SessionScreen() {
           content: string
           version: string
           isDirty: boolean
+          editable?: boolean
+          readOnlyReason?: string
         }
         setMarkdownDocs((prev) =>
           new Map(prev).set(tab.id, {
             status: 'ready',
             content: result.content,
-            version: result.version,
-            isDirty: result.isDirty
+            localContent: result.content,
+            baseVersion: result.version,
+            isDirty: false,
+            editable: result.editable === true,
+            stale: result.isDirty,
+            readOnlyReason: result.readOnlyReason
           })
         )
       } catch {
@@ -825,6 +903,166 @@ export default function SessionScreen() {
       }
     },
     [client, worktreeId]
+  )
+
+  const updateMarkdownLocalContent = useCallback((tabId: string, content: string) => {
+    setMarkdownDocs((prev) => {
+      const current = prev.get(tabId)
+      if (current?.status !== 'ready') return prev
+      const next = new Map(prev)
+      next.set(tabId, {
+        ...current,
+        localContent: content,
+        isDirty: content !== current.content,
+        saveError: undefined
+      })
+      return next
+    })
+  }, [])
+
+  const copyMarkdownLocalContent = useCallback(
+    async (tabId: string) => {
+      const current = markdownDocs.get(tabId)
+      if (current?.status !== 'ready') return
+      await Clipboard.setStringAsync(current.localContent)
+      triggerSuccess()
+      showToast('Copied')
+    },
+    [markdownDocs, showToast]
+  )
+
+  const getDirtyMarkdownDrafts = useCallback(() => {
+    const drafts: Array<{ tabId: string; title: string; content: string }> = []
+    for (const [tabId, doc] of markdownDocs) {
+      if (doc.status === 'ready' && doc.isDirty) {
+        const tab = sessionTabs.find((candidate) => candidate.id === tabId)
+        drafts.push({ tabId, title: tab?.title || 'Markdown', content: doc.localContent })
+      }
+    }
+    return drafts
+  }, [markdownDocs, sessionTabs])
+
+  const requestLeaveSession = useCallback(() => {
+    const dirtyDrafts = getDirtyMarkdownDrafts()
+    if (dirtyDrafts.length === 0) {
+      router.back()
+      return
+    }
+    Alert.alert('Unsaved markdown changes', 'Copy or discard phone drafts before leaving.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Copy All & Leave',
+        onPress: () => {
+          const combined = dirtyDrafts
+            .map((draft) => `# ${draft.title}\n\n${draft.content}`)
+            .join('\n\n---\n\n')
+          void Clipboard.setStringAsync(combined).finally(() => router.back())
+        }
+      },
+      {
+        text: 'Discard',
+        style: 'destructive',
+        onPress: () => router.back()
+      }
+    ])
+  }, [getDirtyMarkdownDrafts, router])
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (getDirtyMarkdownDrafts().length === 0) {
+        return false
+      }
+      requestLeaveSession()
+      return true
+    })
+    return () => subscription.remove()
+  }, [getDirtyMarkdownDrafts, requestLeaveSession])
+
+  const discardMarkdownLocalContent = useCallback(
+    (tab: Extract<MobileSessionTab, { type: 'markdown' }>) => {
+      const current = markdownDocs.get(tab.id)
+      if (current?.status !== 'ready') return
+      if (!current.isDirty) {
+        void readMarkdownTab(tab)
+        return
+      }
+      Alert.alert('Discard changes?', 'This will replace the phone draft with the desktop file.', [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Discard',
+          style: 'destructive',
+          onPress: () => void readMarkdownTab(tab)
+        }
+      ])
+    },
+    [markdownDocs, readMarkdownTab]
+  )
+
+  const saveMarkdownTab = useCallback(
+    async (tab: Extract<MobileSessionTab, { type: 'markdown' }>) => {
+      if (!client) return
+      const current = markdownDocs.get(tab.id)
+      if (current?.status !== 'ready' || current.saving || !current.editable) return
+      if (markdownSaveInFlightRef.current.has(tab.id)) return
+      markdownSaveInFlightRef.current.add(tab.id)
+      const saveSeq = (markdownSaveSeqRef.current.get(tab.id) ?? 0) + 1
+      markdownSaveSeqRef.current.set(tab.id, saveSeq)
+      setMarkdownDocs((prev) => {
+        const existing = prev.get(tab.id)
+        if (existing?.status !== 'ready') return prev
+        return new Map(prev).set(tab.id, { ...existing, saving: true, saveError: undefined })
+      })
+      try {
+        const response = await client.sendRequest('markdown.saveTab', {
+          worktree: `id:${worktreeId}`,
+          tabId: tab.id,
+          baseVersion: current.baseVersion,
+          content: current.localContent
+        })
+        if (!response.ok) {
+          throw new Error((response as RpcFailure).error.message)
+        }
+        const result = (response as RpcSuccess).result as {
+          content: string
+          version: string
+          isDirty: false
+        }
+        if (markdownSaveSeqRef.current.get(tab.id) !== saveSeq) {
+          return
+        }
+        setMarkdownDocs((prev) =>
+          new Map(prev).set(tab.id, {
+            status: 'ready',
+            content: result.content,
+            localContent: result.content,
+            baseVersion: result.version,
+            isDirty: false,
+            editable: true
+          })
+        )
+        markdownSaveSeqRef.current.delete(tab.id)
+        triggerSuccess()
+        showToast('Saved')
+      } catch (error) {
+        triggerError()
+        const message = error instanceof Error ? error.message : 'Save failed'
+        if (markdownSaveSeqRef.current.get(tab.id) !== saveSeq) {
+          return
+        }
+        setMarkdownDocs((prev) => {
+          const existing = prev.get(tab.id)
+          if (existing?.status !== 'ready') return prev
+          return new Map(prev).set(tab.id, {
+            ...existing,
+            saving: false,
+            saveError: message || 'Save failed'
+          })
+        })
+      } finally {
+        markdownSaveInFlightRef.current.delete(tab.id)
+      }
+    },
+    [client, markdownDocs, showToast, worktreeId]
   )
 
   const fetchSessionTabsInFlightRef = useRef(false)
@@ -1064,10 +1302,7 @@ export default function SessionScreen() {
           if (activeMarkdown) {
             setMarkdownDocs((prev) => {
               const current = prev.get(activeMarkdown.id)
-              if (
-                current?.status === 'ready' &&
-                current.version !== activeMarkdown.documentVersion
-              ) {
+              if (current?.status === 'ready' && activeMarkdown.isDirty && !current.isDirty) {
                 const next = new Map(prev)
                 next.set(activeMarkdown.id, { ...current, stale: true })
                 return next
@@ -1158,9 +1393,11 @@ export default function SessionScreen() {
           .catch(() => {})
       }
       const cached = markdownDocs.get(tab.id)
-      if (cached?.status === 'ready' && !cached.stale && cached.version === tab.documentVersion) {
+      if (cached?.status === 'ready' && cached.isDirty) {
         return
       }
+      // Why: desktop clean saves do not carry a reliable content version in the
+      // lightweight tab list. Re-read on revisit unless the phone has a draft.
       void readMarkdownTab(tab)
     },
     [client, markdownDocs, readMarkdownTab, switchTab, unsubscribeTerminal, worktreeId]
@@ -1318,23 +1555,6 @@ export default function SessionScreen() {
   useEffect(() => {
     return () => stopAccessoryRepeat()
   }, [stopAccessoryRepeat])
-
-  const showToast = useCallback((message: string, durationMs = 1200) => {
-    setToastMessage(message)
-    Animated.timing(toastOpacityRef.current, {
-      toValue: 1,
-      duration: 150,
-      useNativeDriver: true
-    }).start(() => {
-      setTimeout(() => {
-        Animated.timing(toastOpacityRef.current, {
-          toValue: 0,
-          duration: 200,
-          useNativeDriver: true
-        }).start(() => setToastMessage(null))
-      }, durationMs)
-    })
-  }, [])
 
   const handleSelectionMode = useCallback((handle: string, active: boolean) => {
     if (handle !== activeHandleRef.current) return
@@ -1607,7 +1827,7 @@ export default function SessionScreen() {
           <View style={styles.sessionTopBar}>
             <Pressable
               style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
-              onPress={() => router.back()}
+              onPress={requestLeaveSession}
               hitSlop={8}
               accessibilityLabel="Back to worktrees"
             >
@@ -1713,11 +1933,15 @@ export default function SessionScreen() {
             </Pressable>
           </View>
         ) : activeMarkdownTab ? (
-          <View style={styles.markdownFrame}>
+          <View style={[styles.markdownFrame, { paddingBottom: keyboardLift }]}>
             <MarkdownReader
               tab={activeMarkdownTab}
               doc={markdownDocs.get(activeMarkdownTab.id)}
               onRefresh={() => void readMarkdownTab(activeMarkdownTab)}
+              onChange={(content) => updateMarkdownLocalContent(activeMarkdownTab.id, content)}
+              onSave={() => void saveMarkdownTab(activeMarkdownTab)}
+              onCopy={() => void copyMarkdownLocalContent(activeMarkdownTab.id)}
+              onDiscard={() => discardMarkdownLocalContent(activeMarkdownTab)}
             />
             {toastMessage && (
               <Animated.View
@@ -1980,7 +2204,7 @@ export default function SessionScreen() {
               const target = markdownActionTarget
               setMarkdownActionTarget(null)
               if (target) {
-                void readMarkdownTab(target)
+                discardMarkdownLocalContent(target)
               }
             }
           },
@@ -2163,13 +2387,36 @@ const styles = StyleSheet.create({
   markdownReader: {
     flex: 1
   },
+  markdownEditor: {
+    flex: 1,
+    padding: spacing.lg,
+    gap: spacing.md
+  },
   markdownContent: {
     padding: spacing.lg,
     paddingBottom: spacing.xl * 2
   },
   markdownHeader: {
-    marginBottom: spacing.lg,
     gap: spacing.xs
+  },
+  markdownTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: spacing.md
+  },
+  markdownTitleBlock: {
+    flex: 1,
+    minWidth: 0,
+    gap: spacing.xs
+  },
+  markdownActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: spacing.xs,
+    maxWidth: '58%'
   },
   markdownTitle: {
     color: colors.textPrimary,
@@ -2214,6 +2461,19 @@ const styles = StyleSheet.create({
     color: colors.statusRed,
     fontSize: typography.bodySize
   },
+  markdownTextInput: {
+    flex: 1,
+    minHeight: 0,
+    color: colors.textPrimary,
+    backgroundColor: colors.bgRaised,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    borderRadius: radii.card,
+    padding: spacing.md,
+    fontSize: typography.bodySize,
+    lineHeight: 22,
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' })
+  },
   markdownRefreshButton: {
     alignSelf: 'flex-start',
     flexDirection: 'row',
@@ -2225,6 +2485,9 @@ const styles = StyleSheet.create({
     borderRadius: radii.button,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.xs
+  },
+  markdownButtonDisabled: {
+    opacity: 0.45
   },
   markdownRefreshText: {
     color: colors.textPrimary,

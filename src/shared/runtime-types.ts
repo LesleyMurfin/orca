@@ -1,6 +1,12 @@
 /* eslint-disable max-lines -- Why: shared type definitions for all runtime RPC methods live in one file for discoverability and import simplicity. */
 import type { TerminalPaneLayoutNode } from './types'
 import type { BrowserSessionProfile, GitWorktreeInfo, Repo } from './types'
+import type {
+  RuntimeMarkdownReadTabResult,
+  RuntimeMarkdownSaveTabResult
+} from './mobile-markdown-document'
+
+export type { RuntimeMarkdownReadTabResult, RuntimeMarkdownSaveTabResult }
 
 export type RuntimeGraphStatus = 'ready' | 'reloading' | 'unavailable'
 
@@ -119,16 +125,6 @@ export type RuntimeMobileSessionTabsResult = {
   activeTabId: string | null
   activeTabType: 'terminal' | 'markdown' | null
   tabs: RuntimeMobileSessionClientTab[]
-}
-
-export type RuntimeMarkdownReadTabResult = {
-  tabId: string
-  filePath: string
-  relativePath: string
-  content: string
-  isDirty: boolean
-  version: string
-  source: 'draft' | 'file'
 }
 
 export type RuntimeTerminalSummary = {

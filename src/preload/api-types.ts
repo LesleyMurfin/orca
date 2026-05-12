@@ -125,6 +125,10 @@ import type { AgentHookInstallStatus } from '../shared/agent-hook-types'
 import type { AgentStatusIpcPayload } from '../shared/agent-status-types'
 import type { RuntimeStatus, RuntimeSyncWindowGraph } from '../shared/runtime-types'
 import type {
+  RuntimeMobileMarkdownRequest,
+  RuntimeMobileMarkdownResponse
+} from '../shared/mobile-markdown-document'
+import type {
   DeveloperPermissionId,
   DeveloperPermissionRequestResult,
   DeveloperPermissionState
@@ -1123,6 +1127,10 @@ export type PreloadApi = {
     onFocusEditorTab: (
       callback: (data: { tabId: string; worktreeId: string }) => void
     ) => () => void
+    onMobileMarkdownRequest: (
+      callback: (request: RuntimeMobileMarkdownRequest) => void
+    ) => () => void
+    respondMobileMarkdownRequest: (response: RuntimeMobileMarkdownResponse) => void
     onCloseTerminal: (
       callback: (data: { tabId: string; paneRuntimeId?: number }) => void
     ) => () => void

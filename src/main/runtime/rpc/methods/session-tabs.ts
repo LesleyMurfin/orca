@@ -15,6 +15,14 @@ const ActivateTab = WorktreeTabSelector.extend({
     .pipe(z.string().min(1, 'Missing tab id'))
 })
 
+const SaveMarkdownTab = ActivateTab.extend({
+  baseVersion: z
+    .unknown()
+    .transform((v) => (typeof v === 'string' ? v : ''))
+    .pipe(z.string().min(1, 'Missing base version')),
+  content: z.string()
+})
+
 export const SESSION_TAB_METHODS: RpcAnyMethod[] = [
   defineMethod({
     name: 'session.tabs.list',
@@ -54,5 +62,16 @@ export const SESSION_TAB_METHODS: RpcAnyMethod[] = [
     params: ActivateTab,
     handler: async (params, { runtime }) =>
       runtime.readMobileMarkdownTab(params.worktree, params.tabId)
+  }),
+  defineMethod({
+    name: 'markdown.saveTab',
+    params: SaveMarkdownTab,
+    handler: async (params, { runtime }) =>
+      runtime.saveMobileMarkdownTab(
+        params.worktree,
+        params.tabId,
+        params.baseVersion,
+        params.content
+      )
   })
 ]

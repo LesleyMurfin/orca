@@ -31,6 +31,10 @@ import type {
   WorktreeRemoteBranchConflictEvent
 } from '../shared/types'
 import type { RuntimeStatus, RuntimeSyncWindowGraph } from '../shared/runtime-types'
+import type {
+  RuntimeMobileMarkdownRequest,
+  RuntimeMobileMarkdownResponse
+} from '../shared/mobile-markdown-document'
 import type { RateLimitState } from '../shared/rate-limit-types'
 import type { GhAuthDiagnostic } from '../shared/github-auth-types'
 import type {
@@ -1941,6 +1945,17 @@ const api = {
       ) => callback(data)
       ipcRenderer.on('ui:focusEditorTab', listener)
       return () => ipcRenderer.removeListener('ui:focusEditorTab', listener)
+    },
+    onMobileMarkdownRequest: (
+      callback: (request: RuntimeMobileMarkdownRequest) => void
+    ): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, request: RuntimeMobileMarkdownRequest) =>
+        callback(request)
+      ipcRenderer.on('ui:mobileMarkdownRequest', listener)
+      return () => ipcRenderer.removeListener('ui:mobileMarkdownRequest', listener)
+    },
+    respondMobileMarkdownRequest: (response: RuntimeMobileMarkdownResponse): void => {
+      ipcRenderer.send('ui:mobileMarkdownResponse', response)
     },
     onCloseTerminal: (
       callback: (data: { tabId: string; paneRuntimeId?: number }) => void

@@ -28,6 +28,7 @@ import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import { setFitOverride, hydrateOverrides } from '@/lib/pane-manager/mobile-fit-overrides'
 import { setDriverForPty } from '@/lib/pane-manager/mobile-driver-state'
 import { destroyPersistentWebview } from '@/components/browser-pane/webview-registry'
+import { attachMobileMarkdownBridge } from '@/runtime/mobile-markdown-bridge'
 
 export { resolveZoomTarget } from './resolve-zoom-target'
 
@@ -36,6 +37,8 @@ const ZOOM_STEP = 0.5
 export function useIpcEvents(): void {
   useEffect(() => {
     const unsubs: (() => void)[] = []
+
+    unsubs.push(attachMobileMarkdownBridge())
 
     unsubs.push(
       window.api.repos.onChanged(() => {

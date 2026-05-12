@@ -27,6 +27,11 @@ import { scheduleHistoryGc } from '../terminal-history'
 import { hydrateLocalPtyRegistryAtBoot } from '../memory/hydrate-local-pty-registry'
 import type { ClaudeRuntimeAuthPreparation } from '../claude-accounts/runtime-auth-service'
 import { getKnownWorktreeIdsForHistoryGc } from './history-gc-worktree-ids'
+import type {
+  RuntimeMarkdownReadTabResult,
+  RuntimeMarkdownSaveTabResult
+} from '../../shared/mobile-markdown-document'
+import { requestMobileMarkdownFromRenderer } from './mobile-markdown-request-relay'
 
 export function attachMainWindowServices(
   mainWindow: BrowserWindow,
@@ -271,6 +276,20 @@ function registerRuntimeWindowLifecycle(
     renameTerminal: (tabId, title) => send('ui:renameTerminal', { tabId, title }),
     focusTerminal: (tabId, worktreeId) => send('ui:focusTerminal', { tabId, worktreeId }),
     focusEditorTab: (tabId, worktreeId) => send('ui:focusEditorTab', { tabId, worktreeId }),
+    readMobileMarkdownTab: (worktreeId, tabId) =>
+      requestMobileMarkdownFromRenderer(mainWindow, {
+        operation: 'read',
+        worktreeId,
+        tabId
+      }) as Promise<RuntimeMarkdownReadTabResult>,
+    saveMobileMarkdownTab: (worktreeId, tabId, baseVersion, content) =>
+      requestMobileMarkdownFromRenderer(mainWindow, {
+        operation: 'save',
+        worktreeId,
+        tabId,
+        baseVersion,
+        content
+      }) as Promise<RuntimeMarkdownSaveTabResult>,
     closeTerminal: (tabId, paneRuntimeId) => send('ui:closeTerminal', { tabId, paneRuntimeId }),
     sleepWorktree: (worktreeId) => send('ui:sleepWorktree', { worktreeId }),
     terminalFitOverrideChanged: (ptyId, mode, cols, rows) =>
