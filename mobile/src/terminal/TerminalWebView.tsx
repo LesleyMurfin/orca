@@ -9,11 +9,18 @@ export type TerminalModes = {
   altScreen: boolean
 }
 
+export type TerminalKeyboardAvoidanceMetrics = {
+  cursorY: number
+  rows: number
+  altScreen: boolean
+}
+
 export type TerminalSelectionEvents = {
   onSelectionMode?: (active: boolean) => void
   onSelectionCopy?: (text: string) => void
   onSelectionEvicted?: () => void
   onModesChanged?: (modes: TerminalModes) => void
+  onKeyboardAvoidanceMetrics?: (metrics: TerminalKeyboardAvoidanceMetrics) => void
   onHaptic?: (kind: 'selection' | 'success' | 'error' | 'edge-bump') => void
 }
 
@@ -716,14 +723,34 @@ const XTERM_HTML = `<!DOCTYPE html>
   }
   var lastEmittedModes = { bracketedPasteMode: false, altScreen: false };
 
+  function emitKeyboardAvoidanceMetrics() {
+    if (!term) return;
+    var alt = false;
+    try { alt = term.buffer && term.buffer.active && term.buffer.active.type === 'alternate'; } catch (e) {}
+    notify({
+      type: 'keyboard-avoidance-metrics',
+      cursorY: term.buffer && term.buffer.active ? term.buffer.active.cursorY : 0,
+      rows: term.rows || 0,
+      altScreen: alt
+    });
+  }
+
   function attachTermObservers() {
     if (!term) return;
     try { term.onLineFeed(logFeedAndEvict); } catch (e) {}
     // Why: emit modes on every parsed write so RN's mirror stays current
     // without round-trip; covers \\x1b[?2004h/l and alt-screen toggles.
-    try { term.onWriteParsed && term.onWriteParsed(emitModesIfChanged); } catch (e) {}
+    try {
+      term.onWriteParsed && term.onWriteParsed(function() {
+        emitModesIfChanged();
+        emitKeyboardAvoidanceMetrics();
+      });
+    } catch (e) {}
     // Initial emit once buffer settles.
-    afterWritesDrained(function() { emitModesIfChanged(); });
+    afterWritesDrained(function() {
+      emitModesIfChanged();
+      emitKeyboardAvoidanceMetrics();
+    });
   }
 
   function viewportToCell(clientX, clientY) {
@@ -1282,6 +1309,7 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
     onSelectionCopy,
     onSelectionEvicted,
     onModesChanged,
+    onKeyboardAvoidanceMetrics,
     onHaptic
   },
   ref
@@ -1371,6 +1399,14 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
           bracketedPasteMode: !!msg.bracketedPasteMode,
           altScreen: !!msg.altScreen
         })
+      } else if (msg.type === 'keyboard-avoidance-metrics') {
+        const cursorY = typeof msg.cursorY === 'number' ? msg.cursorY : 0
+        const rows = typeof msg.rows === 'number' ? msg.rows : 0
+        onKeyboardAvoidanceMetrics?.({
+          cursorY,
+          rows,
+          altScreen: !!msg.altScreen
+        })
       } else if (msg.type === 'haptic') {
         const kind = msg.kind
         if (
@@ -1393,6 +1429,7 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
       onSelectionCopy,
       onSelectionEvicted,
       onModesChanged,
+      onKeyboardAvoidanceMetrics,
       onHaptic
     ]
   )

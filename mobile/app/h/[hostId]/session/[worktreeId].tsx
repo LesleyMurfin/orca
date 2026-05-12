@@ -40,6 +40,7 @@ import {
 } from '../../../../src/platform/haptics'
 import {
   TerminalWebView,
+  type TerminalKeyboardAvoidanceMetrics,
   type TerminalModes,
   type TerminalWebViewHandle
 } from '../../../../src/terminal/TerminalWebView'
@@ -157,6 +158,7 @@ function TerminalPaneView({
   onSelectionCopy,
   onSelectionEvicted,
   onModesChanged,
+  onKeyboardAvoidanceMetrics,
   onHaptic
 }: {
   handle: string
@@ -168,6 +170,7 @@ function TerminalPaneView({
   onSelectionCopy: (handle: string, text: string) => void
   onSelectionEvicted: (handle: string) => void
   onModesChanged: (handle: string, modes: TerminalModes) => void
+  onKeyboardAvoidanceMetrics: (handle: string, metrics: TerminalKeyboardAvoidanceMetrics) => void
   onHaptic: (kind: 'selection' | 'success' | 'error' | 'edge-bump') => void
 }) {
   const setRef = useCallback(
@@ -194,6 +197,7 @@ function TerminalPaneView({
         onSelectionCopy={(t) => onSelectionCopy(handle, t)}
         onSelectionEvicted={() => onSelectionEvicted(handle)}
         onModesChanged={(m) => onModesChanged(handle, m)}
+        onKeyboardAvoidanceMetrics={(m) => onKeyboardAvoidanceMetrics(handle, m)}
         onHaptic={onHaptic}
       />
     </View>
@@ -349,6 +353,9 @@ export default function SessionScreen() {
   // Why: server-authoritative display mode per terminal. The runtime is the
   // single source of truth — this state is populated from subscribe responses.
   const [terminalModes, setTerminalModes] = useState<Map<string, MobileDisplayMode>>(new Map())
+  const [terminalKeyboardMetrics, setTerminalKeyboardMetrics] = useState<
+    Map<string, TerminalKeyboardAvoidanceMetrics>
+  >(new Map())
   const [selectModeActive, setSelectModeActive] = useState(false)
   const [canPaste, setCanPaste] = useState(false)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
@@ -441,6 +448,7 @@ export default function SessionScreen() {
     webReadyHandlesRef.current.clear()
     subscribeSeqRef.current.clear()
     layoutSeqRef.current.clear()
+    setTerminalKeyboardMetrics(new Map())
     for (const term of terminalRefs.current.values()) {
       term.clear()
     }
@@ -744,6 +752,12 @@ export default function SessionScreen() {
               unsubscribeTerminal(handle)
               terminalRefs.current.delete(handle)
               initializedHandlesRef.current.delete(handle)
+              setTerminalKeyboardMetrics((prev) => {
+                if (!prev.has(handle)) return prev
+                const next = new Map(prev)
+                next.delete(handle)
+                return next
+              })
             }
           }
           lastKnownTerminalCountRef.current = result.terminals.length
@@ -1614,6 +1628,24 @@ export default function SessionScreen() {
     initialModesSeenRef.current.add(handle)
   }, [])
 
+  const handleKeyboardAvoidanceMetrics = useCallback(
+    (handle: string, metrics: TerminalKeyboardAvoidanceMetrics) => {
+      setTerminalKeyboardMetrics((prev) => {
+        const current = prev.get(handle)
+        if (
+          current &&
+          current.cursorY === metrics.cursorY &&
+          current.rows === metrics.rows &&
+          current.altScreen === metrics.altScreen
+        ) {
+          return prev
+        }
+        return new Map(prev).set(handle, metrics)
+      })
+    },
+    []
+  )
+
   const handleHaptic = useCallback((kind: 'selection' | 'success' | 'error' | 'edge-bump') => {
     if (kind === 'selection') triggerSelection()
     else if (kind === 'success') triggerSuccess()
@@ -1809,7 +1841,7 @@ export default function SessionScreen() {
     connState === 'connected' && terminalsLoaded && visibleTabs.length === 0 && !activeHandle
   const terminalSummary =
     connState === 'connected'
-      ? !terminalsLoaded
+      ? showLoadingState
         ? 'Loading terminals'
         : visibleTabs.length === 1
           ? '1 tab'
@@ -1825,6 +1857,23 @@ export default function SessionScreen() {
         ? Math.max(0, keyboardHeight - insets.bottom)
         : keyboardHeight
       : 0
+  const activeTerminalKeyboardLift = (() => {
+    if (keyboardLift <= 0 || !activeHandle) return 0
+    const metrics = terminalKeyboardMetrics.get(activeHandle)
+    if (!metrics || metrics.rows <= 0 || terminalFrameHeightRef.current <= 0) {
+      return keyboardLift
+    }
+    if (metrics.altScreen) {
+      return keyboardLift
+    }
+    const rowHeight = terminalFrameHeightRef.current / metrics.rows
+    const cursorBottom = (metrics.cursorY + 1) * rowHeight
+    const dockTop = terminalFrameHeightRef.current - keyboardLift
+    const margin = rowHeight
+    // Why: only move the terminal when the active cursor would sit under the
+    // raised input dock. Short shell output near the top should stay put.
+    return Math.min(keyboardLift, Math.max(0, cursorBottom + margin - dockTop))
+  })()
 
   return (
     <View style={styles.container}>
@@ -1970,13 +2019,14 @@ export default function SessionScreen() {
                 key={terminal.handle}
                 handle={terminal.handle}
                 active={terminal.handle === activeHandle}
-                keyboardLift={keyboardLift}
+                keyboardLift={terminal.handle === activeHandle ? activeTerminalKeyboardLift : 0}
                 onRef={setTerminalWebViewRef}
                 onWebReady={handleTerminalWebReady}
                 onSelectionMode={handleSelectionMode}
                 onSelectionCopy={handleSelectionCopy}
                 onSelectionEvicted={handleSelectionEvicted}
                 onModesChanged={handleModesChanged}
+                onKeyboardAvoidanceMetrics={handleKeyboardAvoidanceMetrics}
                 onHaptic={handleHaptic}
               />
             ))}
