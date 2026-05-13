@@ -202,7 +202,7 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     rightSidebarOpenByDefault: true,
     showTitlebarAppName: true,
     showTasksButton: true,
-    floatingTerminalEnabled: false,
+    floatingTerminalEnabled: true,
     floatingTerminalCwd: '~',
     floatingTerminalTriggerLocation: 'floating-button',
     notifications: getDefaultNotificationSettings(),
