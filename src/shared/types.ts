@@ -1079,6 +1079,10 @@ export type TerminalColorOverrides = {
   bold?: string
 }
 
+export type FloatingTerminalCwdRequest = {
+  path?: string
+}
+
 export type GlobalSettings = {
   workspaceDir: string
   nestWorkspaces: boolean
@@ -1170,6 +1174,12 @@ export type GlobalSettings = {
    *  left sidebar free of its button entirely. Hiding the button here also
    *  removes it from keyboard navigation. */
   showTasksButton: boolean
+  /** Why: Floating Terminal is a global terminal surface. Keep it opt-in until
+   *  users explicitly want a global shell outside repo/worktree context. */
+  floatingTerminalEnabled: boolean
+  /** Where new Floating Terminal tabs start. Defaults to '~' so the visible
+   *  setting matches the shell-oriented directory users expect. */
+  floatingTerminalCwd: string
   diffDefaultView: 'inline' | 'side-by-side'
   notifications: NotificationSettings
   /** When true, a countdown timer is shown after a Claude agent becomes idle,

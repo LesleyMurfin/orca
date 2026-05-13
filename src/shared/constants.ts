@@ -198,6 +198,8 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     rightSidebarOpenByDefault: true,
     showTitlebarAppName: true,
     showTasksButton: true,
+    floatingTerminalEnabled: false,
+    floatingTerminalCwd: '~',
     notifications: getDefaultNotificationSettings(),
     diffDefaultView: 'inline',
     promptCacheTimerEnabled: false,

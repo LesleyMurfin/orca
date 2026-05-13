@@ -26,6 +26,7 @@ import type {
   NotificationSoundPathResult,
   NotificationSoundResult,
   OnboardingState,
+  FloatingTerminalCwdRequest,
   SearchResult,
   WorktreeBaseStatusEvent,
   WorktreeRemoteBranchConflictEvent
@@ -259,7 +260,9 @@ const api = {
     getKeyboardInputSourceId: (): Promise<string | null> =>
       ipcRenderer.invoke('app:getKeyboardInputSourceId'),
     setUnreadDockBadgeCount: (count: number): Promise<void> =>
-      ipcRenderer.invoke('app:setUnreadDockBadgeCount', count)
+      ipcRenderer.invoke('app:setUnreadDockBadgeCount', count),
+    getFloatingTerminalCwd: (args?: FloatingTerminalCwdRequest): Promise<string> =>
+      ipcRenderer.invoke('app:getFloatingTerminalCwd', args)
   },
 
   wsl: {
@@ -1697,6 +1700,11 @@ const api = {
       const listener = (_event: Electron.IpcRendererEvent) => callback()
       ipcRenderer.on('ui:toggleWorktreePalette', listener)
       return () => ipcRenderer.removeListener('ui:toggleWorktreePalette', listener)
+    },
+    onToggleFloatingTerminal: (callback: () => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent) => callback()
+      ipcRenderer.on('ui:toggleFloatingTerminal', listener)
+      return () => ipcRenderer.removeListener('ui:toggleFloatingTerminal', listener)
     },
     onOpenQuickOpen: (callback: () => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent) => callback()

@@ -26,6 +26,7 @@ import {
   unregisterPtyDataHandlers
 } from '@/components/terminal-pane/pty-transport'
 import { shutdownBufferCaptures } from '@/components/terminal-pane/shutdown-buffer-captures'
+import { FLOATING_TERMINAL_WORKTREE_ID } from '@/lib/floating-terminal'
 
 function getNextTerminalOrdinal(tabs: TerminalTab[]): number {
   const usedOrdinals = new Set<number>()
@@ -143,6 +144,7 @@ export type TerminalSlice = {
   reorderTabs: (worktreeId: string, tabIds: string[]) => void
   setTabBarOrder: (worktreeId: string, order: string[]) => void
   setActiveTab: (tabId: string) => void
+  setActiveTabForWorktree: (worktreeId: string, tabId: string) => void
   updateTabTitle: (tabId: string, title: string) => void
   setRuntimePaneTitle: (tabId: string, paneId: number, title: string) => void
   clearRuntimePaneTitle: (tabId: string, paneId: number) => void
@@ -670,6 +672,15 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
     if (item) {
       get().activateTab(item.id)
     }
+  },
+
+  setActiveTabForWorktree: (worktreeId, tabId) => {
+    set((s) => ({
+      activeTabIdByWorktree: {
+        ...s.activeTabIdByWorktree,
+        [worktreeId]: tabId
+      }
+    }))
   },
 
   updateTabTitle: (tabId, title) => {
@@ -1388,6 +1399,10 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       // Only SSH repos need this: local worktrees are persisted and a missing
       // local worktree genuinely means it was deleted.
       const sshRepoIds = new Set(s.repos.filter((r) => r.connectionId).map((r) => r.id))
+      // Why: the Floating Terminal is intentionally not a repo worktree, but
+      // its tabs still use the normal terminal session pipeline so daemon PTYs
+      // can survive app restart just like workspace terminals.
+      validWorktreeIds.add(FLOATING_TERMINAL_WORKTREE_ID)
       for (const worktreeId of Object.keys(session.tabsByWorktree)) {
         if (!validWorktreeIds.has(worktreeId)) {
           const repoId = worktreeId.split('::')[0]

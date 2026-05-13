@@ -41,6 +41,7 @@ import type {
   LinearMember,
   LinearTeam,
   MarkdownDocument,
+  FloatingTerminalCwdRequest,
   GitHubIssueUpdate,
   GetRateLimitResult,
   NotificationDispatchRequest,
@@ -383,6 +384,8 @@ export type AppApi = {
   getKeyboardInputSourceId: () => Promise<string | null>
   /** Updates the macOS Dock unread badge. No-op on Windows/Linux. */
   setUnreadDockBadgeCount: (count: number) => Promise<void>
+  /** Resolves the launch directory for global Floating Terminal tabs. */
+  getFloatingTerminalCwd: (args?: FloatingTerminalCwdRequest) => Promise<string>
 }
 
 export type PreloadApi = {
@@ -1047,6 +1050,7 @@ export type PreloadApi = {
     onToggleLeftSidebar: (callback: () => void) => () => void
     onToggleRightSidebar: (callback: () => void) => () => void
     onToggleWorktreePalette: (callback: () => void) => () => void
+    onToggleFloatingTerminal: (callback: () => void) => () => void
     onOpenQuickOpen: (callback: () => void) => () => void
     onOpenNewWorkspace: (callback: () => void) => () => void
     onJumpToWorktreeIndex: (callback: (index: number) => void) => () => void

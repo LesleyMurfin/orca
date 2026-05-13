@@ -5,6 +5,7 @@ import {
   type WorkspaceSessionSnapshot
 } from './workspace-session'
 import type { AppState } from '../store'
+import { FLOATING_TERMINAL_WORKTREE_ID } from './floating-terminal'
 
 function createSnapshot(overrides: Partial<AppState> = {}): AppState {
   return {
@@ -90,6 +91,34 @@ describe('buildWorkspaceSessionPayload', () => {
     const payload = buildWorkspaceSessionPayload(createSnapshot())
 
     expect(payload.activeWorktreeIdsOnShutdown).toEqual(['wt-1'])
+  })
+
+  it('persists floating terminal tabs for daemon reattach after restart', () => {
+    const payload = buildWorkspaceSessionPayload(
+      createSnapshot({
+        tabsByWorktree: {
+          [FLOATING_TERMINAL_WORKTREE_ID]: [
+            {
+              id: 'floating-tab-1',
+              title: 'Terminal 1',
+              ptyId: 'floating-pty-1',
+              worktreeId: FLOATING_TERMINAL_WORKTREE_ID
+            } as never
+          ]
+        },
+        terminalLayoutsByTabId: {
+          'floating-tab-1': { root: null, activeLeafId: null, expandedLeafId: null }
+        },
+        activeTabIdByWorktree: {
+          [FLOATING_TERMINAL_WORKTREE_ID]: 'floating-tab-1'
+        }
+      })
+    )
+
+    expect(payload.tabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID]).toHaveLength(1)
+    expect(payload.activeTabIdByWorktree?.[FLOATING_TERMINAL_WORKTREE_ID]).toBe('floating-tab-1')
+    expect(payload.terminalLayoutsByTabId['floating-tab-1']).toBeDefined()
+    expect(payload.activeWorktreeIdsOnShutdown).toEqual([FLOATING_TERMINAL_WORKTREE_ID])
   })
 
   it('persists only edit-mode files and resets browser loading state', () => {

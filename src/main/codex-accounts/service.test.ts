@@ -62,6 +62,8 @@ function createSettings(overrides: Partial<GlobalSettings> = {}): GlobalSettings
     rightSidebarOpenByDefault: true,
     showTitlebarAppName: true,
     showTasksButton: true,
+    floatingTerminalEnabled: false,
+    floatingTerminalCwd: '~',
     diffDefaultView: 'inline',
     notifications: {
       enabled: true,

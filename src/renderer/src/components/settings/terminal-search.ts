@@ -78,6 +78,14 @@ export const TERMINAL_CURSOR_SEARCH_ENTRIES: SettingsSearchEntry[] = [
   }
 ]
 
+export const TERMINAL_FLOATING_SEARCH_ENTRIES: SettingsSearchEntry[] = [
+  {
+    title: 'Floating Terminal',
+    description: 'Enable the global floating terminal and choose where new tabs start.',
+    keywords: ['terminal', 'global', 'floating', 'quick terminal', 'launch directory']
+  }
+]
+
 export const TERMINAL_PANE_STYLE_SEARCH_ENTRIES: SettingsSearchEntry[] = [
   {
     title: 'Inactive Pane Opacity',
@@ -275,6 +283,7 @@ export function getTerminalPaneSearchEntries(platform: {
   // users from landing on an option the UI intentionally hides.
   return [
     ...TERMINAL_TYPOGRAPHY_SEARCH_ENTRIES,
+    ...TERMINAL_FLOATING_SEARCH_ENTRIES,
     ...TERMINAL_RENDERING_SEARCH_ENTRIES,
     ...TERMINAL_CURSOR_SEARCH_ENTRIES,
     ...TERMINAL_PANE_STYLE_SEARCH_ENTRIES,

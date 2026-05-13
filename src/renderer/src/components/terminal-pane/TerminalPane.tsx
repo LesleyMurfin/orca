@@ -614,6 +614,7 @@ export default function TerminalPane({
 
   useTerminalKeyboardShortcuts({
     isActive,
+    keyboardScopeRef: containerRef,
     managerRef,
     paneTransportsRef,
     paneCwdRef,

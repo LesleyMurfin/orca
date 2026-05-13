@@ -38,6 +38,11 @@ import { TelemetryFirstLaunchSurface } from './components/TelemetryFirstLaunchSu
 import { ZoomOverlay } from './components/ZoomOverlay'
 import { shouldShowOnboarding } from './components/onboarding/should-show-onboarding'
 import { SshPassphraseDialog } from './components/settings/SshPassphraseDialog'
+import {
+  FloatingTerminalPanel,
+  FloatingTerminalToggleButton
+} from './components/floating-terminal/FloatingTerminalPanel'
+import { TOGGLE_FLOATING_TERMINAL_EVENT } from '@/lib/floating-terminal'
 import { useGitStatusPolling } from './components/right-sidebar/useGitStatusPolling'
 import { useEditorExternalWatch } from './hooks/useEditorExternalWatch'
 import { useAutoAckViewedAgent } from './hooks/useAutoAckViewedAgent'
@@ -146,6 +151,7 @@ const OnboardingFlow = lazy(() => import('./components/onboarding/OnboardingFlow
 
 function App(): React.JSX.Element {
   useUnreadDockBadge()
+  const [floatingTerminalOpen, setFloatingTerminalOpen] = useState(false)
 
   // Why: Zustand actions are referentially stable, but each individual
   // useAppStore(s => s.someAction) still registers a subscription that React
@@ -188,6 +194,23 @@ function App(): React.JSX.Element {
   const expandedPaneByTabId = useAppStore((s) => s.expandedPaneByTabId)
   const canExpandPaneByTabId = useAppStore((s) => s.canExpandPaneByTabId)
   const workspaceSessionReady = useAppStore((s) => s.workspaceSessionReady)
+  const floatingTerminalEnabled = useAppStore((s) => s.settings?.floatingTerminalEnabled === true)
+
+  useEffect(() => {
+    const toggleFloatingTerminal = (): void => {
+      if (floatingTerminalEnabled) {
+        setFloatingTerminalOpen((open) => !open)
+      }
+    }
+    window.addEventListener(TOGGLE_FLOATING_TERMINAL_EVENT, toggleFloatingTerminal)
+    return () => window.removeEventListener(TOGGLE_FLOATING_TERMINAL_EVENT, toggleFloatingTerminal)
+  }, [floatingTerminalEnabled])
+
+  useEffect(() => {
+    if (!floatingTerminalEnabled) {
+      setFloatingTerminalOpen(false)
+    }
+  }, [floatingTerminalEnabled])
   const sidebarWidth = useAppStore((s) => s.sidebarWidth)
   const sidebarOpen = useAppStore((s) => s.sidebarOpen)
   const groupBy = useAppStore((s) => s.groupBy)
@@ -1099,6 +1122,18 @@ function App(): React.JSX.Element {
               surface is intentionally distraction-free. */}
           {showRightSidebarControls ? <RightSidebar /> : null}
         </div>
+        {floatingTerminalEnabled ? (
+          <>
+            <FloatingTerminalPanel
+              open={floatingTerminalOpen}
+              onOpenChange={setFloatingTerminalOpen}
+            />
+            <FloatingTerminalToggleButton
+              open={floatingTerminalOpen}
+              onToggle={() => setFloatingTerminalOpen((open) => !open)}
+            />
+          </>
+        ) : null}
         <StatusBar />
         {/* Why: NewWorkspaceComposerCard renders Radix <Tooltip>s that crash
             when mounted outside a TooltipProvider ancestor. Keep the global

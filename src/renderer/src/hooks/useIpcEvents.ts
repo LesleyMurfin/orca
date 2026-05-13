@@ -24,6 +24,7 @@ import {
   type AgentStatusIpcPayload
 } from '../../../shared/agent-status-types'
 import { isGitRepoKind } from '../../../shared/repo-kind'
+import { TOGGLE_FLOATING_TERMINAL_EVENT } from '@/lib/floating-terminal'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import { focusRuntimeTerminalSurface } from '@/runtime/sync-runtime-graph'
 import { setFitOverride, hydrateOverrides } from '@/lib/pane-manager/mobile-fit-overrides'
@@ -139,6 +140,12 @@ export function useIpcEvents(): void {
           return
         }
         store.openModal('worktree-palette')
+      })
+    )
+
+    unsubs.push(
+      window.api.ui.onToggleFloatingTerminal(() => {
+        window.dispatchEvent(new CustomEvent(TOGGLE_FLOATING_TERMINAL_EVENT))
       })
     )
 
