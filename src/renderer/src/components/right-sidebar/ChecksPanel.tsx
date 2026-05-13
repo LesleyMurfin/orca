@@ -77,6 +77,7 @@ export default function ChecksPanel(): React.JSX.Element {
   // Find active worktree and repo
   const branch = activeWorktree ? activeWorktree.branch.replace(/^refs\/heads\//, '') : ''
   const isFolder = repo ? isFolderRepo(repo) : false
+  const isRemoteRepo = Boolean(repo?.connectionId)
   const prCacheKey = repo && branch ? `${repo.path}::${branch}` : ''
   const refreshContextKey = `${activeWorktreeId ?? ''}::${repo?.path ?? ''}::${branch}`
   if (refreshContextKey !== refreshContextKeyRef.current) {
@@ -549,24 +550,28 @@ export default function ChecksPanel(): React.JSX.Element {
         <div className="text-sm font-medium text-foreground">
           {operationInProgress
             ? `${operationLabel} in progress`
-            : isQueuedPRRefresh
-              ? 'Checking for pull request'
-              : isInFlightPRRefresh
+            : isRemoteRepo
+              ? 'Checks unavailable'
+              : isQueuedPRRefresh
                 ? 'Checking for pull request'
-                : 'No pull request found'}
+                : isInFlightPRRefresh
+                  ? 'Checking for pull request'
+                  : 'No pull request found'}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
           {operationInProgress
             ? 'PR checks will be available after the operation completes'
-            : isQueuedPRRefresh
-              ? 'Waiting to refresh GitHub status for this branch'
-              : isInFlightPRRefresh
-                ? 'Refreshing GitHub status for this branch'
-                : isPausedPRRefresh
-                  ? 'GitHub refresh is paused by the current rate-limit budget'
-                  : 'Push your branch and open a PR to see checks here'}
+            : isRemoteRepo
+              ? 'PR refresh is not supported for remote worktrees yet'
+              : isQueuedPRRefresh
+                ? 'Waiting to refresh GitHub status for this branch'
+                : isInFlightPRRefresh
+                  ? 'Refreshing GitHub status for this branch'
+                  : isPausedPRRefresh
+                    ? 'GitHub refresh is paused by the current rate-limit budget'
+                    : 'Push your branch and open a PR to see checks here'}
         </div>
-        {!operationInProgress && (
+        {!operationInProgress && !isRemoteRepo && (
           <button
             className="mt-3 px-3 py-1 text-xs font-medium rounded-md border border-border bg-accent/50 text-foreground hover:bg-accent transition-colors disabled:opacity-50"
             disabled={emptyRefreshing}
