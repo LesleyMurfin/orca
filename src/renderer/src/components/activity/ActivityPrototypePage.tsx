@@ -600,9 +600,7 @@ function ThreadRow({
         </span>
         <span className="inline-flex shrink-0 items-center gap-1.5 pt-[3px]">
           {thread.unread ? (
-            <span className="rounded-full bg-primary px-1.5 py-0.5 text-[9px] font-semibold leading-none text-primary-foreground">
-              New
-            </span>
+            <BellDot className="size-3.5 shrink-0 text-primary" aria-label="Unread" />
           ) : null}
           <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal">
             {thread.events.length}
