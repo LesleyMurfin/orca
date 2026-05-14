@@ -473,7 +473,7 @@ describe('Codex hook normalization', () => {
     // Why: Codex's PreToolUse is NOT an approval prompt — it fires for every
     // tool call. We map it to `working` (never `waiting`) and use it only to
     // give the dashboard a live readout during the gap between prompt and
-    // Stop. Real approval signals flow through Codex's `notify` callback.
+    // Stop. Real approval signals flow through PermissionRequest.
     const result = _internals.normalizeHookPayload(
       'codex',
       buildBody({
@@ -486,6 +486,26 @@ describe('Codex hook normalization', () => {
     expect(result?.payload.state).toBe('working')
     expect(result?.payload.toolName).toBe('exec_command')
     expect(result?.payload.toolInput).toBe('git status')
+  })
+
+  it('PermissionRequest maps to waiting and surfaces the pending tool input', () => {
+    // Why: Codex asks for user attention through PermissionRequest. Orca's
+    // sidebar red dot depends on this becoming `waiting`; treating it like
+    // PreToolUse would leave the pane looking busy while it is blocked on the
+    // user.
+    const result = _internals.normalizeHookPayload(
+      'codex',
+      buildBody({
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'exec_command',
+        tool_input: { cmd: 'rm -rf build', workdir: '/tmp' }
+      }),
+      'production'
+    )
+    expect(result?.payload.state).toBe('waiting')
+    expect(result?.payload.agentType).toBe('codex')
+    expect(result?.payload.toolName).toBe('exec_command')
+    expect(result?.payload.toolInput).toBe('rm -rf build')
   })
 
   it('UserPromptSubmit does not extract tool fields even when the payload carries them', () => {

@@ -26,15 +26,14 @@ import {
 
 // Why: PreToolUse/PostToolUse give the dashboard a live readout of the
 // in-flight tool (name + input preview) between UserPromptSubmit and Stop.
-// Without them, a long-running Codex turn looks like a silent gap after the
-// prompt is submitted. We keep both events mapped to `working` (see
-// normalizeCodexEvent); they do NOT mean "approval needed" — Codex's real
-// approval signal flows through its separate `notify` callback (different
-// install surface, different payload shape) and is deferred as a follow-up.
+// PermissionRequest is the human-input boundary: the managed script exits
+// without a decision so Codex still shows its normal approval UI, while Orca
+// can flip the pane to the red waiting state.
 const CODEX_EVENTS = [
   'SessionStart',
   'UserPromptSubmit',
   'PreToolUse',
+  'PermissionRequest',
   'PostToolUse',
   'Stop'
 ] as const
@@ -55,6 +54,7 @@ const CODEX_EVENT_LABEL: Record<(typeof CODEX_EVENTS)[number], CodexEventLabel> 
   SessionStart: 'session_start',
   UserPromptSubmit: 'user_prompt_submit',
   PreToolUse: 'pre_tool_use',
+  PermissionRequest: 'permission_request',
   PostToolUse: 'post_tool_use',
   Stop: 'stop'
 }

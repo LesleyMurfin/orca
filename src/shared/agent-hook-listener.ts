@@ -481,7 +481,11 @@ function extractCodexToolFields(
   eventName: unknown,
   hookPayload: Record<string, unknown>
 ): ToolSnapshot {
-  if (eventName === 'PreToolUse' || eventName === 'PostToolUse') {
+  if (
+    eventName === 'PreToolUse' ||
+    eventName === 'PermissionRequest' ||
+    eventName === 'PostToolUse'
+  ) {
     const toolName = readString(hookPayload, 'tool_name') ?? readString(hookPayload, 'name')
     const toolInput =
       deriveToolInputPreview(toolName, hookPayload.tool_input) ??
@@ -759,9 +763,11 @@ function normalizeCodexEvent(
     eventName === 'PreToolUse' ||
     eventName === 'PostToolUse'
       ? 'working'
-      : eventName === 'Stop'
-        ? 'done'
-        : null
+      : eventName === 'PermissionRequest'
+        ? 'waiting'
+        : eventName === 'Stop'
+          ? 'done'
+          : null
 
   if (!stateName) {
     return null
