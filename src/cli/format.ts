@@ -268,10 +268,10 @@ export function formatWorktreeList(result: RuntimeWorktreeListResult): string {
     return 'No worktrees found.'
   }
   const body = result.worktrees
-    .map(
-      (worktree) =>
-        `${String(worktree.id)}  ${String(worktree.branch)}  ${String(worktree.path)}\ndisplayName: ${String(worktree.displayName ?? '')}\nlinkedIssue: ${String(worktree.linkedIssue ?? 'null')}\ncomment: ${String(worktree.comment ?? '')}`
-    )
+    .map((worktree) => {
+      const childCount = worktree.childWorktreeIds?.length ?? 0
+      return `${String(worktree.id)}  ${String(worktree.branch)}  ${String(worktree.path)}\ndisplayName: ${String(worktree.displayName ?? '')}\nparentWorktreeId: ${String(worktree.parentWorktreeId ?? 'null')}\nchildWorktreeIds: ${childCount > 0 ? worktree.childWorktreeIds.join(',') : '[]'}\nlinkedIssue: ${String(worktree.linkedIssue ?? 'null')}\ncomment: ${String(worktree.comment ?? '')}`
+    })
     .join('\n\n')
   return result.truncated
     ? `${body}\n\ntruncated: showing ${result.worktrees.length} of ${result.totalCount}`

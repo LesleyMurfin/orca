@@ -149,6 +149,80 @@ describe('orca cli worktree awareness', () => {
     })
   })
 
+  it('passes parent lineage through worktree.set', async () => {
+    queueFixtures(
+      callMock,
+      okFixture('req_set_parent', {
+        worktree: {
+          ...buildWorktree('/tmp/repo/child', 'feature/child'),
+          parentWorktreeId: 'repo::/tmp/repo/parent',
+          childWorktreeIds: [],
+          lineage: {
+            worktreeId: 'repo::/tmp/repo/child',
+            worktreeInstanceId: 'child-instance',
+            parentWorktreeId: 'repo::/tmp/repo/parent',
+            parentWorktreeInstanceId: 'parent-instance',
+            origin: 'manual',
+            capture: { source: 'manual-action', confidence: 'explicit' },
+            createdAt: 1
+          }
+        }
+      })
+    )
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await main(
+      [
+        'worktree',
+        'set',
+        '--worktree',
+        'id:repo::/tmp/repo/child',
+        '--parent-worktree',
+        'id:repo::/tmp/repo/parent',
+        '--json'
+      ],
+      '/tmp/repo'
+    )
+
+    expect(callMock).toHaveBeenCalledWith('worktree.set', {
+      worktree: 'id:repo::/tmp/repo/child',
+      displayName: undefined,
+      linkedIssue: undefined,
+      comment: undefined,
+      parentWorktree: 'id:repo::/tmp/repo/parent',
+      noParent: false
+    })
+  })
+
+  it('passes parent removal through worktree.set', async () => {
+    queueFixtures(
+      callMock,
+      okFixture('req_clear_parent', {
+        worktree: {
+          ...buildWorktree('/tmp/repo/child', 'feature/child'),
+          parentWorktreeId: null,
+          childWorktreeIds: [],
+          lineage: null
+        }
+      })
+    )
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await main(
+      ['worktree', 'set', '--worktree', 'id:repo::/tmp/repo/child', '--no-parent', '--json'],
+      '/tmp/repo'
+    )
+
+    expect(callMock).toHaveBeenCalledWith('worktree.set', {
+      worktree: 'id:repo::/tmp/repo/child',
+      displayName: undefined,
+      linkedIssue: undefined,
+      comment: undefined,
+      parentWorktree: undefined,
+      noParent: true
+    })
+  })
+
   it('passes explicit activation through worktree.create', async () => {
     queueFixtures(
       callMock,
@@ -175,6 +249,133 @@ describe('orca cli worktree awareness', () => {
       parentWorktree: `path:${path.resolve('/tmp/repo')}`,
       noParent: false,
       callerTerminalHandle: undefined
+    })
+  })
+
+  it('passes an explicit parent through worktree.create without cwd inference', async () => {
+    queueFixtures(
+      callMock,
+      okFixture('req_create', {
+        worktree: {
+          ...buildWorktree('/tmp/repo/child', 'child', 'abc', 'repo-1'),
+          parentWorktreeId: 'repo-1::/tmp/repo/parent',
+          lineage: {
+            worktreeId: 'repo-1::/tmp/repo/child',
+            worktreeInstanceId: 'child-instance',
+            parentWorktreeId: 'repo-1::/tmp/repo/parent',
+            parentWorktreeInstanceId: 'parent-instance',
+            origin: 'cli',
+            capture: { source: 'explicit-cli-flag', confidence: 'explicit' },
+            createdAt: 1
+          }
+        },
+        lineage: {
+          worktreeId: 'repo-1::/tmp/repo/child',
+          worktreeInstanceId: 'child-instance',
+          parentWorktreeId: 'repo-1::/tmp/repo/parent',
+          parentWorktreeInstanceId: 'parent-instance',
+          origin: 'cli',
+          capture: { source: 'explicit-cli-flag', confidence: 'explicit' },
+          createdAt: 1
+        },
+        warnings: []
+      })
+    )
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await main(
+      [
+        'worktree',
+        'create',
+        '--repo',
+        'id:repo-1',
+        '--name',
+        'child',
+        '--parent-worktree',
+        'id:repo-1::/tmp/repo/parent',
+        '--json'
+      ],
+      '/tmp/repo/parent/src'
+    )
+
+    expect(callMock).toHaveBeenCalledTimes(1)
+    expect(callMock).toHaveBeenCalledWith('worktree.create', {
+      repo: 'id:repo-1',
+      name: 'child',
+      baseBranch: undefined,
+      linkedIssue: undefined,
+      comment: undefined,
+      runHooks: false,
+      activate: false,
+      parentWorktree: 'id:repo-1::/tmp/repo/parent',
+      noParent: false,
+      callerTerminalHandle: undefined
+    })
+  })
+
+  it('passes no-parent through worktree.create and skips cwd inference', async () => {
+    queueFixtures(
+      callMock,
+      okFixture('req_create', {
+        worktree: buildWorktree('/tmp/repo/child', 'child', 'abc', 'repo-1'),
+        lineage: null,
+        warnings: []
+      })
+    )
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await main(
+      ['worktree', 'create', '--repo', 'id:repo-1', '--name', 'child', '--no-parent', '--json'],
+      '/tmp/repo/parent/src'
+    )
+
+    expect(callMock).toHaveBeenCalledTimes(1)
+    expect(callMock).toHaveBeenCalledWith('worktree.create', {
+      repo: 'id:repo-1',
+      name: 'child',
+      baseBranch: undefined,
+      linkedIssue: undefined,
+      comment: undefined,
+      runHooks: false,
+      activate: false,
+      parentWorktree: undefined,
+      noParent: true,
+      callerTerminalHandle: undefined
+    })
+  })
+
+  it('passes caller terminal handle through worktree.create instead of cwd inference', async () => {
+    process.env.ORCA_TERMINAL_HANDLE = 'term_parent'
+    queueFixtures(
+      callMock,
+      okFixture('req_create', {
+        worktree: buildWorktree('/tmp/repo/child', 'child', 'abc', 'repo-1'),
+        lineage: null,
+        warnings: []
+      })
+    )
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await main(
+      ['worktree', 'create', '--repo', 'id:repo-1', '--name', 'child', '--json'],
+      '/tmp/repo'
+    )
+
+    expect(callMock).toHaveBeenCalledTimes(1)
+    expect(callMock).toHaveBeenCalledWith('worktree.create', {
+      repo: 'id:repo-1',
+      name: 'child',
+      baseBranch: undefined,
+      linkedIssue: undefined,
+      comment: undefined,
+      runHooks: false,
+      activate: false,
+      parentWorktree: undefined,
+      noParent: false,
+      callerTerminalHandle: 'term_parent'
     })
   })
 

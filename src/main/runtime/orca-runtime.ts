@@ -417,6 +417,9 @@ type ResolvedWorktree = {
   repoId: string
   path: string
   branch: string
+  parentWorktreeId: string | null
+  childWorktreeIds: string[]
+  lineage: WorktreeLineage | null
   linkedIssue: number | null
   git: {
     path: string
@@ -3827,6 +3830,8 @@ export class OrcaRuntimeService {
         repo: repo?.displayName ?? worktree.repoId,
         path: worktree.path,
         branch: worktree.branch,
+        parentWorktreeId: worktree.parentWorktreeId,
+        childWorktreeIds: worktree.childWorktreeIds,
         displayName: worktree.displayName,
         linkedIssue: worktree.linkedIssue,
         linkedPR,
@@ -4850,7 +4855,7 @@ export class OrcaRuntimeService {
         createdAt: Date.now()
       })
     }
-    const meta = this.store.setWorktreeMeta(worktree.id, {
+    this.store.setWorktreeMeta(worktree.id, {
       ...(updates.displayName !== undefined ? { displayName: updates.displayName } : {}),
       ...(updates.linkedIssue !== undefined ? { linkedIssue: updates.linkedIssue } : {}),
       ...(updates.comment !== undefined ? { comment: updates.comment } : {}),
@@ -4860,7 +4865,7 @@ export class OrcaRuntimeService {
     // explicit push so the editor refreshes metadata changed outside the UI.
     this.invalidateResolvedWorktreeCache()
     this.notifier?.worktreesChanged(worktree.repoId)
-    return mergeWorktree(worktree.repoId, worktree.git, meta)
+    return await this.showManagedWorktree(`id:${worktree.id}`)
   }
 
   async removeManagedWorktree(
@@ -5956,6 +5961,9 @@ export class OrcaRuntimeService {
             repoId: repo.id,
             path: merged.path,
             branch: merged.branch,
+            parentWorktreeId: null,
+            childWorktreeIds: [],
+            lineage: null,
             linkedIssue: meta?.linkedIssue ?? null,
             git: {
               path: gitWorktree.path,
@@ -5970,7 +5978,7 @@ export class OrcaRuntimeService {
         })
       })
     )
-    const worktrees = perRepoWorktrees.flat()
+    const worktrees = this.attachLineageToResolvedWorktrees(perRepoWorktrees.flat())
     // Why: terminal polling can be frequent, but git worktree state is still
     // allowed to change outside Orca. A short TTL avoids shelling out on every
     // read without pretending the cache is authoritative for long.
@@ -5979,6 +5987,42 @@ export class OrcaRuntimeService {
       expiresAt: now + RESOLVED_WORKTREE_CACHE_TTL_MS
     }
     return worktrees
+  }
+
+  private attachLineageToResolvedWorktrees(worktrees: ResolvedWorktree[]): ResolvedWorktree[] {
+    const lineageById = this.store?.getAllWorktreeLineage?.() ?? {}
+    const worktreeById = new Map(worktrees.map((worktree) => [worktree.id, worktree]))
+    const validLineageByChildId = new Map<string, WorktreeLineage>()
+    const childIdsByParentId = new Map<string, string[]>()
+
+    for (const [childId, lineage] of Object.entries(lineageById)) {
+      const child = worktreeById.get(childId)
+      const parent = worktreeById.get(lineage.parentWorktreeId)
+      if (
+        !child ||
+        !parent ||
+        child.instanceId !== lineage.worktreeInstanceId ||
+        parent.instanceId !== lineage.parentWorktreeInstanceId
+      ) {
+        // Why: worktree IDs are path-derived. Instance checks keep replacement
+        // checkouts from appearing as children of stale same-path lineage.
+        continue
+      }
+      validLineageByChildId.set(childId, lineage)
+      const children = childIdsByParentId.get(lineage.parentWorktreeId) ?? []
+      children.push(childId)
+      childIdsByParentId.set(lineage.parentWorktreeId, children)
+    }
+
+    return worktrees.map((worktree) => {
+      const lineage = validLineageByChildId.get(worktree.id) ?? null
+      return {
+        ...worktree,
+        parentWorktreeId: lineage?.parentWorktreeId ?? null,
+        childWorktreeIds: childIdsByParentId.get(worktree.id) ?? [],
+        lineage
+      }
+    })
   }
 
   private pruneLineageForMissingRepoWorktrees(repo: Repo, gitWorktrees: GitWorktreeInfo[]): void {

@@ -1321,6 +1321,8 @@ describe('OrcaRuntimeService', () => {
           repo: 'repo',
           path: '/tmp/worktree-a',
           branch: 'feature/foo',
+          parentWorktreeId: null,
+          childWorktreeIds: [],
           displayName: 'foo',
           linkedIssue: 123,
           linkedPR: null,
@@ -1882,6 +1884,82 @@ describe('OrcaRuntimeService', () => {
     expect(runtimeStore.setWorktreeMeta).not.toHaveBeenCalled()
     expect(lineageById[childId]).toBeTruthy()
     expect(metaById[parentId].instanceId).toBe('parent-instance')
+  })
+
+  it('exposes valid parent and child lineage in CLI worktree records', async () => {
+    const parentPath = '/tmp/worktree-parent'
+    const childPath = '/tmp/worktree-child'
+    const parentId = `${TEST_REPO_ID}::${parentPath}`
+    const childId = `${TEST_REPO_ID}::${childPath}`
+    const metaById: Record<string, WorktreeMeta> = {
+      [parentId]: makeWorktreeMeta({
+        instanceId: 'parent-instance',
+        displayName: 'parent'
+      }),
+      [childId]: makeWorktreeMeta({
+        instanceId: 'child-instance',
+        displayName: 'child'
+      })
+    }
+    const lineageById: Record<string, WorktreeLineage> = {
+      [childId]: {
+        worktreeId: childId,
+        worktreeInstanceId: 'child-instance',
+        parentWorktreeId: parentId,
+        parentWorktreeInstanceId: 'parent-instance',
+        origin: 'manual',
+        capture: { source: 'manual-action', confidence: 'explicit' },
+        createdAt: 1
+      }
+    }
+    const runtimeStore = {
+      ...store,
+      getAllWorktreeMeta: () => metaById,
+      getWorktreeMeta: (worktreeId: string) => metaById[worktreeId],
+      setWorktreeMeta: (worktreeId: string, meta: Partial<WorktreeMeta>) => {
+        metaById[worktreeId] = { ...metaById[worktreeId], ...meta }
+        return metaById[worktreeId]
+      },
+      getAllWorktreeLineage: () => lineageById
+    }
+    vi.mocked(listWorktrees).mockResolvedValue([
+      {
+        path: parentPath,
+        head: 'abc',
+        branch: 'feature/parent',
+        isBare: false,
+        isMainWorktree: false
+      },
+      {
+        path: childPath,
+        head: 'def',
+        branch: 'feature/child',
+        isBare: false,
+        isMainWorktree: false
+      }
+    ])
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+
+    const listed = await runtime.listManagedWorktrees('id:repo-1')
+    const parent = listed.worktrees.find((worktree) => worktree.id === parentId)
+    const child = listed.worktrees.find((worktree) => worktree.id === childId)
+
+    expect(parent).toMatchObject({
+      parentWorktreeId: null,
+      childWorktreeIds: [childId],
+      lineage: null
+    })
+    expect(child).toMatchObject({
+      parentWorktreeId: parentId,
+      childWorktreeIds: [],
+      lineage: lineageById[childId]
+    })
+    await expect(runtime.showManagedWorktree(`id:${childId}`)).resolves.toMatchObject({
+      id: childId,
+      parentWorktreeId: parentId,
+      childWorktreeIds: [],
+      lineage: lineageById[childId]
+    })
   })
 
   it('keeps valid orchestration lineage when caller terminal context is stale', async () => {

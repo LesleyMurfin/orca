@@ -5,14 +5,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { create } from 'zustand'
 import type { AppState } from '../types'
-import type { Worktree } from '../../../../shared/types'
+import type { Worktree, WorktreeLineage } from '../../../../shared/types'
 
 const mockApi = {
   worktrees: {
     create: vi.fn(),
     list: vi.fn().mockResolvedValue([]),
+    listLineage: vi.fn().mockResolvedValue({}),
     remove: vi.fn().mockResolvedValue(undefined),
-    updateMeta: vi.fn().mockResolvedValue(undefined)
+    updateMeta: vi.fn().mockResolvedValue(undefined),
+    updateLineage: vi.fn().mockResolvedValue(null)
   },
   pty: {
     kill: vi.fn().mockResolvedValue(undefined)
@@ -91,6 +93,19 @@ function makeWorktree(overrides: Partial<Worktree> & { id: string; repoId: strin
     isPinned: false,
     sortOrder: 0,
     lastActivityAt: 0,
+    ...overrides
+  }
+}
+
+function makeLineage(overrides: Partial<WorktreeLineage> = {}): WorktreeLineage {
+  return {
+    worktreeId: 'repo1::/path/child',
+    worktreeInstanceId: 'child-instance',
+    parentWorktreeId: 'repo1::/path/parent',
+    parentWorktreeInstanceId: 'parent-instance',
+    origin: 'manual',
+    capture: { source: 'manual-action', confidence: 'explicit' },
+    createdAt: 1,
     ...overrides
   }
 }
@@ -191,6 +206,71 @@ describe('fetchWorktrees', () => {
 
     expect(store.getState().worktreesByRepo.repo1).toEqual([])
     expect(store.getState().sortEpoch).toBe(8)
+  })
+})
+
+describe('worktree lineage state', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('fetches persisted lineage into the renderer store', async () => {
+    const store = createTestStore()
+    const lineage = makeLineage()
+    mockApi.worktrees.listLineage.mockResolvedValue({ [lineage.worktreeId]: lineage })
+
+    await store.getState().fetchWorktreeLineage()
+
+    expect(mockApi.worktrees.listLineage).toHaveBeenCalled()
+    expect(store.getState().worktreeLineageById).toEqual({ [lineage.worktreeId]: lineage })
+  })
+
+  it('updates a child lineage entry and bumps sortEpoch', async () => {
+    const store = createTestStore()
+    const lineage = makeLineage()
+    mockApi.worktrees.updateLineage.mockResolvedValue(lineage)
+    store.setState({ sortEpoch: 3 } as Partial<AppState>)
+
+    await store.getState().updateWorktreeLineage(lineage.worktreeId, {
+      parentWorktreeId: lineage.parentWorktreeId
+    })
+
+    expect(mockApi.worktrees.updateLineage).toHaveBeenCalledWith({
+      worktreeId: lineage.worktreeId,
+      parentWorktreeId: lineage.parentWorktreeId
+    })
+    expect(store.getState().worktreeLineageById).toEqual({ [lineage.worktreeId]: lineage })
+    expect(store.getState().sortEpoch).toBe(4)
+  })
+
+  it('removes a child lineage entry when the backend clears the parent link', async () => {
+    const store = createTestStore()
+    const lineage = makeLineage()
+    mockApi.worktrees.updateLineage.mockResolvedValue(null)
+    store.setState({
+      worktreeLineageById: { [lineage.worktreeId]: lineage },
+      sortEpoch: 3
+    } as Partial<AppState>)
+
+    await store.getState().updateWorktreeLineage(lineage.worktreeId, { noParent: true })
+
+    expect(store.getState().worktreeLineageById).toEqual({})
+    expect(store.getState().sortEpoch).toBe(4)
+  })
+
+  it('refetches lineage after an update failure', async () => {
+    const store = createTestStore()
+    const lineage = makeLineage()
+    mockApi.worktrees.updateLineage.mockRejectedValueOnce(new Error('stale parent'))
+    mockApi.worktrees.listLineage.mockResolvedValue({ [lineage.worktreeId]: lineage })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await store.getState().updateWorktreeLineage(lineage.worktreeId, {
+      parentWorktreeId: lineage.parentWorktreeId
+    })
+
+    expect(mockApi.worktrees.listLineage).toHaveBeenCalled()
+    expect(store.getState().worktreeLineageById).toEqual({ [lineage.worktreeId]: lineage })
   })
 })
 
@@ -343,6 +423,30 @@ describe('removeWorktree state cleanup', () => {
     // Draft for file-1 should be removed, draft for file-2 should remain
     expect(store.getState().editorDrafts).toEqual({
       'file-2': 'draft content for another worktree'
+    })
+  })
+
+  it('cleans up the removed worktree lineage entry', async () => {
+    const store = createTestStore()
+    const wt = makeWorktree({ id: 'repo1::/path/wt1', repoId: 'repo1', path: '/path/wt1' })
+    const childLineage = makeLineage({ worktreeId: wt.id })
+    const siblingLineage = makeLineage({
+      worktreeId: 'repo1::/path/wt2',
+      worktreeInstanceId: 'sibling-instance'
+    })
+
+    store.setState({
+      worktreesByRepo: { repo1: [wt] },
+      worktreeLineageById: {
+        [wt.id]: childLineage,
+        'repo1::/path/wt2': siblingLineage
+      }
+    } as Partial<AppState>)
+
+    await store.getState().removeWorktree(wt.id)
+
+    expect(store.getState().worktreeLineageById).toEqual({
+      'repo1::/path/wt2': siblingLineage
     })
   })
 
@@ -857,6 +961,10 @@ describe('purgeWorktreeTerminalState direct (design §4.4)', () => {
       ],
       editorDrafts: { 'file-1': 'draft', 'file-99': 'other' },
       activeWorktreeId: 'repoA::/a/wt1',
+      worktreeLineageById: {
+        'repoA::/a/wt1': makeLineage({ worktreeId: 'repoA::/a/wt1' }),
+        'repoA::/a/wt2': makeLineage({ worktreeId: 'repoA::/a/wt2' })
+      },
       activeFileId: 'file-1',
       activeTabId: 'tab-1',
       activeTabType: 'editor' as const
@@ -867,6 +975,9 @@ describe('purgeWorktreeTerminalState direct (design §4.4)', () => {
     const s = store.getState()
     expect(s.tabsByWorktree).toEqual({
       'repoA::/a/wt2': [{ id: 'tab-3', worktreeId: 'repoA::/a/wt2' }]
+    })
+    expect(s.worktreeLineageById).toEqual({
+      'repoA::/a/wt2': makeLineage({ worktreeId: 'repoA::/a/wt2' })
     })
     expect(s.terminalLayoutsByTabId).toEqual({ 'tab-3': { panes: [] } })
     expect(s.ptyIdsByTabId).toEqual({ 'tab-3': ['pty-3'] })

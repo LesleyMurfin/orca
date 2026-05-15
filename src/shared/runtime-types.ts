@@ -278,6 +278,8 @@ export type RuntimeWorktreePsSummary = {
   repo: string
   path: string
   branch: string
+  parentWorktreeId: string | null
+  childWorktreeIds: string[]
   displayName: string
   linkedIssue: number | null
   linkedPR: { number: number; state: string } | null
@@ -298,6 +300,9 @@ export type RuntimeWorktreeRecord = {
   repoId: string
   path: string
   branch: string
+  parentWorktreeId: string | null
+  childWorktreeIds: string[]
+  lineage: WorktreeLineage | null
   linkedIssue: number | null
   git: GitWorktreeInfo
   displayName: string
