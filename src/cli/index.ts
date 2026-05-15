@@ -45,14 +45,24 @@ export async function main(argv = process.argv.slice(2), cwd = process.cwd()): P
     // simple command typos or unsupported flags.
     validateCommandAndFlags(COMMAND_SPECS, parsed)
     const ignoreRemoteSelection = shouldIgnoreRemoteSelection(parsed.commandPath)
-    const pairingCode = ignoreRemoteSelection ? null : parsed.flags.get('pairing-code')
-    const environmentSelector = ignoreRemoteSelection ? null : parsed.flags.get('environment')
-    const client = new RuntimeClient(
-      undefined,
-      undefined,
-      typeof pairingCode === 'string' ? pairingCode : undefined,
-      typeof environmentSelector === 'string' ? environmentSelector : undefined
-    )
+    const pairingCodeFlag = parsed.flags.get('pairing-code')
+    const environmentFlag = parsed.flags.get('environment')
+    // Why: RuntimeClient's ctor uses ES default parameters that fall back to
+    // ORCA_PAIRING_CODE / ORCA_ENVIRONMENT when the argument is `undefined`.
+    // For environment/serve commands we must bypass that fallback, so pass
+    // `null` (a valid typed value that does not trigger defaults) rather than
+    // `undefined`.
+    const pairingCode = ignoreRemoteSelection
+      ? null
+      : typeof pairingCodeFlag === 'string'
+        ? pairingCodeFlag
+        : undefined
+    const environmentSelector = ignoreRemoteSelection
+      ? null
+      : typeof environmentFlag === 'string'
+        ? environmentFlag
+        : undefined
+    const client = new RuntimeClient(undefined, undefined, pairingCode, environmentSelector)
     await dispatch(parsed.commandPath, {
       flags: parsed.flags,
       client,
