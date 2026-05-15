@@ -113,6 +113,8 @@ export function classifyListIssuesError(stderr: string): ClassifiedError {
 // short local name `OwnerRepo`.
 export type OwnerRepo = GitHubOwnerRepo
 
+export type GitHubRemoteIdentity = GitHubOwnerRepo & { host: string }
+
 export type GitHubRepoContext = {
   repoPath: string
   connectionId?: string | null
@@ -143,11 +145,24 @@ export function _resetOwnerRepoCache(): void {
 }
 
 export function parseGitHubOwnerRepo(remoteUrl: string): OwnerRepo | null {
-  const match = remoteUrl.trim().match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/)
-  if (!match) {
+  const identity = parseGitHubRemoteIdentity(remoteUrl)
+  if (!identity || identity.host.toLowerCase() !== 'github.com') {
     return null
   }
-  return { owner: match[1], repo: match[2] }
+  return { owner: identity.owner, repo: identity.repo }
+}
+
+export function parseGitHubRemoteIdentity(remoteUrl: string): GitHubRemoteIdentity | null {
+  const trimmed = remoteUrl.trim()
+  const httpsMatch = trimmed.match(/^https?:\/\/([^/]+)\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i)
+  if (httpsMatch) {
+    return { host: httpsMatch[1], owner: httpsMatch[2], repo: httpsMatch[3] }
+  }
+  const sshMatch = trimmed.match(/^git@([^:]+):([^/]+)\/([^/]+?)(?:\.git)?$/i)
+  if (sshMatch) {
+    return { host: sshMatch[1], owner: sshMatch[2], repo: sshMatch[3] }
+  }
+  return null
 }
 
 export async function getRemoteUrlForRepo(

@@ -22,6 +22,11 @@ import { getConnectionId } from '@/lib/connection-context'
 import { CreatePullRequestDialog } from './CreatePullRequestDialog'
 import type { HostedReviewCreationEligibility } from '../../../../shared/hosted-review'
 import { toast } from 'sonner'
+import {
+  classifyHostedReview,
+  type HostedReviewClassificationOptions
+} from '../../../../shared/hosted-review-queue'
+import { hostedReviewSummaryFromGitHubPRInfo } from '../../../../shared/hosted-review-github'
 
 export default function ChecksPanel(): React.JSX.Element {
   const activeWorktree = useActiveWorktree()
@@ -579,6 +584,68 @@ export default function ChecksPanel(): React.JSX.Element {
     ]
   )
 
+  const activeReviewClassification = React.useMemo(() => {
+    if (!pr || !repo) {
+      return null
+    }
+    let host = 'github.com'
+    let owner = 'unknown'
+    let repoName = 'unknown'
+    try {
+      const parsed = new URL(pr.url)
+      host = parsed.host || host
+      const segments = parsed.pathname.split('/').filter(Boolean)
+      if (segments.length >= 2) {
+        owner = segments[0]
+        repoName = segments[1]
+      }
+    } catch {
+      // Why: malformed URLs should not block queue-state classification.
+    }
+
+    // Why: unresolved thread data is paginated and fetched separately. Until
+    // comments have loaded for this PR, do not let queue badges imply a clean review.
+    const commentsForClassification =
+      commentsFetchedAt !== undefined && !commentsLoading ? comments : undefined
+    const summary = hostedReviewSummaryFromGitHubPRInfo({
+      pr,
+      owner,
+      repo: repoName,
+      host,
+      comments: commentsForClassification,
+      checks
+    })
+    const options: HostedReviewClassificationOptions = {
+      agentAuthorLogins: [],
+      viewer: null
+    }
+    return classifyHostedReview(summary, options)
+  }, [pr, repo, comments, commentsFetchedAt, commentsLoading, checks])
+
+  const queueBadges = React.useMemo(() => {
+    if (!activeReviewClassification) {
+      return [] as string[]
+    }
+    const badges: string[] = []
+    if (activeReviewClassification.needsResponse) {
+      badges.push('Needs response')
+    }
+    if (activeReviewClassification.readyToMerge) {
+      badges.push('Ready to merge')
+    }
+    if (activeReviewClassification.requested) {
+      badges.push('Review requested')
+    }
+    if (activeReviewClassification.state === 'mine') {
+      badges.push('My PR')
+    } else if (activeReviewClassification.state === 'agent') {
+      badges.push('AI PR')
+    } else {
+      badges.push('Teammate PR')
+    }
+    return badges
+  }, [activeReviewClassification])
+
   // ── Empty state ──
   if (!activeWorktree) {
     return (
@@ -760,6 +827,19 @@ export default function ChecksPanel(): React.JSX.Element {
         {pr.updatedAt && (
           <div className="text-[10px] text-muted-foreground/60">
             Updated {new Date(pr.updatedAt).toLocaleString()}
+          </div>
+        )}
+
+        {queueBadges.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {queueBadges.map((badge) => (
+              <span
+                key={badge}
+                className="rounded border border-border bg-accent/30 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground"
+              >
+                {badge}
+              </span>
+            ))}
           </div>
         )}
 

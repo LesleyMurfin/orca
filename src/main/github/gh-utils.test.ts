@@ -20,6 +20,7 @@ import {
   classifyListIssuesError,
   getIssueOwnerRepo,
   getOwnerRepo,
+  parseGitHubRemoteIdentity,
   parseGitHubOwnerRepo,
   resolveIssueSource
 } from './gh-utils'
@@ -45,6 +46,20 @@ describe('github owner/repo resolution', () => {
       repo: 'boring.notch'
     })
     expect(parseGitHubOwnerRepo('git@example.com:stablyai/orca.git')).toBeNull()
+  })
+
+  it('parses GitHub Enterprise host identity', () => {
+    expect(parseGitHubRemoteIdentity('https://ghe.acme.internal/acme/orca.git')).toEqual({
+      host: 'ghe.acme.internal',
+      owner: 'acme',
+      repo: 'orca'
+    })
+    expect(parseGitHubRemoteIdentity('git@ghe.acme.internal:acme/orca.git')).toEqual({
+      host: 'ghe.acme.internal',
+      owner: 'acme',
+      repo: 'orca'
+    })
+    expect(parseGitHubOwnerRepo('https://ghe.acme.internal/acme/orca.git')).toBeNull()
   })
 
   it('keeps getOwnerRepo origin-based', async () => {

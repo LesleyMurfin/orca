@@ -113,3 +113,56 @@ export type HostedReviewCreationEligibilityArgs = {
   linkedBitbucketPR?: number | null
   linkedGiteaPR?: number | null
 }
+
+export type HostedReviewIdentity = {
+  provider: HostedReviewProvider
+  host: string
+  owner: string
+  repo: string
+  number: number
+}
+
+export type HostedReviewUser = {
+  login: string | null
+  isBot?: boolean
+}
+
+export type HostedReviewDecision = 'approved' | 'changes_requested' | 'review_required' | null
+
+export type HostedReviewThreadSummary = {
+  unresolvedCount: number | null
+  dataCompleteness?: 'full' | 'partial'
+}
+
+export type HostedReviewQueueSummary = {
+  identity: HostedReviewIdentity
+  title: string
+  url: string
+  state: HostedReviewState
+  author: HostedReviewUser | null
+  updatedAt: string
+  lastViewedAt?: number
+  mergeable: PRMergeableState
+  checksStatus: CheckStatus
+  reviewDecision?: HostedReviewDecision
+  threadSummary?: HostedReviewThreadSummary
+  requestedReviewerLogins?: string[] | null
+  draft?: boolean
+}
+
+export type HostedReviewQueueKey =
+  | 'mine'
+  | 'requested'
+  | 'agent'
+  | 'teammate'
+  | 'needs-response'
+  | 'ready-to-merge'
+
+export type HostedReviewQueueState = 'mine' | 'requested' | 'agent' | 'teammate'
+
+export type HostedReviewQueueClassification = {
+  state: HostedReviewQueueState
+  needsResponse: boolean
+  readyToMerge: boolean
+  requested: boolean
+}
