@@ -118,6 +118,17 @@ import {
 import { subscribeRuntimeEnvironmentFromPreload } from './runtime-environment-subscriptions'
 import type { RuntimeEnvironmentSubscriptionHandle } from './runtime-environment-subscriptions'
 import type { HostedReviewForBranchArgs } from '../shared/hosted-review'
+import type {
+  LspCompletionResult,
+  LspDiagnosticsEvent,
+  LspDocumentChange,
+  LspDocumentContext,
+  LspDocumentIdentity,
+  LspHover,
+  LspLocation,
+  LspRequestContext,
+  LspServerStatus
+} from '../shared/lsp-types'
 
 type NativeDropResolution =
   | { target: 'editor' }
@@ -1725,6 +1736,31 @@ const api = {
       const listener = (_event: Electron.IpcRendererEvent) => callback()
       ipcRenderer.on('updater:clearDismissal', listener)
       return () => ipcRenderer.removeListener('updater:clearDismissal', listener)
+    }
+  },
+
+  lsp: {
+    getStatus: (args: LspDocumentIdentity): Promise<LspServerStatus> =>
+      ipcRenderer.invoke('lsp:getStatus', args),
+    openDocument: (args: LspDocumentContext): Promise<LspServerStatus> =>
+      ipcRenderer.invoke('lsp:openDocument', args),
+    changeDocument: (args: LspDocumentChange): Promise<void> =>
+      ipcRenderer.invoke('lsp:changeDocument', args),
+    closeDocument: (args: Omit<LspDocumentChange, 'content'>): Promise<void> =>
+      ipcRenderer.invoke('lsp:closeDocument', args),
+    completion: (args: LspRequestContext): Promise<LspCompletionResult | null> =>
+      ipcRenderer.invoke('lsp:completion', args),
+    hover: (args: LspRequestContext): Promise<LspHover | null> =>
+      ipcRenderer.invoke('lsp:hover', args),
+    definition: (args: LspRequestContext): Promise<LspLocation[]> =>
+      ipcRenderer.invoke('lsp:definition', args),
+    getStats: (): Promise<{ activeSessions: number; sessions: Record<string, unknown>[] }> =>
+      ipcRenderer.invoke('lsp:getStats'),
+    onDiagnostics: (callback: (event: LspDiagnosticsEvent) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: LspDiagnosticsEvent) =>
+        callback(payload)
+      ipcRenderer.on('lsp:diagnostics', listener)
+      return () => ipcRenderer.removeListener('lsp:diagnostics', listener)
     }
   },
 

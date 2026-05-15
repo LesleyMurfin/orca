@@ -49,6 +49,7 @@ describe('TabGroupSplitLayout', () => {
     return tabGroupPanelElement.props as {
       groupId: string
       worktreeId: string
+      isWorktreeActive: boolean
       isFocused: boolean
       hasSplitGroups: boolean
       reserveClosedExplorerToggleSpace: boolean
@@ -61,6 +62,7 @@ describe('TabGroupSplitLayout', () => {
       expect.objectContaining({
         groupId: 'group-1',
         worktreeId: 'wt-1',
+        isWorktreeActive: false,
         isFocused: false,
         hasSplitGroups: false,
         reserveClosedExplorerToggleSpace: true,
@@ -74,6 +76,7 @@ describe('TabGroupSplitLayout', () => {
       expect.objectContaining({
         groupId: 'group-1',
         worktreeId: 'wt-1',
+        isWorktreeActive: true,
         isFocused: true,
         hasSplitGroups: false,
         reserveClosedExplorerToggleSpace: true,

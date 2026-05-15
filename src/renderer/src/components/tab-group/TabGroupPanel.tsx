@@ -25,6 +25,7 @@ const EditorPanel = lazy(() => import('../editor/EditorPanel'))
 export default function TabGroupPanel({
   groupId,
   worktreeId,
+  isWorktreeActive,
   isFocused,
   hasSplitGroups,
   touchesRightEdge,
@@ -37,6 +38,7 @@ export default function TabGroupPanel({
 }: {
   groupId: string
   worktreeId: string
+  isWorktreeActive: boolean
   isFocused: boolean
   hasSplitGroups: boolean
   touchesRightEdge: boolean
@@ -355,7 +357,11 @@ export default function TabGroupPanel({
                   </div>
                 }
               >
-                <EditorPanel activeFileId={activeTab.entityId} activeViewStateId={activeTab.id} />
+                <EditorPanel
+                  activeFileId={activeTab.entityId}
+                  activeViewStateId={activeTab.id}
+                  isWorkspaceActive={isWorktreeActive}
+                />
               </Suspense>
             </div>
           )}

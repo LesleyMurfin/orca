@@ -23,10 +23,12 @@ const isMac = navigator.userAgent.includes('Mac')
 
 function EditorPanelInner({
   activeFileId: activeFileIdProp,
-  activeViewStateId: activeViewStateIdProp
+  activeViewStateId: activeViewStateIdProp,
+  isWorkspaceActive = true
 }: {
   activeFileId?: string | null
   activeViewStateId?: string | null
+  isWorkspaceActive?: boolean
 } = {}): React.JSX.Element | null {
   const openFiles = useAppStore((s) => s.openFiles)
   const globalActiveFileId = useAppStore((s) => s.activeFileId)
@@ -279,6 +281,7 @@ function EditorPanelInner({
       diffContents={diffContents}
       editorDrafts={editorDrafts}
       pendingEditorReveal={pendingEditorReveal}
+      isWorkspaceActive={isWorkspaceActive}
       renameDialogFile={renameDialogFile}
       renameError={renameError}
       disableRenameBrowse={disableRenameBrowse}

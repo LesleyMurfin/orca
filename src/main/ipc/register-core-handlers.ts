@@ -14,6 +14,7 @@ import { registerGitHubHandlers } from './github'
 import { registerGitLabHandlers } from './gitlab'
 import { registerHostedReviewHandlers } from './hosted-review'
 import { registerLinearHandlers } from './linear'
+import { registerLspHandlers } from './lsp'
 import { registerFeedbackHandlers } from './feedback'
 import { registerExportHandlers } from './export'
 import { registerStatsHandlers } from './stats'
@@ -100,6 +101,7 @@ export function registerCoreHandlers(
   registerGitLabHandlers(store)
   registerHostedReviewHandlers(store, stats)
   registerLinearHandlers()
+  registerLspHandlers()
   registerFeedbackHandlers()
   registerExportHandlers()
   registerStatsHandlers(stats)

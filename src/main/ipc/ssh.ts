@@ -35,6 +35,22 @@ let portForwardManager: SshPortForwardManager | null = null
 // (multiplexer, providers, abort controller, state machine). Eliminates the
 // scattered Maps/Sets that previously tracked this state independently.
 const activeSessions = new Map<string, SshRelaySession>()
+const activeMultiplexerReadyListeners = new Set<(connectionId: string) => void>()
+
+export function onActiveMultiplexerReady(listener: (connectionId: string) => void): () => void {
+  activeMultiplexerReadyListeners.add(listener)
+  return () => activeMultiplexerReadyListeners.delete(listener)
+}
+
+function notifyActiveMultiplexerReady(connectionId: string): void {
+  for (const listener of activeMultiplexerReadyListeners) {
+    try {
+      listener(connectionId)
+    } catch (error) {
+      console.warn(`[ssh] Active multiplexer ready listener failed for ${connectionId}:`, error)
+    }
+  }
+}
 
 function relayGracePeriodForTarget(target: SshTarget | null | undefined): number | undefined {
   if (!target?.remoteWorkspaceSyncEnabled) {
@@ -530,6 +546,7 @@ export function registerSshHandlers(
           }
         }
         void restorePortForwards(tid, getMainWindow)
+        notifyActiveMultiplexerReady(tid)
       })
 
       await session.establish(conn, relayGracePeriodForTarget(target))

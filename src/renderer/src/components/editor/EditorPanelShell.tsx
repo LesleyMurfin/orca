@@ -24,6 +24,7 @@ type EditorPanelShellProps = {
   diffContents: Record<string, DiffContent>
   editorDrafts: Record<string, string>
   pendingEditorReveal: ReturnType<typeof useAppStore.getState>['pendingEditorReveal']
+  isWorkspaceActive?: boolean
   renameDialogFile: OpenFile | null
   renameError: string | null
   disableRenameBrowse: boolean
@@ -59,6 +60,7 @@ export function EditorPanelShell({
   diffContents,
   editorDrafts,
   pendingEditorReveal,
+  isWorkspaceActive = true,
   renameDialogFile,
   renameError,
   disableRenameBrowse,
@@ -132,6 +134,7 @@ export function EditorPanelShell({
           mdViewMode={model.mdViewMode}
           isChangesMode={model.isDiffSurface && !model.isSingleDiff}
           sideBySide={sideBySide}
+          isWorkspaceActive={isWorkspaceActive}
           pendingEditorReveal={pendingEditorReveal}
           handleContentChange={onContentChange}
           handleDirtyStateHint={onDirtyStateHint}
