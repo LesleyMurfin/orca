@@ -569,33 +569,19 @@ jobs:
         include:
           - os: macos-15
             platform: mac
-            arch: arm64
-            release_command: ORCA_MAC_RELEASE=1 pnpm exec electron-builder --config config/electron-builder.config.cjs --mac --arm64 --publish never
-            artifact_name: release-assets-mac-arm64
-            eb_cache_path: |
-              ~/Library/Caches/electron
-              ~/Library/Caches/electron-builder
-          - os: macos-15
-            platform: mac
-            arch: x64
-            release_command: ORCA_MAC_RELEASE=1 pnpm exec electron-builder --config config/electron-builder.config.cjs --mac --x64 --publish never
-            artifact_name: release-assets-mac-x64
+            release_command: ORCA_MAC_RELEASE=1 pnpm exec electron-builder --config config/electron-builder.config.cjs --mac --publish always
             eb_cache_path: |
               ~/Library/Caches/electron
               ~/Library/Caches/electron-builder
           - os: windows-latest
             platform: win
-            arch: x64
-            release_command: pnpm exec electron-builder --config config/electron-builder.config.cjs --win --publish never
-            artifact_name: release-assets-win-x64
+            release_command: pnpm exec electron-builder --config config/electron-builder.config.cjs --win --publish always
             eb_cache_path: |
               ~\AppData\Local\electron\Cache
               ~\AppData\Local\electron-builder\Cache
           - os: ubuntu-latest
             platform: linux
-            arch: x64
-            release_command: pnpm exec electron-builder --config config/electron-builder.config.cjs --linux --publish never
-            artifact_name: release-assets-linux-x64
+            release_command: pnpm exec electron-builder --config config/electron-builder.config.cjs --linux --publish always
             eb_cache_path: |
               ~/.cache/electron
               ~/.cache/electron-builder
@@ -739,10 +725,10 @@ jobs:
       #
       # Why retry: electron-builder downloads NSIS/winCodeSign/squirrel
       # binaries and the Electron runtime from GitHub release assets during
-      # packaging. GitHub's download CDN occasionally returns 504s that fail
+      # publish. GitHub's download CDN occasionally returns 504s that fail
       # the whole release. Retry on failure so transient network errors
       # don't require a manual re-run.
-      - name: Build release artifacts (macOS)
+      - name: Publish release artifacts (macOS)
         if: matrix.platform == 'mac'
         uses: nick-fields/retry@v3
         with:
@@ -758,7 +744,7 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      - name: Build release artifacts
+      - name: Publish release artifacts
         if: matrix.platform != 'mac'
         uses: nick-fields/retry@v3
         with:
@@ -769,35 +755,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Collect release assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p release-assets
-          shopt -s nullglob
-          for pattern in \
-            "dist/*.AppImage" \
-            "dist/*.deb" \
-            "dist/*.dmg" \
-            "dist/*.exe" \
-            "dist/*.zip" \
-            "dist/*.blockmap" \
-            "dist/*.yml"; do
-            for file in $pattern; do
-              if [[ "$(basename "$file")" == builder-debug* ]]; then
-                continue
-              fi
-              cp "$file" release-assets/
-            done
-          done
-
-          if [[ "${{ matrix.platform }}" == "mac" && "${{ matrix.arch }}" == "x64" ]]; then
-            for manifest in release-assets/*-mac.yml; do
-              mv "$manifest" "${manifest%.yml}-x64.yml"
-            done
-          fi
-
-      - name: Verify release remains draft after artifact build
+      - name: Verify release remains draft after artifact upload
         # Why: the build matrix must never be the actor that exposes a partial
         # release. If an uploader or GitHub transition flips draft early, fail
         # this platform leg and leave the diagnostic monitor artifact behind.
@@ -817,10 +775,19 @@ jobs:
             exit 1
           }
           if [[ "$draft" != "true" ]]; then
-            echo "::error::Release $TAG was published during the ${{ matrix.platform }} artifact build."
+            echo "::error::Release $TAG was published during the ${{ matrix.platform }} artifact upload."
             exit 1
           fi
 
+      # Why post-publish (not pre-publish): electron-builder packs and
+      # uploads in a single `--publish always` invocation, so there is no
+      # cheap insertion point between pack and upload without splitting
+      # that step. Running verify last still blocks the bad release: the
+      # binary is uploaded to the draft, but a failed matrix job blocks
+      # the `publish-release` job (which depends on `build`) from flipping
+      # the release from draft → published, so users never see it. A human
+      # then deletes the draft and re-cuts.
+      #
       # Why this guards against: a misconfigured CI run where
       # `ORCA_POSTHOG_WRITE_KEY` is unset or the tag fails to classify
       # would otherwise produce a binary with `BUILD_IDENTITY = null` and
@@ -829,13 +796,6 @@ jobs:
       # in PR #1385's deferred follow-up.
       - name: Verify telemetry constants present in app.asar
         run: node config/scripts/verify-telemetry-constants.mjs
-
-      - name: Upload release assets artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: release-assets/*
-          if-no-files-found: error
 
   publish-release:
     needs:
@@ -852,27 +812,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version-file: package.json
-
-      - name: Download release assets
-        uses: actions/download-artifact@v4
-        with:
-          pattern: release-assets-*
-          merge-multiple: true
-          path: release-assets
-
-      - name: Merge macOS updater manifests
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          for x64_manifest in release-assets/*-mac-x64.yml; do
-            arm64_manifest="${x64_manifest%-x64.yml}.yml"
-            if [[ ! -f "$arm64_manifest" ]]; then
-              echo "::error::Missing matching arm64 macOS manifest for $x64_manifest"
-              exit 1
-            fi
-            node config/scripts/merge-macos-update-manifests.mjs "$arm64_manifest" "$x64_manifest"
-            rm -f "$x64_manifest"
-          done
 
       - name: Verify release is still draft
         env:
@@ -893,20 +832,6 @@ jobs:
             echo "::error::Release $TAG was published before publish-release; refusing to continue."
             exit 1
           fi
-
-      - name: Upload release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.cut.outputs.tag }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          assets=(release-assets/*)
-          if [[ ${#assets[@]} -eq 0 ]]; then
-            echo "::error::No release assets were downloaded."
-            exit 1
-          fi
-          gh release upload "$TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Verify release assets complete
         # Why: publish-release is the only intended draft -> published
