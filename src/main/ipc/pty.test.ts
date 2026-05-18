@@ -797,7 +797,9 @@ describe('registerPtyHandlers', () => {
             PATH: '/system/bin'
           })
           expect(env.ORCA_USER_DATA_PATH).toBe('/tmp/orca-user-data')
-          expect(env.PATH).toBe(`${join('/tmp/orca-user-data', 'cli', 'bin')}${delimiter}/system/bin`)
+          expect(env.PATH).toBe(
+            `${join('/tmp/orca-user-data', 'cli', 'bin')}${delimiter}/system/bin`
+          )
         } finally {
           mockedApp.isPackaged = prev
         }

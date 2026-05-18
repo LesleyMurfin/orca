@@ -290,7 +290,9 @@ describe('createLinearSlice', () => {
       email: 'test@example.com',
       organizationName: 'Test Org'
     }
-    linearStatus.mockReturnValueOnce(staleMountCheck.promise).mockReturnValueOnce(freshConnectCheck.promise)
+    linearStatus
+      .mockReturnValueOnce(staleMountCheck.promise)
+      .mockReturnValueOnce(freshConnectCheck.promise)
     linearConnect.mockResolvedValueOnce({ ok: true, viewer })
     const store = createTestStore()
 

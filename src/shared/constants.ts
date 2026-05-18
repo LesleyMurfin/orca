@@ -212,6 +212,7 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     openInApplications: [],
     rightSidebarOpenByDefault: true,
     showGitIgnoredFiles: true,
+    sourceControlViewMode: 'list',
     showTitlebarAppName: true,
     showTasksButton: true,
     ctrlTabOrderMode: 'mru',

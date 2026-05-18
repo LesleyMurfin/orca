@@ -40,9 +40,10 @@ export function getWorkspaceFileBrowserOpenTarget(params: {
   }
 }
 
-export function openFileInBrowserTab(
-  params: { filePath: string; worktreeId: string }
-): WorkspaceFileBrowserOpenTarget {
+export function openFileInBrowserTab(params: {
+  filePath: string
+  worktreeId: string
+}): WorkspaceFileBrowserOpenTarget {
   const target = getWorkspaceFileBrowserOpenTarget(params)
   if (target.status === 'unsupported') {
     return target

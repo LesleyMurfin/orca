@@ -175,7 +175,8 @@ export function useAutomationDispatchEvents(): void {
             for (const [paneKey, entry] of Object.entries(agentStatusByPaneKey)) {
               const parsed = parsePaneKey(paneKey)
               if (parsed?.tabId === tabId && entry.state === 'done') {
-                latestAssistantMessage = entry.lastAssistantMessage?.trim() || latestAssistantMessage
+                latestAssistantMessage =
+                  entry.lastAssistantMessage?.trim() || latestAssistantMessage
                 handleAgentDone()
                 return
               }
