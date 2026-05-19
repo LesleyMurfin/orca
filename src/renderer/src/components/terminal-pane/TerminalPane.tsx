@@ -267,6 +267,11 @@ export default function TerminalPane({
   // again. Similarly, pressing Escape runs handleRenameCancel but blur would
   // then call handleRenameSubmit, saving the title the user wanted to discard.
   const renameSubmittedRef = useRef(false)
+  const renameSessionIdRef = useRef(0)
+  const renameBlurCommitEnabledRef = useRef(true)
+  const renameFocusFrameRef = useRef<number | null>(null)
+  const renameEnableBlurFrameRef = useRef<number | null>(null)
+  const renameRefocusFrameRef = useRef<number | null>(null)
   const onPtyErrorRef = useRef((_paneId: number, message: string) => {
     if (isTerminalSessionStateSaveFailure(message)) {
       setTerminalError(null)
@@ -1140,10 +1145,40 @@ export default function TerminalPane({
     }
   }, [tabId, worktreeId, setTabLayout])
 
-  const handleStartRename = useCallback((paneId: number) => {
-    setRenameValue(paneTitlesRef.current[paneId] ?? '')
-    setRenamingPaneId(paneId)
+  const cancelPendingRenameFrames = useCallback(() => {
+    const frameRefs = [renameFocusFrameRef, renameEnableBlurFrameRef, renameRefocusFrameRef]
+    for (const frameRef of frameRefs) {
+      if (frameRef.current !== null) {
+        cancelAnimationFrame(frameRef.current)
+        frameRef.current = null
+      }
+    }
   }, [])
+
+  const closeRenameSession = useCallback(() => {
+    renameSessionIdRef.current += 1
+    renameBlurCommitEnabledRef.current = true
+    cancelPendingRenameFrames()
+  }, [cancelPendingRenameFrames])
+
+  useEffect(
+    () => () => {
+      closeRenameSession()
+    },
+    [closeRenameSession]
+  )
+
+  const handleStartRename = useCallback(
+    (paneId: number) => {
+      cancelPendingRenameFrames()
+      renameSessionIdRef.current += 1
+      renameBlurCommitEnabledRef.current = false
+      renameSubmittedRef.current = false
+      setRenameValue(paneTitlesRef.current[paneId] ?? '')
+      setRenamingPaneId(paneId)
+    },
+    [cancelPendingRenameFrames]
+  )
 
   const removePaneTitle = useCallback(
     (paneId: number) => {
@@ -1180,6 +1215,7 @@ export default function TerminalPane({
       if (paneTitlesRef.current[renamingPaneId]) {
         removePaneTitle(renamingPaneId)
       }
+      closeRenameSession()
       setRenamingPaneId(null)
       return
     }
@@ -1193,15 +1229,52 @@ export default function TerminalPane({
     if (leafId) {
       removedTitleLeafIdsRef.current.delete(leafId)
     }
+    closeRenameSession()
     setRenamingPaneId(null)
     // Persist immediately so the title survives restarts.
     persistLayoutSnapshot()
-  }, [renamingPaneId, renameValue, removePaneTitle, persistLayoutSnapshot])
+  }, [closeRenameSession, renamingPaneId, renameValue, removePaneTitle, persistLayoutSnapshot])
 
   const handleRenameCancel = useCallback(() => {
     renameSubmittedRef.current = true
+    closeRenameSession()
     setRenamingPaneId(null)
-  }, [])
+  }, [closeRenameSession])
+
+  const handleRenameBlur = useCallback(() => {
+    if (renameBlurCommitEnabledRef.current) {
+      handleRenameSubmit()
+      return
+    }
+    if (renamingPaneId === null || renameRefocusFrameRef.current !== null) {
+      return
+    }
+
+    const sessionId = renameSessionIdRef.current
+    const paneId = renamingPaneId
+    // Why: the context-menu selection can be followed by a delayed Radix/xterm
+    // focus handoff. That synthetic early blur is not a title submission.
+    renameRefocusFrameRef.current = requestAnimationFrame(() => {
+      renameRefocusFrameRef.current = null
+      if (renameSessionIdRef.current !== sessionId || renamingPaneId !== paneId) {
+        return
+      }
+      const input = renameInputRef.current
+      if (!input) {
+        renameBlurCommitEnabledRef.current = true
+        handleRenameSubmit()
+        return
+      }
+      input.focus()
+      input.select()
+      if (document.activeElement === input) {
+        renameBlurCommitEnabledRef.current = true
+        return
+      }
+      renameBlurCommitEnabledRef.current = true
+      handleRenameSubmit()
+    })
+  }, [handleRenameSubmit, renamingPaneId])
 
   const handleRemoveTitle = useCallback(
     (paneId: number) => removePaneTitle(paneId),
@@ -1214,13 +1287,34 @@ export default function TerminalPane({
     if (renamingPaneId === null) {
       return
     }
+    const sessionId = renameSessionIdRef.current
+    const paneId = renamingPaneId
     renameSubmittedRef.current = false
-    const frame = requestAnimationFrame(() => {
-      renameInputRef.current?.focus()
-      renameInputRef.current?.select()
+    renameFocusFrameRef.current = requestAnimationFrame(() => {
+      renameFocusFrameRef.current = null
+      if (renameSessionIdRef.current !== sessionId || renamingPaneId !== paneId) {
+        return
+      }
+      const input = renameInputRef.current
+      if (!input) {
+        return
+      }
+      input.focus()
+      input.select()
+      renameEnableBlurFrameRef.current = requestAnimationFrame(() => {
+        renameEnableBlurFrameRef.current = null
+        if (
+          renameSessionIdRef.current === sessionId &&
+          renamingPaneId === paneId &&
+          renameInputRef.current === input &&
+          document.activeElement === input
+        ) {
+          renameBlurCommitEnabledRef.current = true
+        }
+      })
     })
-    return () => cancelAnimationFrame(frame)
-  }, [renamingPaneId])
+    return () => cancelPendingRenameFrames()
+  }, [cancelPendingRenameFrames, renamingPaneId])
 
   const contextMenu = useTerminalPaneContextMenu({
     managerRef,
@@ -1486,7 +1580,7 @@ export default function TerminalPane({
                     handleRenameCancel()
                   }
                 }}
-                onBlur={handleRenameSubmit}
+                onBlur={handleRenameBlur}
               />
             ) : (
               <>
