@@ -109,7 +109,7 @@ export function runWorktreeDeleteWithToast(
                     }
                   })
                   .catch((err: unknown) => {
-                    toast.error('Failed to delete worktree', {
+                    toast.error('Failed to delete workspace', {
                       description: err instanceof Error ? err.message : String(err),
                       action: {
                         label: 'View',
@@ -124,7 +124,7 @@ export function runWorktreeDeleteWithToast(
       return false
     })
     .catch((err: unknown) => {
-      toast.error('Failed to delete worktree', {
+      toast.error('Failed to delete workspace', {
         description: err instanceof Error ? err.message : String(err)
       })
       return false

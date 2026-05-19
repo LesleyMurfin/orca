@@ -1009,7 +1009,7 @@ export default function ChecksPanel(): React.JSX.Element {
           </div>
         )}
 
-        {/* Merge / Delete Worktree actions */}
+        {/* Merge / Delete Workspace actions */}
         {activeWorktree && repo && (
           <PRActions pr={pr} repo={repo} worktree={activeWorktree} onRefreshPR={handleRefreshPR} />
         )}

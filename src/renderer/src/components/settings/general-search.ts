@@ -12,8 +12,8 @@ export const GENERAL_WORKSPACE_SEARCH_ENTRIES: SettingsSearchEntry[] = [
     keywords: ['nested', 'subfolder', 'directory']
   },
   {
-    title: 'Ask Before Deleting Worktrees',
-    description: 'Show a confirmation dialog before deleting a worktree.',
+    title: 'Ask Before Deleting Workspaces',
+    description: 'Show a confirmation dialog before deleting a workspace.',
     keywords: ['delete', 'worktree', 'confirm', 'dialog', 'skip', 'prompt']
   },
   {

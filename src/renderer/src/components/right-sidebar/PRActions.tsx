@@ -187,7 +187,7 @@ export default function PRActions({
         ) : (
           <Trash2 className="size-3.5" />
         )}
-        {isDeletingWorktree ? 'Deleting…' : 'Delete Worktree'}
+        {isDeletingWorktree ? 'Deleting…' : 'Delete Workspace'}
       </Button>
     )
   }

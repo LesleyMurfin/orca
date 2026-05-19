@@ -278,16 +278,16 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
             breaks that toast action even though this pane still renders fine. */}
         <div id="general-skip-delete-worktree-confirm" className="scroll-mt-6">
           <SearchableSetting
-            title="Ask Before Deleting Worktrees"
-            description="Show a confirmation dialog before deleting a worktree."
+            title="Ask Before Deleting Workspaces"
+            description="Show a confirmation dialog before deleting a workspace."
             keywords={['delete', 'worktree', 'confirm', 'dialog', 'skip', 'prompt']}
             className="flex items-center justify-between gap-4 px-1 py-2"
           >
             <div className="space-y-0.5">
-              <Label>Ask Before Deleting Worktrees</Label>
+              <Label>Ask Before Deleting Workspaces</Label>
               <p className="text-xs text-muted-foreground">
-                Show a confirmation before deleting a worktree from the context menu. Failed deletes
-                still surface a Force Delete fallback.
+                Show a confirmation before deleting a workspace from the context menu. Failed
+                deletes still surface a Force Delete fallback.
               </p>
             </div>
             <button

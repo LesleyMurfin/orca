@@ -174,7 +174,7 @@ const DeleteWorktreeDialog = React.memo(function DeleteWorktreeDialog() {
             onDeleted?.([worktreeId])
           })
           .catch((err: unknown) => {
-            toast.error('Failed to delete worktree', {
+            toast.error('Failed to delete workspace', {
               description: err instanceof Error ? err.message : String(err)
             })
           })
@@ -222,14 +222,14 @@ const DeleteWorktreeDialog = React.memo(function DeleteWorktreeDialog() {
       >
         <DialogHeader>
           <DialogTitle className="text-sm">
-            {isBatchDelete ? 'Delete Worktrees' : 'Delete Worktree'}
+            {isBatchDelete ? 'Delete Workspaces' : 'Delete Workspace'}
           </DialogTitle>
           <DialogDescription className="text-xs">
             {isBatchDelete ? (
               <>
                 Remove{' '}
-                <span className="font-medium text-foreground">{worktrees.length} worktrees</span>{' '}
-                from git and delete their working tree folders.
+                <span className="font-medium text-foreground">{worktrees.length} workspaces</span>{' '}
+                from git and delete their workspace folders.
               </>
             ) : (
               <>
@@ -237,7 +237,7 @@ const DeleteWorktreeDialog = React.memo(function DeleteWorktreeDialog() {
                 <span className="break-all font-medium text-foreground">
                   {worktree?.displayName}
                 </span>{' '}
-                from git and delete its working tree folder.
+                from git and delete its workspace folder.
               </>
             )}
           </DialogDescription>
