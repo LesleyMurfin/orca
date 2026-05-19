@@ -956,6 +956,8 @@ describe('registerWorktreeHandlers', () => {
     })
     expect(runtimeStub.reconcileWorktreeBaseStatus).toHaveBeenCalledWith(
       expect.objectContaining({
+        createdWorktreePath: '/workspace/improve-dashboard',
+        createdInstanceId: expect.any(String),
         createdBaseSha: 'created-sha',
         fetchPromise: pendingFetch
       })
@@ -966,6 +968,58 @@ describe('registerWorktreeHandlers', () => {
       })
     )
     resolveFetch()
+  })
+
+  it('schedules optimistic reconcile when remote-tracking base freshness is cached', async () => {
+    const remoteBase = {
+      remote: 'origin',
+      branch: 'main',
+      ref: 'refs/remotes/origin/main',
+      base: 'origin/main'
+    }
+    runtimeStub.resolveRemoteTrackingBase.mockResolvedValue(remoteBase)
+    runtimeStub.hasRemoteTrackingRef.mockResolvedValue(true)
+    runtimeStub.isRemoteFetchFresh.mockResolvedValue(true)
+    listWorktreesMock.mockResolvedValue([
+      {
+        path: '/workspace/improve-dashboard',
+        head: 'created-sha',
+        branch: 'improve-dashboard',
+        isBare: false,
+        isMainWorktree: false
+      }
+    ])
+    gitExecFileAsyncMock.mockResolvedValue({ stdout: 'created-sha\n', stderr: '' })
+
+    const result = await handlers['worktrees:create'](null, {
+      repoId: 'repo-1',
+      name: 'improve-dashboard'
+    })
+
+    expect(runtimeStub.getOrStartRemoteFetch).not.toHaveBeenCalled()
+    expect(runtimeStub.emitWorktreeBaseStatus).toHaveBeenCalledWith({
+      repoId: 'repo-1',
+      worktreeId: 'repo-1::/workspace/improve-dashboard',
+      status: 'checking',
+      base: 'origin/main',
+      remote: 'origin'
+    })
+    expect(runtimeStub.reconcileWorktreeBaseStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        createdWorktreePath: '/workspace/improve-dashboard',
+        createdInstanceId: expect.any(String),
+        createdBaseSha: 'created-sha',
+        fetchPromise: expect.any(Promise)
+      })
+    )
+    await expect(
+      runtimeStub.reconcileWorktreeBaseStatus.mock.calls[0][0].fetchPromise
+    ).resolves.toEqual({ ok: true })
+    expect(result).toEqual(
+      expect.objectContaining({
+        initialBaseStatus: expect.objectContaining({ status: 'checking', base: 'origin/main' })
+      })
+    )
   })
 
   it('throws a clear error when no default base ref can be resolved', async () => {

@@ -551,9 +551,9 @@ export async function createLocalWorktree(
       const hasLocalBaseRef = await runtime.hasRemoteTrackingRef(repo.path, optimisticBase)
       if (hasLocalBaseRef) {
         const isFresh = await runtime.isRemoteFetchFresh(repo.path, optimisticBase.remote)
-        if (!isFresh) {
-          optimisticFetchPromise = runtime.getOrStartRemoteFetch(repo.path, optimisticBase.remote)
-        }
+        optimisticFetchPromise = isFresh
+          ? Promise.resolve({ ok: true })
+          : runtime.getOrStartRemoteFetch(repo.path, optimisticBase.remote)
       } else {
         emitCreateWorktreeProgress(mainWindow, 'fetching')
         const result = await runtime.getOrStartRemoteFetch(repo.path, optimisticBase.remote)
@@ -770,11 +770,12 @@ export async function createLocalWorktree(
 
   const worktreeId = `${repo.id}::${created.path}`
   const now = Date.now()
+  const createdInstanceId = randomUUID()
   const metaUpdates: Partial<WorktreeMeta> = {
     // Why: path-derived worktree IDs can be reused after external deletion.
     // Fresh creations must rotate instance identity so stale lineage cannot
     // attach to the new occupant of the same path.
-    instanceId: randomUUID(),
+    instanceId: createdInstanceId,
     // Stamp activity so the worktree sorts into its final position
     // immediately — prevents scroll-to-reveal racing with a later
     // bumpWorktreeActivity that would re-sort the list.
@@ -882,6 +883,8 @@ export async function createLocalWorktree(
           repoId: repo.id,
           repoPath: repo.path,
           worktreeId,
+          createdWorktreePath: created.path,
+          createdInstanceId,
           base: optimisticBase,
           branchName,
           createdBaseSha,

@@ -6065,10 +6065,77 @@ export class OrcaRuntimeService {
     this.notifier?.worktreeBaseStatus?.(event)
   }
 
+  private async refreshUntouchedCreatedWorktree(args: {
+    worktreeId: string
+    createdWorktreePath: string
+    createdInstanceId: string
+    branchName: string
+    createdBaseSha: string
+    postFetchSha: string
+    stillCurrent: () => boolean
+  }): Promise<'refreshed' | 'skipped' | 'stale'> {
+    const instanceMatches = (): boolean =>
+      this.store?.getWorktreeMeta(args.worktreeId)?.instanceId === args.createdInstanceId
+    if (!args.stillCurrent()) {
+      return 'stale'
+    }
+    if (!instanceMatches()) {
+      return 'stale'
+    }
+
+    try {
+      const { stdout: isWorkTreeStdout } = await gitExecFileAsync(
+        ['rev-parse', '--is-inside-work-tree'],
+        { cwd: args.createdWorktreePath }
+      )
+      if (isWorkTreeStdout.trim() !== 'true') {
+        return 'skipped'
+      }
+
+      const { stdout: headStdout } = await gitExecFileAsync(
+        ['rev-parse', '--verify', 'HEAD^{commit}'],
+        { cwd: args.createdWorktreePath }
+      )
+      if (headStdout.trim() !== args.createdBaseSha) {
+        return 'skipped'
+      }
+
+      const { stdout: branchStdout } = await gitExecFileAsync(
+        ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+        { cwd: args.createdWorktreePath }
+      )
+      if (branchStdout.trim() !== args.branchName) {
+        return 'skipped'
+      }
+
+      const { stdout: statusStdout } = await gitExecFileAsync(['status', '--porcelain'], {
+        cwd: args.createdWorktreePath
+      })
+      if (statusStdout.trim()) {
+        return 'skipped'
+      }
+
+      if (!args.stillCurrent()) {
+        return 'stale'
+      }
+      if (!instanceMatches()) {
+        return 'stale'
+      }
+      await gitExecFileAsync(['reset', '--hard', args.postFetchSha], {
+        cwd: args.createdWorktreePath
+      })
+      return args.stillCurrent() && instanceMatches() ? 'refreshed' : 'stale'
+    } catch {
+      return args.stillCurrent() ? 'skipped' : 'stale'
+    }
+  }
+
   async reconcileWorktreeBaseStatus(args: {
     repoId: string
     repoPath: string
     worktreeId: string
+    createdWorktreePath: string
+    createdInstanceId: string
     base: RemoteTrackingBase
     branchName: string
     createdBaseSha: string
@@ -6172,6 +6239,24 @@ export class OrcaRuntimeService {
         })
       } catch {
         emit({ status: 'base_changed' })
+        await checkPublishRemoteConflict()
+        return
+      }
+
+      const refreshResult = await this.refreshUntouchedCreatedWorktree({
+        worktreeId: args.worktreeId,
+        createdWorktreePath: args.createdWorktreePath,
+        createdInstanceId: args.createdInstanceId,
+        branchName: args.branchName,
+        createdBaseSha: args.createdBaseSha,
+        postFetchSha,
+        stillCurrent
+      })
+      if (refreshResult === 'stale') {
+        return
+      }
+      if (refreshResult === 'refreshed') {
+        emit({ status: 'current' })
         await checkPublishRemoteConflict()
         return
       }

@@ -5470,6 +5470,8 @@ describe('OrcaRuntimeService', () => {
       repoId: TEST_REPO_ID,
       repoPath: TEST_REPO_PATH,
       worktreeId: TEST_WORKTREE_ID,
+      createdWorktreePath: TEST_WORKTREE_PATH,
+      createdInstanceId: 'instance-1',
       base: {
         remote: 'origin',
         branch: 'main',
@@ -5483,6 +5485,306 @@ describe('OrcaRuntimeService', () => {
     })
 
     expect(worktreeBaseStatus).not.toHaveBeenCalled()
+  })
+
+  const remoteTrackingBase = {
+    remote: 'origin',
+    branch: 'main',
+    ref: 'refs/remotes/origin/main',
+    base: 'origin/main'
+  }
+
+  function createReconcileRuntime(instanceId: string | null = 'instance-1'): {
+    runtime: OrcaRuntimeService
+    worktreeBaseStatus: ReturnType<typeof vi.fn>
+  } {
+    const worktreeBaseStatus = vi.fn()
+    const runtimeStore = {
+      ...store,
+      getWorktreeMeta: (worktreeId: string) =>
+        worktreeId === TEST_WORKTREE_ID && instanceId
+          ? { ...store.getWorktreeMeta(worktreeId), instanceId }
+          : store.getWorktreeMeta(worktreeId)
+    }
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+    runtime.setNotifier({
+      worktreeBaseStatus,
+      worktreeRemoteBranchConflict: vi.fn()
+    } as never)
+    return { runtime, worktreeBaseStatus }
+  }
+
+  function mockReconcileGit(options: {
+    postFetchSha?: string
+    ancestor?: boolean
+    worktreeExists?: boolean
+    headSha?: string
+    branchName?: string
+    branchDetached?: boolean
+    status?: string
+    baseRefMissing?: boolean
+  }) {
+    const {
+      postFetchSha = 'new-base-sha',
+      ancestor = true,
+      worktreeExists = true,
+      headSha = 'created-base-sha',
+      branchName = 'feature',
+      branchDetached = false,
+      status = '',
+      baseRefMissing = false
+    } = options
+
+    return vi.spyOn(gitRunner, 'gitExecFileAsync').mockImplementation(async (args, options) => {
+      const command = args as string[]
+      const cwd = (options as { cwd?: string } | undefined)?.cwd
+      if (
+        cwd === TEST_REPO_PATH &&
+        command[0] === 'rev-parse' &&
+        command[1] === '--verify' &&
+        command[2] === `${remoteTrackingBase.ref}^{commit}`
+      ) {
+        if (baseRefMissing) {
+          throw new Error('missing base ref')
+        }
+        return { stdout: `${postFetchSha}\n`, stderr: '' }
+      }
+      if (cwd === TEST_REPO_PATH && command[0] === 'merge-base') {
+        if (!ancestor) {
+          throw new Error('not ancestor')
+        }
+        return { stdout: '', stderr: '' }
+      }
+      if (cwd === TEST_WORKTREE_PATH && command[0] === 'rev-parse') {
+        if (command[1] === '--is-inside-work-tree') {
+          if (!worktreeExists) {
+            throw new Error('not a worktree')
+          }
+          return { stdout: 'true\n', stderr: '' }
+        }
+        if (command[1] === '--verify' && command[2] === 'HEAD^{commit}') {
+          return { stdout: `${headSha}\n`, stderr: '' }
+        }
+      }
+      if (cwd === TEST_WORKTREE_PATH && command[0] === 'symbolic-ref') {
+        if (branchDetached) {
+          throw new Error('detached')
+        }
+        return { stdout: `${branchName}\n`, stderr: '' }
+      }
+      if (cwd === TEST_WORKTREE_PATH && command[0] === 'status') {
+        return { stdout: status, stderr: '' }
+      }
+      if (cwd === TEST_WORKTREE_PATH && command[0] === 'reset') {
+        return { stdout: `HEAD is now at ${postFetchSha}\n`, stderr: '' }
+      }
+      if (cwd === TEST_REPO_PATH && command[0] === 'rev-list') {
+        return { stdout: '3\n', stderr: '' }
+      }
+      if (cwd === TEST_REPO_PATH && command[0] === 'log') {
+        return { stdout: 'base commit 3\nbase commit 2\n', stderr: '' }
+      }
+      if (cwd === TEST_REPO_PATH && command[0] === 'config') {
+        throw new Error('config missing')
+      }
+      if (
+        cwd === TEST_REPO_PATH &&
+        command[0] === 'rev-parse' &&
+        command[1] === '--verify' &&
+        command[2] === 'refs/remotes/origin/feature^{commit}'
+      ) {
+        throw new Error('no publish branch conflict')
+      }
+      throw new Error(`unexpected git command: ${command.join(' ')}`)
+    })
+  }
+
+  async function reconcileWithToken(runtime: OrcaRuntimeService, token: string): Promise<void> {
+    await runtime.reconcileWorktreeBaseStatus({
+      repoId: TEST_REPO_ID,
+      repoPath: TEST_REPO_PATH,
+      worktreeId: TEST_WORKTREE_ID,
+      createdWorktreePath: TEST_WORKTREE_PATH,
+      createdInstanceId: 'instance-1',
+      base: remoteTrackingBase,
+      branchName: 'feature',
+      createdBaseSha: 'created-base-sha',
+      token,
+      fetchPromise: Promise.resolve({ ok: true })
+    })
+  }
+
+  it('auto-refreshes an untouched created worktree to current after fetch fast-forwards base', async () => {
+    const { runtime, worktreeBaseStatus } = createReconcileRuntime()
+    const token = runtime.recordOptimisticReconcileToken(TEST_WORKTREE_ID)
+    const gitSpy = mockReconcileGit({})
+    try {
+      await reconcileWithToken(runtime, token)
+
+      expect(gitSpy).toHaveBeenCalledWith(['reset', '--hard', 'new-base-sha'], {
+        cwd: TEST_WORKTREE_PATH
+      })
+      expect(worktreeBaseStatus).toHaveBeenCalledWith({
+        repoId: TEST_REPO_ID,
+        worktreeId: TEST_WORKTREE_ID,
+        base: 'origin/main',
+        remote: 'origin',
+        status: 'current'
+      })
+    } finally {
+      gitSpy.mockRestore()
+    }
+  })
+
+  it('skips auto-refresh and emits drift when the created worktree has untracked files', async () => {
+    const { runtime, worktreeBaseStatus } = createReconcileRuntime()
+    const token = runtime.recordOptimisticReconcileToken(TEST_WORKTREE_ID)
+    const gitSpy = mockReconcileGit({ status: '?? scratch.txt\n' })
+    try {
+      await reconcileWithToken(runtime, token)
+
+      expect(gitSpy).not.toHaveBeenCalledWith(['reset', '--hard', 'new-base-sha'], {
+        cwd: TEST_WORKTREE_PATH
+      })
+      expect(worktreeBaseStatus).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'drift',
+          behind: 3,
+          recentSubjects: ['base commit 3', 'base commit 2']
+        })
+      )
+    } finally {
+      gitSpy.mockRestore()
+    }
+  })
+
+  it('skips auto-refresh and emits drift when HEAD changed before reconcile', async () => {
+    const { runtime, worktreeBaseStatus } = createReconcileRuntime()
+    const token = runtime.recordOptimisticReconcileToken(TEST_WORKTREE_ID)
+    const gitSpy = mockReconcileGit({ headSha: 'user-commit-sha' })
+    try {
+      await reconcileWithToken(runtime, token)
+
+      expect(gitSpy).not.toHaveBeenCalledWith(['reset', '--hard', 'new-base-sha'], {
+        cwd: TEST_WORKTREE_PATH
+      })
+      expect(worktreeBaseStatus).toHaveBeenCalledWith(expect.objectContaining({ status: 'drift' }))
+    } finally {
+      gitSpy.mockRestore()
+    }
+  })
+
+  it('skips auto-refresh and emits drift when the created branch was switched or detached', async () => {
+    const { runtime, worktreeBaseStatus } = createReconcileRuntime()
+    const token = runtime.recordOptimisticReconcileToken(TEST_WORKTREE_ID)
+    const gitSpy = mockReconcileGit({ branchDetached: true })
+    try {
+      await reconcileWithToken(runtime, token)
+
+      expect(gitSpy).not.toHaveBeenCalledWith(['reset', '--hard', 'new-base-sha'], {
+        cwd: TEST_WORKTREE_PATH
+      })
+      expect(worktreeBaseStatus).toHaveBeenCalledWith(expect.objectContaining({ status: 'drift' }))
+    } finally {
+      gitSpy.mockRestore()
+    }
+  })
+
+  it('emits base_changed without mutation when the fetched base rewrote history', async () => {
+    const { runtime, worktreeBaseStatus } = createReconcileRuntime()
+    const token = runtime.recordOptimisticReconcileToken(TEST_WORKTREE_ID)
+    const gitSpy = mockReconcileGit({ ancestor: false })
+    try {
+      await reconcileWithToken(runtime, token)
+
+      expect(gitSpy).not.toHaveBeenCalledWith(['reset', '--hard', 'new-base-sha'], {
+        cwd: TEST_WORKTREE_PATH
+      })
+      expect(worktreeBaseStatus).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'base_changed' })
+      )
+    } finally {
+      gitSpy.mockRestore()
+    }
+  })
+
+  it('skips stale-token and instance-mismatch reconciles without mutating or emitting stale status', async () => {
+    const stale = createReconcileRuntime()
+    const staleToken = stale.runtime.recordOptimisticReconcileToken(TEST_WORKTREE_ID)
+    stale.runtime.recordOptimisticReconcileToken(TEST_WORKTREE_ID)
+    const staleGitSpy = mockReconcileGit({})
+    try {
+      await reconcileWithToken(stale.runtime, staleToken)
+      expect(stale.worktreeBaseStatus).not.toHaveBeenCalled()
+      expect(staleGitSpy).not.toHaveBeenCalled()
+    } finally {
+      staleGitSpy.mockRestore()
+    }
+
+    const mismatch = createReconcileRuntime('new-instance')
+    const mismatchToken = mismatch.runtime.recordOptimisticReconcileToken(TEST_WORKTREE_ID)
+    const mismatchGitSpy = mockReconcileGit({})
+    try {
+      await reconcileWithToken(mismatch.runtime, mismatchToken)
+
+      expect(mismatchGitSpy).not.toHaveBeenCalledWith(['reset', '--hard', 'new-base-sha'], {
+        cwd: TEST_WORKTREE_PATH
+      })
+      expect(mismatch.worktreeBaseStatus).not.toHaveBeenCalled()
+    } finally {
+      mismatchGitSpy.mockRestore()
+    }
+  })
+
+  it('skips auto-refresh and emits drift when the created path is gone', async () => {
+    const { runtime, worktreeBaseStatus } = createReconcileRuntime()
+    const token = runtime.recordOptimisticReconcileToken(TEST_WORKTREE_ID)
+    const gitSpy = mockReconcileGit({ worktreeExists: false })
+    try {
+      await reconcileWithToken(runtime, token)
+
+      expect(gitSpy).not.toHaveBeenCalledWith(['reset', '--hard', 'new-base-sha'], {
+        cwd: TEST_WORKTREE_PATH
+      })
+      expect(worktreeBaseStatus).toHaveBeenCalledWith(expect.objectContaining({ status: 'drift' }))
+    } finally {
+      gitSpy.mockRestore()
+    }
+  })
+
+  it('emits unknown without mutation when fetch fails or the base ref is missing', async () => {
+    const fetchFailure = createReconcileRuntime()
+    const fetchFailureToken = fetchFailure.runtime.recordOptimisticReconcileToken(TEST_WORKTREE_ID)
+    await fetchFailure.runtime.reconcileWorktreeBaseStatus({
+      repoId: TEST_REPO_ID,
+      repoPath: TEST_REPO_PATH,
+      worktreeId: TEST_WORKTREE_ID,
+      createdWorktreePath: TEST_WORKTREE_PATH,
+      createdInstanceId: 'instance-1',
+      base: remoteTrackingBase,
+      branchName: 'feature',
+      createdBaseSha: 'created-base-sha',
+      token: fetchFailureToken,
+      fetchPromise: Promise.resolve({ ok: false, errorKind: 'git_error' })
+    })
+    expect(fetchFailure.worktreeBaseStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'unknown' })
+    )
+
+    const missingBase = createReconcileRuntime()
+    const missingBaseToken = missingBase.runtime.recordOptimisticReconcileToken(TEST_WORKTREE_ID)
+    const gitSpy = mockReconcileGit({ baseRefMissing: true })
+    try {
+      await reconcileWithToken(missingBase.runtime, missingBaseToken)
+      expect(gitSpy).not.toHaveBeenCalledWith(['reset', '--hard', 'new-base-sha'], {
+        cwd: TEST_WORKTREE_PATH
+      })
+      expect(missingBase.worktreeBaseStatus).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'unknown' })
+      )
+    } finally {
+      gitSpy.mockRestore()
+    }
   })
 
   it('invalidates the filesystem-auth cache after CLI worktree creation', async () => {
