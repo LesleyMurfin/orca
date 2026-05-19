@@ -458,6 +458,10 @@ export function createRemoteRuntimePtyTransport(
       return true
     },
 
+    acknowledgeDataEvent(_charCount: number): void {
+      // Remote runtime terminal streams own their upstream flow control.
+    },
+
     resize(cols: number, rows: number): boolean {
       if (!connected || !handle) {
         return false

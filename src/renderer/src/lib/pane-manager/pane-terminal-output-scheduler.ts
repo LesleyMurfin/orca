@@ -1,3 +1,5 @@
+/* oxlint-disable max-lines -- Why: queueing, parse callbacks, and discard
+semantics share ACK state; keeping them together makes liveness easier to audit. */
 import { e2eConfig } from '@/lib/e2e-config'
 
 type TerminalOutputTarget = {
@@ -6,7 +8,24 @@ type TerminalOutputTarget = {
 
 type QueueEntry = {
   terminal: TerminalOutputTarget
-  chunks: string[]
+  chunks: QueueChunk[]
+}
+
+type QueueChunk = {
+  data: string
+  onParsed?: (charCount: number) => void
+}
+
+type WriteQueueEntry = {
+  data: string
+  callback?: () => void
+  callbackInvoked?: boolean
+}
+
+type TerminalWriteState = {
+  queue: WriteQueueEntry[]
+  writing: boolean
+  current?: WriteQueueEntry
 }
 
 const BACKGROUND_FLUSH_DELAY_MS = 50
@@ -14,8 +33,10 @@ const BACKGROUND_DRAIN_INTERVAL_MS = 16
 const BACKGROUND_CHUNK_CHARS = 16 * 1024
 const MAX_WRITES_PER_DRAIN = 2
 const PARSE_SETTLE_TIMEOUT_MS = 250
+const WRITE_CALLBACK_TIMEOUT_MS = 30_000
 
 const queuedByTerminal = new Map<TerminalOutputTarget, QueueEntry>()
+const writesByTerminal = new Map<TerminalOutputTarget, TerminalWriteState>()
 let drainTimer: ReturnType<typeof setTimeout> | null = null
 const debugEnabled = e2eConfig.exposeStore
 
@@ -84,41 +105,167 @@ function scheduleDrain(delayMs: number): void {
   drainTimer = setTimeout(drainQueuedOutput, delayMs)
 }
 
-function takeQueuedChunk(entry: QueueEntry, limit: number): string {
+function takeQueuedChunk(entry: QueueEntry, limit: number): { data: string; onParsed: () => void } {
   let remaining = limit
   let data = ''
+  const parsedCallbacks: (() => void)[] = []
 
   while (remaining > 0 && entry.chunks.length > 0) {
     const chunk = entry.chunks[0]
-    if (chunk.length <= remaining) {
-      data += chunk
-      remaining -= chunk.length
+    if (chunk.data.length <= remaining) {
+      data += chunk.data
+      remaining -= chunk.data.length
+      const consumed = chunk.data.length
+      if (chunk.onParsed && consumed > 0) {
+        parsedCallbacks.push(() => chunk.onParsed?.(consumed))
+      }
       entry.chunks.shift()
       continue
     }
 
-    data += chunk.slice(0, remaining)
-    entry.chunks[0] = chunk.slice(remaining)
+    const consumed = remaining
+    data += chunk.data.slice(0, remaining)
+    entry.chunks[0] = { ...chunk, data: chunk.data.slice(remaining) }
+    if (chunk.onParsed && consumed > 0) {
+      parsedCallbacks.push(() => chunk.onParsed?.(consumed))
+    }
     remaining = 0
   }
 
-  return data
+  return {
+    data,
+    onParsed: () => {
+      for (const callback of parsedCallbacks) {
+        callback()
+      }
+    }
+  }
+}
+
+function getWriteState(terminal: TerminalOutputTarget): TerminalWriteState {
+  let state = writesByTerminal.get(terminal)
+  if (!state) {
+    state = { queue: [], writing: false }
+    writesByTerminal.set(terminal, state)
+  }
+  return state
+}
+
+function invokeWriteCallback(entry: WriteQueueEntry): void {
+  if (entry.callbackInvoked) {
+    return
+  }
+  entry.callbackInvoked = true
+  entry.callback?.()
+}
+
+function invokeQueuedChunkCallbacks(entry: QueueEntry): void {
+  for (const chunk of entry.chunks) {
+    if (chunk.data.length > 0) {
+      chunk.onParsed?.(chunk.data.length)
+    }
+  }
+  entry.chunks.length = 0
+}
+
+function discardWriteState(state: TerminalWriteState): void {
+  if (state.current) {
+    invokeWriteCallback(state.current)
+    state.current = undefined
+  }
+  for (const entry of state.queue) {
+    invokeWriteCallback(entry)
+  }
+  state.queue.length = 0
+  state.writing = false
+}
+
+function finishTerminalWrite(terminal: TerminalOutputTarget, state: TerminalWriteState): void {
+  if (writesByTerminal.get(terminal) !== state) {
+    return
+  }
+  state.current = undefined
+  state.writing = false
+  if (state.queue.length === 0) {
+    writesByTerminal.delete(terminal)
+    return
+  }
+  pumpTerminalWriteQueue(terminal, state)
+}
+
+function pumpTerminalWriteQueue(
+  terminal: TerminalOutputTarget,
+  state = writesByTerminal.get(terminal)
+): void {
+  if (!state || state.writing) {
+    return
+  }
+
+  const next = state.queue.shift()
+  if (!next) {
+    writesByTerminal.delete(terminal)
+    return
+  }
+
+  state.writing = true
+  state.current = next
+  let settled = false
+  const finish = (): void => {
+    if (settled) {
+      return
+    }
+    settled = true
+    if (timeout !== null) {
+      clearTimeout(timeout)
+    }
+    finishTerminalWrite(terminal, state)
+  }
+  let timeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    // Why: if xterm never calls back, these bytes have no future ACK path.
+    // Treat them as abandoned so upstream PTYs cannot remain paused forever.
+    try {
+      invokeWriteCallback(next)
+    } finally {
+      finish()
+    }
+  }, WRITE_CALLBACK_TIMEOUT_MS)
+  try {
+    terminal.write(next.data, () => {
+      try {
+        invokeWriteCallback(next)
+      } finally {
+        finish()
+      }
+    })
+  } catch {
+    // Why: xterm throws when disposed and can throw its overflow guard if a
+    // caller bypassed flow control earlier. Drop this terminal's pending writes
+    // so one dead pane cannot poison the global scheduler.
+    if (timeout !== null) {
+      clearTimeout(timeout)
+      timeout = null
+    }
+    discardWriteState(state)
+    writesByTerminal.delete(terminal)
+  }
+}
+
+export function enqueueTerminalWrite(
+  terminal: TerminalOutputTarget,
+  data: string,
+  callback?: () => void
+): void {
+  const state = getWriteState(terminal)
+  state.queue.push({ data, callback })
+  pumpTerminalWriteQueue(terminal, state)
 }
 
 function writeQueuedChunk(entry: QueueEntry): boolean {
-  const data = takeQueuedChunk(entry, BACKGROUND_CHUNK_CHARS)
+  const { data, onParsed } = takeQueuedChunk(entry, BACKGROUND_CHUNK_CHARS)
   if (!data) {
     return false
   }
-  try {
-    entry.terminal.write(data)
-  } catch {
-    // Why: pane.terminal.dispose() can race with a queued late-arriving PTY ping;
-    // a write to a disposed terminal throws. Drop the entry rather than crashing
-    // the scheduler for other panes still draining.
-    entry.chunks.length = 0
-    return false
-  }
+  enqueueTerminalWrite(entry.terminal, data, onParsed)
   return true
 }
 
@@ -155,7 +302,7 @@ function drainQueuedOutput(): void {
 export function writeTerminalOutput(
   terminal: TerminalOutputTarget,
   data: string,
-  options: { foreground: boolean }
+  options: { foreground: boolean; onParsed?: (charCount: number) => void }
 ): void {
   exposeDebugApi()
   if (!data) {
@@ -167,7 +314,7 @@ export function writeTerminalOutput(
     if (debugEnabled) {
       debugState.foregroundWriteCount++
     }
-    terminal.write(data)
+    enqueueTerminalWrite(terminal, data, () => options.onParsed?.(data.length))
     return
   }
 
@@ -176,7 +323,7 @@ export function writeTerminalOutput(
     entry = { terminal, chunks: [] }
     queuedByTerminal.set(terminal, entry)
   }
-  entry.chunks.push(data)
+  entry.chunks.push({ data, onParsed: options.onParsed })
   if (debugEnabled) {
     debugState.backgroundEnqueueCount++
   }
@@ -195,18 +342,11 @@ export function flushTerminalOutput(terminal: TerminalOutputTarget): void {
   queuedByTerminal.delete(terminal)
 
   let data = takeQueuedChunk(entry, BACKGROUND_CHUNK_CHARS)
-  while (data) {
+  while (data.data) {
     if (debugEnabled) {
       debugState.flushWriteCount++
     }
-    try {
-      terminal.write(data)
-    } catch {
-      // Why: pane.terminal.dispose() can race with a queued late-arriving PTY ping;
-      // a write to a disposed terminal throws. Drop the entry rather than crashing
-      // the scheduler for other panes still draining.
-      return
-    }
+    enqueueTerminalWrite(terminal, data.data, data.onParsed)
     data = takeQueuedChunk(entry, BACKGROUND_CHUNK_CHARS)
   }
 }
@@ -228,17 +368,22 @@ export function waitForTerminalOutputParsed(terminal: TerminalOutputTarget): Pro
       resolve()
     }
     timer = setTimeout(finish, PARSE_SETTLE_TIMEOUT_MS)
-    try {
-      terminal.write('', finish)
-    } catch {
-      finish()
-    }
+    enqueueTerminalWrite(terminal, '', finish)
   })
 }
 
 export function discardTerminalOutput(terminal: TerminalOutputTarget): void {
   exposeDebugApi()
-  queuedByTerminal.delete(terminal)
+  const queuedEntry = queuedByTerminal.get(terminal)
+  if (queuedEntry) {
+    invokeQueuedChunkCallbacks(queuedEntry)
+    queuedByTerminal.delete(terminal)
+  }
+  const writeState = writesByTerminal.get(terminal)
+  if (writeState) {
+    discardWriteState(writeState)
+  }
+  writesByTerminal.delete(terminal)
 }
 
 exposeDebugApi()

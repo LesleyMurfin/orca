@@ -1080,6 +1080,7 @@ function createPtyApi(): NonNullable<Partial<PreloadApi>['pty']> {
   return {
     spawn: () => Promise.reject(new Error('Local PTYs are unavailable in the web client.')),
     write: () => {},
+    ackData: () => {},
     resize: () => {},
     reportGeometry: () => {},
     signal: () => {},

@@ -62,6 +62,10 @@ export class DaemonPtyProvider {
     this.client.notify('resize', { sessionId: id, cols, rows })
   }
 
+  acknowledgeDataEvent(id: string, charCount: number): void {
+    this.client.notify('acknowledgeDataEvent', { sessionId: id, charCount })
+  }
+
   async shutdown(id: string, _opts: { immediate?: boolean; keepHistory?: boolean }): Promise<void> {
     await this.client.request('kill', { sessionId: id })
   }

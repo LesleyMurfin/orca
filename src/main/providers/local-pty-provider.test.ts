@@ -50,6 +50,8 @@ describe('LocalPtyProvider', () => {
     onExit: ReturnType<typeof vi.fn>
     write: ReturnType<typeof vi.fn>
     resize: ReturnType<typeof vi.fn>
+    pause: ReturnType<typeof vi.fn>
+    resume: ReturnType<typeof vi.fn>
     kill: ReturnType<typeof vi.fn>
     process: string
     pid: number
@@ -75,6 +77,8 @@ describe('LocalPtyProvider', () => {
       }),
       write: vi.fn(),
       resize: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
       kill: vi.fn(() => {
         exitCb?.({ exitCode: -1 })
       }),
@@ -355,6 +359,20 @@ describe('LocalPtyProvider', () => {
       onDataCb('hello')
 
       expect(dataHandler).not.toHaveBeenCalled()
+    })
+
+    it('pauses and resumes PTY output based on renderer parse acknowledgements', async () => {
+      const { id } = await provider.spawn({ cols: 80, rows: 24 })
+      const onDataCb = mockProc.onData.mock.calls[0][0]
+
+      onDataCb('x'.repeat(100_001))
+
+      expect(mockProc.pause).toHaveBeenCalledTimes(1)
+      expect(mockProc.resume).not.toHaveBeenCalled()
+
+      provider.acknowledgeDataEvent(id, 95_002)
+
+      expect(mockProc.resume).toHaveBeenCalledTimes(1)
     })
   })
 

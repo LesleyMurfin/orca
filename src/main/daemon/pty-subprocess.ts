@@ -1,3 +1,5 @@
+/* oxlint-disable max-lines -- Why: subprocess spawn, Windows shell parity, and
+native PTY teardown hazards need to stay co-located for safe lifecycle changes. */
 import * as pty from 'node-pty'
 import { statSync } from 'fs'
 import { win32 as pathWin32 } from 'path'
@@ -301,6 +303,26 @@ export function createPtySubprocess(opts: PtySubprocessOptions): SubprocessHandl
       }
       try {
         proc.resize(cols, rows)
+      } catch {
+        dead = true
+      }
+    },
+    pause: () => {
+      if (dead) {
+        return
+      }
+      try {
+        proc.pause()
+      } catch {
+        dead = true
+      }
+    },
+    resume: () => {
+      if (dead) {
+        return
+      }
+      try {
+        proc.resume()
       } catch {
         dead = true
       }

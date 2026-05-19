@@ -259,6 +259,16 @@ export class DaemonServer {
         }
         return {}
 
+      case 'acknowledgeDataEvent':
+        try {
+          this.host.acknowledgeDataEvent(request.payload.sessionId, request.payload.charCount)
+        } catch (err) {
+          if (!(err instanceof SessionNotFoundError)) {
+            throw err
+          }
+        }
+        return {}
+
       case 'kill':
         this.host.kill(request.payload.sessionId)
         return {}

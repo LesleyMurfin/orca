@@ -1,3 +1,5 @@
+/* oxlint-disable max-lines -- Why: Session state, flow-control, and teardown
+tests share one subprocess harness and are easier to audit together. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Session } from './session'
 import type { SessionState, ShellReadyState } from './types'
@@ -6,6 +8,8 @@ import type { SessionState, ShellReadyState } from './types'
 function createMockSubprocess() {
   const written: string[] = []
   const signals: string[] = []
+  const pause = vi.fn()
+  const resume = vi.fn()
   let onData: ((data: string) => void) | null = null
   let onExit: ((code: number) => void) | null = null
   let killed = false
@@ -24,6 +28,8 @@ function createMockSubprocess() {
       written.push(data)
     },
     resize(_cols: number, _rows: number) {},
+    pause,
+    resume,
     kill() {
       killed = true
       // Simulate async exit
@@ -146,6 +152,25 @@ describe('Session', () => {
       subprocess.simulateData('broadcast')
       expect(received1).toEqual(['broadcast'])
       expect(received2).toEqual(['broadcast'])
+    })
+
+    it('pauses and resumes output from renderer parse acknowledgements', () => {
+      createSession()
+      session.attachClient({ onData: () => {}, onExit: () => {} })
+      subprocess.simulateData('x'.repeat(100_001))
+
+      expect(subprocess.pause).toHaveBeenCalledTimes(1)
+      expect(subprocess.resume).not.toHaveBeenCalled()
+      session.acknowledgeDataEvent(95_002)
+      expect(subprocess.resume).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not pause waiting for renderer acknowledgements when no client is attached', () => {
+      createSession()
+
+      subprocess.simulateData('x'.repeat(100_001))
+
+      expect(subprocess.pause).not.toHaveBeenCalled()
     })
   })
 

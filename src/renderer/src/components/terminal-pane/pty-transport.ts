@@ -59,6 +59,7 @@ type PtyOutputProcessorOptions = Pick<
 type ProcessPtyOutputOptions = {
   replayingBufferedData?: boolean
   suppressAttentionEvents?: boolean
+  onParsed?: (charCount: number) => void
 }
 
 export function createPtyOutputProcessor({
@@ -126,6 +127,7 @@ export function createPtyOutputProcessor({
     callbacks: PtyOutputCallbacks,
     options: ProcessPtyOutputOptions = {}
   ): void {
+    const sourceCharCount = data.length
     const suppressAttentionEvents = options.suppressAttentionEvents === true
     // Why: OSC 9999 is a renderer-only control protocol. Parse it before
     // xterm sees the bytes, and keep parser state across chunks so partial
@@ -142,9 +144,15 @@ export function createPtyOutputProcessor({
       }
     }
     if (options.replayingBufferedData && callbacks.onReplayData) {
-      callbacks.onReplayData(data)
+      if (data.length === 0) {
+        options.onParsed?.(sourceCharCount)
+      } else if (options.onParsed) {
+        callbacks.onReplayData(data, () => options.onParsed?.(sourceCharCount))
+      } else {
+        callbacks.onReplayData(data)
+      }
     } else {
-      callbacks.onData?.(data)
+      callbacks.onData?.(data, sourceCharCount)
     }
     if (onTitleChange) {
       // Why: feed EVERY OSC title in the chunk through the observer, not just
@@ -269,7 +277,7 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       if (storedCallbacks.onReplayData) {
         storedCallbacks.onReplayData(data)
       } else {
-        storedCallbacks.onData?.(data)
+        storedCallbacks.onData?.(data, 0)
       }
     })
     ptyDataHandlers.set(id, (data) => {
@@ -439,7 +447,10 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
           suppressAttentionEvents = true
           replayingBufferedData = true
           try {
-            ptyDataHandlers.get(id)?.(buffered)
+            outputProcessor.processData(buffered, storedCallbacks, {
+              replayingBufferedData: true,
+              suppressAttentionEvents: true
+            })
           } finally {
             replayingBufferedData = false
             suppressAttentionEvents = false
@@ -518,6 +529,13 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       }
       window.api.pty.write(ptyId, data)
       return true
+    },
+
+    acknowledgeDataEvent(charCount: number): void {
+      if (!connected || !ptyId || charCount <= 0) {
+        return
+      }
+      window.api.pty.ackData(ptyId, charCount)
     },
 
     resize(cols: number, rows: number): boolean {

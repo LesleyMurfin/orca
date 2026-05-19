@@ -13,6 +13,8 @@ const { mockPtySpawn, mockPtyInstance } = vi.hoisted(() => ({
     onExit: vi.fn(),
     write: vi.fn(),
     resize: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
     kill: vi.fn(),
     clear: vi.fn()
   }
@@ -32,6 +34,8 @@ function createMockDispatcher() {
   >()
   const notificationHandlers = new Map<string, (params: Record<string, unknown>) => void>()
   const notifications: { method: string; params?: Record<string, unknown> }[] = []
+  const clientDetachListeners = new Set<(clientId: number) => void>()
+  let hasOpenClient = true
 
   const dispatcher = {
     onRequest: vi.fn(
@@ -51,10 +55,23 @@ function createMockDispatcher() {
     notify: vi.fn((method: string, params?: Record<string, unknown>) => {
       notifications.push({ method, params })
     }),
+    onClientDetached: vi.fn((listener: (clientId: number) => void) => {
+      clientDetachListeners.add(listener)
+      return () => clientDetachListeners.delete(listener)
+    }),
+    hasOpenClient: vi.fn(() => hasOpenClient),
     // Helpers for tests
     _requestHandlers: requestHandlers,
     _notificationHandlers: notificationHandlers,
     _notifications: notifications,
+    _setHasOpenClient(value: boolean) {
+      hasOpenClient = value
+    },
+    _detachClient(clientId = 1) {
+      for (const listener of clientDetachListeners) {
+        listener(clientId)
+      }
+    },
     async callRequest(
       method: string,
       params: Record<string, unknown> = {},
@@ -89,6 +106,8 @@ describe('PtyHandler', () => {
     mockPtyInstance.onExit.mockReset()
     mockPtyInstance.write.mockReset()
     mockPtyInstance.resize.mockReset()
+    mockPtyInstance.pause.mockReset()
+    mockPtyInstance.resume.mockReset()
     mockPtyInstance.kill.mockReset()
     mockPtyInstance.clear.mockReset()
 
@@ -269,6 +288,74 @@ describe('PtyHandler', () => {
     await dispatcher.callRequest('pty.spawn', {})
     dispatcher.callNotification('pty.resize', { id: 'pty-1', cols: 120, rows: 40 })
     expect(mockResize).toHaveBeenCalledWith(120, 40)
+  })
+
+  it('pauses and resumes remote PTY output based on renderer parse acknowledgements', async () => {
+    let dataCallback: ((data: string) => void) | undefined
+    const mockPause = vi.fn()
+    const mockResume = vi.fn()
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      pause: mockPause,
+      resume: mockResume,
+      onData: vi.fn((cb: (data: string) => void) => {
+        dataCallback = cb
+      }),
+      onExit: vi.fn()
+    })
+
+    await dispatcher.callRequest('pty.spawn', {})
+    dataCallback!('x'.repeat(100_001))
+
+    expect(mockPause).toHaveBeenCalledTimes(1)
+    expect(mockResume).not.toHaveBeenCalled()
+
+    dispatcher.callNotification('pty.ackData', { id: 'pty-1', charCount: 95_002 })
+
+    expect(mockResume).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not pause remote PTYs while no relay client can acknowledge output', async () => {
+    let dataCallback: ((data: string) => void) | undefined
+    const mockPause = vi.fn()
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      pause: mockPause,
+      onData: vi.fn((cb: (data: string) => void) => {
+        dataCallback = cb
+      }),
+      onExit: vi.fn()
+    })
+
+    dispatcher._setHasOpenClient(false)
+    await dispatcher.callRequest('pty.spawn', {})
+    dataCallback!('x'.repeat(120 * 1024))
+
+    expect(mockPause).not.toHaveBeenCalled()
+  })
+
+  it('clears paused flow-control state when the last relay client detaches', async () => {
+    let dataCallback: ((data: string) => void) | undefined
+    const mockPause = vi.fn()
+    const mockResume = vi.fn()
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      pause: mockPause,
+      resume: mockResume,
+      onData: vi.fn((cb: (data: string) => void) => {
+        dataCallback = cb
+      }),
+      onExit: vi.fn()
+    })
+
+    await dispatcher.callRequest('pty.spawn', {})
+    dataCallback!('x'.repeat(120 * 1024))
+    expect(mockPause).toHaveBeenCalledTimes(1)
+
+    dispatcher._setHasOpenClient(false)
+    dispatcher._detachClient()
+
+    expect(mockResume).toHaveBeenCalledTimes(1)
   })
 
   it('kills PTY on shutdown with SIGTERM by default', async () => {

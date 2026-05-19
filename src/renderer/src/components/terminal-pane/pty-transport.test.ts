@@ -29,6 +29,7 @@ describe('createIpcPtyTransport', () => {
           spawn: vi.fn().mockResolvedValue({ id: 'pty-1' }),
           write: vi.fn(),
           resize: vi.fn(),
+          ackData: vi.fn(),
           kill: vi.fn(),
           onData: vi.fn((callback: (payload: { id: string; data: string }) => void) => {
             onData = callback
@@ -173,6 +174,19 @@ describe('createIpcPtyTransport', () => {
     expect(handle.flush()).toBe('')
     expect(onReplayData).toHaveBeenCalledWith(bufferedPayload)
     expect(onDataCallback).not.toHaveBeenCalledWith(bufferedPayload)
+  })
+
+  it('acknowledges eager-buffered bytes as soon as the renderer stores them', async () => {
+    const { registerEagerPtyBuffer } = await import('./pty-transport')
+    const first = 'x'.repeat(400 * 1024)
+    const second = 'y'.repeat(200 * 1024)
+
+    registerEagerPtyBuffer('pty-restored', vi.fn())
+    onData?.({ id: 'pty-restored', data: first })
+    onData?.({ id: 'pty-restored', data: second })
+
+    expect(window.api.pty.ackData).toHaveBeenCalledWith('pty-restored', first.length)
+    expect(window.api.pty.ackData).toHaveBeenCalledWith('pty-restored', second.length)
   })
 
   it('routes the attach-time clear sequence through onReplayData for non-alternate-screen sessions', async () => {
@@ -767,7 +781,7 @@ describe('createRemoteRuntimePtyTransport', () => {
 
     expect(onReplayData).toHaveBeenCalledWith('hello')
     expect(onConnect).toHaveBeenCalled()
-    expect(onData).toHaveBeenCalledWith(' world')
+    expect(onData).toHaveBeenCalledWith(' world', 6)
   })
 
   it('forwards input and cleanup through runtime RPC', async () => {

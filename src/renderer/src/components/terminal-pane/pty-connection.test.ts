@@ -81,6 +81,7 @@ type MockTransport = {
     ) => unknown
   }
   sendInput: ReturnType<typeof vi.fn>
+  acknowledgeDataEvent: ReturnType<typeof vi.fn>
   resize: ReturnType<typeof vi.fn>
   getPtyId: ReturnType<typeof vi.fn>
 }
@@ -193,6 +194,7 @@ function createMockTransport(initialPtyId: string | null = null): MockTransport 
       return ptyId
     }),
     sendInput: vi.fn(() => true),
+    acknowledgeDataEvent: vi.fn(),
     resize: vi.fn(() => true),
     getPtyId: vi.fn(() => ptyId)
   } as MockTransport
@@ -207,7 +209,9 @@ function createPane(paneId: number) {
     terminal: {
       cols: 120,
       rows: 40,
-      write: vi.fn(),
+      write: vi.fn((_data: string, callback?: () => void) => {
+        callback?.()
+      }),
       onData: vi.fn(() => ({ dispose: vi.fn() })),
       onResize: vi.fn(() => ({ dispose: vi.fn() })),
       onTitleChange: vi.fn(() => ({ dispose: vi.fn() })),
@@ -978,13 +982,13 @@ describe('connectPanePty', () => {
 
       expect(capturedDataCallback.current).not.toBeNull()
       capturedDataCallback.current?.('hello\r\n')
-      expect(pane.terminal.write).not.toHaveBeenCalledWith('hello\r\n')
+      expect(pane.terminal.write).not.toHaveBeenCalledWith('hello\r\n', expect.any(Function))
 
       for (const fn of pendingTimeouts) {
         fn()
       }
 
-      expect(pane.terminal.write).toHaveBeenCalledWith('hello\r\n')
+      expect(pane.terminal.write).toHaveBeenCalledWith('hello\r\n', expect.any(Function))
     } finally {
       globalThis.setTimeout = originalSetTimeout
     }
@@ -1022,13 +1026,19 @@ describe('connectPanePty', () => {
 
       expect(capturedDataCallback.current).not.toBeNull()
       capturedDataCallback.current?.('visible split output\r\n')
-      expect(pane.terminal.write).not.toHaveBeenCalledWith('visible split output\r\n')
+      expect(pane.terminal.write).not.toHaveBeenCalledWith(
+        'visible split output\r\n',
+        expect.any(Function)
+      )
 
       for (const fn of pendingTimeouts) {
         fn()
       }
 
-      expect(pane.terminal.write).toHaveBeenCalledWith('visible split output\r\n')
+      expect(pane.terminal.write).toHaveBeenCalledWith(
+        'visible split output\r\n',
+        expect.any(Function)
+      )
     } finally {
       globalThis.setTimeout = originalSetTimeout
     }
@@ -1057,7 +1067,10 @@ describe('connectPanePty', () => {
     expect(capturedDataCallback.current).not.toBeNull()
     capturedDataCallback.current?.('active split output\r\n')
 
-    expect(pane.terminal.write).toHaveBeenCalledWith('active split output\r\n')
+    expect(pane.terminal.write).toHaveBeenCalledWith(
+      'active split output\r\n',
+      expect.any(Function)
+    )
   })
 
   it('marks panes that receive Arabic output for DOM rendering', async () => {
@@ -1080,7 +1093,10 @@ describe('connectPanePty', () => {
     capturedDataCallback.current?.('Arabic: السلام عليكم\r\n')
 
     expect(manager.markPaneHasComplexScriptOutput).toHaveBeenCalledWith(1)
-    expect(pane.terminal.write).toHaveBeenCalledWith('Arabic: السلام عليكم\r\n')
+    expect(pane.terminal.write).toHaveBeenCalledWith(
+      'Arabic: السلام عليكم\r\n',
+      expect.any(Function)
+    )
   })
 
   it('reattaches via daemon sessionId when an in-session PTY is live', async () => {

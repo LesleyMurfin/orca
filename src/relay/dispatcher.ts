@@ -1,3 +1,5 @@
+/* oxlint-disable max-lines -- Why: relay framing, client liveness, and request
+routing share sequence state; splitting would make protocol ordering harder to audit. */
 import {
   FrameDecoder,
   MessageType,
@@ -120,6 +122,15 @@ export class RelayDispatcher {
   onClientDetached(listener: (clientId: number) => void): () => void {
     this.clientDetachListeners.add(listener)
     return () => this.clientDetachListeners.delete(listener)
+  }
+
+  hasOpenClient(): boolean {
+    for (const client of this.clients.values()) {
+      if (!client.closed) {
+        return true
+      }
+    }
+    return false
   }
 
   feed(data: Buffer): void {

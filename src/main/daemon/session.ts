@@ -7,11 +7,15 @@ import type { SessionState, ShellReadyState, TerminalSnapshot } from './types'
 const SHELL_READY_TIMEOUT_MS = 15_000
 const KILL_TIMEOUT_MS = 5_000
 const SHELL_READY_MARKER = '\x1b]777;orca-shell-ready\x07'
+const FLOW_CONTROL_HIGH_WATERMARK_CHARS = 100_000
+const FLOW_CONTROL_LOW_WATERMARK_CHARS = 5_000
 
 export type SubprocessHandle = {
   pid: number
   write(data: string): void
   resize(cols: number, rows: number): void
+  pause?(): void
+  resume?(): void
   kill(): void
   forceKill(): void
   signal(sig: string): void
@@ -50,6 +54,8 @@ export class Session {
   private attachedClients: AttachedClient[] = []
   private preReadyStdinQueue: string[] = []
   private markerBuffer = ''
+  private unacknowledgedChars = 0
+  private subprocessPaused = false
   private shellReadyTimer: ReturnType<typeof setTimeout> | null = null
   private killTimer: ReturnType<typeof setTimeout> | null = null
   private postReadyFlushGate: PostReadyFlushGate
@@ -132,6 +138,23 @@ export class Session {
     }
     this.emulator.resize(cols, rows)
     this.subprocess.resize(cols, rows)
+  }
+
+  acknowledgeDataEvent(charCount: number): void {
+    if (charCount <= 0) {
+      return
+    }
+    this.unacknowledgedChars = Math.max(0, this.unacknowledgedChars - charCount)
+    if (
+      this.subprocessPaused &&
+      this.unacknowledgedChars < FLOW_CONTROL_LOW_WATERMARK_CHARS &&
+      !this._disposed &&
+      this._state !== 'exited' &&
+      this.subprocess.resume
+    ) {
+      this.subprocess.resume()
+      this.subprocessPaused = false
+    }
   }
 
   kill(): void {
@@ -220,6 +243,8 @@ export class Session {
 
     this.attachedClients = []
     this.preReadyStdinQueue = []
+    this.unacknowledgedChars = 0
+    this.subprocessPaused = false
     this.postReadyFlushGate.clear()
     this.emulator.dispose()
 
@@ -301,6 +326,9 @@ export class Session {
 
     // Feed data to headless emulator for state tracking
     this.emulator.write(data)
+    if (this.attachedClients.length > 0) {
+      this.observeUnacknowledgedData(data.length)
+    }
 
     if (this._shellState === 'pending') {
       this.scanForShellMarker(data)
@@ -311,6 +339,23 @@ export class Session {
     // Broadcast to attached clients
     for (const client of this.attachedClients) {
       client.onData(data)
+    }
+  }
+
+  private observeUnacknowledgedData(charCount: number): void {
+    if (charCount <= 0) {
+      return
+    }
+    this.unacknowledgedChars += charCount
+    if (
+      !this.subprocessPaused &&
+      this.unacknowledgedChars > FLOW_CONTROL_HIGH_WATERMARK_CHARS &&
+      this.subprocess.pause
+    ) {
+      // Why: renderer ACKs arrive after xterm parses output. Pausing here
+      // keeps daemon-hosted PTYs from outrunning the renderer indefinitely.
+      this.subprocess.pause()
+      this.subprocessPaused = true
     }
   }
 
@@ -331,6 +376,8 @@ export class Session {
       this.shellReadyTimer = null
     }
     this.postReadyFlushGate.clear()
+    this.unacknowledgedChars = 0
+    this.subprocessPaused = false
 
     // Why: release the ptmx fd on the natural-exit path. Without this, the
     // node-pty wrapper's _socket stays alive until GC and the master fd leaks
@@ -421,6 +468,8 @@ export class Session {
     const clients = this.attachedClients
     this.attachedClients = []
     this.preReadyStdinQueue = []
+    this.unacknowledgedChars = 0
+    this.subprocessPaused = false
     this.postReadyFlushGate.clear()
     this.emulator.dispose()
 

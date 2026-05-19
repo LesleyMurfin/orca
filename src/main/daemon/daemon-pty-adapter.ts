@@ -34,7 +34,7 @@ const MAX_TOMBSTONES = 1000
 const MAX_PENDING_DAEMON_NOTIFICATIONS = 512
 
 type PendingDaemonNotification = {
-  type: 'write' | 'resize'
+  type: 'write' | 'resize' | 'acknowledgeDataEvent'
   payload: unknown
 }
 
@@ -319,8 +319,8 @@ export class DaemonPtyAdapter implements IPtyProvider {
     this.markSessionDirty(id)
   }
 
-  acknowledgeDataEvent(_id: string, _charCount: number): void {
-    // No flow control for daemon-backed terminals
+  acknowledgeDataEvent(id: string, charCount: number): void {
+    this.sendNotification('acknowledgeDataEvent', { sessionId: id, charCount })
   }
 
   async hasChildProcesses(_id: string): Promise<boolean> {

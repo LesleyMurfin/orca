@@ -848,14 +848,14 @@ export function connectPanePty(
     // regardless of DOM visibility and the guard stays engaged via the
     // write-completion callback until xterm finishes parsing.
     let replayEndsWithLineBreak = true
-    const writeReplayData = (data: string): void => {
+    const writeReplayData = (data: string, onParsed?: (charCount: number) => void): void => {
       // Why: drain any queued background bytes BEFORE the replay paint, so the
       // scheduler's deferred drain cannot land older bytes on top of the replay.
       flushTerminalOutput(pane.terminal)
       if (terminalOutputPrefersDomRenderer(data)) {
         manager.markPaneHasComplexScriptOutput(pane.id)
       }
-      replayIntoTerminal(pane, deps.replayingPanesRef, data)
+      replayIntoTerminal(pane, deps.replayingPanesRef, data, onParsed)
       replayEndsWithLineBreak = /[\r\n]$/.test(data)
     }
     const terminateReplayLine = (): void => {
@@ -864,16 +864,22 @@ export function connectPanePty(
       }
     }
 
-    const replayDataCallback = (data: string): void => {
+    const replayDataCallback = (data: string, onParsed?: (charCount: number) => void): void => {
       // Relay replay buffer holds the last 100 KB of output, which may
       // overlap with content already rendered in xterm before the
       // disconnect. Clear first to prevent duplication on SSH reconnect.
       writeReplayData('\x1b[2J\x1b[3J\x1b[H')
-      writeReplayData(data)
+      writeReplayData(data, onParsed)
     }
 
-    const dataCallback = (data: string): void => {
+    const dataCallback = (data: string, sourceCharCount = data.length): void => {
       commandLifecycle.handlePtyData(data)
+      if (!data) {
+        if (sourceCharCount > 0) {
+          transport.acknowledgeDataEvent(sourceCharCount)
+        }
+        return
+      }
       if (terminalOutputPrefersDomRenderer(data)) {
         manager.markPaneHasComplexScriptOutput(pane.id)
       }
@@ -881,8 +887,19 @@ export function connectPanePty(
       // panes still drain, but through the shared scheduler so a build log in
       // another split cannot monopolize xterm writes while the user types.
       const activePaneId = manager.getActivePane()?.id ?? pane.id
+      let ackedSourceChunk = false
       writeTerminalOutput(pane.terminal, data, {
-        foreground: deps.isVisibleRef.current && activePaneId === pane.id
+        foreground: deps.isVisibleRef.current && activePaneId === pane.id,
+        onParsed: (charCount) => {
+          if (sourceCharCount === data.length) {
+            transport.acknowledgeDataEvent(charCount)
+            return
+          }
+          if (!ackedSourceChunk) {
+            ackedSourceChunk = true
+            transport.acknowledgeDataEvent(sourceCharCount)
+          }
+        }
       })
 
       if (pendingStartupCommand) {

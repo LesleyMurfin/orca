@@ -1,4 +1,5 @@
 import type { ManagedPane } from '@/lib/pane-manager/pane-manager'
+import { enqueueTerminalWrite } from '@/lib/pane-manager/pane-terminal-output-scheduler'
 
 // Why: xterm.js auto-responds to terminal query sequences (DA1 `CSI c`,
 // DECRQM `CSI ? Ps $ p`, OSC 10/11 color queries, focus events, CPR) by
@@ -37,27 +38,30 @@ export function isPaneReplaying(ref: ReplayingPanesRef, paneId: number): boolean
 export function replayIntoTerminal(
   pane: ManagedPane,
   replayingPanesRef: ReplayingPanesRef,
-  data: string
+  data: string,
+  onParsed?: (charCount: number) => void
 ): void {
   if (!data) {
     return
   }
   const map = replayingPanesRef.current
   map.set(pane.id, (map.get(pane.id) ?? 0) + 1)
-  pane.terminal.write(data, () => {
+  enqueueTerminalWrite(pane.terminal, data, () => {
     const remaining = (map.get(pane.id) ?? 1) - 1
     if (remaining <= 0) {
       map.delete(pane.id)
     } else {
       map.set(pane.id, remaining)
     }
+    onParsed?.(data.length)
   })
 }
 
 export function replayIntoTerminalAsync(
   pane: ManagedPane,
   replayingPanesRef: ReplayingPanesRef,
-  data: string
+  data: string,
+  onParsed?: (charCount: number) => void
 ): Promise<void> {
   if (!data) {
     return Promise.resolve()
@@ -65,13 +69,14 @@ export function replayIntoTerminalAsync(
   const map = replayingPanesRef.current
   map.set(pane.id, (map.get(pane.id) ?? 0) + 1)
   return new Promise((resolve) => {
-    pane.terminal.write(data, () => {
+    enqueueTerminalWrite(pane.terminal, data, () => {
       const remaining = (map.get(pane.id) ?? 1) - 1
       if (remaining <= 0) {
         map.delete(pane.id)
       } else {
         map.set(pane.id, remaining)
       }
+      onParsed?.(data.length)
       resolve()
     })
   })

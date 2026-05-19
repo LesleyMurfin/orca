@@ -51,6 +51,8 @@ type ManagedPty = {
   paneKey?: string
   tabId?: string
   worktreeId?: string
+  unacknowledgedChars?: number
+  flowPaused?: boolean
 }
 
 function disposeManagedPty(managed: ManagedPty): void {
@@ -84,6 +86,8 @@ function disposeManagedPty(managed: ManagedPty): void {
 }
 const DEFAULT_GRACE_TIME_MS = DEFAULT_SSH_RELAY_GRACE_PERIOD_SECONDS * 1000
 export const REPLAY_BUFFER_MAX = 100 * 1024
+const FLOW_CONTROL_HIGH_WATERMARK_CHARS = 100_000
+const FLOW_CONTROL_LOW_WATERMARK_CHARS = 5_000
 const ALLOWED_SIGNALS = new Set([
   'SIGINT',
   'SIGTERM',
@@ -142,6 +146,11 @@ export class PtyHandler {
   constructor(dispatcher: RelayDispatcher, graceTimeMs = DEFAULT_GRACE_TIME_MS) {
     this.dispatcher = dispatcher
     this.graceTimeMs = graceTimeMs
+    this.dispatcher.onClientDetached(() => {
+      if (!this.dispatcher.hasOpenClient()) {
+        this.clearFlowControlForDetachedClients()
+      }
+    })
     this.registerHandlers()
   }
 
@@ -195,6 +204,9 @@ export class PtyHandler {
   private wireAndStore(managed: ManagedPty): void {
     this.ptys.set(managed.id, managed)
     managed.pty.onData((data: string) => {
+      if (this.dispatcher.hasOpenClient()) {
+        this.observeUnacknowledgedData(managed, data.length)
+      }
       managed.buffered += data
       if (managed.buffered.length > REPLAY_BUFFER_MAX) {
         managed.buffered = managed.buffered.slice(-REPLAY_BUFFER_MAX)
@@ -270,9 +282,7 @@ export class PtyHandler {
 
     this.dispatcher.onNotification('pty.data', (p) => this.writeData(p))
     this.dispatcher.onNotification('pty.resize', (p) => this.resize(p))
-    this.dispatcher.onNotification('pty.ackData', (_p) => {
-      /* flow control ack -- not yet enforced */
-    })
+    this.dispatcher.onNotification('pty.ackData', (p) => this.ackData(p))
   }
 
   private async spawn(
@@ -391,6 +401,50 @@ export class PtyHandler {
     const managed = this.ptys.get(id)
     if (managed && !managed.disposed) {
       managed.pty.write(data)
+    }
+  }
+
+  private observeUnacknowledgedData(managed: ManagedPty, charCount: number): void {
+    if (charCount <= 0 || managed.disposed) {
+      return
+    }
+    managed.unacknowledgedChars = (managed.unacknowledgedChars ?? 0) + charCount
+    if (!managed.flowPaused && managed.unacknowledgedChars > FLOW_CONTROL_HIGH_WATERMARK_CHARS) {
+      // Why: renderer ACKs arrive after xterm parses output. Pausing remote
+      // node-pty prevents one SSH PTY from filling the relay/socket queues.
+      managed.pty.pause()
+      managed.flowPaused = true
+    }
+  }
+
+  private ackData(params: Record<string, unknown>): void {
+    const id = params.id as string
+    const managed = this.ptys.get(id)
+    if (!managed || managed.disposed) {
+      return
+    }
+    const charCount = Math.max(0, Math.floor(Number(params.charCount) || 0))
+    this.ackManagedData(managed, charCount)
+  }
+
+  private ackManagedData(managed: ManagedPty, charCount: number): void {
+    if (charCount <= 0) {
+      return
+    }
+    managed.unacknowledgedChars = Math.max(0, (managed.unacknowledgedChars ?? 0) - charCount)
+    if (managed.flowPaused && managed.unacknowledgedChars < FLOW_CONTROL_LOW_WATERMARK_CHARS) {
+      managed.pty.resume()
+      managed.flowPaused = false
+    }
+  }
+
+  private clearFlowControlForDetachedClients(): void {
+    for (const managed of this.ptys.values()) {
+      managed.unacknowledgedChars = 0
+      if (managed.flowPaused && !managed.disposed) {
+        managed.pty.resume()
+        managed.flowPaused = false
+      }
     }
   }
 

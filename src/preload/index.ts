@@ -606,6 +606,10 @@ const api = {
       ipcRenderer.send('pty:write', { id, data })
     },
 
+    ackData: (id: string, charCount: number): void => {
+      ipcRenderer.send('pty:ackData', { id, charCount })
+    },
+
     resize: (id: string, cols: number, rows: number): void => {
       ipcRenderer.send('pty:resize', { id, cols, rows })
     },

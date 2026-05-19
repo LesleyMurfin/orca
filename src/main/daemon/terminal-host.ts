@@ -144,6 +144,10 @@ export class TerminalHost {
     this.getAliveSession(sessionId).resize(cols, rows)
   }
 
+  acknowledgeDataEvent(sessionId: string, charCount: number): void {
+    this.getAliveSession(sessionId).acknowledgeDataEvent(charCount)
+  }
+
   kill(sessionId: string): void {
     const session = this.getAliveSession(sessionId)
     this.recordTombstone(sessionId)

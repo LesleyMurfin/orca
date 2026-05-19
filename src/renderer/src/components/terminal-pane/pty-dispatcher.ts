@@ -162,10 +162,14 @@ export function registerEagerPtyBuffer(
   const dataHandler = (data: string): void => {
     buffer.push(data)
     bufferBytes += data.length
+    // Why: no xterm exists yet for eager/background PTYs. Once the renderer
+    // owns the bytes in this bounded buffer, upstream flow control can resume.
+    window.api.pty.ackData(ptyId, data.length)
     // Trim from the front when the buffer exceeds the cap, keeping the
     // most recent output which contains the shell prompt.
     while (bufferBytes > EAGER_BUFFER_MAX_BYTES && buffer.length > 1) {
-      bufferBytes -= buffer.shift()!.length
+      const dropped = buffer.shift()!
+      bufferBytes -= dropped.length
     }
   }
   const exitHandler = (code: number): void => {
@@ -230,12 +234,12 @@ export type PtyTransport = {
     callbacks: {
       onConnect?: () => void
       onDisconnect?: () => void
-      onData?: (data: string) => void
+      onData?: (data: string, sourceCharCount?: number) => void
       /** Replay bytes from a prior session (eager buffers, attach-time screen
        *  clears). Routed separately from onData so the renderer can engage
        *  the replay guard — otherwise xterm auto-replies to embedded query
        *  sequences leak into the shell. See replay-guard.ts. */
-      onReplayData?: (data: string) => void
+      onReplayData?: (data: string, onParsed?: (charCount: number) => void) => void
       onStatus?: (shell: string) => void
       onError?: (message: string, errors?: string[]) => void
       onExit?: (code: number) => void
@@ -254,9 +258,9 @@ export type PtyTransport = {
     callbacks: {
       onConnect?: () => void
       onDisconnect?: () => void
-      onData?: (data: string) => void
+      onData?: (data: string, sourceCharCount?: number) => void
       /** See note on connect.callbacks.onReplayData. */
-      onReplayData?: (data: string) => void
+      onReplayData?: (data: string, onParsed?: (charCount: number) => void) => void
       onStatus?: (shell: string) => void
       onError?: (message: string, errors?: string[]) => void
       onExit?: (code: number) => void
@@ -264,6 +268,7 @@ export type PtyTransport = {
   }) => void
   disconnect: () => void
   sendInput: (data: string) => boolean
+  acknowledgeDataEvent: (charCount: number) => void
   resize: (
     cols: number,
     rows: number,

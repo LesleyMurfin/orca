@@ -584,6 +584,7 @@ export function registerPtyHandlers(
   ipcMain.removeHandler('pty:settlePaneSerializer')
   ipcMain.removeHandler('pty:clearPendingPaneSerializer')
   ipcMain.removeAllListeners('pty:write')
+  ipcMain.removeAllListeners('pty:ackData')
   ipcMain.removeAllListeners('pty:ackColdRestore')
   ipcMain.removeAllListeners('pty:serializeBuffer:response')
 
@@ -1623,6 +1624,15 @@ export function registerPtyHandlers(
     }
     lastInputAtByPty.set(args.id, performance.now())
     provider.write(args.id, args.data)
+  })
+
+  ipcMain.removeAllListeners('pty:ackData')
+  ipcMain.on('pty:ackData', (_event, args: { id: string; charCount: number }) => {
+    const charCount = Math.max(0, Math.floor(Number(args.charCount) || 0))
+    if (charCount <= 0) {
+      return
+    }
+    tryGetProviderForPty(args.id)?.acknowledgeDataEvent(args.id, charCount)
   })
 
   // Why: resize is fire-and-forget — the renderer doesn't need a reply.

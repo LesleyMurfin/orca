@@ -32,6 +32,8 @@ import {
 import { removeInheritedNoColor } from '../pty/terminal-color-env'
 
 const PANE_IDENTITY_ENV_KEYS = ['ORCA_PANE_KEY', 'ORCA_TAB_ID', 'ORCA_WORKTREE_ID'] as const
+const FLOW_CONTROL_HIGH_WATERMARK_CHARS = 100_000
+const FLOW_CONTROL_LOW_WATERMARK_CHARS = 5_000
 
 let ptyCounter = 0
 const ptyProcesses = new Map<string, pty.IPty>()
@@ -41,6 +43,7 @@ const ptyShellName = new Map<string, string>()
 // stale callbacks survive into node::FreeEnvironment() where NAPI attempts
 // to invoke/clean them up on a destroyed environment, triggering a SIGABRT.
 const ptyDisposables = new Map<string, { dispose: () => void }[]>()
+const ptyFlowState = new Map<string, { unacknowledgedChars: number; paused: boolean }>()
 
 let loadGeneration = 0
 const ptyLoadGeneration = new Map<string, number>()
@@ -94,6 +97,38 @@ function clearPtyState(id: string): void {
   ptyProcesses.delete(id)
   ptyShellName.delete(id)
   ptyLoadGeneration.delete(id)
+  ptyFlowState.delete(id)
+}
+
+function pausePty(proc: pty.IPty): void {
+  try {
+    ;(proc as unknown as { pause?: () => void }).pause?.()
+  } catch {
+    /* best effort */
+  }
+}
+
+function resumePty(proc: pty.IPty): void {
+  try {
+    ;(proc as unknown as { resume?: () => void }).resume?.()
+  } catch {
+    /* best effort */
+  }
+}
+
+function observeUnacknowledgedPtyData(id: string, proc: pty.IPty, dataLength: number): void {
+  if (dataLength <= 0) {
+    return
+  }
+  const state = ptyFlowState.get(id) ?? { unacknowledgedChars: 0, paused: false }
+  state.unacknowledgedChars += dataLength
+  if (!state.paused && state.unacknowledgedChars > FLOW_CONTROL_HIGH_WATERMARK_CHARS) {
+    // Why: xterm parse completion is the consumer signal. If the renderer falls
+    // behind, pause the producing PTY instead of buffering unbounded output.
+    pausePty(proc)
+    state.paused = true
+  }
+  ptyFlowState.set(id, state)
 }
 
 function destroyPtyProcess(proc: pty.IPty): void {
@@ -382,6 +417,7 @@ export class LocalPtyProvider implements IPtyProvider {
       if (data.length === 0) {
         return
       }
+      observeUnacknowledgedPtyData(id, proc, data.length)
       this.opts.onData?.(id, data, Date.now())
       for (const cb of dataListeners) {
         cb({ id, data })
@@ -506,8 +542,20 @@ export class LocalPtyProvider implements IPtyProvider {
   async clearBuffer(_id: string): Promise<void> {
     /* handled client-side in xterm.js */
   }
-  acknowledgeDataEvent(_id: string, _charCount: number): void {
-    /* no flow control for local */
+  acknowledgeDataEvent(id: string, charCount: number): void {
+    const state = ptyFlowState.get(id)
+    if (!state || charCount <= 0) {
+      return
+    }
+    state.unacknowledgedChars = Math.max(0, state.unacknowledgedChars - charCount)
+    const proc = ptyProcesses.get(id)
+    if (state.paused && state.unacknowledgedChars < FLOW_CONTROL_LOW_WATERMARK_CHARS && proc) {
+      resumePty(proc)
+      state.paused = false
+    }
+    if (state.unacknowledgedChars === 0 && !state.paused) {
+      ptyFlowState.delete(id)
+    }
   }
 
   async hasChildProcesses(id: string): Promise<boolean> {
