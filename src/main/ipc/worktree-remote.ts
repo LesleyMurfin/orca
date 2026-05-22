@@ -45,6 +45,7 @@ import { getActiveMultiplexer } from './ssh'
 import type { SshGitProvider } from '../providers/ssh-git-provider'
 import { isTuiAgent } from '../../shared/tui-agent-config'
 import { isWindowsAbsolutePathLike } from '../../shared/cross-platform-path'
+import { getSshGitUsername } from '../git/git-username'
 import {
   sanitizeWorktreeName,
   sanitizeWorktreeDisplayName,
@@ -652,14 +653,9 @@ export async function createRemoteWorktree(
     ? sanitizeWorktreeDisplayName(args.displayName)
     : undefined
 
-  // Get git username from remote
-  let username = ''
-  try {
-    const { stdout } = await provider.exec(['config', 'user.name'], repo.path)
-    username = stdout.trim()
-  } catch {
-    /* no username configured */
-  }
+  // Why: SSH targets cannot use the local `gh` account, and git email/name are
+  // commit author identity rather than hosted-account usernames.
+  const username = await getSshGitUsername(provider, repo.path)
 
   const branchName = await resolveCreateBranchNameSsh(
     provider,
