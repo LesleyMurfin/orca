@@ -8,6 +8,7 @@ import { useAppStore } from '@/store'
 const ONBOARDING_INLINE_TERMINAL_WORKTREE_ID = 'onboarding-inline-terminal'
 const AUTO_INSERT_DELAY_MS = 250
 const READY_RETRY_MS = 100
+const READY_MAX_ATTEMPTS = 50
 const PTY_TEXT_FALLBACK_MS = 750
 
 type OnboardingInlineCommandTerminalProps = {
@@ -168,7 +169,7 @@ export function OnboardingInlineCommandTerminal({
       }, AUTO_INSERT_DELAY_MS)
     }
 
-    const waitForTerminal = (): void => {
+    const waitForTerminal = (attempt: number): void => {
       if (canceled) {
         return
       }
@@ -190,10 +191,12 @@ export function OnboardingInlineCommandTerminal({
       } else {
         ptyFirstSeenAt = null
       }
-      retryTimer = window.setTimeout(waitForTerminal, READY_RETRY_MS)
+      if (attempt < READY_MAX_ATTEMPTS) {
+        retryTimer = window.setTimeout(() => waitForTerminal(attempt + 1), READY_RETRY_MS)
+      }
     }
 
-    waitForTerminal()
+    waitForTerminal(0)
     return () => {
       canceled = true
       if (retryTimer !== null) {
