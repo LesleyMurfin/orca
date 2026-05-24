@@ -208,7 +208,6 @@
   --orca-pane-title-button-fg: var(--terminal-pane-title-on-dark-button-fg);
   --orca-pane-title-button-hover-fg: var(--terminal-pane-title-on-dark-button-hover-fg);
   --orca-pane-title-input-bg: var(--terminal-pane-title-on-dark-input-bg);
-  --orca-pane-title-separator: var(--terminal-pane-title-on-dark-separator);
 }
 
 [data-pane-title-surface='light'] {
@@ -218,12 +217,10 @@
   --orca-pane-title-button-fg: var(--terminal-pane-title-on-light-button-fg);
   --orca-pane-title-button-hover-fg: var(--terminal-pane-title-on-light-button-hover-fg);
   --orca-pane-title-input-bg: var(--terminal-pane-title-on-light-input-bg);
-  --orca-pane-title-separator: var(--terminal-pane-title-on-light-separator);
 }
 
-/* Floating tab style — no full-width background bar. The title sits as a
-   lightweight inline label so the terminal content isn't visually "capped."
-   Uses muted grey + monospace to read as metadata, not actionable text. */
+/* Floating title overlay. The title owns the top strip of the pane while xterm
+   keeps its full geometry and can scroll underneath it. */
 .pane-title-overlay-layer {
   position: absolute;
   inset: 0;
@@ -337,44 +334,4 @@
   height: calc(100% - var(--pane-padding-y, 4px));
   margin-top: var(--pane-padding-y, 4px);
   margin-left: var(--pane-padding-x, 4px);
-}
-
-/* When a pane has a title, shift the terminal content down to make room.
-   The .pane container uses position: relative, so the absolutely-positioned
-   title bar occupies the top title-height pixels. Height is reduced by the
-   same amount to prevent overflow/clipping. */
-.pane[data-has-title] .xterm-container {
-  margin-top: var(--orca-pane-title-height);
-  height: calc(100% - var(--orca-pane-title-height)); /* match margin-top */
-}
-
-/* Override the inline overflow:hidden set by pane-manager so the title
-   separator line can extend into the divider hit-padding zone.
-   overflow:clip behaves identically to overflow:hidden for content
-   clipping but supports overflow-clip-margin to widen the clip region.
-   The 5px margin matches the divider's hit-padding (10px total / 2). */
-.pane[data-has-title] {
-  overflow: clip !important;
-  overflow-clip-margin: 5px;
-}
-
-/* Title separator line — rendered on the .pane itself (not the portaled
-   title bar) so the line spans the full pane width into the divider zone. */
-.pane[data-has-title]::after {
-  content: '';
-  position: absolute;
-  top: var(--orca-pane-title-height);
-  left: -5px;
-  right: -5px;
-  height: 1px;
-  background: var(--orca-pane-title-separator, rgb(255 255 255 / 0.06));
-  z-index: 6;
-  pointer-events: none;
-}
-
-/* Hide the drag handle on titled panes — the title bar already provides
-   visual identification, and a grab-cursor strip right at the border
-   creates a confusing "looks draggable" affordance that misleads users. */
-.pane[data-has-title] .pane-drag-handle {
-  display: none;
 }

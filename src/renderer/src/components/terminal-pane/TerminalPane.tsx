@@ -16,7 +16,7 @@ import {
 import type { ManagedPane, PaneManager } from '@/lib/pane-manager/pane-manager'
 import TerminalSearch from '@/components/TerminalSearch'
 import type { PtyTransport } from './pty-transport'
-import { fitPanes, isWindowsUserAgent, shellEscapePath } from './pane-helpers'
+import { isWindowsUserAgent, shellEscapePath } from './pane-helpers'
 import { getConnectionId } from '@/lib/connection-context'
 import { resolveTerminalDropTargetShell } from './terminal-drop-handler'
 import { EMPTY_LAYOUT, serializeTerminalLayout } from './layout-serialization'
@@ -1242,40 +1242,6 @@ export default function TerminalPane({
     }
   }, [tabId, worktreeId, clearTerminalTabUnread, clearWorktreeUnread])
 
-  // Sync the data-has-title attribute on pane containers when titles change,
-  // and reflow terminals so safeFit() sees the correct available height.
-  // useLayoutEffect (not useEffect) ensures the attribute and refit happen
-  // synchronously after React commits but before the browser paints, so the
-  // title bar offset is applied before the first visible frame and before
-  // any pending requestAnimationFrame (e.g. queueResizeAll) measures dims.
-  useLayoutEffect(() => {
-    const manager = managerRef.current
-    if (!manager) {
-      return
-    }
-    let needsFit = false
-    for (const pane of manager.getPanes()) {
-      // Show the title bar space when the pane has a title OR is being
-      // inline-edited (so the input appears even for untitled panes).
-      // Unread activity does NOT reserve title-bar space — the bell is
-      // rendered as an absolutely-positioned overlay in the pane's top-right
-      // corner so it can appear and disappear without shifting terminal
-      // content, avoiding the jarring reflow on bell toggles.
-      const shouldShow = !!paneTitles[pane.id] || renamingPaneId === pane.id
-      const hadTitle = pane.container.hasAttribute('data-has-title')
-      if (shouldShow && !hadTitle) {
-        pane.container.setAttribute('data-has-title', '')
-        needsFit = true
-      } else if (!shouldShow && hadTitle) {
-        pane.container.removeAttribute('data-has-title')
-        needsFit = true
-      }
-    }
-    if (needsFit) {
-      fitPanes(manager)
-    }
-  }, [paneTitles, renamingPaneId])
-
   const syncPaneTitleOverlayRects = useCallback((): void => {
     const manager = managerRef.current
     const container = containerRef.current
@@ -1826,10 +1792,9 @@ export default function TerminalPane({
         onOpenChange={setQuickCommandEditorOpen}
         onSave={saveQuickCommand}
       />
-      {/* Title bar overlays live in Orca-owned React DOM rather than xterm's
-          pane subtree. The pane still gets data-has-title for terminal layout,
-          while focus-sensitive editor controls stay outside xterm's helper
-          textarea focus zone. */}
+      {/* Title bars are a true Orca-owned overlay: xterm keeps its full geometry
+          and scrolls underneath, while editor controls stay outside xterm's
+          helper textarea focus zone. */}
       <div
         className="pane-title-overlay-layer"
         data-pane-title-surface={titleUsesLightSurface ? 'light' : 'dark'}

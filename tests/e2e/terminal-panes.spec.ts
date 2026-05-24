@@ -98,6 +98,32 @@ async function installDelayedTerminalFocusSteals(
   }, delaysMs)
 }
 
+async function readVisibleXtermContainerBox(
+  page: Page
+): Promise<{ x: number; y: number; width: number; height: number }> {
+  return page
+    .locator('.xterm:visible')
+    .first()
+    .evaluate((xterm) => {
+      const container = xterm.closest('.xterm-container')
+      if (!(container instanceof HTMLElement)) {
+        throw new Error('No visible xterm container found')
+      }
+      const rect = container.getBoundingClientRect()
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+    })
+}
+
+function expectBoxesToMatch(
+  actual: { x: number; y: number; width: number; height: number },
+  expected: { x: number; y: number; width: number; height: number }
+): void {
+  expect(Math.abs(actual.x - expected.x)).toBeLessThan(1)
+  expect(Math.abs(actual.y - expected.y)).toBeLessThan(1)
+  expect(Math.abs(actual.width - expected.width)).toBeLessThan(1)
+  expect(Math.abs(actual.height - expected.height)).toBeLessThan(1)
+}
+
 async function getTabCustomTitle(
   page: Page,
   worktreeId: string,
@@ -266,7 +292,12 @@ test.describe('Terminal Panes', () => {
     await expect(orcaPage.locator('.pane-title-text', { hasText: title })).toHaveCount(1)
   })
 
-  test('Set Title editor renders in Orca overlay outside xterm pane DOM', async ({ orcaPage }) => {
+  test('Set Title editor renders in a pure Orca overlay outside xterm pane DOM', async ({
+    orcaPage
+  }) => {
+    const title = `Pure overlay title ${Date.now()}`
+    const terminalBoxBefore = await readVisibleXtermContainerBox(orcaPage)
+
     await openTerminalContextMenu(orcaPage)
     await orcaPage.getByText('Set Title…', { exact: true }).click()
 
@@ -275,6 +306,14 @@ test.describe('Terminal Panes', () => {
     await expect(titleInput).toBeFocused()
     await expect(orcaPage.getByText('Set Title…', { exact: true })).toBeHidden()
     await expect(orcaPage.locator('.pane .pane-title-input')).toHaveCount(0)
+    await expect(orcaPage.locator('.pane[data-has-title]')).toHaveCount(0)
+    expectBoxesToMatch(await readVisibleXtermContainerBox(orcaPage), terminalBoxBefore)
+
+    await titleInput.fill(title)
+    await titleInput.press('Enter')
+    await expect(orcaPage.locator('.pane-title-text', { hasText: title })).toBeVisible()
+    await expect(orcaPage.locator('.pane[data-has-title]')).toHaveCount(0)
+    expectBoxesToMatch(await readVisibleXtermContainerBox(orcaPage), terminalBoxBefore)
   })
 
   test('Set Title input stays open when clicked in a split terminal', async ({ orcaPage }) => {
@@ -290,9 +329,8 @@ test.describe('Terminal Panes', () => {
     await expect(titleInput).toBeVisible()
     await expect(titleInput).toBeFocused()
 
-    // Why: pane-level pointerdown focuses xterm for terminal clicks. Pane-local
-    // controls must be excluded or clicking the already-open title input blurs
-    // it and commits an empty title, which looks like the editor flashed closed.
+    // Why: overlay controls own the title strip. Clicking the already-open
+    // title input must not leak through to xterm and flash the editor closed.
     await titleInput.evaluate((input) => {
       const pointerInit: PointerEventInit = {
         bubbles: true,
