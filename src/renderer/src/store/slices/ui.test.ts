@@ -11,6 +11,7 @@ import type {
 import { createUISlice } from './ui'
 import { createWorktreeNavHistorySlice } from './worktree-nav-history'
 import type { AppState } from '../types'
+import type { ContextualTourId } from '../../../../shared/contextual-tours'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -758,6 +759,233 @@ describe('createUISlice feature tips', () => {
     )
 
     expect(store.getState().featureTipsSeenIds).toEqual(['voice-dictation'])
+  })
+})
+
+function stubContextualTourTargets(selectors: readonly string[]): void {
+  const selectorSet = new Set(selectors)
+  vi.stubGlobal('document', {
+    querySelector: vi.fn((selector: string) =>
+      selectorSet.has(selector)
+        ? {
+            getBoundingClientRect: () => ({
+              left: 10,
+              top: 10,
+              right: 110,
+              bottom: 50,
+              width: 100,
+              height: 40
+            })
+          }
+        : null
+    )
+  })
+}
+
+describe('createUISlice contextual tours', () => {
+  it('normalizes persisted contextual tour ids during hydration', () => {
+    const store = createUIStore()
+
+    store.getState().hydratePersistedUI(
+      makePersistedUI({
+        contextualToursSeenIds: ['tasks', 'unknown', 'tasks', 'browser'] as never
+      })
+    )
+
+    expect(store.getState().contextualToursSeenIds).toEqual(['tasks', 'browser'])
+  })
+
+  it('marks contextual tours seen and persists them once', () => {
+    const setMock = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('window', {
+      api: {
+        ui: {
+          set: setMock
+        }
+      }
+    })
+    const store = createUIStore()
+
+    store.getState().markContextualToursSeen(['tasks'])
+    store.getState().markContextualToursSeen(['tasks'])
+
+    expect(store.getState().contextualToursSeenIds).toEqual(['tasks'])
+    expect(setMock).toHaveBeenCalledTimes(1)
+    expect(setMock).toHaveBeenCalledWith({ contextualToursSeenIds: ['tasks'] })
+  })
+
+  it('starts a tour only after persisted UI and required first target are ready', () => {
+    const store = createUIStore()
+    const tasksFirstSelector = '[data-contextual-tour-target="tasks-source-filters"]'
+    stubContextualTourTargets([tasksFirstSelector])
+
+    store.getState().requestContextualTour('tasks', 'tasks_open')
+    expect(store.getState().activeContextualTourId).toBeNull()
+
+    store.getState().hydratePersistedUI(makePersistedUI())
+    store.getState().requestContextualTour('tasks', 'tasks_open')
+
+    expect(store.getState().activeContextualTourId).toBe('tasks')
+    expect(store.getState().activeContextualTourStepIndex).toBe(0)
+    expect(store.getState().activeContextualTourSource).toBe('tasks_open')
+    expect(store.getState().contextualTourShownThisSession).toBe(true)
+    expect(store.getState().contextualToursSeenIds).toEqual([])
+  })
+
+  it('does not mark seen when the required first target is absent', () => {
+    const store = createUIStore()
+    stubContextualTourTargets([])
+    store.getState().hydratePersistedUI(makePersistedUI())
+
+    store.getState().requestContextualTour('tasks', 'tasks_open')
+
+    expect(store.getState().activeContextualTourId).toBeNull()
+    expect(store.getState().contextualToursSeenIds).toEqual([])
+    expect(store.getState().contextualTourShownThisSession).toBe(false)
+  })
+
+  it('does not start while a root confirmation surface is visible', () => {
+    const store = createUIStore()
+    stubContextualTourTargets(['[data-contextual-tour-target="tasks-source-filters"]'])
+    store.getState().hydratePersistedUI(makePersistedUI())
+
+    store.getState().setContextualToursBlockingSurfaceVisible(true)
+    store.getState().requestContextualTour('tasks', 'tasks_open')
+
+    expect(store.getState().activeContextualTourId).toBeNull()
+    expect(store.getState().contextualTourShownThisSession).toBe(false)
+  })
+
+  it('allows only workspace creation over its creation modals', () => {
+    const store = createUIStore()
+    stubContextualTourTargets([
+      '[data-contextual-tour-target="workspace-creation-source"]',
+      '[data-contextual-tour-target="tasks-source-filters"]'
+    ])
+    store.getState().hydratePersistedUI(makePersistedUI())
+
+    store.getState().openModal('new-workspace-composer')
+    store.getState().requestContextualTour('tasks', 'tasks_open')
+    expect(store.getState().activeContextualTourId).toBeNull()
+
+    store.getState().requestContextualTour('workspace-creation', 'workspace_creation_modal')
+    expect(store.getState().activeContextualTourId).toBe('workspace-creation')
+  })
+
+  it('advances across visible steps and closes when no later target remains', () => {
+    const store = createUIStore()
+    const visibleSelectors = [
+      '[data-contextual-tour-target="browser-address"], [data-orca-browser-address-bar="true"]',
+      '[data-contextual-tour-target="browser-annotation-control"]'
+    ]
+    stubContextualTourTargets(visibleSelectors)
+    store.getState().hydratePersistedUI(makePersistedUI())
+    store.getState().requestContextualTour('browser', 'browser_visible')
+
+    store.getState().advanceContextualTour()
+    expect(store.getState().activeContextualTourStepIndex).toBe(2)
+
+    store.getState().advanceContextualTour()
+    expect(store.getState().activeContextualTourId).toBeNull()
+  })
+
+  it('cancels a not-yet-rendered tour without persistence churn', () => {
+    const setMock = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('window', {
+      api: {
+        ui: {
+          set: setMock
+        }
+      }
+    })
+    const store = createUIStore()
+    store.setState({
+      activeContextualTourId: 'tasks',
+      activeContextualTourStepIndex: 0,
+      activeContextualTourSource: 'tasks_open',
+      contextualTourShownThisSession: true
+    })
+
+    store.getState().cancelContextualTour('tasks')
+
+    expect(store.getState().activeContextualTourId).toBeNull()
+    expect(store.getState().contextualTourShownThisSession).toBe(false)
+    expect(store.getState().contextualToursSeenIds).toEqual([])
+    expect(setMock).not.toHaveBeenCalled()
+  })
+
+  it('preserves the session guard when canceling an already-rendered tour', () => {
+    const setMock = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('window', {
+      api: {
+        ui: {
+          set: setMock
+        }
+      }
+    })
+    const store = createUIStore()
+    store.setState({
+      activeContextualTourId: 'tasks',
+      activeContextualTourStepIndex: 0,
+      activeContextualTourSource: 'tasks_open',
+      contextualTourShownThisSession: true,
+      contextualToursSeenIds: ['tasks']
+    })
+
+    store.getState().cancelContextualTour('tasks')
+
+    expect(store.getState().activeContextualTourId).toBeNull()
+    expect(store.getState().contextualTourShownThisSession).toBe(true)
+    expect(store.getState().contextualToursSeenIds).toEqual<ContextualTourId[]>(['tasks'])
+    expect(setMock).not.toHaveBeenCalled()
+  })
+
+  it('dismisses active tours as seen', () => {
+    const setMock = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('window', {
+      api: {
+        ui: {
+          set: setMock
+        }
+      }
+    })
+    const store = createUIStore()
+    store.setState({
+      activeContextualTourId: 'automations',
+      activeContextualTourStepIndex: 0,
+      activeContextualTourSource: 'automations_open',
+      contextualTourShownThisSession: true
+    })
+
+    store.getState().dismissContextualTour('automations')
+
+    expect(store.getState().activeContextualTourId).toBeNull()
+    expect(store.getState().contextualToursSeenIds).toEqual<ContextualTourId[]>(['automations'])
+    expect(setMock).toHaveBeenCalledWith({ contextualToursSeenIds: ['automations'] })
+  })
+
+  it('ignores stale dismissals for a different active tour', () => {
+    const setMock = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('window', {
+      api: {
+        ui: {
+          set: setMock
+        }
+      }
+    })
+    const store = createUIStore()
+    store.setState({
+      activeContextualTourId: 'tasks',
+      activeContextualTourStepIndex: 0,
+      activeContextualTourSource: 'tasks_open',
+      contextualTourShownThisSession: true
+    })
+
+    store.getState().dismissContextualTour('browser')
+
+    expect(store.getState().activeContextualTourId).toBe('tasks')
+    expect(store.getState().contextualToursSeenIds).toEqual([])
+    expect(setMock).not.toHaveBeenCalled()
   })
 })
 

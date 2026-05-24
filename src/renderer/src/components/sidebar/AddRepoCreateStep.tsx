@@ -320,7 +320,10 @@ export function CreateStep({
         (= content size), so a long path inside the Location row would blow out
         the dialog width even with flex + truncate on the row itself. min-w-0
         here caps the grid track at the dialog's max-width. */}
-      <div className="space-y-3.5 pt-1 min-w-0">
+      <div
+        className="space-y-3.5 pt-1 min-w-0"
+        data-contextual-tour-target="workspace-creation-source"
+      >
         {/* Kind toggle. Real radiogroup so screen readers announce it as a choice. */}
         <div
           ref={radioGroupRef}
@@ -426,7 +429,13 @@ export function CreateStep({
           </p>
         )}
 
-        <Button onClick={onCreate} disabled={!canSubmit} size="lg" className="w-full">
+        <Button
+          onClick={onCreate}
+          disabled={!canSubmit}
+          size="lg"
+          className="w-full"
+          data-contextual-tour-target="workspace-creation-action"
+        >
           {isCreating ? 'Creating…' : 'Create project'}
         </Button>
       </div>

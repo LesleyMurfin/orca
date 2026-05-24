@@ -113,6 +113,7 @@ import type { RemoteWorkspacePatchResult } from '../../shared/remote-workspace-t
 import type { OnboardingState } from '../../shared/types'
 import { FLOATING_TERMINAL_WORKTREE_ID } from '../../shared/constants'
 import { getFeatureTipsAppOpenDecision } from './components/feature-tips/feature-tip-startup-gate'
+import { ContextualTourOverlay } from './components/contextual-tours/ContextualTourOverlay'
 import {
   keybindingMatchesAction,
   type KeybindingActionId,
@@ -286,6 +287,8 @@ function App(): React.JSX.Element {
       openModal: s.openModal,
       closeModal: s.closeModal,
       markFeatureTipsSeen: s.markFeatureTipsSeen,
+      setContextualToursOnboardingVisible: s.setContextualToursOnboardingVisible,
+      cancelContextualTour: s.cancelContextualTour,
       toggleRightSidebar: s.toggleRightSidebar,
       setRightSidebarOpen: s.setRightSidebarOpen,
       setRightSidebarTab: s.setRightSidebarTab,
@@ -413,6 +416,7 @@ function App(): React.JSX.Element {
   const [collapsedSidebarHeaderWidth, setCollapsedSidebarHeaderWidth] = useState(0)
   const [mountedLazyModalIds, setMountedLazyModalIds] = useState(() => new Set<string>())
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null)
+  const [onboardingLoaded, setOnboardingLoaded] = useState(false)
   const featureTipsPromptedThisSessionRef = useRef(false)
   const featureTipsSuppressedByOnboardingThisSessionRef = useRef(false)
   const [onboardingSettingsDetour, setOnboardingSettingsDetour] = useState(false)
@@ -446,6 +450,17 @@ function App(): React.JSX.Element {
   useEffect(() => {
     return onOnboardingReopened(setOnboarding)
   }, [])
+
+  useEffect(() => {
+    // Why: `onboarding === null` is the startup loading state. Suppress
+    // contextual tours until the persisted onboarding state is known so a
+    // first-run user cannot have a tour marked seen before onboarding appears.
+    const suppressTours = !onboardingLoaded || shouldShowOnboarding(onboarding)
+    actions.setContextualToursOnboardingVisible(suppressTours)
+    if (suppressTours) {
+      actions.cancelContextualTour()
+    }
+  }, [actions, onboarding, onboardingLoaded])
 
   useEffect(() => {
     const featureTipsDecision = getFeatureTipsAppOpenDecision({
@@ -557,6 +572,7 @@ function App(): React.JSX.Element {
           const onboardingState = await window.api.onboarding.get()
           if (!cancelled) {
             setOnboarding(onboardingState)
+            setOnboardingLoaded(true)
           }
 
           // Why: SSH connections must be re-established BEFORE terminal
@@ -1686,6 +1702,7 @@ function App(): React.JSX.Element {
             {mountedLazyModalIds.has('feature-wall') ? <FeatureWallModal /> : null}
             {mountedLazyModalIds.has('feature-tips') ? <FeatureTipsModal /> : null}
           </Suspense>
+          <ContextualTourOverlay />
           {/* Why: mount PetOverlay only when the experimental flag is on AND
           the user hasn't hit "Hide pet" in the status-bar menu. Both
           conditions must be true — see design doc (pet-overlay.md) on why

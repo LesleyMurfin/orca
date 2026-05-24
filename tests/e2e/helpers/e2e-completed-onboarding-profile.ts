@@ -1,6 +1,14 @@
 import { ONBOARDING_FINAL_STEP } from '../../../src/shared/constants'
 
 const SEEN_FIRST_RUN_FEATURE_TIP_IDS = ['voice-dictation'] as const
+const SEEN_FIRST_RUN_CONTEXTUAL_TOUR_IDS = [
+  'right-sidebar',
+  'workspace-board',
+  'browser',
+  'tasks',
+  'automations',
+  'workspace-creation'
+] as const
 
 export function getE2ECompletedOnboardingProfile() {
   return {
@@ -19,7 +27,8 @@ export function getE2ECompletedOnboardingProfile() {
     ui: {
       // Why: completed-onboarding E2E profiles should not be interrupted by
       // first-run education modals that cover the UI under test.
-      featureTipsSeenIds: [...SEEN_FIRST_RUN_FEATURE_TIP_IDS]
+      featureTipsSeenIds: [...SEEN_FIRST_RUN_FEATURE_TIP_IDS],
+      contextualToursSeenIds: [...SEEN_FIRST_RUN_CONTEXTUAL_TOUR_IDS]
     }
   }
 }

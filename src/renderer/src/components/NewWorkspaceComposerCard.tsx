@@ -307,7 +307,7 @@ export default function NewWorkspaceComposerCard({
       )}
     >
       <div className="min-w-0 space-y-4 pt-3">
-        <div className="space-y-1">
+        <div className="space-y-1" data-contextual-tour-target="workspace-creation-source">
           <div className="flex items-center justify-between gap-2">
             <label className="text-xs font-medium text-muted-foreground">Project</label>
             <Tooltip>
@@ -452,6 +452,7 @@ export default function NewWorkspaceComposerCard({
             size="sm"
             onClick={onToggleAdvanced}
             className="-ml-2 text-xs"
+            data-contextual-tour-target="workspace-creation-setup"
           >
             Advanced
             <ChevronDown
@@ -648,6 +649,7 @@ export default function NewWorkspaceComposerCard({
           disabled={createDisabled}
           size="sm"
           className="text-xs"
+          data-contextual-tour-target="workspace-creation-action"
         >
           {creating ? <LoaderCircle className="size-4 animate-spin" /> : null}
           {primaryActionLabel}

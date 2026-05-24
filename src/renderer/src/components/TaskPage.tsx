@@ -132,6 +132,7 @@ import type {
   TaskViewPresetId
 } from '../../../shared/types'
 import { shouldSuppressEnterSubmit } from '@/lib/new-workspace-enter-guard'
+import { useContextualTour } from '@/components/contextual-tours/use-contextual-tour'
 import { getScreenSubmitShortcutLabel, isScreenSubmitShortcut } from '@/lib/screen-submit-shortcut'
 import { useTeamStates } from '@/hooks/useIssueMetadata'
 import {
@@ -3071,6 +3072,17 @@ export default function TaskPage(): React.JSX.Element {
     'idle'
   )
   const [linearConnectError, setLinearConnectError] = useState<string | null>(null)
+  useContextualTour(
+    'tasks',
+    !dialogWorkItem &&
+      !gitlabDialogItem &&
+      !selectedLinearIssue &&
+      !newIssueOpen &&
+      !newLinearIssueOpen &&
+      !linearConnectOpen &&
+      activeModal === 'none',
+    'tasks_open'
+  )
 
   const activeGithubTaskKind = getGitHubTaskKind(activeTaskPreset, appliedTaskSearch)
 
@@ -4147,7 +4159,10 @@ export default function TaskPage(): React.JSX.Element {
             <section className="flex flex-col gap-3">
               <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <div
+                    className="flex min-w-0 flex-wrap items-center gap-2"
+                    data-contextual-tour-target="tasks-source-filters"
+                  >
                     {/* Why: Close is anchored left in the same row as the
                         source icons so the top chrome is one compact band.
                         Left-aligned keeps it clear of the app sidebar on the
@@ -4323,7 +4338,10 @@ export default function TaskPage(): React.JSX.Element {
                 ) : null}
 
                 {taskSource === 'github' && githubMode === 'items' ? (
-                  <div className="min-w-0 rounded-md rounded-b-none border border-border/50 bg-muted/50 p-3 shadow-sm">
+                  <div
+                    className="min-w-0 rounded-md rounded-b-none border border-border/50 bg-muted/50 p-3 shadow-sm"
+                    data-contextual-tour-target="tasks-search-presets"
+                  >
                     <div className="mb-3 flex flex-wrap gap-2">
                       {getGitHubTaskKindPresets(activeGithubTaskKind).map((option) => {
                         const active = activeTaskPreset === option.id
@@ -4393,7 +4411,10 @@ export default function TaskPage(): React.JSX.Element {
                           </button>
                         ) : null}
                       </div>
-                      <div className="flex shrink-0 items-center gap-2">
+                      <div
+                        className="flex shrink-0 items-center gap-2"
+                        data-contextual-tour-target="tasks-actions"
+                      >
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
@@ -4516,7 +4537,10 @@ export default function TaskPage(): React.JSX.Element {
                     })()}
                   </div>
                 ) : taskSource === 'linear' && linearStatus.connected ? (
-                  <div className="min-w-0 rounded-md rounded-b-none border border-border/50 bg-muted/50 p-3 shadow-sm">
+                  <div
+                    className="min-w-0 rounded-md rounded-b-none border border-border/50 bg-muted/50 p-3 shadow-sm"
+                    data-contextual-tour-target="tasks-search-presets"
+                  >
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex flex-wrap gap-2">
                         {LINEAR_PRESETS.map((preset) => {
@@ -4544,7 +4568,10 @@ export default function TaskPage(): React.JSX.Element {
                           )
                         })}
                       </div>
-                      <div className="flex shrink-0 items-center gap-2">
+                      <div
+                        className="flex shrink-0 items-center gap-2"
+                        data-contextual-tour-target="tasks-actions"
+                      >
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
@@ -4681,7 +4708,10 @@ export default function TaskPage(): React.JSX.Element {
                         />
                       </div>
                     </div>
-                    <div className="min-w-0 rounded-md rounded-b-none border border-border/50 bg-muted/50 p-3 shadow-sm">
+                    <div
+                      className="min-w-0 rounded-md rounded-b-none border border-border/50 bg-muted/50 p-3 shadow-sm"
+                      data-contextual-tour-target="tasks-search-presets"
+                    >
                       <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
                         <div className="flex min-w-0 flex-wrap items-center gap-2">
                           <div className="flex flex-wrap gap-2">
@@ -4713,7 +4743,10 @@ export default function TaskPage(): React.JSX.Element {
                               : null}
                           </div>
                         </div>
-                        <div className="flex shrink-0 items-center gap-2">
+                        <div
+                          className="flex shrink-0 items-center gap-2"
+                          data-contextual-tour-target="tasks-actions"
+                        >
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <Button

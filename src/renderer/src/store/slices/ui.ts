@@ -27,6 +27,11 @@ import {
   type WorkspaceCleanupDismissal
 } from '../../../../shared/workspace-cleanup'
 import { normalizeFeatureTipIds, type FeatureTipId } from '../../../../shared/feature-tips'
+import {
+  getContextualTour,
+  normalizeContextualTourIds,
+  type ContextualTourId
+} from '../../../../shared/contextual-tours'
 import { PER_REPO_FETCH_LIMIT } from '../../../../shared/work-items'
 import {
   normalizeVisibleTaskProviders,
@@ -54,6 +59,11 @@ import { DEFAULT_PET_ID, isBundledPetId } from '../../components/pet/pet-models'
 import { revokeCustomPetBlobUrl } from '../../components/pet/pet-blob-cache'
 import { isGitRepoKind } from '../../../../shared/repo-kind'
 import type { WorkspacePortScanResult } from '../../../../shared/workspace-ports'
+import {
+  getContextualTourRequestDecision,
+  hasContextualTourTarget,
+  getNextVisibleContextualTourStepIndex
+} from '../../components/contextual-tours/contextual-tour-gate'
 
 export type PendingSidebarWorktreeReveal = {
   worktreeId: string
@@ -445,6 +455,21 @@ export type UISlice = {
   closeModal: () => void
   featureTipsSeenIds: FeatureTipId[]
   markFeatureTipsSeen: (ids: FeatureTipId[]) => void
+  contextualToursSeenIds: ContextualTourId[]
+  activeContextualTourId: ContextualTourId | null
+  activeContextualTourStepIndex: number
+  activeContextualTourSource: string | null
+  contextualTourShownThisSession: boolean
+  contextualToursOnboardingVisible: boolean
+  contextualToursBlockingSurfaceVisible: boolean
+  setContextualToursOnboardingVisible: (visible: boolean) => void
+  setContextualToursBlockingSurfaceVisible: (visible: boolean) => void
+  requestContextualTour: (id: ContextualTourId, source: string) => void
+  advanceContextualTour: () => void
+  dismissContextualTour: (id?: ContextualTourId) => void
+  completeContextualTour: (id?: ContextualTourId) => void
+  cancelContextualTour: (id?: ContextualTourId) => void
+  markContextualToursSeen: (ids: ContextualTourId[]) => void
   trustedOrcaHooks: PersistedTrustedOrcaHooks
   markOrcaHookScriptConfirmed: (
     repoId: string,
@@ -881,6 +906,145 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
       window.api.ui.set({ featureTipsSeenIds: next }).catch(console.error)
       return { featureTipsSeenIds: next }
     }),
+  contextualToursSeenIds: [],
+  activeContextualTourId: null,
+  activeContextualTourStepIndex: 0,
+  activeContextualTourSource: null,
+  contextualTourShownThisSession: false,
+  contextualToursOnboardingVisible: false,
+  contextualToursBlockingSurfaceVisible: false,
+  setContextualToursOnboardingVisible: (visible) =>
+    set((s) =>
+      s.contextualToursOnboardingVisible === visible
+        ? s
+        : { contextualToursOnboardingVisible: visible }
+    ),
+  setContextualToursBlockingSurfaceVisible: (visible) =>
+    set((s) =>
+      s.contextualToursBlockingSurfaceVisible === visible
+        ? s
+        : { contextualToursBlockingSurfaceVisible: visible }
+    ),
+  requestContextualTour: (id, source) =>
+    set((s) => {
+      const tour = getContextualTour(id)
+      const decision = getContextualTourRequestDecision({
+        tour,
+        persistedUIReady: s.persistedUIReady,
+        onboardingVisible: s.contextualToursOnboardingVisible,
+        seenIds: s.contextualToursSeenIds,
+        sessionConsumed: s.contextualTourShownThisSession,
+        activeTourId: s.activeContextualTourId,
+        activeModal: s.activeModal,
+        blockingSurfaceVisible: s.contextualToursBlockingSurfaceVisible,
+        targetExists: hasContextualTourTarget
+      })
+      if (decision.kind !== 'start') {
+        return s
+      }
+      return {
+        activeContextualTourId: id,
+        activeContextualTourStepIndex: decision.stepIndex,
+        activeContextualTourSource: source,
+        contextualTourShownThisSession: true
+      }
+    }),
+  advanceContextualTour: () =>
+    set((s) => {
+      if (!s.activeContextualTourId) {
+        return s
+      }
+      const nextStepIndex = getNextVisibleContextualTourStepIndex({
+        tour: getContextualTour(s.activeContextualTourId),
+        currentStepIndex: s.activeContextualTourStepIndex,
+        targetExists: hasContextualTourTarget
+      })
+      if (nextStepIndex === null) {
+        return {
+          activeContextualTourId: null,
+          activeContextualTourStepIndex: 0,
+          activeContextualTourSource: null
+        }
+      }
+      return { activeContextualTourStepIndex: nextStepIndex }
+    }),
+  dismissContextualTour: (id) => {
+    const activeTourId = get().activeContextualTourId
+    if (id && activeTourId !== id) {
+      return
+    }
+    const tourId = id ?? activeTourId
+    if (tourId) {
+      get().markContextualToursSeen([tourId])
+    }
+    set((s) => {
+      if (id && s.activeContextualTourId !== id) {
+        return s
+      }
+      return {
+        activeContextualTourId: null,
+        activeContextualTourStepIndex: 0,
+        activeContextualTourSource: null
+      }
+    })
+  },
+  completeContextualTour: (id) => {
+    const activeTourId = get().activeContextualTourId
+    if (id && activeTourId !== id) {
+      return
+    }
+    const tourId = id ?? activeTourId
+    if (tourId) {
+      get().markContextualToursSeen([tourId])
+    }
+    set((s) => {
+      if (id && s.activeContextualTourId !== id) {
+        return s
+      }
+      return {
+        activeContextualTourId: null,
+        activeContextualTourStepIndex: 0,
+        activeContextualTourSource: null
+      }
+    })
+  },
+  cancelContextualTour: (id) =>
+    set((s) => {
+      const activeTourId = s.activeContextualTourId
+      const tourId = id ?? activeTourId
+      if (!tourId || (id && activeTourId !== id)) {
+        return s
+      }
+      const alreadyShown = s.contextualToursSeenIds.includes(tourId)
+      return {
+        activeContextualTourId: null,
+        activeContextualTourStepIndex: 0,
+        activeContextualTourSource: null,
+        contextualTourShownThisSession: alreadyShown ? s.contextualTourShownThisSession : false
+      }
+    }),
+  markContextualToursSeen: (ids) =>
+    set((s) => {
+      if (ids.length === 0) {
+        return s
+      }
+      const current = new Set(s.contextualToursSeenIds)
+      let changed = false
+      for (const id of ids) {
+        if (!current.has(id)) {
+          current.add(id)
+          changed = true
+        }
+      }
+      if (!changed) {
+        return s
+      }
+      const next = [...current]
+      if (typeof window !== 'undefined') {
+        window.api.ui.set({ contextualToursSeenIds: next }).catch(console.error)
+      }
+      return { contextualToursSeenIds: next }
+    }),
   trustedOrcaHooks: {},
   markOrcaHookScriptConfirmed: (repoId, kind, contentHash) =>
     set((s) => {
@@ -1208,6 +1372,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
         browserKagiSessionLink: normalizeKagiSessionLink(ui.browserKagiSessionLink ?? ''),
         taskResumeState: sanitizeTaskResumeState(ui.taskResumeState),
         featureTipsSeenIds: normalizeFeatureTipIds(ui.featureTipsSeenIds),
+        contextualToursSeenIds: normalizeContextualTourIds(ui.contextualToursSeenIds),
         trustedOrcaHooks: filterTrustedOrcaHooksToValidRepos(
           ui.trustedOrcaHooks ?? {},
           validRepoIds

@@ -234,7 +234,7 @@ export function RemoteStep({
         </DialogDescription>
       </DialogHeader>
 
-      <div className="space-y-3 pt-1">
+      <div className="space-y-3 pt-1" data-contextual-tour-target="workspace-creation-source">
         <div className="space-y-1">
           <label className="text-[11px] font-medium text-muted-foreground">SSH target</label>
           {sshTargets.length === 0 ? (
@@ -301,6 +301,7 @@ export function RemoteStep({
           onClick={onAdd}
           disabled={!selectedTargetId || !remotePath.trim() || isAddingRemote}
           className="w-full"
+          data-contextual-tour-target="workspace-creation-action"
         >
           {isAddingRemote ? 'Adding...' : 'Add remote project'}
         </Button>
@@ -352,7 +353,7 @@ export function CloneStep({
         <DialogDescription>Enter the Git URL and choose where to clone it.</DialogDescription>
       </DialogHeader>
 
-      <div className="space-y-3 pt-1">
+      <div className="space-y-3 pt-1" data-contextual-tour-target="workspace-creation-source">
         <div className="space-y-1">
           <label className="text-[11px] font-medium text-muted-foreground">Git URL</label>
           <Input
@@ -396,6 +397,7 @@ export function CloneStep({
           onClick={onClone}
           disabled={!cloneUrl.trim() || !cloneDestination.trim() || isCloning}
           className="w-full"
+          data-contextual-tour-target="workspace-creation-action"
         >
           {isCloning ? 'Cloning...' : 'Clone'}
         </Button>

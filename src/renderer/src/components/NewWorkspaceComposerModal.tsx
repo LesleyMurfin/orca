@@ -8,6 +8,7 @@ import { AGENT_CATALOG } from '@/lib/agent-catalog'
 import type { LinkedWorkItemSummary } from '@/lib/new-workspace'
 import { shouldAllowComposerEnterSubmitTarget } from '@/lib/new-workspace-enter-guard'
 import { isScreenSubmitShortcut } from '@/lib/screen-submit-shortcut'
+import { useContextualTour } from '@/components/contextual-tours/use-contextual-tour'
 import type {
   TuiAgent,
   WorkspaceCreateTelemetrySource,
@@ -98,6 +99,7 @@ function QuickTabBody({
   onClose: () => void
   active: boolean
 }): React.JSX.Element {
+  useContextualTour('workspace-creation', active, 'workspace_creation_modal')
   const settings = useAppStore((s) => s.settings)
   const { cardProps, composerRef, nameInputRef, submitQuick, createDisabled } = useComposerState({
     initialName: modalData.prefilledName ?? '',

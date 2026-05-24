@@ -138,7 +138,7 @@ export function ProjectAddedContent({
 
   return (
     <>
-      <DialogHeader>
+      <DialogHeader data-contextual-tour-target="workspace-creation-source">
         <DialogTitle>Repo added</DialogTitle>
         <DialogDescription>
           {repoName
@@ -147,7 +147,7 @@ export function ProjectAddedContent({
         </DialogDescription>
       </DialogHeader>
 
-      <div className="space-y-3 pt-1">
+      <div className="space-y-3 pt-1" data-contextual-tour-target="workspace-creation-setup">
         {hasHiddenWorktrees ? (
           <div
             ref={radioGroupRef}
@@ -204,7 +204,12 @@ export function ProjectAddedContent({
           <Settings className="size-3" />
           Configure repo
         </button>
-        <Button type="button" size="sm" onClick={handlePrimaryAction}>
+        <Button
+          type="button"
+          size="sm"
+          onClick={handlePrimaryAction}
+          data-contextual-tour-target="workspace-creation-action"
+        >
           {selectedChoice === 'existing' ? (
             <>
               <GitBranch className="size-4" />

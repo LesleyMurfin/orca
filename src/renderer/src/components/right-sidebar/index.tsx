@@ -29,6 +29,7 @@ import {
 import { getActiveChecksStatus } from './active-checks-status'
 import { getVisibleRightSidebarActivityItems } from './right-sidebar-activity-visibility'
 import { useShortcutLabel } from '@/hooks/useShortcutLabel'
+import { useContextualTour } from '@/components/contextual-tours/use-contextual-tour'
 
 const MIN_WIDTH = 220
 // Why: long file names (e.g. construction drawing sheets, multi-part document
@@ -109,6 +110,7 @@ function RightSidebarInner(): React.JSX.Element {
     () => getVisibleRightSidebarActivityItems(activityItems, { isFolder, isSshRepo }),
     [activityItems, isFolder, isSshRepo]
   )
+  useContextualTour('right-sidebar', rightSidebarOpen, 'right_sidebar_visible')
 
   // If the active tab is hidden (e.g. switched from a git repo to a folder),
   // fall back to the first visible tab.
@@ -203,10 +205,12 @@ function RightSidebarInner(): React.JSX.Element {
         // stays mounted for performance — see App.tsx).
         rightSidebarOpen ? 'overflow-visible' : 'overflow-hidden'
       )}
+      data-contextual-tour-target="right-sidebar-shell"
     >
       {/* Panel content area */}
       <div
         className="flex flex-col flex-1 min-w-0 bg-sidebar overflow-hidden"
+        data-contextual-tour-target="right-sidebar-panel"
         style={{
           borderLeft: rightSidebarOpen ? '1px solid var(--sidebar-border)' : 'none'
         }}
@@ -221,6 +225,7 @@ function RightSidebarInner(): React.JSX.Element {
                     <div
                       ref={topActivityStripRef}
                       className="right-sidebar-activity-strip flex min-w-0 flex-1 items-center overflow-hidden pl-2 right-sidebar-header-no-drag"
+                      data-contextual-tour-target="right-sidebar-activity"
                     >
                       {/* Why: the top strip shares a narrow titlebar with the close
                           button and Windows controls. Overflow goes behind More
@@ -266,6 +271,7 @@ function RightSidebarInner(): React.JSX.Element {
                   <div
                     ref={topActivityStripRef}
                     className="right-sidebar-activity-strip flex h-10 min-h-10 items-center border-b border-border px-2 right-sidebar-header-no-drag"
+                    data-contextual-tour-target="right-sidebar-activity"
                   >
                     {/* Why: Windows has fixed native-style controls in the titlebar
                         area; keep sidebar navigation in the sidebar body so the
@@ -329,7 +335,10 @@ function RightSidebarInner(): React.JSX.Element {
       {activityBarPosition === 'side' && (
         <ContextMenu>
           <ContextMenuTrigger asChild>
-            <div className="flex flex-col items-center w-10 min-w-[40px] bg-sidebar border-l border-border side-activity-bar-windows-inset">
+            <div
+              className="flex flex-col items-center w-10 min-w-[40px] bg-sidebar border-l border-border side-activity-bar-windows-inset"
+              data-contextual-tour-target="right-sidebar-activity"
+            >
               <TooltipProvider delayDuration={400}>{sideActivityBarIcons}</TooltipProvider>
             </div>
           </ContextMenuTrigger>
