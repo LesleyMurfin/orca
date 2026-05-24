@@ -19,7 +19,6 @@ export type FeatureTip =
     })
   | (FeatureTipBase & {
       action: 'open-agent-status-release-notes'
-      mediaUrl: string
       releaseNotesUrl: string
     })
 
@@ -47,7 +46,6 @@ export const FEATURE_TIPS = [
       'Worktree cards now show each agent inline with a status dot, so you can spot what is working and what is done without opening every terminal.',
     action: 'open-agent-status-release-notes',
     ctaLabel: "See What's New",
-    mediaUrl: 'https://onorca.dev/whats-new/agent-statuses.gif',
     releaseNotesUrl: 'https://onorca.dev/changelog/1-3-41'
   }
 ] as const satisfies readonly FeatureTip[]
