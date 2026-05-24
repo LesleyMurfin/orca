@@ -33,7 +33,6 @@ import {
   effectiveExternalWorktreeVisibility,
   isLegacyRepoForExternalWorktreeVisibility
 } from '../../../../shared/worktree-ownership'
-import { useContextualTour } from '@/components/contextual-tours/use-contextual-tour'
 
 const AddRepoDialog = React.memo(function AddRepoDialog() {
   const activeModal = useAppStore((s) => s.activeModal)
@@ -131,11 +130,6 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
   const isOpen = activeModal === 'add-repo'
   const repoId = addedRepo?.id ?? ''
   const isRuntimeEnvironmentActive = Boolean(settings?.activeRuntimeEnvironmentId?.trim())
-  useContextualTour(
-    'workspace-creation',
-    isOpen && step === 'setup',
-    'workspace_creation_add_project'
-  )
 
   const worktrees = useMemo(() => {
     return worktreesByRepo[repoId] ?? []
@@ -483,7 +477,7 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
               </DialogDescription>
             </DialogHeader>
 
-            <div className="space-y-3 pt-2" data-contextual-tour-target="workspace-creation-source">
+            <div className="space-y-3 pt-2">
               <div className="space-y-1">
                 <label
                   htmlFor="server-project-path"
@@ -507,7 +501,6 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
                   onClick={() => void handleAddServerPath('git')}
                   disabled={!serverPath.trim() || isAddingServerPath}
                   className="h-10"
-                  data-contextual-tour-target="workspace-creation-action"
                 >
                   Add Git Project
                 </Button>
@@ -555,16 +548,12 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
               </DialogDescription>
             </DialogHeader>
 
-            <div
-              className="grid grid-cols-3 gap-3 pt-2"
-              data-contextual-tour-target="workspace-creation-source"
-            >
+            <div className="grid grid-cols-3 gap-3 pt-2">
               <Button
                 onClick={handleBrowse}
                 disabled={isAdding}
                 variant="outline"
                 className="h-auto py-5 px-2 flex flex-col items-center gap-2 text-center border-border/80"
-                data-contextual-tour-target="workspace-creation-action"
               >
                 <FolderOpen className="size-6 text-muted-foreground" />
                 <div>

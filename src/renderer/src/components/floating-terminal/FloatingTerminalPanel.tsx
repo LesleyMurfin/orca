@@ -934,7 +934,7 @@ export function FloatingTerminalPanel({
                 className={isActive ? 'absolute inset-0 flex' : 'absolute inset-0 hidden'}
                 aria-hidden={!isActive}
               >
-                <BrowserPane browserTab={tab} isActive={open && isActive} />
+                <BrowserPane browserTab={tab} isActive={isActive} />
               </div>
             )
           })}

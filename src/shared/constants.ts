@@ -378,8 +378,7 @@ export function getDefaultUIState(): PersistedUIState {
     setupScriptPromptDismissedRepoIds: [],
     acknowledgedAgentsByPaneKey: {},
     workspaceCleanup: { dismissals: {} },
-    featureTipsSeenIds: [],
-    contextualToursSeenIds: []
+    featureTipsSeenIds: []
   }
 }
 
