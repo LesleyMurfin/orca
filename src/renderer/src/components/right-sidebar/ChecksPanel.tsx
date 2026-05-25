@@ -42,10 +42,14 @@ import {
   shouldCommitChecksPanelAsyncResult
 } from './checks-panel-async-result-key'
 import { installWindowVisibilityTimeoutPoller } from '@/lib/window-visibility-timeout-poller'
-import { getChecksPanelEmptyStateCopy } from './checks-panel-empty-state'
+import {
+  getChecksPanelEmptyStateCopy,
+  shouldShowChecksPanelPublishBranchAction
+} from './checks-panel-empty-state'
 import { getRuntimeGitStatus, getRuntimeGitUpstreamStatus } from '@/runtime/runtime-git-client'
 import {
   buildChecksPanelGitStatusContextKey,
+  readChecksPanelPublishActionGitStatus,
   readChecksPanelGitStatusSnapshot,
   shouldClearChecksPanelGitStatusSnapshot,
   shouldCoalesceChecksPanelGitStatusSnapshotRefresh,
@@ -87,6 +91,7 @@ export default function ChecksPanel(): React.JSX.Element {
   const remoteStatusInvalidation = useAppStore((s) =>
     activeWorktreeId ? s.remoteStatusesByWorktree[activeWorktreeId] : undefined
   )
+  const isRemoteOperationActive = useAppStore((s) => s.isRemoteOperationActive)
   const pushBranch = useAppStore((s) => s.pushBranch)
   const fetchUpstreamStatus = useAppStore((s) => s.fetchUpstreamStatus)
   const setRightSidebarOpen = useAppStore((s) => s.setRightSidebarOpen)
@@ -113,6 +118,7 @@ export default function ChecksPanel(): React.JSX.Element {
   const [conflictDetailsRefreshing, setConflictDetailsRefreshing] = useState(false)
   const [createPrDialogOpen, setCreatePrDialogOpen] = useState(false)
   const [createPrPushFirst, setCreatePrPushFirst] = useState(false)
+  const [isPublishingBranch, setIsPublishingBranch] = useState(false)
   const [isResolvingConflictsWithAI, setIsResolvingConflictsWithAI] = useState(false)
   const [isFixingChecksWithAI, setIsFixingChecksWithAI] = useState(false)
   const [hostedReviewCreationSnapshot, setHostedReviewCreationSnapshot] =
@@ -175,6 +181,7 @@ export default function ChecksPanel(): React.JSX.Element {
     setConflictDetailsRefreshing(false)
     setCreatePrDialogOpen(false)
     setCreatePrPushFirst(false)
+    setIsPublishingBranch(false)
     setIsResolvingConflictsWithAI(false)
     setIsFixingChecksWithAI(false)
     setHostedReviewCreationSnapshot(null)
@@ -282,6 +289,18 @@ export default function ChecksPanel(): React.JSX.Element {
   const gitStatusReadyForPanelContext = gitStatusInputs.hasUncommittedChanges !== undefined
   const hasUncommittedChanges = gitStatusInputs.hasUncommittedChanges
   const remoteStatus = gitStatusInputs.remoteStatus
+  // Why: Create PR eligibility waits for the stricter panel snapshot, but the
+  // Publish affordance can use the active worktree poller when SSH snapshot
+  // refresh is delayed; publishing is still blocked for dirty fallback status.
+  const publishActionGitStatusInputs = readChecksPanelPublishActionGitStatus({
+    snapshot: gitStatusSnapshot,
+    contextKey: panelContextKey,
+    fallbackEntries: gitStatusInvalidation,
+    fallbackRemoteStatus: remoteStatusInvalidation
+  })
+  const publishActionHasUncommittedChanges =
+    publishActionGitStatusInputs.hasUncommittedChanges ?? true
+  const publishActionRemoteStatus = publishActionGitStatusInputs.remoteStatus
   const hostedReviewCreation =
     hostedReviewCreationSnapshot?.requestKey === hostedReviewCreationRequestKey
       ? hostedReviewCreationSnapshot.data
@@ -1213,6 +1232,48 @@ export default function ChecksPanel(): React.JSX.Element {
     }
   }, [activeWorktree, activeWorktreeId, fetchUpstreamStatus, pushBranch])
 
+  const handlePublishBranch = useCallback(async (): Promise<void> => {
+    if (
+      !activeWorktreeId ||
+      !activeWorktree?.path ||
+      isPublishingBranch ||
+      isRemoteOperationActive
+    ) {
+      return
+    }
+    const connectionId = getConnectionId(activeWorktreeId) ?? undefined
+    setIsPublishingBranch(true)
+    try {
+      await pushBranch(
+        activeWorktreeId,
+        activeWorktree.path,
+        true,
+        connectionId,
+        activeWorktree.pushTarget
+      )
+      await fetchUpstreamStatus(
+        activeWorktreeId,
+        activeWorktree.path,
+        connectionId,
+        activeWorktree.pushTarget
+      )
+    } catch {
+      // Store remote actions already surface the publish failure toast.
+    } finally {
+      // Why: publishing changes the upstream boundary the Checks panel uses to
+      // decide between Publish, Create PR, and Push & Create PR.
+      setGitStatusRefreshNonce((value) => value + 1)
+      setIsPublishingBranch(false)
+    }
+  }, [
+    activeWorktree,
+    activeWorktreeId,
+    fetchUpstreamStatus,
+    isPublishingBranch,
+    isRemoteOperationActive,
+    pushBranch
+  ])
+
   const handleBranchChangedByPullRequestGeneration = useCallback(async (): Promise<void> => {
     if (!activeWorktreeId || !activeWorktree?.path) {
       return
@@ -1412,11 +1473,18 @@ export default function ChecksPanel(): React.JSX.Element {
             : null
     const canCreate = hostedReviewCreation?.canCreate
     const canPushCreate = hostedReviewCreation?.blockedReason === 'needs_push'
+    const canPublishBranch =
+      isPublishingBranch ||
+      (!publishActionHasUncommittedChanges &&
+        shouldShowChecksPanelPublishBranchAction({
+          hostedReviewBlockedReason: hostedReviewCreation?.blockedReason,
+          hasUpstream: publishActionRemoteStatus?.hasUpstream
+        }))
     const emptyStateCopy = getChecksPanelEmptyStateCopy({
       operationLabel,
       prRefreshStatus: prRefreshState?.status,
       hostedReviewBlockedReason: hostedReviewCreation?.blockedReason,
-      hasUpstream: remoteStatus?.hasUpstream
+      hasUpstream: publishActionRemoteStatus?.hasUpstream
     })
     return (
       <>
@@ -1441,6 +1509,15 @@ export default function ChecksPanel(): React.JSX.Element {
           <div className="mt-1 text-xs text-muted-foreground">{emptyStateCopy.description}</div>
           {!operationInProgress && (
             <div className="mt-3 flex flex-wrap gap-2">
+              {canPublishBranch && (
+                <Button
+                  size="xs"
+                  disabled={isPublishingBranch || isRemoteOperationActive}
+                  onClick={handlePublishBranch}
+                >
+                  {isPublishingBranch ? 'Publishing…' : 'Publish Branch'}
+                </Button>
+              )}
               {(canCreate || canPushCreate) && (
                 <Button
                   size="xs"
@@ -1455,7 +1532,7 @@ export default function ChecksPanel(): React.JSX.Element {
               <Button
                 size="xs"
                 variant="outline"
-                disabled={emptyRefreshing}
+                disabled={emptyRefreshing || isPublishingBranch || isRemoteOperationActive}
                 onClick={() => {
                   if (!activeWorktreeId) {
                     return

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildChecksPanelGitStatusContextKey,
+  readChecksPanelPublishActionGitStatus,
   readChecksPanelGitStatusSnapshot,
   shouldClearChecksPanelGitStatusSnapshot,
   shouldCoalesceChecksPanelGitStatusSnapshotRefresh,
@@ -59,6 +60,66 @@ describe('readChecksPanelGitStatusSnapshot', () => {
   it('withholds worktree-keyed status after a runtime or SSH context change', () => {
     expect(
       readChecksPanelGitStatusSnapshot(SNAPSHOT, 'runtime:env-2::repo::worktree::branch')
+    ).toEqual({
+      hasUncommittedChanges: undefined,
+      remoteStatus: undefined
+    })
+  })
+})
+
+describe('readChecksPanelPublishActionGitStatus', () => {
+  it('uses the matching panel snapshot before worktree-keyed fallback status', () => {
+    expect(
+      readChecksPanelPublishActionGitStatus({
+        snapshot: SNAPSHOT,
+        contextKey: SNAPSHOT.contextKey,
+        fallbackEntries: [],
+        fallbackRemoteStatus: {
+          hasUpstream: true,
+          ahead: 0,
+          behind: 0
+        }
+      })
+    ).toEqual({
+      hasUncommittedChanges: true,
+      remoteStatus: {
+        hasUpstream: false,
+        ahead: 0,
+        behind: 0
+      }
+    })
+  })
+
+  it('falls back to active worktree status when the panel snapshot is unavailable', () => {
+    expect(
+      readChecksPanelPublishActionGitStatus({
+        snapshot: null,
+        contextKey: SNAPSHOT.contextKey,
+        fallbackEntries: [],
+        fallbackRemoteStatus: {
+          hasUpstream: false,
+          ahead: 0,
+          behind: 0
+        }
+      })
+    ).toEqual({
+      hasUncommittedChanges: false,
+      remoteStatus: {
+        hasUpstream: false,
+        ahead: 0,
+        behind: 0
+      }
+    })
+  })
+
+  it('does not synthesize publish inputs without fallback upstream status', () => {
+    expect(
+      readChecksPanelPublishActionGitStatus({
+        snapshot: null,
+        contextKey: SNAPSHOT.contextKey,
+        fallbackEntries: [],
+        fallbackRemoteStatus: undefined
+      })
     ).toEqual({
       hasUncommittedChanges: undefined,
       remoteStatus: undefined

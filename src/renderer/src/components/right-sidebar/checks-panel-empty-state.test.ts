@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { getChecksPanelEmptyStateCopy } from './checks-panel-empty-state'
+import {
+  getChecksPanelEmptyStateCopy,
+  shouldShowChecksPanelPublishBranchAction
+} from './checks-panel-empty-state'
 
 describe('getChecksPanelEmptyStateCopy', () => {
   it('shows a local-only branch message instead of a refresh error', () => {
@@ -12,7 +15,7 @@ describe('getChecksPanelEmptyStateCopy', () => {
       })
     ).toEqual({
       title: 'Branch not published',
-      description: 'Publish this branch from Source Control before creating a pull request.'
+      description: 'Publish this branch before creating a pull request.'
     })
   })
 
@@ -52,15 +55,15 @@ describe('getChecksPanelEmptyStateCopy', () => {
     })
   })
 
-  it('does not let remote status override a known eligibility blocker', () => {
+  it('shows unpublished branch copy even when PR provider eligibility has another blocker', () => {
     expect(
       getChecksPanelEmptyStateCopy({
         operationLabel: null,
         prRefreshStatus: 'error',
-        hostedReviewBlockedReason: 'dirty',
+        hostedReviewBlockedReason: 'unsupported_provider',
         hasUpstream: false
       }).title
-    ).toBe('Could not refresh pull request')
+    ).toBe('Branch not published')
   })
 
   it('keeps the generic refresh error when no local branch action is known', () => {
@@ -72,5 +75,31 @@ describe('getChecksPanelEmptyStateCopy', () => {
         hasUpstream: true
       }).title
     ).toBe('Could not refresh pull request')
+  })
+})
+
+describe('shouldShowChecksPanelPublishBranchAction', () => {
+  it('shows publish when eligibility reports no upstream', () => {
+    expect(
+      shouldShowChecksPanelPublishBranchAction({
+        hostedReviewBlockedReason: 'no_upstream',
+        hasUpstream: undefined
+      })
+    ).toBe(true)
+  })
+
+  it('uses remote status even when provider eligibility has a separate blocker', () => {
+    expect(
+      shouldShowChecksPanelPublishBranchAction({
+        hostedReviewBlockedReason: undefined,
+        hasUpstream: false
+      })
+    ).toBe(true)
+    expect(
+      shouldShowChecksPanelPublishBranchAction({
+        hostedReviewBlockedReason: 'unsupported_provider',
+        hasUpstream: false
+      })
+    ).toBe(true)
   })
 })

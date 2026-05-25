@@ -1,4 +1,4 @@
-import type { GitPushTarget, GitUpstreamStatus } from '../../../../shared/types'
+import type { GitPushTarget, GitStatusEntry, GitUpstreamStatus } from '../../../../shared/types'
 
 export type ChecksPanelGitStatusContextInput = {
   repoId: string | null | undefined
@@ -87,5 +87,22 @@ export function readChecksPanelGitStatusSnapshot(
   return {
     hasUncommittedChanges: snapshot.hasUncommittedChanges,
     remoteStatus: snapshot.remoteStatus
+  }
+}
+
+export function readChecksPanelPublishActionGitStatus(input: {
+  snapshot: ChecksPanelGitStatusSnapshot | null
+  contextKey: string
+  fallbackEntries: GitStatusEntry[] | undefined
+  fallbackRemoteStatus: GitUpstreamStatus | undefined
+}): ChecksPanelGitStatusInputs {
+  const snapshotInputs = readChecksPanelGitStatusSnapshot(input.snapshot, input.contextKey)
+  if (snapshotInputs.hasUncommittedChanges !== undefined || !input.fallbackRemoteStatus) {
+    return snapshotInputs
+  }
+
+  return {
+    hasUncommittedChanges: (input.fallbackEntries?.length ?? 0) > 0,
+    remoteStatus: input.fallbackRemoteStatus
   }
 }

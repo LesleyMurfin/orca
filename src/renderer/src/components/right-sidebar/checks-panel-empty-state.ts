@@ -25,15 +25,17 @@ export function getChecksPanelEmptyStateCopy(
   }
 
   const blockedReason = input.hostedReviewBlockedReason
-  const branchNotPublished =
-    blockedReason === 'no_upstream' ||
-    ((blockedReason === undefined || blockedReason === null) && input.hasUpstream === false)
-  if (branchNotPublished) {
+  if (
+    shouldShowChecksPanelPublishBranchAction({
+      hostedReviewBlockedReason: blockedReason,
+      hasUpstream: input.hasUpstream
+    })
+  ) {
     // Why: a local-only branch cannot have GitHub PR status yet; surfacing a
     // refresh error here makes a normal pre-publish state look broken.
     return {
       title: 'Branch not published',
-      description: 'Publish this branch from Source Control before creating a pull request.'
+      description: 'Publish this branch before creating a pull request.'
     }
   }
 
@@ -71,4 +73,12 @@ export function getChecksPanelEmptyStateCopy(
         description: 'Create a pull request to start checks and review.'
       }
   }
+}
+
+export function shouldShowChecksPanelPublishBranchAction(input: {
+  hostedReviewBlockedReason: HostedReviewCreationBlockedReason | undefined
+  hasUpstream: boolean | undefined
+}): boolean {
+  const blockedReason = input.hostedReviewBlockedReason
+  return input.hasUpstream === false || blockedReason === 'no_upstream'
 }
