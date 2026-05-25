@@ -114,20 +114,22 @@ export function OnboardingTourStep({
               </li>
             ))}
           </ul>
-          <div className="mt-2 flex items-center gap-3">
+        </div>
+        <div className="flex w-full flex-col gap-3">
+          <FeatureTourPreview className="w-full" />
+          <div className="rounded-lg border border-border bg-muted/40 p-3">
             <Button
               variant="default"
               onClick={handleStartTour}
               disabled={Boolean(busyLabel)}
-              className="gap-2"
+              className="w-full gap-2"
             >
               Take the tour
               <ArrowRight className="size-4" />
             </Button>
-            <span className="text-xs text-muted-foreground">~ 60 seconds</span>
+            <div className="mt-2 text-center text-xs text-muted-foreground">~ 60 seconds</div>
           </div>
         </div>
-        <FeatureTourPreview className="w-full" />
       </div>
 
       <p className="mt-auto max-w-[560px] text-left text-xs leading-relaxed text-muted-foreground">
