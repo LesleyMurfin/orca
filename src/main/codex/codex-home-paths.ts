@@ -5,13 +5,14 @@ import {
   mkdirSync,
   readFileSync,
   readlinkSync,
+  rmdirSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { app } from 'electron'
 
 const CODEX_SYSTEM_RESOURCE_ENTRIES = [
   'skills',
@@ -27,9 +28,24 @@ export function getSystemCodexHomePath(): string {
 }
 
 export function getOrcaManagedCodexHomePath(): string {
-  const managedHomePath = join(app.getPath('userData'), 'codex-runtime-home', 'home')
+  const managedHomePath = join(getOrcaUserDataPath(), 'codex-runtime-home', 'home')
   mkdirSync(managedHomePath, { recursive: true })
   return managedHomePath
+}
+
+function getOrcaUserDataPath(): string {
+  if (process.env.ORCA_USER_DATA_PATH) {
+    return process.env.ORCA_USER_DATA_PATH
+  }
+  // Why: CLI hook commands import this module outside Electron. Mirror the CLI
+  // runtime metadata path so offline hook status/on/off uses the same userData.
+  if (process.platform === 'darwin') {
+    return join(homedir(), 'Library', 'Application Support', 'orca')
+  }
+  if (process.platform === 'win32') {
+    return join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'orca')
+  }
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'orca')
 }
 
 export function syncSystemCodexResourcesIntoManagedHome(): void {
@@ -93,10 +109,24 @@ function linkSystemCodexResource(
 
 function targetAlreadyPointsToSource(targetPath: string, sourcePath: string): boolean {
   try {
-    return lstatSync(targetPath).isSymbolicLink() && readlinkSync(targetPath) === sourcePath
+    return (
+      lstatSync(targetPath).isSymbolicLink() &&
+      linkTargetsMatch(readlinkSync(targetPath), sourcePath)
+    )
   } catch {
     return false
   }
+}
+
+function linkTargetsMatch(actualTarget: string, expectedTarget: string): boolean {
+  if (process.platform !== 'win32') {
+    return actualTarget === expectedTarget
+  }
+  return normalizeWindowsLinkTarget(actualTarget) === normalizeWindowsLinkTarget(expectedTarget)
+}
+
+function normalizeWindowsLinkTarget(linkTarget: string): string {
+  return linkTarget.replace(/^\\\\\?\\/, '').toLowerCase()
 }
 
 function getResourceCopyMarkerPath(managedHomePath: string, entryName: string): string {
@@ -153,9 +183,47 @@ function removeCopiedResourceIfOwned(
   entryName: string,
   sourcePath: string
 ): void {
+  if (removeSymlinkedResourceIfOwned(targetPath, sourcePath)) {
+    clearCopiedResourceMarker(managedHomePath, entryName)
+    return
+  }
   if (!targetIsOwnedFallbackCopy(targetPath, managedHomePath, entryName, sourcePath)) {
     return
   }
   rmSync(targetPath, { recursive: true, force: true })
   clearCopiedResourceMarker(managedHomePath, entryName)
+}
+
+function removeSymlinkedResourceIfOwned(targetPath: string, sourcePath: string): boolean {
+  try {
+    if (!lstatSync(targetPath).isSymbolicLink()) {
+      return false
+    }
+    if (!linkTargetsMatch(readlinkSync(targetPath), sourcePath)) {
+      return false
+    }
+    return removeSymlinkEntry(targetPath)
+  } catch {
+    return false
+  }
+}
+
+function removeSymlinkEntry(targetPath: string): boolean {
+  try {
+    // Why: recursive rm can leave a broken directory symlink behind; unlink the
+    // link entry itself so deleted system resources do not linger in runtime home.
+    unlinkSync(targetPath)
+    return true
+  } catch {
+    if (process.platform !== 'win32') {
+      return false
+    }
+  }
+
+  try {
+    rmdirSync(targetPath)
+    return true
+  } catch {
+    return false
+  }
 }

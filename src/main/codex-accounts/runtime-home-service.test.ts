@@ -16,7 +16,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { GlobalSettings } from '../../shared/types'
 
-const testState = { userDataDir: '', fakeHomeDir: '' }
+const testState = {
+  userDataDir: '',
+  fakeHomeDir: '',
+  previousUserDataPath: undefined as string | undefined
+}
 
 vi.mock('electron', () => ({
   app: {
@@ -218,6 +222,8 @@ describe('CodexRuntimeHomeService', () => {
     vi.clearAllMocks()
     testState.userDataDir = mkdtempSync(join(tmpdir(), 'orca-runtime-home-'))
     testState.fakeHomeDir = mkdtempSync(join(tmpdir(), 'orca-codex-home-'))
+    testState.previousUserDataPath = process.env.ORCA_USER_DATA_PATH
+    process.env.ORCA_USER_DATA_PATH = testState.userDataDir
     mkdirSync(getSystemCodexHomePath(), { recursive: true })
     mkdirSync(getRuntimeCodexHomePath(), { recursive: true })
   })
@@ -225,6 +231,11 @@ describe('CodexRuntimeHomeService', () => {
   afterEach(() => {
     rmSync(testState.userDataDir, { recursive: true, force: true })
     rmSync(testState.fakeHomeDir, { recursive: true, force: true })
+    if (testState.previousUserDataPath === undefined) {
+      delete process.env.ORCA_USER_DATA_PATH
+    } else {
+      process.env.ORCA_USER_DATA_PATH = testState.previousUserDataPath
+    }
   })
 
   it('captures the existing ~/.codex auth as the system-default snapshot', async () => {

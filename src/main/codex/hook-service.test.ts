@@ -7,6 +7,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from 'fs'
 import { tmpdir } from 'os'
@@ -38,10 +39,13 @@ import { CodexHookService } from './hook-service'
 
 let tmpHome: string
 let userDataDir: string
+let previousUserDataPath: string | undefined
 
 beforeEach(() => {
   tmpHome = mkdtempSync(join(tmpdir(), 'orca-codex-home-'))
   userDataDir = mkdtempSync(join(tmpdir(), 'orca-codex-user-data-'))
+  previousUserDataPath = process.env.ORCA_USER_DATA_PATH
+  process.env.ORCA_USER_DATA_PATH = userDataDir
   homedirMock.mockReturnValue(tmpHome)
   getPathMock.mockImplementation((name: string) => {
     if (name === 'userData') {
@@ -54,6 +58,11 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(tmpHome, { recursive: true, force: true })
   rmSync(userDataDir, { recursive: true, force: true })
+  if (previousUserDataPath === undefined) {
+    delete process.env.ORCA_USER_DATA_PATH
+  } else {
+    process.env.ORCA_USER_DATA_PATH = previousUserDataPath
+  }
   vi.clearAllMocks()
 })
 
@@ -134,6 +143,7 @@ describe('CodexHookService', () => {
         }
         throw new Error(`unexpected app.getPath(${name})`)
       })
+      process.env.ORCA_USER_DATA_PATH = devUserDataDir
       expect(new CodexHookService().install().state).toBe('installed')
 
       getPathMock.mockImplementation((name: string) => {
@@ -142,6 +152,7 @@ describe('CodexHookService', () => {
         }
         throw new Error(`unexpected app.getPath(${name})`)
       })
+      process.env.ORCA_USER_DATA_PATH = prodUserDataDir
       expect(new CodexHookService().install().state).toBe('installed')
 
       const devHooksPath = join(devUserDataDir, 'codex-runtime-home', 'home', 'hooks.json')
@@ -168,6 +179,7 @@ describe('CodexHookService', () => {
       ).toBe(true)
       expect(readFileSync(systemHooksPath, 'utf-8')).toBe(existingSystemHooks)
     } finally {
+      process.env.ORCA_USER_DATA_PATH = userDataDir
       rmSync(devUserDataDir, { recursive: true, force: true })
       rmSync(prodUserDataDir, { recursive: true, force: true })
     }
@@ -240,7 +252,7 @@ describe('CodexHookService', () => {
     expect(runtimeToml).not.toContain(hookTrustHeader(`${systemHooksPath}:stop:0:0`))
   })
 
-  it('mirrors compact-event user hook approvals and skips disabled trust entries', () => {
+  it('mirrors compact-event user hook approvals and disabled trust entries', () => {
     const systemCodexHome = join(tmpHome, '.codex')
     const systemHooksPath = join(systemCodexHome, 'hooks.json')
     mkdirSync(systemCodexHome, { recursive: true })
@@ -294,9 +306,14 @@ describe('CodexHookService', () => {
     expect(runtimeHooks.hooks.PostCompact?.[0]?.hooks?.[0]?.command).toBe('post-compact-disabled')
 
     const runtimeToml = readFileSync(join(managedCodexHome, 'config.toml'), 'utf-8')
-    expect(runtimeToml).toContain(hookTrustHeader(`${managedHooksPath}:pre_compact:0:0`))
-    expect(runtimeToml).not.toContain(hookTrustHeader(`${managedHooksPath}:post_compact:0:0`))
+    expect(runtimeToml).toContain(
+      `${hookTrustHeader(`${managedHooksPath}:pre_compact:0:0`)}\nenabled = true`
+    )
+    expect(runtimeToml).toContain(
+      `${hookTrustHeader(`${managedHooksPath}:post_compact:0:0`)}\nenabled = false`
+    )
     expect(runtimeToml).not.toContain(hookTrustHeader(`${systemHooksPath}:pre_compact:0:0`))
+    expect(runtimeToml).not.toContain(hookTrustHeader(`${systemHooksPath}:post_compact:0:0`))
   })
 
   it('removes runtime user hook trust after system approval is revoked', () => {
@@ -376,6 +393,57 @@ describe('CodexHookService', () => {
       ) ?? []
     expect(stopCommands).toContain('user-hook-new')
     expect(stopCommands).not.toContain('user-hook-old')
+  })
+
+  it('refreshes runtime user hooks without installing Orca-managed hooks', () => {
+    const systemCodexHome = join(tmpHome, '.codex')
+    const systemHooksPath = join(systemCodexHome, 'hooks.json')
+    mkdirSync(systemCodexHome, { recursive: true })
+    writeFileSync(
+      systemHooksPath,
+      `${JSON.stringify({
+        hooks: { Stop: [{ hooks: [{ type: 'command', command: 'user-stop-hook' }] }] }
+      })}\n`,
+      'utf-8'
+    )
+    const disabledStopHeader = hookTrustHeader(`${systemHooksPath}:stop:0:0`)
+    writeFileSync(
+      join(systemCodexHome, 'config.toml'),
+      upsertHookTrustEntriesInContent('model = "system-model"\n', [
+        {
+          sourcePath: systemHooksPath,
+          eventLabel: 'stop',
+          groupIndex: 0,
+          handlerIndex: 0,
+          command: 'user-stop-hook'
+        }
+      ]).replace(`${disabledStopHeader}\nenabled = true`, `${disabledStopHeader}\nenabled = false`),
+      'utf-8'
+    )
+
+    const service = new CodexHookService()
+    expect(service.install().state).toBe('installed')
+
+    const status = service.refreshRuntimeUserHooks()
+
+    expect(status.state).toBe('not_installed')
+    expect(status.managedHooksPresent).toBe(false)
+    const managedCodexHome = join(userDataDir, 'codex-runtime-home', 'home')
+    const managedHooksPath = join(managedCodexHome, 'hooks.json')
+    const runtimeHooks = JSON.parse(readFileSync(managedHooksPath, 'utf-8')) as {
+      hooks: Record<string, { hooks?: { command?: string }[] }[]>
+    }
+    const runtimeCommands = Object.values(runtimeHooks.hooks).flatMap((definitions) =>
+      definitions.flatMap((definition) => definition.hooks?.map((hook) => hook.command ?? '') ?? [])
+    )
+    expect(runtimeCommands).toEqual(['user-stop-hook'])
+    expect(runtimeCommands.some((command) => command.includes('codex-hook'))).toBe(false)
+
+    const runtimeToml = readFileSync(join(managedCodexHome, 'config.toml'), 'utf-8')
+    expect(runtimeToml).toContain(
+      `${hookTrustHeader(`${managedHooksPath}:stop:0:0`)}\nenabled = false`
+    )
+    expect(runtimeToml).not.toContain(':permission_request:0:0')
   })
 
   it('removes legacy Orca-managed hooks from system ~/.codex during install', () => {
@@ -492,6 +560,66 @@ describe('CodexHookService', () => {
     expect(profileConfig).not.toContain('codex-hook')
   })
 
+  it('cleans legacy system and profile hooks when runtime hooks.json is malformed during remove', () => {
+    const managedCodexHome = join(userDataDir, 'codex-runtime-home', 'home')
+    mkdirSync(managedCodexHome, { recursive: true })
+    writeFileSync(join(managedCodexHome, 'hooks.json'), '{not json', 'utf-8')
+
+    const systemCodexHome = join(tmpHome, '.codex')
+    const systemHooksPath = join(systemCodexHome, 'hooks.json')
+    const profilePath = join(systemCodexHome, 'orca-agent-status.config.toml')
+    const legacyScriptPath = join(
+      tmpHome,
+      '.orca',
+      'agent-hooks',
+      process.platform === 'win32' ? 'codex-hook.cmd' : 'codex-hook.sh'
+    )
+    const legacyCommand =
+      process.platform === 'win32' ? legacyScriptPath : wrapPosixHookCommand(legacyScriptPath)
+    mkdirSync(systemCodexHome, { recursive: true })
+    writeFileSync(
+      systemHooksPath,
+      `${JSON.stringify(
+        {
+          hooks: {
+            Stop: [
+              { hooks: [{ type: 'command', command: 'user-hook' }] },
+              { hooks: [{ type: 'command', command: legacyCommand }] }
+            ],
+            SessionStart: [{ hooks: [{ type: 'command', command: legacyCommand }] }]
+          }
+        },
+        null,
+        2
+      )}\n`,
+      'utf-8'
+    )
+    writeFileSync(
+      profilePath,
+      [
+        '# BEGIN ORCA AGENT STATUS HOOKS',
+        '[[hooks.PermissionRequest]]',
+        '[[hooks.PermissionRequest.hooks]]',
+        'type = "command"',
+        'command = "codex-hook"',
+        '# END ORCA AGENT STATUS HOOKS',
+        ''
+      ].join('\n'),
+      'utf-8'
+    )
+
+    const status = new CodexHookService().remove()
+
+    expect(status.state).toBe('error')
+    expect(status.detail).toBe('Could not parse Codex hooks.json')
+    const systemHooks = JSON.parse(readFileSync(systemHooksPath, 'utf-8')) as {
+      hooks: Record<string, { hooks?: { command?: string }[] }[]>
+    }
+    expect(systemHooks.hooks.Stop).toEqual([{ hooks: [{ type: 'command', command: 'user-hook' }] }])
+    expect(systemHooks.hooks.SessionStart).toBeUndefined()
+    expect(existsSync(profilePath)).toBe(false)
+  })
+
   it('cleans duplicate Codex hook representations while keeping status hooks in runtime CODEX_HOME', () => {
     const systemCodexHome = join(tmpHome, '.codex')
     const systemHooksPath = join(systemCodexHome, 'hooks.json')
@@ -593,6 +721,27 @@ describe('CodexHookService', () => {
     expect(systemToml).not.toContain(':session_start:0:0')
     expect(existsSync(legacyProfilePath)).toBe(false)
     expect(service.getStatus().state).toBe('installed')
+  })
+
+  it('removes managed trust entries when userData resolves through a symlink', () => {
+    const linkedUserDataDir = join(tmpHome, 'linked-user-data')
+    symlinkSync(userDataDir, linkedUserDataDir, process.platform === 'win32' ? 'junction' : 'dir')
+    process.env.ORCA_USER_DATA_PATH = linkedUserDataDir
+
+    const service = new CodexHookService()
+    expect(service.install().state).toBe('installed')
+
+    const linkedManagedCodexHome = join(linkedUserDataDir, 'codex-runtime-home', 'home')
+    const linkedHooksPath = join(linkedManagedCodexHome, 'hooks.json')
+    let runtimeToml = readFileSync(join(linkedManagedCodexHome, 'config.toml'), 'utf-8')
+    expect(runtimeToml).toContain(hookTrustHeader(`${linkedHooksPath}:permission_request:0:0`))
+
+    const status = service.remove()
+
+    expect(status.state).toBe('not_installed')
+    runtimeToml = readFileSync(join(linkedManagedCodexHome, 'config.toml'), 'utf-8')
+    expect(runtimeToml).not.toContain(':permission_request:0:0')
+    expect(runtimeToml).not.toContain(':stop:0:0')
   })
 
   it('mirrors system Codex config while preserving runtime hook trust on hook install', () => {

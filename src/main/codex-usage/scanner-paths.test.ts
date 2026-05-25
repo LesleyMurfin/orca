@@ -32,11 +32,14 @@ import {
 const originalCodexHome = process.env.CODEX_HOME
 let fakeHomeDir: string
 let userDataDir: string
+let previousUserDataPath: string | undefined
 
 beforeEach(() => {
   delete process.env.CODEX_HOME
   fakeHomeDir = mkdtempSync(join(tmpdir(), 'orca-codex-usage-home-'))
   userDataDir = mkdtempSync(join(tmpdir(), 'orca-codex-usage-user-data-'))
+  previousUserDataPath = process.env.ORCA_USER_DATA_PATH
+  process.env.ORCA_USER_DATA_PATH = userDataDir
   homedirMock.mockReturnValue(fakeHomeDir)
   getPathMock.mockImplementation((name: string) => {
     if (name === 'userData') {
@@ -53,6 +56,11 @@ afterEach(() => {
     delete process.env.CODEX_HOME
   } else {
     process.env.CODEX_HOME = originalCodexHome
+  }
+  if (previousUserDataPath === undefined) {
+    delete process.env.ORCA_USER_DATA_PATH
+  } else {
+    process.env.ORCA_USER_DATA_PATH = previousUserDataPath
   }
   vi.clearAllMocks()
 })

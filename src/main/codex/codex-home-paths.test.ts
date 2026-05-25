@@ -7,6 +7,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -54,6 +55,7 @@ import { syncSystemCodexResourcesIntoManagedHome } from './codex-home-paths'
 
 let fakeHomeDir: string
 let userDataDir: string
+let previousUserDataPath: string | undefined
 
 function getSystemCodexHomePath(): string {
   return join(fakeHomeDir, '.codex')
@@ -76,10 +78,21 @@ function expectSymbolicLinkTargetIfLinked(targetPath: string, sourcePath: string
   expect(normalizeLinkTarget(readlinkSync(targetPath))).toBe(normalizeLinkTarget(sourcePath))
 }
 
+function mockElectronAppPaths(): void {
+  vi.doMock('electron', () => ({
+    app: {
+      getPath: getPathMock
+    }
+  }))
+}
+
 beforeEach(() => {
+  mockElectronAppPaths()
   fsMockState.failSymlink = false
   fakeHomeDir = mkdtempSync(join(tmpdir(), 'orca-codex-resource-home-'))
   userDataDir = mkdtempSync(join(tmpdir(), 'orca-codex-resource-user-data-'))
+  previousUserDataPath = process.env.ORCA_USER_DATA_PATH
+  process.env.ORCA_USER_DATA_PATH = userDataDir
   homedirMock.mockReturnValue(fakeHomeDir)
   getPathMock.mockImplementation((name: string) => {
     if (name === 'userData') {
@@ -93,10 +106,38 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(fakeHomeDir, { recursive: true, force: true })
   rmSync(userDataDir, { recursive: true, force: true })
+  if (previousUserDataPath === undefined) {
+    delete process.env.ORCA_USER_DATA_PATH
+  } else {
+    process.env.ORCA_USER_DATA_PATH = previousUserDataPath
+  }
   vi.clearAllMocks()
 })
 
 describe('syncSystemCodexResourcesIntoManagedHome', () => {
+  it('uses ORCA_USER_DATA_PATH when Electron cannot be required', async () => {
+    vi.resetModules()
+    vi.doMock('electron', () => {
+      throw new Error('electron unavailable in packaged CLI')
+    })
+    const previousUserDataPath = process.env.ORCA_USER_DATA_PATH
+    process.env.ORCA_USER_DATA_PATH = userDataDir
+    try {
+      const { getOrcaManagedCodexHomePath: getCliSafeManagedPath } =
+        await import('./codex-home-paths')
+
+      expect(getCliSafeManagedPath()).toBe(join(userDataDir, 'codex-runtime-home', 'home'))
+    } finally {
+      if (previousUserDataPath === undefined) {
+        delete process.env.ORCA_USER_DATA_PATH
+      } else {
+        process.env.ORCA_USER_DATA_PATH = previousUserDataPath
+      }
+      mockElectronAppPaths()
+      vi.resetModules()
+    }
+  })
+
   it('mirrors only user resource entries into the managed runtime home', () => {
     mkdirSync(join(getSystemCodexHomePath(), 'skills', 'review'), { recursive: true })
     mkdirSync(join(getSystemCodexHomePath(), 'plugins'), { recursive: true })
@@ -132,6 +173,35 @@ describe('syncSystemCodexResourcesIntoManagedHome', () => {
     expect(lstatSync(runtimeSkillsPath).isSymbolicLink()).toBe(false)
     expect(readFileSync(join(runtimeSkillsPath, 'runtime.md'), 'utf-8')).toBe('runtime\n')
     expect(existsSync(join(runtimeSkillsPath, 'system.md'))).toBe(false)
+  })
+
+  it('removes owned symlinks for deleted system resources without touching unrelated runtime links', () => {
+    const systemSkillsPath = join(getSystemCodexHomePath(), 'skills')
+    const runtimeSkillsPath = join(getRuntimeCodexHomePath(), 'skills')
+    const externalPluginsPath = join(userDataDir, 'external-plugins')
+    const runtimePluginsPath = join(getRuntimeCodexHomePath(), 'plugins')
+    mkdirSync(systemSkillsPath, { recursive: true })
+    mkdirSync(externalPluginsPath, { recursive: true })
+    mkdirSync(getRuntimeCodexHomePath(), { recursive: true })
+    writeFileSync(join(systemSkillsPath, 'system.md'), 'system\n')
+    writeFileSync(join(externalPluginsPath, 'runtime.md'), 'runtime\n')
+    symlinkSync(
+      externalPluginsPath,
+      runtimePluginsPath,
+      process.platform === 'win32' ? 'junction' : undefined
+    )
+
+    syncSystemCodexResourcesIntoManagedHome()
+    expect(lstatSync(runtimeSkillsPath).isSymbolicLink()).toBe(true)
+    expectSymbolicLinkTargetIfLinked(runtimeSkillsPath, systemSkillsPath)
+
+    rmSync(systemSkillsPath, { recursive: true, force: true })
+    syncSystemCodexResourcesIntoManagedHome()
+
+    expect(() => lstatSync(runtimeSkillsPath)).toThrow()
+    expect(lstatSync(runtimePluginsPath).isSymbolicLink()).toBe(true)
+    expectSymbolicLinkTargetIfLinked(runtimePluginsPath, externalPluginsPath)
+    expect(readFileSync(join(runtimePluginsPath, 'runtime.md'), 'utf-8')).toBe('runtime\n')
   })
 
   it('refreshes owned fallback copies when symlinks are unavailable', () => {
