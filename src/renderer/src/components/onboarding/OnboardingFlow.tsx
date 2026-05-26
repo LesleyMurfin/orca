@@ -246,7 +246,7 @@ export default function OnboardingFlow({
               ? 'mt-7 overflow-hidden'
               : cn(
                   'scrollbar-sleek overflow-y-auto pr-1',
-                  currentStep.id === 'agentSetup' ? 'mt-6' : 'mt-10'
+                  currentStep.id === 'agentSetup' ? 'mt-4' : 'mt-10'
                 )
           )}
         >
