@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   symlinkSync
@@ -37,6 +38,15 @@ export function syncSystemCodexSessionsIntoManagedHome(): void {
     const relativePath = relative(systemSessionsRoot, systemSessionFilePath)
     const managedSessionFilePath = join(managedSessionsRoot, relativePath)
     if (existsSync(managedSessionFilePath)) {
+      if (
+        replaceSymlinkSessionBridgeWithHardlink(
+          systemSessionFilePath,
+          managedSessionFilePath,
+          relativePath
+        )
+      ) {
+        continue
+      }
       migrateLegacyCopiedSessionBridge(systemSessionFilePath, managedSessionFilePath, relativePath)
       continue
     }
@@ -77,21 +87,66 @@ function linkSystemCodexSessionFile(
 }
 
 function tryLinkSystemCodexSessionFile(sourcePath: string, targetPath: string): boolean {
+  if (tryHardlinkSystemCodexSessionFile(sourcePath, targetPath)) {
+    return true
+  }
   try {
-    // Why: old sessions must stay resumable under Orca's runtime CODEX_HOME
-    // without copying hooks/config/auth or rewriting Codex's SQLite state.
+    // Why fallback: hardlinks keep sessions visible to Codex resume, but can
+    // fail across volumes. A symlink is still better than a diverging copy.
     symlinkSync(sourcePath, targetPath, process.platform === 'win32' ? 'file' : undefined)
     return true
-  } catch (symlinkError) {
-    try {
-      linkSync(sourcePath, targetPath)
-      return true
-    } catch {
-      console.warn(
-        '[codex-session-bridge] Failed to link system Codex session:',
-        sourcePath,
-        symlinkError
-      )
+  } catch (error) {
+    console.warn('[codex-session-bridge] Failed to link system Codex session:', sourcePath, error)
+  }
+  return false
+}
+
+function tryHardlinkSystemCodexSessionFile(sourcePath: string, targetPath: string): boolean {
+  try {
+    // Why: Codex resume ignores symlinked JSONL sessions, while a hardlink
+    // preserves one physical log without copy divergence.
+    linkSync(sourcePath, targetPath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function replaceSymlinkSessionBridgeWithHardlink(
+  sourcePath: string,
+  targetPath: string,
+  relativePath: string
+): boolean {
+  let replacementPath: string | null = null
+  try {
+    const targetStat = lstatSync(targetPath)
+    if (!targetStat.isSymbolicLink()) {
+      return false
+    }
+    const linkTarget = readlinkSync(targetPath)
+    const absoluteLinkTarget = isAbsolute(linkTarget)
+      ? linkTarget
+      : join(dirname(targetPath), linkTarget)
+    if (absoluteLinkTarget !== sourcePath) {
+      return false
+    }
+
+    replacementPath = `${targetPath}.orca-link-${process.pid}-${Date.now()}`
+    if (!tryHardlinkSystemCodexSessionFile(sourcePath, replacementPath)) {
+      return false
+    }
+    rmSync(targetPath, { force: true })
+    renameSync(replacementPath, targetPath)
+    clearLegacyCopiedSessionMarker(relativePath)
+    return true
+  } catch (error) {
+    console.warn(
+      '[codex-session-bridge] Failed to replace symlinked Codex session bridge:',
+      sourcePath,
+      error
+    )
+    if (replacementPath) {
+      rmSync(replacementPath, { force: true })
     }
   }
   return false

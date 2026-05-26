@@ -7,6 +7,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import type * as NodeFs from 'node:fs'
@@ -150,10 +151,40 @@ describe('syncSystemCodexSessionsIntoManagedHome', () => {
       'rollout-old.jsonl'
     )
     expect(readFileSync(runtimeSessionPath, 'utf-8')).toBe('{"type":"session_meta","id":"old"}\n')
+    expect(lstatSync(runtimeSessionPath).isSymbolicLink()).toBe(false)
     expectResourceLinked(runtimeSessionPath, systemSessionPath)
     expect(
       existsSync(join(getRuntimeCodexHomePath(), 'sessions', '2026', '05', '26', 'scratch.txt'))
     ).toBe(false)
+  })
+
+  it('falls back to symlinks when hardlinks are unavailable', () => {
+    fsMockState.failLink = true
+    const systemSessionPath = join(
+      getSystemCodexHomePath(),
+      'sessions',
+      '2026',
+      '05',
+      '26',
+      'rollout-symlink-fallback.jsonl'
+    )
+    mkdirSync(dirname(systemSessionPath), { recursive: true })
+    writeFileSync(systemSessionPath, '{"id":"system"}\n', 'utf-8')
+
+    syncSystemCodexSessionsIntoManagedHome()
+
+    const runtimeSessionPath = join(
+      getRuntimeCodexHomePath(),
+      'sessions',
+      '2026',
+      '05',
+      '26',
+      'rollout-symlink-fallback.jsonl'
+    )
+    expect(lstatSync(runtimeSessionPath).isSymbolicLink()).toBe(true)
+    expect(normalizeLinkTarget(readlinkSync(runtimeSessionPath))).toBe(
+      normalizeLinkTarget(systemSessionPath)
+    )
   })
 
   it('does not overwrite runtime-owned session files', () => {
@@ -168,6 +199,25 @@ describe('syncSystemCodexSessionsIntoManagedHome', () => {
     syncSystemCodexSessionsIntoManagedHome()
 
     expect(readFileSync(runtimeSessionPath, 'utf-8')).toBe('{"id":"runtime"}\n')
+  })
+
+  it('replaces existing symlink bridges with hardlinks', () => {
+    const relativeSessionPath = join('sessions', '2026', '05', '26', 'rollout-symlink.jsonl')
+    const systemSessionPath = join(getSystemCodexHomePath(), relativeSessionPath)
+    const runtimeSessionPath = join(getRuntimeCodexHomePath(), relativeSessionPath)
+    mkdirSync(dirname(systemSessionPath), { recursive: true })
+    mkdirSync(dirname(runtimeSessionPath), { recursive: true })
+    writeFileSync(systemSessionPath, '{"id":"system"}\n', 'utf-8')
+    symlinkSync(
+      systemSessionPath,
+      runtimeSessionPath,
+      process.platform === 'win32' ? 'file' : undefined
+    )
+
+    syncSystemCodexSessionsIntoManagedHome()
+
+    expect(lstatSync(runtimeSessionPath).isSymbolicLink()).toBe(false)
+    expectResourceLinked(runtimeSessionPath, systemSessionPath)
   })
 
   it('does not create independent session copies when file links are unavailable', () => {
