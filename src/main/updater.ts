@@ -17,6 +17,7 @@ import {
   isBenignCheckFailure,
   isMissingUpdateManifestFailure,
   isPrereleaseVersion,
+  isReleaseAssetsPublishingFailure,
   statusesEqual
 } from './updater-fallback'
 import {
@@ -106,6 +107,11 @@ function clearPendingUpdateNudge(): void {
   activeUpdateNudgeId = null
   awaitingNudgeCheckOutcome = false
   _setPendingUpdateNudgeId?.(null)
+}
+
+function deferPendingUpdateNudgeUntilRetry(): void {
+  activeUpdateNudgeId = null
+  awaitingNudgeCheckOutcome = false
 }
 
 function getPersistedPendingUpdateNudgeId(): string | null {
@@ -299,6 +305,12 @@ async function sendCheckFailureStatus(
         // actionable cause.
         sendErrorStatus("Couldn't reach the update server. Try again in a few minutes.", true)
       } else {
+        if (isReleaseAssetsPublishingFailure(message)) {
+          // Why: a nudge-triggered check can land during the brief window where
+          // GitHub exposes a release before its updater assets are reachable.
+          // Keep the campaign pending so the short retry can still show it.
+          deferPendingUpdateNudgeUntilRetry()
+        }
         sendStatus({ state: 'idle' })
       }
       return

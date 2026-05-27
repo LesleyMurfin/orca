@@ -968,6 +968,62 @@ describe('updater', () => {
     })
   })
 
+  it('keeps a nudge campaign pending when release assets are still publishing', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-24T21:40:00Z'))
+    appMock.getVersion.mockReturnValue('1.4.26')
+    fetchNudgeMock.mockResolvedValue({ id: 'campaign-1', minVersion: '1.0.0' })
+    shouldApplyNudgeMock.mockReturnValue(true)
+    fetchNewerReleaseTagsMock
+      .mockResolvedValueOnce({ tags: [], state: 'not-ready' })
+      .mockResolvedValueOnce(['v1.4.27'])
+    autoUpdaterMock.checkForUpdates.mockImplementation(() => {
+      autoUpdaterMock.emit('checking-for-update')
+      return Promise.resolve(undefined)
+    })
+    let pendingNudgeId: string | null = null
+    const setPendingUpdateNudgeId = vi.fn((id: string | null) => {
+      pendingNudgeId = id
+    })
+    const setDismissedUpdateNudgeId = vi.fn()
+    const sendMock = vi.fn()
+    const mainWindow = { webContents: { send: sendMock } }
+
+    const { setupAutoUpdater } = await import('./updater')
+
+    setupAutoUpdater(mainWindow as never, {
+      getLastUpdateCheckAt: () => Date.now(),
+      getPendingUpdateNudgeId: () => pendingNudgeId,
+      getDismissedUpdateNudgeId: () => null,
+      setPendingUpdateNudgeId,
+      setDismissedUpdateNudgeId
+    })
+
+    await vi.waitFor(() => {
+      expect(fetchNewerReleaseTagsMock).toHaveBeenCalledTimes(1)
+    })
+    expect(setPendingUpdateNudgeId).toHaveBeenCalledWith('campaign-1')
+    expect(setPendingUpdateNudgeId).not.toHaveBeenCalledWith(null)
+    expect(setDismissedUpdateNudgeId).not.toHaveBeenCalled()
+    expect(pendingNudgeId).toBe('campaign-1')
+
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
+
+    await vi.waitFor(() => {
+      expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalledTimes(1)
+    })
+    autoUpdaterMock.emit('update-available', { version: '1.4.27' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(sendMock).toHaveBeenCalledWith('updater:status', {
+      state: 'available',
+      version: '1.4.27',
+      changelog: null,
+      activeNudgeId: 'campaign-1'
+    })
+    expect(setDismissedUpdateNudgeId).not.toHaveBeenCalled()
+  })
+
   it('retries a prerelease check once against the previous feed tag when the manifest is missing', async () => {
     appMock.getVersion.mockReturnValue('1.3.51-rc.6')
     fetchNewerReleaseTagsMock.mockResolvedValue(['v1.3.51-rc.7', 'v1.3.51-rc.6'])
