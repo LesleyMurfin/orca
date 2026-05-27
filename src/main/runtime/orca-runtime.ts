@@ -8472,6 +8472,13 @@ export class OrcaRuntimeService {
     }
   }
 
+  private removeWorktreeMetadataAndHistory(store: RuntimeStore, worktreeId: string): void {
+    // Why: terminal history is keyed by worktree ID, so metadata cleanup must
+    // also purge history before the same path-derived ID can be recreated.
+    store.removeWorktreeMeta(worktreeId)
+    deleteWorktreeHistoryDir(worktreeId)
+  }
+
   async removeManagedWorktree(
     worktreeSelector: string,
     force = false,
@@ -8515,8 +8522,7 @@ export class OrcaRuntimeService {
             console.warn(`[worktree-teardown] failed for ${removalTarget.id}:`, err)
           })
         }
-        store.removeWorktreeMeta(removalTarget.id)
-        deleteWorktreeHistoryDir(removalTarget.id)
+        this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
         this.invalidateResolvedWorktreeCache()
         this.notifier?.worktreesChanged(repo.id)
         return {}
@@ -8590,7 +8596,7 @@ export class OrcaRuntimeService {
             )
           }
           this.clearOptimisticReconcileToken(removalTarget.id)
-          store.removeWorktreeMeta(removalTarget.id)
+          this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
           this.invalidateResolvedWorktreeCache()
           invalidateAuthorizedRootsCache()
           this.notifier?.worktreesChanged(repo.id)
@@ -8615,7 +8621,7 @@ export class OrcaRuntimeService {
                 store
               ))
           this.clearOptimisticReconcileToken(removalTarget.id)
-          store.removeWorktreeMeta(removalTarget.id)
+          this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
           this.invalidateResolvedWorktreeCache()
           invalidateAuthorizedRootsCache()
           this.notifier?.worktreesChanged(repo.id)
@@ -8637,7 +8643,7 @@ export class OrcaRuntimeService {
           store
         )
         this.clearOptimisticReconcileToken(removalTarget.id)
-        store.removeWorktreeMeta(removalTarget.id)
+        this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
         this.invalidateResolvedWorktreeCache()
         invalidateAuthorizedRootsCache()
         this.notifier?.worktreesChanged(repo.id)
@@ -8721,7 +8727,7 @@ export class OrcaRuntimeService {
             store
           )
           this.clearOptimisticReconcileToken(removalTarget.id)
-          store.removeWorktreeMeta(removalTarget.id)
+          this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
           this.invalidateResolvedWorktreeCache()
           invalidateAuthorizedRootsCache()
           this.notifier?.worktreesChanged(repo.id)
@@ -8739,7 +8745,7 @@ export class OrcaRuntimeService {
         store
       )
       this.clearOptimisticReconcileToken(removalTarget.id)
-      store.removeWorktreeMeta(removalTarget.id)
+      this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
       this.invalidateResolvedWorktreeCache()
       invalidateAuthorizedRootsCache()
       this.notifier?.worktreesChanged(repo.id)
