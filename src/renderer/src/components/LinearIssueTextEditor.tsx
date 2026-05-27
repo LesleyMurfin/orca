@@ -86,7 +86,7 @@ export function LinearIssueTextEditor({
       }
 
       const nextValue = field === 'title' ? nextTitle : nextDescription
-      const currentValue = field === 'title' ? issue.title : (issue.description ?? '')
+      const currentValue = field === 'title' ? issue.title : (issue.description ?? '').trimEnd()
       if (nextValue === currentValue) {
         return
       }
