@@ -187,17 +187,26 @@ function ContextualTourSpotlight({
   rect: SpotlightRect
   hosted: boolean
 }): JSX.Element {
+  if (hosted) {
+    return (
+      <div
+        aria-hidden="true"
+        data-contextual-tour-spotlight=""
+        data-contextual-tour-spotlight-hosted="true"
+        className="contextual-tour-hosted-scrim absolute"
+      />
+    )
+  }
+
   // Why: an SVG mask scrim cuts a rounded-rect hole that follows the
   // target's border-radius, so curved buttons don't leave un-dimmed
   // corners between the target's curve and the cutout edge.
-  const positionClass = hosted ? 'absolute' : 'fixed'
-  const maskId = `contextual-tour-spotlight-mask-${hosted ? 'hosted' : 'fixed'}`
+  const maskId = 'contextual-tour-spotlight-mask-fixed'
   return (
     <div
       aria-hidden="true"
       data-contextual-tour-spotlight=""
-      data-contextual-tour-spotlight-hosted={hosted ? 'true' : undefined}
-      className={cn('contextual-tour-spotlight', positionClass)}
+      className="contextual-tour-spotlight fixed"
     >
       <svg className="contextual-tour-spotlight-svg" preserveAspectRatio="none" aria-hidden="true">
         <defs>

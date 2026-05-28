@@ -2420,6 +2420,16 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
   fill: rgb(0 0 0 / 0.22);
 }
 
+/* Why: inside Dialog/Sheet content the target element is lifted above this
+   scrim. A plain scrim avoids drawing a fake rectangular cutout around grouped
+   controls such as the Add Project source choices. */
+.contextual-tour-hosted-scrim {
+  pointer-events: none;
+  inset: 0;
+  background: rgb(0 0 0 / 0.14);
+  animation: contextual-tour-spotlight-fade-in 200ms ease-out;
+}
+
 /* Why: tours can appear inside existing modal surfaces. In that case the
    modal backdrop is secondary context, not the primary attention device. */
 :root[data-contextual-tour-active='true'] [data-slot='dialog-overlay'],
@@ -2438,6 +2448,9 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
 
 @media (prefers-reduced-motion: reduce) {
   .contextual-tour-spotlight {
+    animation: none;
+  }
+  .contextual-tour-hosted-scrim {
     animation: none;
   }
 }
