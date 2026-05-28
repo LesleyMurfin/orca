@@ -1,5 +1,5 @@
 import type { CSSProperties, JSX } from 'react'
-import type { ContextualTourPanelPlacement } from './contextual-tour-gate'
+import type { ContextualTourPanelPlacement } from './contextual-tour-panel-position'
 
 export function ContextualTourArrow({
   placement

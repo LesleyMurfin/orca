@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { getContextualTour } from '../../../../shared/contextual-tours'
 import {
-  clampContextualTourPanelPosition,
   getContextualTourRequestDecision,
   getContextualTourStepProgress,
   getContextualTourOutcomeStepTotal,
@@ -11,7 +10,10 @@ import {
   getVisibleContextualTourStepIndexes,
   isContextualTourAllowedForModal
 } from './contextual-tour-gate'
-import { getContextualTourPanelCssPosition } from './contextual-tour-panel-position'
+import {
+  clampContextualTourPanelPosition,
+  getContextualTourPanelCssPosition
+} from './contextual-tour-panel-position'
 
 describe('contextual tour gate', () => {
   it('allows only workspace creation over its workspace composer modal', () => {

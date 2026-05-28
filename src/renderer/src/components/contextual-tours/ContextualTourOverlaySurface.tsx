@@ -11,7 +11,7 @@ import type {
 import { ContextualTourArrow } from './ContextualTourArrow'
 import { ContextualTourControl } from './ContextualTourControl'
 import { ContextualTourProgressDots } from './ContextualTourProgressDots'
-import type { ContextualTourPanelPlacement } from './contextual-tour-gate'
+import type { ContextualTourPanelPlacement } from './contextual-tour-panel-position'
 
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'

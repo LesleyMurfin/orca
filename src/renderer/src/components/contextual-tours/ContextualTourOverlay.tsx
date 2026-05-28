@@ -16,7 +16,6 @@ import {
   trackContextualTourShown
 } from '@/lib/feature-education-telemetry'
 import {
-  clampContextualTourPanelPosition,
   getContextualTourStepCopy,
   getContextualTourStepProgress,
   getContextualTourOutcomeStepTotal,
@@ -25,7 +24,10 @@ import {
   getVisibleContextualTourStepIndexes,
   isContextualTourAllowedForModal
 } from './contextual-tour-gate'
-import { getContextualTourPanelCssPosition } from './contextual-tour-panel-position'
+import {
+  clampContextualTourPanelPosition,
+  getContextualTourPanelCssPosition
+} from './contextual-tour-panel-position'
 import {
   ContextualTourOverlaySurface,
   getContextualTourFocusableElements,
