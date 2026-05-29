@@ -7,6 +7,10 @@ import { useAppStore } from '@/store'
 import { getScreenSubmitShortcutLabel, isScreenSubmitShortcut } from '@/lib/screen-submit-shortcut'
 import { linearUpdateIssue } from '@/runtime/runtime-linear-client'
 import type { LinearIssue } from '../../../shared/types'
+import {
+  getLinearIssueTextSavePlan,
+  type LinearIssueTextField
+} from './linear-issue-text-save-plan'
 
 type LinearIssueTextEditorProps = {
   issue: LinearIssue
@@ -76,25 +80,23 @@ export function LinearIssueTextEditor({
   }, [descriptionDraft, issue.description, issue.id, issue.title, titleDraft])
 
   const saveField = useCallback(
-    async (field: 'title' | 'description') => {
-      const nextTitle = titleDraft.trim()
-      const nextDescription = descriptionDraft.trimEnd()
-      if (field === 'title' && !nextTitle) {
+    async (field: LinearIssueTextField) => {
+      const savePlan = getLinearIssueTextSavePlan({
+        descriptionDraft,
+        field,
+        issue: { description: issue.description, title: issue.title },
+        titleDraft
+      })
+      if (savePlan.kind === 'empty-title') {
         setTitleDraft(issue.title)
         toast.error('Title is required')
         return
       }
-
-      const nextValue = field === 'title' ? nextTitle : nextDescription
-      const currentValue = field === 'title' ? issue.title : (issue.description ?? '').trimEnd()
-      if (nextValue === currentValue) {
+      if (savePlan.kind === 'unchanged') {
         return
       }
 
-      const patch =
-        field === 'title'
-          ? ({ title: nextTitle } as const)
-          : ({ description: nextDescription } as const)
+      const { patch } = savePlan
       setSavingField(field)
       onIssueChange(patch)
       patchLinearIssue(issue.id, patch)
