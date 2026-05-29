@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../../shared/constants'
 import type { BrowserTab, Tab, TabGroup, TerminalTab } from '../../../../shared/types'
 import type { OpenFile } from '@/store/slices/editor'
-import { createUntitledMarkdownFile } from '@/lib/create-untitled-markdown'
+import { createUntitledMarkdownFileWithTemplateSelection } from '@/lib/create-untitled-markdown'
 
 type EffectCallback = () => void | (() => void)
 
@@ -241,7 +241,7 @@ vi.mock('@/lib/connection-context', () => ({
 }))
 
 vi.mock('@/lib/create-untitled-markdown', () => ({
-  createUntitledMarkdownFile: vi.fn()
+  createUntitledMarkdownFileWithTemplateSelection: vi.fn()
 }))
 
 vi.mock('@/lib/ipc-error', () => ({
@@ -904,7 +904,7 @@ describe('FloatingTerminalPanel close behavior', () => {
 
   it('creates floating markdown files in local filesystem mode', async () => {
     setFloatingTabs([makeTab({ id: 'tab-1' })])
-    vi.mocked(createUntitledMarkdownFile).mockResolvedValue({
+    vi.mocked(createUntitledMarkdownFileWithTemplateSelection).mockResolvedValue({
       filePath: '/tmp/orca/floating-notes/untitled.md',
       relativePath: 'untitled.md',
       worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
@@ -921,7 +921,7 @@ describe('FloatingTerminalPanel close behavior', () => {
     ;(tabBar.props.onNewFileTab as () => void)()
     await flushAsyncWork()
 
-    expect(createUntitledMarkdownFile).toHaveBeenCalledWith(
+    expect(createUntitledMarkdownFileWithTemplateSelection).toHaveBeenCalledWith(
       '/tmp/orca/floating-notes',
       FLOATING_TERMINAL_WORKTREE_ID,
       undefined,
