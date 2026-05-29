@@ -62,6 +62,73 @@ type ModelDiscoveryState = {
   error?: string
 }
 
+type CommitMessageInstructionDraftValues = Record<SourceControlAiOperation, string>
+
+type CommitMessageInstructionDraftState = {
+  source: CommitMessageInstructionDraftValues
+  draft: CommitMessageInstructionDraftValues
+  discardSignal: number | undefined
+}
+
+const COMMIT_MESSAGE_INSTRUCTION_OPERATIONS: readonly SourceControlAiOperation[] = [
+  'commitMessage',
+  'pullRequest',
+  'branchName'
+]
+
+function cloneInstructionDraftValues(
+  values: CommitMessageInstructionDraftValues
+): CommitMessageInstructionDraftValues {
+  return {
+    commitMessage: values.commitMessage,
+    pullRequest: values.pullRequest,
+    branchName: values.branchName
+  }
+}
+
+export function createCommitMessageInstructionDraftState(
+  source: CommitMessageInstructionDraftValues,
+  discardSignal: number | undefined
+): CommitMessageInstructionDraftState {
+  return {
+    source: cloneInstructionDraftValues(source),
+    draft: cloneInstructionDraftValues(source),
+    discardSignal
+  }
+}
+
+export function resolveCommitMessageInstructionDraftState(
+  state: CommitMessageInstructionDraftState,
+  source: CommitMessageInstructionDraftValues,
+  discardSignal: number | undefined
+): CommitMessageInstructionDraftState {
+  if (state.discardSignal !== discardSignal) {
+    return createCommitMessageInstructionDraftState(source, discardSignal)
+  }
+
+  let changed = false
+  const nextSource = cloneInstructionDraftValues(state.source)
+  const nextDraft = cloneInstructionDraftValues(state.draft)
+  for (const operation of COMMIT_MESSAGE_INSTRUCTION_OPERATIONS) {
+    if (state.source[operation] === source[operation]) {
+      continue
+    }
+    if (state.draft[operation] === state.source[operation]) {
+      nextDraft[operation] = source[operation]
+    }
+    nextSource[operation] = source[operation]
+    changed = true
+  }
+
+  return changed
+    ? {
+        source: nextSource,
+        draft: nextDraft,
+        discardSignal
+      }
+    : state
+}
+
 const UNCONFIGURED_AGENT_SELECT_VALUE = ''
 const INHERIT_MODEL_SELECT_VALUE = '__inherit__'
 const COMING_SOON_COMMIT_MESSAGE_AGENTS: readonly { id: TuiAgent; label: string }[] = [
@@ -225,21 +292,47 @@ export function CommitMessageAiPane({
   const persistedCommitInstructions = config.instructionsByOperation.commitMessage ?? ''
   const persistedPullRequestInstructions = config.instructionsByOperation.pullRequest ?? ''
   const persistedBranchNameInstructions = config.instructionsByOperation.branchName ?? ''
-  const [commitInstructionsDraft, setCommitInstructionsDraft] = useState(
-    persistedCommitInstructions
-  )
-  const [pullRequestInstructionsDraft, setPullRequestInstructionsDraft] = useState(
-    persistedPullRequestInstructions
-  )
-  const [branchNameInstructionsDraft, setBranchNameInstructionsDraft] = useState(
-    persistedBranchNameInstructions
-  )
-  const [isSavingInstructions, setIsSavingInstructions] = useState(false)
-  const persistedInstructionsRef = useRef({
+  const persistedInstructionDraftValues: CommitMessageInstructionDraftValues = {
     commitMessage: persistedCommitInstructions,
     pullRequest: persistedPullRequestInstructions,
     branchName: persistedBranchNameInstructions
-  })
+  }
+  const [instructionDraftState, setInstructionDraftState] = useState(() =>
+    createCommitMessageInstructionDraftState(
+      persistedInstructionDraftValues,
+      customPromptDiscardSignal
+    )
+  )
+  const [isSavingInstructions, setIsSavingInstructions] = useState(false)
+  const resolvedInstructionDraftState = resolveCommitMessageInstructionDraftState(
+    instructionDraftState,
+    persistedInstructionDraftValues,
+    customPromptDiscardSignal
+  )
+  if (resolvedInstructionDraftState !== instructionDraftState) {
+    // Why: prompt drafts should follow persisted settings only while clean,
+    // and the parent discard signal must reset all unsaved instruction edits.
+    setInstructionDraftState(resolvedInstructionDraftState)
+  }
+  const commitInstructionsDraft = resolvedInstructionDraftState.draft.commitMessage
+  const pullRequestInstructionsDraft = resolvedInstructionDraftState.draft.pullRequest
+  const branchNameInstructionsDraft = resolvedInstructionDraftState.draft.branchName
+  const updateInstructionDraft = (operation: SourceControlAiOperation, value: string): void => {
+    setInstructionDraftState((current) => {
+      const resolved = resolveCommitMessageInstructionDraftState(
+        current,
+        persistedInstructionDraftValues,
+        customPromptDiscardSignal
+      )
+      return {
+        ...resolved,
+        draft: {
+          ...resolved.draft,
+          [operation]: value
+        }
+      }
+    })
+  }
   const isCommitInstructionsDirty = commitInstructionsDraft !== persistedCommitInstructions
   const isPullRequestInstructionsDirty =
     pullRequestInstructionsDraft !== persistedPullRequestInstructions
@@ -247,44 +340,6 @@ export function CommitMessageAiPane({
     branchNameInstructionsDraft !== persistedBranchNameInstructions
   const isCustomPromptDirty =
     isCommitInstructionsDirty || isPullRequestInstructionsDirty || isBranchNameInstructionsDirty
-
-  useEffect(() => {
-    persistedInstructionsRef.current = {
-      commitMessage: persistedCommitInstructions,
-      pullRequest: persistedPullRequestInstructions,
-      branchName: persistedBranchNameInstructions
-    }
-  }, [
-    persistedBranchNameInstructions,
-    persistedCommitInstructions,
-    persistedPullRequestInstructions
-  ])
-
-  useEffect(() => {
-    if (!isCommitInstructionsDirty) {
-      setCommitInstructionsDraft(persistedCommitInstructions)
-    }
-  }, [isCommitInstructionsDirty, persistedCommitInstructions])
-
-  useEffect(() => {
-    if (!isPullRequestInstructionsDirty) {
-      setPullRequestInstructionsDraft(persistedPullRequestInstructions)
-    }
-  }, [isPullRequestInstructionsDirty, persistedPullRequestInstructions])
-
-  useEffect(() => {
-    if (!isBranchNameInstructionsDirty) {
-      setBranchNameInstructionsDraft(persistedBranchNameInstructions)
-    }
-  }, [isBranchNameInstructionsDirty, persistedBranchNameInstructions])
-
-  useEffect(() => {
-    setCommitInstructionsDraft(persistedInstructionsRef.current.commitMessage)
-    setPullRequestInstructionsDraft(persistedInstructionsRef.current.pullRequest)
-    setBranchNameInstructionsDraft(persistedInstructionsRef.current.branchName)
-    // Why: parent navigation guards use this signal after the user confirms
-    // they want to leave without saving the prompt draft.
-  }, [customPromptDiscardSignal])
 
   useEffect(() => {
     onCustomPromptDirtyChange?.(isCustomPromptDirty)
@@ -744,15 +799,20 @@ export function CommitMessageAiPane({
   }
 
   const onDiscardInstructions = (operation: SourceControlAiOperation): void => {
-    if (operation === 'commitMessage') {
-      setCommitInstructionsDraft(persistedCommitInstructions)
-      return
-    }
-    if (operation === 'branchName') {
-      setBranchNameInstructionsDraft(persistedBranchNameInstructions)
-      return
-    }
-    setPullRequestInstructionsDraft(persistedPullRequestInstructions)
+    setInstructionDraftState((current) => {
+      const resolved = resolveCommitMessageInstructionDraftState(
+        current,
+        persistedInstructionDraftValues,
+        customPromptDiscardSignal
+      )
+      return {
+        ...resolved,
+        draft: {
+          ...resolved.draft,
+          [operation]: resolved.source[operation]
+        }
+      }
+    })
   }
 
   const onPrDefaultChange = (
@@ -1189,7 +1249,7 @@ export function CommitMessageAiPane({
           id="source-control-ai-commit-instructions"
           rows={4}
           value={commitInstructionsDraft}
-          onChange={(e) => setCommitInstructionsDraft(e.target.value)}
+          onChange={(e) => updateInstructionDraft('commitMessage', e.target.value)}
           placeholder="Use Conventional Commits format (feat:, fix:, ...). Reference the ticket key when present."
           className="w-full resize-y rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none placeholder:text-muted-foreground/70 focus-visible:ring-1 focus-visible:ring-ring"
         />
@@ -1253,7 +1313,7 @@ export function CommitMessageAiPane({
           id="source-control-ai-pr-instructions"
           rows={4}
           value={pullRequestInstructionsDraft}
-          onChange={(e) => setPullRequestInstructionsDraft(e.target.value)}
+          onChange={(e) => updateInstructionDraft('pullRequest', e.target.value)}
           placeholder="Summarize user-visible changes first, then list reviewer notes and testing evidence."
           className="w-full resize-y rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none placeholder:text-muted-foreground/70 focus-visible:ring-1 focus-visible:ring-ring"
         />
@@ -1319,7 +1379,7 @@ export function CommitMessageAiPane({
           id="source-control-ai-branch-name-instructions"
           rows={4}
           value={branchNameInstructionsDraft}
-          onChange={(e) => setBranchNameInstructionsDraft(e.target.value)}
+          onChange={(e) => updateInstructionDraft('branchName', e.target.value)}
           placeholder="Prefer domain nouns from the task, avoid ticket IDs, and keep names reviewer-friendly."
           className="w-full resize-y rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none placeholder:text-muted-foreground/70 focus-visible:ring-1 focus-visible:ring-ring"
         />
