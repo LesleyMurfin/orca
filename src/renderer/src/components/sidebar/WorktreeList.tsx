@@ -842,6 +842,13 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
   const sshConnectionStates = useAppStore((s) => s.sshConnectionStates)
   const activeLineageChildSshDisconnected =
     activeLineageChildSshStatus !== null && activeLineageChildSshStatus !== 'connected'
+  const lineageReconnectPromptKey =
+    activeLineageChildWorktreeId && activeLineageChildSshDisconnected
+      ? activeLineageChildWorktreeId
+      : null
+  const [lastLineageReconnectPromptKey, setLastLineageReconnectPromptKey] = useState<string | null>(
+    null
+  )
   const renderRowsRef = useRef(renderRows)
   renderRowsRef.current = renderRows
   const getVirtualItemKey = useCallback(
@@ -1311,12 +1318,14 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
   }, [activeModal, keybindings, markDirectScrollInput, navigateWorktree])
 
   // Why: lightweight nested cards do not mount WorktreeCard, so the viewport
-  // owns the SSH reconnect prompt for an active lineage child.
-  useEffect(() => {
-    if (activeLineageChildWorktreeId && activeLineageChildSshDisconnected) {
-      setLineageReconnectWorktreeId(activeLineageChildWorktreeId)
+  // owns the SSH reconnect prompt for an active lineage child. The prompt key
+  // keeps dismissals sticky until the active/disconnected child changes.
+  if (lineageReconnectPromptKey !== lastLineageReconnectPromptKey) {
+    setLastLineageReconnectPromptKey(lineageReconnectPromptKey)
+    if (lineageReconnectPromptKey) {
+      setLineageReconnectWorktreeId(lineageReconnectPromptKey)
     }
-  }, [activeLineageChildWorktreeId, activeLineageChildSshDisconnected])
+  }
 
   const handleContainerKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
