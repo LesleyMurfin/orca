@@ -26,7 +26,9 @@ export async function readCurrentProcessMacSystemResolverHealth(): Promise<Syste
     let stderr = ''
     let settled = false
     const finish = (): void => {
-      if (settled) return
+      if (settled) {
+        return
+      }
       settled = true
       clearTimeout(timer)
       resolve(classifyMacSystemResolverHealth(`${stdout}\n${stderr}`))
@@ -36,6 +38,9 @@ export async function readCurrentProcessMacSystemResolverHealth(): Promise<Syste
     })
     const timer = setTimeout(() => {
       child.kill()
+      // Why: this runs inside the daemon request path, so the timeout must
+      // cap the RPC even if scutil is slow to exit after SIGTERM.
+      finish()
     }, MAC_RESOLVER_CHECK_TIMEOUT_MS)
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
