@@ -342,16 +342,15 @@ export function FloatingTerminalPanel({
     handleSaveDialogCancel()
   }, [handleSaveDialogCancel])
 
-  useEffect(() => {
-    if (!open || normalizedInitialBoundsRef.current || typeof window === 'undefined') {
-      return
-    }
+  if (open && !normalizedInitialBoundsRef.current && typeof window !== 'undefined') {
     normalizedInitialBoundsRef.current = true
     const rightGap = window.innerWidth - bounds.left - bounds.width
     if (rightGap > 160) {
+      // Why: the floating workspace may mount before Electron has final window
+      // dimensions. Normalize before the first open paint to avoid a visible jump.
       setBounds(getDefaultFloatingTerminalBounds())
     }
-  }, [bounds.left, bounds.width, open])
+  }
 
   useEffect(() => {
     void window.api.app
