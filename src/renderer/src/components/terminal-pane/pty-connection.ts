@@ -19,6 +19,11 @@ import { isPtyLocked } from '@/lib/pane-manager/mobile-driver-state'
 import { isPaneReplaying, replayIntoTerminal } from './replay-guard'
 import { terminalOutputPrefersDomRenderer } from '@/lib/pane-manager/terminal-complex-script'
 import {
+  PANE_PTY_RESIZE_HOLD_FLUSH_EVENT,
+  queuePanePtyResizeIfHeld,
+  type PanePtyResizeHoldFlushDetail
+} from '@/lib/pane-manager/pane-pty-resize-hold'
+import {
   POST_REPLAY_MODE_RESET,
   POST_REPLAY_REATTACH_RESET,
   RESET_TERMINAL_CURSOR_STYLE
@@ -1087,7 +1092,14 @@ export function connectPanePty(
     }
   })
 
-  const onResizeDisposable = pane.terminal.onResize(({ cols, rows }) => {
+  const shouldSuppressDesktopPtyResize = (): boolean => {
+    const currentPtyId = transport.getPtyId()
+    return Boolean(
+      currentPtyId && (getFitOverrideForPty(currentPtyId) || isPtyLocked(currentPtyId))
+    )
+  }
+
+  const forwardPtyResize = (cols: number, rows: number): void => {
     // Why: when a mobile-fit override is active OR mobile is currently the
     // driver of this PTY, the PTY is already at phone dims and any desktop
     // resize is wrong. Suppress resize forwarding to avoid spurious SIGWINCH
@@ -1097,8 +1109,26 @@ export function connectPanePty(
     //   transitions where override may not be set (e.g. legacy code paths).
     // The pty:resize IPC has a defense-in-depth twin. See
     // docs/mobile-presence-lock.md.
-    const currentPtyId = transport.getPtyId()
-    if (currentPtyId && (getFitOverrideForPty(currentPtyId) || isPtyLocked(currentPtyId))) {
+    if (shouldSuppressDesktopPtyResize()) {
+      return
+    }
+    transport.resize(cols, rows)
+  }
+
+  const onHeldPtyResizeFlush = (event: Event): void => {
+    const detail = (event as CustomEvent<PanePtyResizeHoldFlushDetail>).detail
+    if (!detail) {
+      return
+    }
+    forwardPtyResize(detail.cols, detail.rows)
+  }
+  pane.container.addEventListener(PANE_PTY_RESIZE_HOLD_FLUSH_EVENT, onHeldPtyResizeFlush)
+
+  const onResizeDisposable = pane.terminal.onResize(({ cols, rows }) => {
+    if (shouldSuppressDesktopPtyResize()) {
+      return
+    }
+    if (queuePanePtyResizeIfHeld(pane.container, cols, rows)) {
       return
     }
     transport.resize(cols, rows)
@@ -2360,6 +2390,7 @@ export function connectPanePty(
       }
       onDataDisposable.dispose()
       onResizeDisposable.dispose()
+      pane.container.removeEventListener(PANE_PTY_RESIZE_HOLD_FLUSH_EVENT, onHeldPtyResizeFlush)
       geometryReportObserver?.disconnect()
       if (pendingGeometryReportRaf !== null) {
         cancelAnimationFrame(pendingGeometryReportRaf)
