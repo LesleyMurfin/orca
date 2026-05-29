@@ -1,7 +1,13 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { ReactNode } from 'react'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { GlobalSettings, Repo, Worktree, WorktreeCardProperty } from '../../../../shared/types'
+import type {
+  GlobalSettings,
+  Repo,
+  Worktree,
+  WorktreeCardProperty,
+  WorkspaceStatusDefinition
+} from '../../../../shared/types'
 import type WorktreeCardComponent from './WorktreeCard'
 
 const fetchHostedReviewForBranch = vi.fn()
@@ -14,6 +20,17 @@ let tabsByWorktree: Record<string, { id: string }[]> = {}
 let ptyIdsByTabId: Record<string, string[]> = {}
 let browserTabsByWorktree: Record<string, { id: string }[]> = {}
 let settings: Partial<GlobalSettings> | null = null
+let workspaceStatuses: WorkspaceStatusDefinition[] = [
+  { id: 'completed', label: 'Done', color: 'conductor-done', icon: 'conductor-done' },
+  { id: 'in-review', label: 'In review', color: 'conductor-review', icon: 'conductor-review' },
+  {
+    id: 'in-progress',
+    label: 'In progress',
+    color: 'conductor-progress',
+    icon: 'conductor-progress'
+  },
+  { id: 'todo', label: 'Todo', color: 'neutral', icon: 'circle' }
+]
 let WorktreeCard: typeof WorktreeCardComponent
 
 vi.mock('@/store', () => ({
@@ -34,6 +51,7 @@ vi.mock('@/store', () => ({
       ptyIdsByTabId,
       tabsByWorktree,
       updateWorktreeMeta,
+      workspaceStatuses,
       worktreeCardProperties
     })
 }))
@@ -117,6 +135,17 @@ describe('WorktreeCard quick actions', () => {
     ptyIdsByTabId = {}
     browserTabsByWorktree = {}
     settings = null
+    workspaceStatuses = [
+      { id: 'completed', label: 'Done', color: 'conductor-done', icon: 'conductor-done' },
+      { id: 'in-review', label: 'In review', color: 'conductor-review', icon: 'conductor-review' },
+      {
+        id: 'in-progress',
+        label: 'In progress',
+        color: 'conductor-progress',
+        icon: 'conductor-progress'
+      },
+      { id: 'todo', label: 'Todo', color: 'neutral', icon: 'circle' }
+    ]
   })
 
   it('marks the unread toggle as a workspace-board-preserving action', () => {
@@ -225,15 +254,16 @@ describe('WorktreeCard quick actions', () => {
     expect(markup).not.toContain('data-worktree-card-meta-row=""')
   })
 
-  it('shows delete as the top-right quick action for an inactive workspace', () => {
+  it('shows mark done as the top-right quick action for an inactive workspace', () => {
     const markup = renderToStaticMarkup(
       <WorktreeCard worktree={makeWorktree()} repo={makeRepo()} isActive={false} />
     )
 
-    expect(markup).toContain('aria-label="Delete workspace"')
+    expect(markup).toContain('aria-label="Mark workspace done"')
+    expect(markup).not.toContain('aria-label="Delete workspace"')
   })
 
-  it('shows delete as the quick action for inactive folder workspace instances', () => {
+  it('shows mark done as the quick action for inactive folder workspace instances', () => {
     const markup = renderToStaticMarkup(
       <WorktreeCard
         worktree={makeWorktree({
@@ -246,10 +276,11 @@ describe('WorktreeCard quick actions', () => {
       />
     )
 
-    expect(markup).toContain('aria-label="Delete workspace"')
+    expect(markup).toContain('aria-label="Mark workspace done"')
+    expect(markup).not.toContain('aria-label="Delete workspace"')
   })
 
-  it('does not replace sleep with delete for a workspace with live activity', () => {
+  it('keeps mark done available for a workspace with live activity', () => {
     const worktree = makeWorktree()
     tabsByWorktree = { [worktree.id]: [{ id: 'tab-1' }] }
     ptyIdsByTabId = { 'tab-1': ['pty-1'] }
@@ -260,9 +291,10 @@ describe('WorktreeCard quick actions', () => {
 
     expect(markup).not.toContain('aria-label="Sleep workspace"')
     expect(markup).not.toContain('aria-label="Delete workspace"')
+    expect(markup).toContain('aria-label="Mark workspace done"')
   })
 
-  it('does not show sleep as the top-right quick action for an active workspace', () => {
+  it('keeps mark done available for an active workspace', () => {
     const worktree = makeWorktree()
     tabsByWorktree = { [worktree.id]: [{ id: 'tab-1' }] }
     ptyIdsByTabId = { 'tab-1': ['pty-1'] }
@@ -273,15 +305,39 @@ describe('WorktreeCard quick actions', () => {
 
     expect(markup).not.toContain('aria-label="Sleep workspace"')
     expect(markup).not.toContain('aria-label="Delete workspace"')
+    expect(markup).toContain('aria-label="Mark workspace done"')
   })
 
-  it('does not show delete when the workspace is current but not selected in the sidebar', () => {
+  it('reverses the quick action for a done workspace', () => {
+    const worktree = makeWorktree({ workspaceStatus: 'completed' })
+
+    const markup = renderToStaticMarkup(
+      <WorktreeCard worktree={worktree} repo={makeRepo()} isActive={false} />
+    )
+
+    expect(markup).toContain('aria-label="Mark workspace in progress"')
+    expect(markup).not.toContain('aria-label="Delete workspace"')
+  })
+
+  it('keeps delete hidden when the workspace is current but not selected in the sidebar', () => {
     const worktree = makeWorktree()
 
     const markup = renderToStaticMarkup(
       <WorktreeCard worktree={worktree} repo={makeRepo()} isActive={false} isCurrentWorktree />
     )
 
+    expect(markup).not.toContain('aria-label="Delete workspace"')
+    expect(markup).toContain('aria-label="Mark workspace done"')
+  })
+
+  it('hides the completion quick action when the Done status is unavailable', () => {
+    workspaceStatuses = [{ id: 'todo', label: 'Todo', color: 'neutral', icon: 'circle' }]
+
+    const markup = renderToStaticMarkup(
+      <WorktreeCard worktree={makeWorktree()} repo={makeRepo()} isActive={false} />
+    )
+
+    expect(markup).not.toContain('aria-label="Mark workspace done"')
     expect(markup).not.toContain('aria-label="Delete workspace"')
   })
 })

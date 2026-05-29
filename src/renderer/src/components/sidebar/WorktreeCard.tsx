@@ -9,12 +9,13 @@ import {
   AlertTriangle,
   Bell,
   ChevronDown,
+  CircleCheck,
+  CircleDot,
   GitMerge,
   LoaderCircle,
   Server,
   ServerOff,
   Star,
-  Trash2,
   Workflow
 } from 'lucide-react'
 import CacheTimer, { usePromptCacheCountdownStartedAt } from './CacheTimer'
@@ -45,11 +46,10 @@ import { writeWorkspaceDragData } from './workspace-status'
 import { getWorktreeCardPrDisplay } from './worktree-card-pr-display'
 import { getWorkspacePortsByWorktreeId } from '@/lib/workspace-port-groups'
 import { RepoBadgeMark } from '@/components/repo/RepoBadgeLabel'
-import { hasActiveWorkspaceActivity } from '@/lib/worktree-activity-state'
 import { installWindowVisibilityInterval, isWindowVisible } from '@/lib/window-visibility-interval'
 import { isMacAppDataPath } from '@/lib/passive-macos-app-data-access'
-import { runWorktreeDelete } from './delete-worktree-flow'
 import { WorktreeTitleInlineRename } from './WorktreeTitleInlineRename'
+import { getWorktreeCompletionAction } from './worktree-completion-action'
 
 type WorktreeCardProps = {
   worktree: Worktree
@@ -91,7 +91,6 @@ const WorktreeCard = React.memo(function WorktreeCard({
   worktree,
   repo,
   isActive,
-  isCurrentWorktree = isActive,
   isActiveSurface = isActive,
   isMultiSelected = false,
   selectedWorktrees,
@@ -110,6 +109,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
   const openModal = useAppStore((s) => s.openModal)
   const openTaskPage = useAppStore((s) => s.openTaskPage)
   const updateWorktreeMeta = useAppStore((s) => s.updateWorktreeMeta)
+  const workspaceStatuses = useAppStore((s) => s.workspaceStatuses)
   const fetchHostedReviewForBranch = useAppStore((s) => s.fetchHostedReviewForBranch)
   const settings = useAppStore((s) => s.settings)
   const fetchIssue = useAppStore((s) => s.fetchIssue)
@@ -249,15 +249,6 @@ const WorktreeCard = React.memo(function WorktreeCard({
         }
     : null
   const isDeleting = deleteState?.isDeleting ?? false
-  const hasActiveActivity = useAppStore((s) =>
-    hasActiveWorkspaceActivity(
-      worktree.id,
-      s.tabsByWorktree,
-      s.ptyIdsByTabId,
-      s.browserTabsByWorktree
-    )
-  )
-
   const showPR = cardProps.includes('pr')
   const showIssue = cardProps.includes('issue')
   const showLinearIssue = cardProps.includes('linear-issue')
@@ -434,18 +425,19 @@ const WorktreeCard = React.memo(function WorktreeCard({
     },
     [worktree.id, worktree.isUnread, updateWorktreeMeta]
   )
-  // Why: deleting the active/current workspace or one with live activity is a
-  // disruptive hover action; keep the quick action delete-only and passive.
-  const showDeleteQuickAction = !isCurrentWorktree && !hasActiveActivity && !worktree.isMainWorktree
+  // Why: completion is metadata-only, so it is safe on active, main, and SSH
+  // workspaces where a delete hover action would be too risky.
+  const completionAction = getWorktreeCompletionAction([worktree], workspaceStatuses)
+  const completionTargetStatus = completionAction?.targetStatus
   const handleWorkspaceQuickAction = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault()
       event.stopPropagation()
-      if (showDeleteQuickAction) {
-        runWorktreeDelete(worktree.id)
+      if (completionTargetStatus) {
+        updateWorktreeMeta(worktree.id, { workspaceStatus: completionTargetStatus })
       }
     },
-    [showDeleteQuickAction, worktree.id]
+    [completionTargetStatus, updateWorktreeMeta, worktree.id]
   )
 
   const unreadTooltip = worktree.isUnread ? 'Mark read' : 'Mark unread'
@@ -572,7 +564,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
     showTitleRowUnread ||
     showTitleRowPrimary ||
     showTitleRowDetails ||
-    (showDeleteQuickAction && !isDeleting)
+    (completionAction != null && !isDeleting)
 
   const unreadQuickAction = showUnreadQuickAction ? (
     <Tooltip>
@@ -777,7 +769,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
 
               {showTitleRowDetails && detailsAndPorts}
 
-              {showDeleteQuickAction && !isDeleting && (
+              {completionAction != null && !isDeleting && (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
@@ -790,13 +782,17 @@ const WorktreeCard = React.memo(function WorktreeCard({
                         'group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100',
                         'text-muted-foreground hover:bg-transparent hover:text-foreground focus-visible:bg-transparent focus-visible:text-foreground'
                       )}
-                      aria-label="Delete workspace"
+                      aria-label={completionAction.ariaLabel}
                     >
-                      <Trash2 className="size-3.5" />
+                      {completionAction.kind === 'mark-done' ? (
+                        <CircleCheck className="size-3.5" />
+                      ) : (
+                        <CircleDot className="size-3.5" />
+                      )}
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="right" sideOffset={8}>
-                    Delete workspace
+                    {completionAction.tooltip}
                   </TooltipContent>
                 </Tooltip>
               )}

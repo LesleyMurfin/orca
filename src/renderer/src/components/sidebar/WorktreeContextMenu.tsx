@@ -17,6 +17,8 @@ import {
   Copy,
   Bell,
   BellOff,
+  CircleCheck,
+  CircleDot,
   CircleX,
   Moon,
   Pencil,
@@ -43,6 +45,7 @@ import { getLineageRenderInfo } from './worktree-list-groups'
 import { getWorkspaceStatus, getWorkspaceStatusVisualMeta } from './workspace-status'
 import { WorktreeOpenInSubMenu } from './WorktreeOpenInMenu'
 import { ProjectGroupNameDialog } from './ProjectGroupNameDialog'
+import { getWorktreeCompletionAction } from './worktree-completion-action'
 
 type Props = {
   worktree: Worktree
@@ -236,6 +239,10 @@ const WorktreeContextMenu = React.memo(function WorktreeContextMenu({
       ? status
       : ''
   }, [activeContextWorktrees, workspaceStatuses])
+  const completionAction = useMemo(
+    () => getWorktreeCompletionAction(activeContextWorktrees, workspaceStatuses),
+    [activeContextWorktrees, workspaceStatuses]
+  )
   const batchDeleteWorktrees = useMemo(
     () =>
       activeContextWorktrees.filter((item) => {
@@ -339,6 +346,28 @@ const WorktreeContextMenu = React.memo(function WorktreeContextMenu({
     },
     [activeContextWorktrees, setMenuOpenState, updateWorktreeMeta, workspaceStatuses]
   )
+
+  const handleAssignCompletionStatus = useCallback(() => {
+    if (!completionAction) {
+      return
+    }
+    setMenuOpenState(false)
+    // Why: marking done is only board metadata; SSH and local workspaces must
+    // avoid archive hooks, filesystem deletion, or git worktree removal.
+    void Promise.all(
+      activeContextWorktrees.map((item) =>
+        getWorkspaceStatus(item, workspaceStatuses) === completionAction.targetStatus
+          ? Promise.resolve()
+          : updateWorktreeMeta(item.id, { workspaceStatus: completionAction.targetStatus })
+      )
+    )
+  }, [
+    activeContextWorktrees,
+    completionAction,
+    setMenuOpenState,
+    updateWorktreeMeta,
+    workspaceStatuses
+  ])
 
   const handleRename = useCallback(() => {
     openModal('edit-meta', {
@@ -589,6 +618,16 @@ const WorktreeContextMenu = React.memo(function WorktreeContextMenu({
               )}
               <DropdownMenuSeparator />
             </>
+          )}
+          {completionAction && (
+            <DropdownMenuItem onSelect={handleAssignCompletionStatus} disabled={deletingContext}>
+              {completionAction.kind === 'mark-done' ? (
+                <CircleCheck className="size-3.5" />
+              ) : (
+                <CircleDot className="size-3.5" />
+              )}
+              {completionAction.label}
+            </DropdownMenuItem>
           )}
           <DropdownMenuSub>
             <DropdownMenuSubTrigger disabled={deletingContext}>
