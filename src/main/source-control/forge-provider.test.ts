@@ -1,0 +1,145 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const {
+  createGitHubPullRequestMock,
+  getAzureDevOpsRepoSlugMock,
+  getBitbucketRepoSlugMock,
+  getGiteaRepoSlugMock,
+  getMergeRequestForBranchMock,
+  getProjectSlugMock,
+  getPRForBranchMock,
+  getRepoSlugMock
+} = vi.hoisted(() => ({
+  createGitHubPullRequestMock: vi.fn(),
+  getAzureDevOpsRepoSlugMock: vi.fn(),
+  getBitbucketRepoSlugMock: vi.fn(),
+  getGiteaRepoSlugMock: vi.fn(),
+  getMergeRequestForBranchMock: vi.fn(),
+  getProjectSlugMock: vi.fn(),
+  getPRForBranchMock: vi.fn(),
+  getRepoSlugMock: vi.fn()
+}))
+
+vi.mock('../gitlab/client', () => ({
+  getProjectSlug: getProjectSlugMock,
+  getMergeRequestForBranch: getMergeRequestForBranchMock,
+  getMergeRequest: vi.fn()
+}))
+
+vi.mock('../github/client', () => ({
+  createGitHubPullRequest: createGitHubPullRequestMock,
+  getRepoSlug: getRepoSlugMock,
+  getPRForBranch: getPRForBranchMock
+}))
+
+vi.mock('../bitbucket/client', () => ({
+  getBitbucketRepoSlug: getBitbucketRepoSlugMock,
+  getBitbucketPullRequestForBranch: vi.fn(),
+  getBitbucketPullRequest: vi.fn()
+}))
+
+vi.mock('../azure-devops/client', () => ({
+  getAzureDevOpsRepoSlug: getAzureDevOpsRepoSlugMock,
+  getAzureDevOpsPullRequestForBranch: vi.fn(),
+  getAzureDevOpsPullRequest: vi.fn()
+}))
+
+vi.mock('../gitea/client', () => ({
+  getGiteaRepoSlug: getGiteaRepoSlugMock,
+  getGiteaPullRequestForBranch: vi.fn(),
+  getGiteaPullRequest: vi.fn()
+}))
+
+import {
+  FORGE_PROVIDERS,
+  detectHostedReviewProvider,
+  getForgeProviderById,
+  getForgeProviderForRepository
+} from './forge-provider'
+
+describe('forge provider interface', () => {
+  beforeEach(() => {
+    createGitHubPullRequestMock.mockReset()
+    getAzureDevOpsRepoSlugMock.mockReset()
+    getBitbucketRepoSlugMock.mockReset()
+    getGiteaRepoSlugMock.mockReset()
+    getMergeRequestForBranchMock.mockReset()
+    getProjectSlugMock.mockReset()
+    getPRForBranchMock.mockReset()
+    getRepoSlugMock.mockReset()
+  })
+
+  it('preserves the existing hosted provider detection order', async () => {
+    getProjectSlugMock.mockResolvedValue({ host: 'gitlab.com', path: 'team/orca' })
+    getRepoSlugMock.mockResolvedValue({ owner: 'team', repo: 'orca' })
+
+    await expect(detectHostedReviewProvider({ repoPath: '/repo' })).resolves.toBe('gitlab')
+    await expect(getForgeProviderForRepository({ repoPath: '/repo' })).resolves.toMatchObject({
+      id: 'gitlab'
+    })
+    expect(getRepoSlugMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps review creation capability scoped to GitHub', async () => {
+    expect(
+      FORGE_PROVIDERS.map((provider) => [provider.id, provider.supportsReviewCreation])
+    ).toEqual([
+      ['gitlab', false],
+      ['github', true],
+      ['bitbucket', false],
+      ['azure-devops', false],
+      ['gitea', false]
+    ])
+    createGitHubPullRequestMock.mockResolvedValue({
+      ok: true,
+      number: 12,
+      url: 'https://github.com/team/orca/pull/12'
+    })
+
+    const provider = getForgeProviderById('github')
+    await expect(
+      provider.createReview?.('/repo', {
+        provider: 'github',
+        base: 'main',
+        head: 'feature/provider-interface',
+        title: 'Add provider interface'
+      })
+    ).resolves.toEqual({
+      ok: true,
+      number: 12,
+      url: 'https://github.com/team/orca/pull/12'
+    })
+    expect(createGitHubPullRequestMock).toHaveBeenCalledWith('/repo', {
+      provider: 'github',
+      base: 'main',
+      head: 'feature/provider-interface',
+      title: 'Add provider interface'
+    })
+  })
+
+  it('adapts GitHub branch lookup through the shared provider contract', async () => {
+    getPRForBranchMock.mockResolvedValue({
+      number: 7,
+      title: 'Provider branch',
+      state: 'open',
+      url: 'https://github.com/team/orca/pull/7',
+      checksStatus: 'success',
+      updatedAt: '2026-05-29T00:00:00.000Z',
+      mergeable: 'MERGEABLE'
+    })
+
+    await expect(
+      getForgeProviderById('github').getReviewForBranch({
+        repoPath: '/repo',
+        connectionId: 'ssh-1',
+        branch: '',
+        fallbackReviewNumber: 7
+      })
+    ).resolves.toMatchObject({
+      provider: 'github',
+      number: 7,
+      status: 'success'
+    })
+    expect(getPRForBranchMock).toHaveBeenCalledWith('/repo', '', null, 'ssh-1', 7)
+  })
+})

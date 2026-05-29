@@ -5,25 +5,20 @@ import type {
   CreateHostedReviewResult,
   HostedReviewCreationBlockedReason,
   HostedReviewCreationEligibility,
-  HostedReviewCreationEligibilityArgs,
-  HostedReviewProvider
+  HostedReviewCreationEligibilityArgs
 } from '../../shared/hosted-review'
 import {
   normalizeHostedReviewBaseRef,
   normalizeHostedReviewHeadRef
 } from '../../shared/hosted-review-refs'
-import { getAzureDevOpsRepoSlug } from '../azure-devops/client'
-import { getBitbucketRepoSlug } from '../bitbucket/client'
-import { getGiteaRepoSlug } from '../gitea/client'
-import { createGitHubPullRequest, getRepoSlug } from '../github/client'
 import { acquire, ghExecFileAsync, gitExecFileAsync, release } from '../github/gh-utils'
 import { isNoUpstreamError, normalizeGitErrorMessage } from '../../shared/git-remote-error'
 import type { GitUpstreamStatus } from '../../shared/types'
 import { gitOptionalLocksDisabledEnv } from '../git/runner'
 import { resolveDefaultBaseRefViaExec } from '../git/repo'
 import { getUpstreamStatus } from '../git/upstream'
-import { getProjectSlug } from '../gitlab/client'
 import { getSshGitProvider } from '../providers/ssh-git-dispatch'
+import { detectHostedReviewProvider, getForgeProviderForRepository } from './forge-provider'
 import { getHostedReviewForBranch } from './hosted-review'
 
 type HostedReviewCreationEligibilityInput = HostedReviewCreationEligibilityArgs & {
@@ -32,28 +27,6 @@ type HostedReviewCreationEligibilityInput = HostedReviewCreationEligibilityArgs 
 
 function stripRefPrefix(ref: string): string {
   return normalizeHostedReviewHeadRef(ref)
-}
-
-async function detectHostedReviewProvider(
-  repoPath: string,
-  connectionId?: string | null
-): Promise<HostedReviewProvider> {
-  if (await getProjectSlug(repoPath, connectionId)) {
-    return 'gitlab'
-  }
-  if (await getRepoSlug(repoPath, connectionId)) {
-    return 'github'
-  }
-  if (await getBitbucketRepoSlug(repoPath)) {
-    return 'bitbucket'
-  }
-  if (await getAzureDevOpsRepoSlug(repoPath)) {
-    return 'azure-devops'
-  }
-  if (await getGiteaRepoSlug(repoPath)) {
-    return 'gitea'
-  }
-  return 'unsupported'
 }
 
 async function isGitHubAuthenticated(
@@ -277,7 +250,10 @@ export async function getHostedReviewCreationEligibility(
   args: HostedReviewCreationEligibilityInput
 ): Promise<HostedReviewCreationEligibility> {
   const branch = stripRefPrefix(args.branch).trim()
-  const provider = await detectHostedReviewProvider(args.repoPath, args.connectionId)
+  const provider = await detectHostedReviewProvider({
+    repoPath: args.repoPath,
+    connectionId: args.connectionId
+  })
   const defaultBaseRef =
     args.base?.trim() || (await getDefaultBaseRef(args.repoPath, args.connectionId))
   const baseBranch = defaultBaseRef ? normalizeHostedReviewBaseRef(defaultBaseRef) : null
@@ -360,8 +336,8 @@ export async function createHostedReview(
       error: 'Creating reviews for this provider is not supported yet.'
     }
   }
-  const provider = await detectHostedReviewProvider(repoPath, connectionId)
-  if (provider !== 'github') {
+  const provider = await getForgeProviderForRepository({ repoPath, connectionId })
+  if (provider?.id !== 'github' || !provider.createReview) {
     return {
       ok: false,
       code: 'unsupported_provider',
@@ -372,5 +348,5 @@ export async function createHostedReview(
   if (blocked) {
     return blocked
   }
-  return createGitHubPullRequest(repoPath, input, connectionId)
+  return provider.createReview(repoPath, input, connectionId)
 }
