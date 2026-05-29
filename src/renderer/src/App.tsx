@@ -400,6 +400,7 @@ function App(): React.JSX.Element {
   const sortBy = useAppStore((s) => s.sortBy)
   const showSleepingWorkspaces = useAppStore((s) => s.showSleepingWorkspaces)
   const hideDefaultBranchWorkspace = useAppStore((s) => s.hideDefaultBranchWorkspace)
+  const showDotfilesByWorktree = useAppStore((s) => s.showDotfilesByWorktree)
   const filterRepoIds = useAppStore((s) => s.filterRepoIds)
   const acknowledgedAgentsByPaneKey = useAppStore((s) => s.acknowledgedAgentsByPaneKey)
   const persistedUIReady = useAppStore((s) => s.persistedUIReady)
@@ -936,6 +937,7 @@ function App(): React.JSX.Element {
         hideSleepingWorkspaces: !showSleepingWorkspaces,
         showSleepingWorkspaces,
         hideDefaultBranchWorkspace,
+        showDotfilesByWorktree,
         filterRepoIds,
         // Why: rides the same debounced save so dashboard auto-acks (which fire
         // on focus/visibility) and the in-memory ack cleanup paths in
@@ -957,6 +959,7 @@ function App(): React.JSX.Element {
     sortBy,
     showSleepingWorkspaces,
     hideDefaultBranchWorkspace,
+    showDotfilesByWorktree,
     filterRepoIds,
     acknowledgedAgentsByPaneKey
   ])

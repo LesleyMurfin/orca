@@ -2151,6 +2151,23 @@ describe('Store', () => {
     expect(ui.dismissedUpdateVersion).toBeNull()
   })
 
+  it('updateUI persists sanitized per-worktree dotfile visibility', async () => {
+    const store = await createStore()
+    store.updateUI({
+      showDotfilesByWorktree: {
+        'repo-1::/repo': false,
+        'repo-2::/repo': true,
+        'repo-3::/repo': 'bad',
+        constructor: false
+      } as never
+    })
+
+    expect(store.getUI().showDotfilesByWorktree).toEqual({
+      'repo-1::/repo': false,
+      'repo-2::/repo': true
+    })
+  })
+
   it('migrates missing rightSidebarOpen from the legacy default setting', async () => {
     writeDataFile({
       schemaVersion: 1,

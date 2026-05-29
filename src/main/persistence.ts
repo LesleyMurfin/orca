@@ -241,6 +241,26 @@ function normalizeGroupBy(groupBy: unknown): PersistedState['ui']['groupBy'] {
   return getDefaultUIState().groupBy
 }
 
+function normalizeShowDotfilesByWorktree(value: unknown): Record<string, boolean> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+  const out: Record<string, boolean> = {}
+  for (const [worktreeId, showDotfiles] of Object.entries(value as Record<string, unknown>)) {
+    if (
+      !worktreeId ||
+      worktreeId === '__proto__' ||
+      worktreeId === 'constructor' ||
+      worktreeId === 'prototype' ||
+      typeof showDotfiles !== 'boolean'
+    ) {
+      continue
+    }
+    out[worktreeId] = showDotfiles
+  }
+  return out
+}
+
 function mergeFeatureInteractions(
   current: PersistedState['ui']['featureInteractions'],
   incoming: PersistedState['ui']['featureInteractions']
@@ -1765,6 +1785,9 @@ export class Store {
               rightSidebarOpen,
               rightSidebarTab: normalizeRightSidebarTab(parsed.ui?.rightSidebarTab),
               sortBy: migrate ? ('smart' as const) : sort,
+              showDotfilesByWorktree: normalizeShowDotfilesByWorktree(
+                parsed.ui?.showDotfilesByWorktree
+              ),
               workspaceStatuses,
               _workspaceStatusesDefaultOrderMigrated: true,
               _workspaceStatusesDefaultWorkflowMigrated: true,
@@ -2808,6 +2831,9 @@ export class Store {
       workspaceBoardColumnWidth: clampWorkspaceBoardColumnWidth(
         this.state.ui?.workspaceBoardColumnWidth
       ),
+      showDotfilesByWorktree: normalizeShowDotfilesByWorktree(
+        this.state.ui?.showDotfilesByWorktree
+      ),
       featureTipsSeenIds: normalizeFeatureTipIds(this.state.ui?.featureTipsSeenIds),
       featureInteractions: normalizeFeatureInteractions(this.state.ui?.featureInteractions)
     }
@@ -2844,6 +2870,10 @@ export class Store {
       workspaceBoardColumnWidth: clampWorkspaceBoardColumnWidth(
         updates.workspaceBoardColumnWidth ?? this.state.ui?.workspaceBoardColumnWidth
       ),
+      showDotfilesByWorktree:
+        updates.showDotfilesByWorktree !== undefined
+          ? normalizeShowDotfilesByWorktree(updates.showDotfilesByWorktree)
+          : normalizeShowDotfilesByWorktree(this.state.ui?.showDotfilesByWorktree),
       featureTipsSeenIds:
         updates.featureTipsSeenIds !== undefined
           ? normalizeFeatureTipIds(updates.featureTipsSeenIds)

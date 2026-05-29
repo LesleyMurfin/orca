@@ -83,6 +83,7 @@ function runtimeScopedStateReset(): Partial<AppState> {
     deferredSshSessionIdsByTabId: {},
     cacheTimerByKey: {},
     recentQuickCommandIdByGroup: {},
+    showDotfilesByWorktree: {},
     expandedDirs: {},
     pendingExplorerReveal: null,
     openFiles: [],

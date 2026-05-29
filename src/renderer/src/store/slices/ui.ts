@@ -206,6 +206,24 @@ function filterRepoIdListToValidRepos(value: unknown, validRepoIds: Set<string>)
   return next
 }
 
+function isSafePersistedRecordKey(key: string): boolean {
+  return key !== '__proto__' && key !== 'constructor' && key !== 'prototype'
+}
+
+function sanitizeShowDotfilesByWorktree(value: unknown): Record<string, boolean> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+  const out: Record<string, boolean> = {}
+  for (const [worktreeId, showDotfiles] of Object.entries(value as Record<string, unknown>)) {
+    if (!worktreeId || !isSafePersistedRecordKey(worktreeId) || typeof showDotfiles !== 'boolean') {
+      continue
+    }
+    out[worktreeId] = showDotfiles
+  }
+  return out
+}
+
 function sanitizePersistedSidebarWidth(width: unknown, fallback: number, maxWidth: number): number {
   if (typeof width !== 'number' || !Number.isFinite(width)) {
     return fallback
@@ -224,10 +242,7 @@ function sanitizeAcknowledgedAgentsByPaneKey(value: unknown): Record<string, num
   const cutoff = Date.now() - HYDRATE_MAX_AGE_MS
   const out: Record<string, number> = {}
   for (const [key, ackAt] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof key !== 'string') {
-      continue
-    }
-    if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+    if (typeof key !== 'string' || !isSafePersistedRecordKey(key)) {
       continue
     }
     if (typeof ackAt !== 'number' || !Number.isFinite(ackAt) || ackAt <= 0) {
@@ -520,6 +535,9 @@ export type UISlice = {
   setShowSleepingWorkspaces: (v: boolean) => void
   hideDefaultBranchWorkspace: boolean
   setHideDefaultBranchWorkspace: (v: boolean) => void
+  showDotfilesByWorktree: Record<string, boolean>
+  setShowDotfilesForWorktree: (worktreeId: string, showDotfiles: boolean) => void
+  toggleShowDotfilesForWorktree: (worktreeId: string) => void
   filterRepoIds: string[]
   setFilterRepoIds: (ids: string[]) => void
   collapsedGroups: Set<string>
@@ -1048,6 +1066,40 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
   hideDefaultBranchWorkspace: false,
   setHideDefaultBranchWorkspace: (v) => set({ hideDefaultBranchWorkspace: v }),
 
+  showDotfilesByWorktree: {},
+  setShowDotfilesForWorktree: (worktreeId, showDotfiles) =>
+    set((s) => {
+      if (!worktreeId) {
+        return s
+      }
+      const current = s.showDotfilesByWorktree[worktreeId] ?? true
+      if (current === showDotfiles) {
+        return s
+      }
+      const next = { ...s.showDotfilesByWorktree }
+      // Why: showing dotfiles is the default; only persist worktree-level opt-outs.
+      if (showDotfiles) {
+        delete next[worktreeId]
+      } else {
+        next[worktreeId] = false
+      }
+      return { showDotfilesByWorktree: next }
+    }),
+  toggleShowDotfilesForWorktree: (worktreeId) =>
+    set((s) => {
+      if (!worktreeId) {
+        return s
+      }
+      const nextShowDotfiles = !(s.showDotfilesByWorktree[worktreeId] ?? true)
+      const next = { ...s.showDotfilesByWorktree }
+      if (nextShowDotfiles) {
+        delete next[worktreeId]
+      } else {
+        next[worktreeId] = false
+      }
+      return { showDotfilesByWorktree: next }
+    }),
+
   filterRepoIds: [],
   setFilterRepoIds: (ids) => set({ filterRepoIds: ids }),
 
@@ -1264,6 +1316,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
         // start from the new default: sleeping workspaces visible.
         showSleepingWorkspaces: !(ui.hideSleepingWorkspaces ?? DEFAULT_HIDE_SLEEPING_WORKSPACES),
         hideDefaultBranchWorkspace: ui.hideDefaultBranchWorkspace ?? false,
+        showDotfilesByWorktree: sanitizeShowDotfilesByWorktree(ui.showDotfilesByWorktree),
         filterRepoIds: (ui.filterRepoIds ?? []).filter((repoId) => validRepoIds.has(repoId)),
         collapsedGroups: new Set(ui.collapsedGroups ?? []),
         uiZoomLevel: ui.uiZoomLevel ?? 0,

@@ -107,6 +107,60 @@ describe('createUISlice hydratePersistedUI', () => {
     expect(store.getState().rightSidebarTab).toBe('checks')
   })
 
+  it('hydrates persisted per-worktree dotfile visibility', () => {
+    const store = createUIStore()
+
+    store.getState().hydratePersistedUI(
+      makePersistedUI({
+        showDotfilesByWorktree: {
+          'repo-1::/repo': false,
+          'repo-2::/repo': true
+        }
+      })
+    )
+
+    expect(store.getState().showDotfilesByWorktree).toEqual({
+      'repo-1::/repo': false,
+      'repo-2::/repo': true
+    })
+  })
+
+  it('drops invalid persisted per-worktree dotfile visibility entries', () => {
+    const store = createUIStore()
+
+    store.getState().hydratePersistedUI(
+      makePersistedUI({
+        showDotfilesByWorktree: {
+          'repo-1::/repo': false,
+          'repo-2::/repo': 'nope',
+          constructor: false
+        } as never
+      })
+    )
+
+    expect(store.getState().showDotfilesByWorktree).toEqual({ 'repo-1::/repo': false })
+  })
+
+  it('stores only per-worktree dotfile visibility opt-outs', () => {
+    const store = createUIStore()
+
+    store.getState().setShowDotfilesForWorktree('repo-1::/repo', false)
+    expect(store.getState().showDotfilesByWorktree).toEqual({ 'repo-1::/repo': false })
+
+    store.getState().setShowDotfilesForWorktree('repo-1::/repo', true)
+    expect(store.getState().showDotfilesByWorktree).toEqual({})
+  })
+
+  it('toggles per-worktree dotfile visibility independently', () => {
+    const store = createUIStore()
+
+    store.getState().toggleShowDotfilesForWorktree('repo-1::/repo')
+    store.getState().toggleShowDotfilesForWorktree('repo-2::/repo')
+    store.getState().toggleShowDotfilesForWorktree('repo-2::/repo')
+
+    expect(store.getState().showDotfilesByWorktree).toEqual({ 'repo-1::/repo': false })
+  })
+
   it('falls back to explorer for invalid persisted right sidebar tabs', () => {
     const store = createUIStore()
 

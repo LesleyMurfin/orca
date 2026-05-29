@@ -2185,6 +2185,8 @@ export type PersistedUIState = {
    *  the predicate in visible-worktrees.ts excludes worktrees with an empty
    *  branch. */
   hideDefaultBranchWorkspace: boolean
+  /** Per-worktree Explorer dotfile visibility. Missing entries inherit the default: show. */
+  showDotfilesByWorktree?: Record<string, boolean>
   filterRepoIds: string[]
   collapsedGroups: string[]
   uiZoomLevel: number
