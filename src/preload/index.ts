@@ -132,6 +132,7 @@ import type {
   ExternalAutomationRunsPage,
   ExternalAutomationUpdateInput,
   AutomationRun,
+  AutomationPrecheckResult,
   AutomationUpdateInput
 } from '../shared/automations-types'
 import type { KeybindingActionId, KeybindingFileSnapshot } from '../shared/keybindings'
@@ -3228,6 +3229,11 @@ const api = {
     delete: (args: { id: string }): Promise<void> => ipcRenderer.invoke('automations:delete', args),
     runNow: (args: { id: string }): Promise<AutomationRun> =>
       ipcRenderer.invoke('automations:runNow', args),
+    runPrecheck: (args: {
+      automationId: string
+      runId: string
+    }): Promise<AutomationPrecheckResult | null> =>
+      ipcRenderer.invoke('automations:runPrecheck', args),
     markDispatchResult: (result: AutomationDispatchResult): Promise<AutomationRun> =>
       ipcRenderer.invoke('automations:markDispatchResult', result),
     snapshotWorkspaceName: (args: { workspaceId: string; displayName: string }): Promise<number> =>

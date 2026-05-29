@@ -6,6 +6,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { AGENT_CATALOG, AgentIcon } from '@/lib/agent-catalog'
 import type { Automation, AutomationRun } from '../../../../shared/automations-types'
 import { formatAutomationSchedule } from '../../../../shared/automation-schedules'
+import { formatAutomationPrecheckTimeout } from '../../../../shared/automation-precheck'
 import { formatAutomationDateTimeWithRelative } from './automation-page-parts'
 import {
   formatAutomationCost,
@@ -197,6 +198,14 @@ export function AutomationDetail({
           <DetailMetric
             label="Session"
             value={automation.reuseSession ? 'Reuse live session' : 'Fresh each run'}
+          />
+          <DetailMetric
+            label="Precheck"
+            value={
+              automation.precheck
+                ? `Enabled, ${formatAutomationPrecheckTimeout(automation.precheck.timeoutSeconds)}`
+                : 'None'
+            }
           />
           <div className="min-w-0">
             <div className="text-[11px] font-medium uppercase text-muted-foreground">Prompt</div>

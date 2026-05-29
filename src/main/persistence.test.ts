@@ -594,6 +594,56 @@ describe('Store', () => {
     expect(reloaded.listAutomations()[0].reuseSession).toBe(false)
   })
 
+  it('persists automation precheck config and run results', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo())
+    const automation = store.createAutomation({
+      name: 'Conditional',
+      prompt: 'Run checks',
+      precheck: {
+        command: 'test -f ready',
+        timeoutSeconds: 30
+      },
+      agentId: 'claude',
+      projectId: 'r1',
+      workspaceMode: 'existing',
+      workspaceId: 'wt1',
+      timezone: 'UTC',
+      rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+      dtstart: new Date('2026-05-13T00:00:00Z').getTime()
+    })
+    const run = store.createAutomationRun(automation, new Date('2026-05-13T09:00:00Z').getTime())
+
+    store.updateAutomationRun({
+      runId: run.id,
+      status: 'skipped_precheck',
+      precheckResult: {
+        command: 'test -f ready',
+        exitCode: 1,
+        timedOut: false,
+        durationMs: 12,
+        stdout: '',
+        stderr: 'missing',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        error: null,
+        startedAt: 10,
+        completedAt: 22
+      },
+      error: 'Precheck exited with code 1.'
+    })
+
+    expect(store.listAutomations()[0].precheck).toEqual({
+      command: 'test -f ready',
+      timeoutSeconds: 30
+    })
+    expect(store.listAutomationRuns(automation.id)[0].precheckResult).toMatchObject({
+      exitCode: 1,
+      stderr: 'missing'
+    })
+    expect(store.updateAutomation(automation.id, { precheck: null }).precheck).toBeNull()
+  })
+
   it('numbers automation run titles per automation', async () => {
     const store = await createStore()
     store.addRepo(makeRepo())

@@ -34,6 +34,7 @@ import type {
   RuntimeWorktreeRecord
 } from '../shared/runtime-types'
 import type { Automation, AutomationRun } from '../shared/automations-types'
+import { formatAutomationPrecheckTimeout } from '../shared/automation-precheck'
 import { formatAutomationSchedule } from '../shared/automation-schedules'
 import type { PublicKnownRuntimeEnvironment } from '../shared/runtime-environments'
 import type { RuntimeRpcFailure, RuntimeRpcSuccess } from './runtime-client'
@@ -340,6 +341,13 @@ export function formatAutomationShow(result: { automation: Automation }): string
     `enabled: ${automation.enabled}`,
     `schedule: ${formatAutomationSchedule(automation.rrule)}`,
     `rrule: ${automation.rrule}`,
+    `precheck: ${
+      automation.precheck
+        ? `${automation.precheck.command} (timeout ${formatAutomationPrecheckTimeout(
+            automation.precheck.timeoutSeconds
+          )})`
+        : 'none'
+    }`,
     `nextRunAt: ${new Date(automation.nextRunAt).toISOString()}`,
     `projectId: ${automation.projectId}`,
     `workspaceMode: ${automation.workspaceMode}`,
@@ -366,8 +374,23 @@ export function formatAutomationRun(result: { run: AutomationRun }): string {
     `trigger: ${result.run.trigger}`,
     `scheduledFor: ${new Date(result.run.scheduledFor).toISOString()}`,
     `workspaceId: ${result.run.workspaceId ?? 'null'}`,
+    `precheck: ${formatAutomationRunPrecheck(result.run)}`,
     `error: ${result.run.error ?? 'null'}`
   ].join('\n')
+}
+
+function formatAutomationRunPrecheck(run: AutomationRun): string {
+  const result = run.precheckResult
+  if (!result) {
+    return 'none'
+  }
+  const outcome = result.timedOut
+    ? 'timed out'
+    : result.error
+      ? 'error'
+      : `exit ${result.exitCode ?? 'unknown'}`
+  const output = result.stderr.trim() || result.stdout.trim()
+  return output ? `${outcome}; ${output}` : outcome
 }
 
 export function formatAutomationRuns(result: { runs: AutomationRun[] }): string {
@@ -377,7 +400,7 @@ export function formatAutomationRuns(result: { runs: AutomationRun[] }): string 
   return result.runs
     .map(
       (run) =>
-        `${run.id}  ${run.automationId}  ${run.status}  ${run.trigger}  ${new Date(run.scheduledFor).toISOString()}\n${run.title}${run.error ? `\nerror: ${run.error}` : ''}`
+        `${run.id}  ${run.automationId}  ${run.status}  ${run.trigger}  ${new Date(run.scheduledFor).toISOString()}\n${run.title}${run.precheckResult ? `\nprecheck: ${formatAutomationRunPrecheck(run)}` : ''}${run.error ? `\nerror: ${run.error}` : ''}`
     )
     .join('\n\n')
 }
