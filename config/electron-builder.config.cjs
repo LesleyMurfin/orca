@@ -88,6 +88,7 @@ module.exports = {
     if (!existsSync(resourcesDir)) {
       return
     }
+    chmodUnixCliLauncher(resourcesDir, context.electronPlatformName)
     for (const filename of readdirSync(resourcesDir)) {
       if (!filename.startsWith('agent-browser-')) {
         continue
@@ -237,6 +238,19 @@ module.exports = {
     repo: 'orca',
     releaseType: 'release'
   }
+}
+
+function chmodUnixCliLauncher(resourcesDir, electronPlatformName) {
+  if (electronPlatformName === 'win32') {
+    return
+  }
+  const launcherPath = join(resourcesDir, 'bin', 'orca')
+  if (!existsSync(launcherPath)) {
+    return
+  }
+  // Why: AppImage installs expose this extraResource as the public shell
+  // command, and source/packager mode drift must not ship a non-executable CLI.
+  chmodSync(launcherPath, 0o755)
 }
 
 async function signMacComputerUseHelper(helperAppPath, packager) {
