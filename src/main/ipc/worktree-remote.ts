@@ -8,7 +8,7 @@
 // cohesive flow would split awkwardly.
 
 import type { BrowserWindow } from 'electron'
-import { join, posix, win32 } from 'path'
+import { posix, win32 } from 'path'
 import { existsSync } from 'fs'
 import { randomUUID } from 'crypto'
 import type { Store } from '../persistence'
@@ -30,7 +30,6 @@ import { gitExecFileAsync } from '../git/runner'
 import { parseGitHubOwnerRepo } from '../github/gh-utils'
 import type { OrcaRuntimeService } from '../runtime/orca-runtime'
 import type { RemoteFetchResult, RemoteTrackingBase } from '../runtime/orca-runtime'
-import { isWslPath, parseWslPath, getWslHome } from '../wsl'
 import {
   buildPosixRunnerScript,
   buildWindowsRunnerScript,
@@ -53,7 +52,12 @@ import {
   sanitizeWorktreeDisplayName,
   computeBranchName,
   computeWorktreePath,
+  computeRemoteWorktreePath,
+  computeWorkspaceRoot,
   ensurePathWithinWorkspace,
+  getWorktreeCreationLayout,
+  getWorktreePathSettings,
+  hasRepoWorktreeBasePath,
   shouldSetDisplayName,
   mergeWorktree,
   areWorktreePathsEqual
@@ -716,6 +720,7 @@ export async function createRemoteWorktree(
   const provider = requireSshGitProvider(repo.connectionId!)
 
   const settings = store.getSettings()
+  const worktreePathSettings = getWorktreePathSettings(repo, settings)
   const requestedName = args.name
   const sanitizedName = sanitizeWorktreeName(args.name)
   const requestedDisplayName = args.displayName
@@ -735,8 +740,9 @@ export async function createRemoteWorktree(
     username
   )
 
-  // Compute worktree path relative to the repo's parent on the remote
-  const remotePath = `${repo.path}/../${sanitizedName}`
+  const remotePath = computeRemoteWorktreePath(sanitizedName, repo.path, worktreePathSettings, {
+    useConfiguredAbsolutePath: hasRepoWorktreeBasePath(repo)
+  })
 
   // Determine base branch
   // Why: previously fell back to a hardcoded 'origin/main' when
@@ -969,10 +975,7 @@ export async function createRemoteWorktree(
     createdAt: now,
     orcaCreatedAt: now,
     orcaCreationSource: 'ssh',
-    orcaCreationWorkspaceLayout: {
-      path: settings.workspaceDir,
-      nestWorkspaces: settings.nestWorkspaces
-    },
+    orcaCreationWorkspaceLayout: getWorktreeCreationLayout(repo, settings),
     baseRef: baseBranch,
     ...(checkoutExistingBranch ? { preserveBranchOnDelete: true } : {}),
     ...(configuredPushTarget ? { pushTarget: configuredPushTarget } : {}),
@@ -1052,6 +1055,7 @@ export async function createLocalWorktree(
   runtime?: OrcaRuntimeService
 ): Promise<CreateWorktreeResult> {
   const settings = store.getSettings()
+  const worktreePathSettings = getWorktreePathSettings(repo, settings)
 
   const username = getGitUsername(repo.path)
   const requestedName = args.name
@@ -1113,13 +1117,7 @@ export async function createLocalWorktree(
       .catch(() => undefined)
     emitCreateWorktreeProgress(mainWindow, 'fetching')
   }
-  // Why: WSL worktrees live under ~/orca/workspaces inside the WSL
-  // filesystem. Validate against that root, not the Windows workspace dir.
-  // If WSL home lookup fails, keep using the configured workspace root so
-  // the path traversal guard still runs on the fallback path.
-  const wslInfo = isWslPath(repo.path) ? parseWslPath(repo.path) : null
-  const wslHome = wslInfo ? getWslHome(wslInfo.distro) : null
-  const workspaceRoot = wslHome ? join(wslHome, 'orca', 'workspaces') : settings.workspaceDir
+  const workspaceRoot = computeWorkspaceRoot(repo.path, worktreePathSettings)
 
   // Why: this validation does not depend on remote refs, so it can overlap a
   // required remote-tracking base refresh.
@@ -1225,7 +1223,7 @@ export async function createLocalWorktree(
     }
 
     worktreePath = ensurePathWithinWorkspace(
-      computeWorktreePath(effectiveSanitizedName, repo.path, settings),
+      computeWorktreePath(effectiveSanitizedName, repo.path, worktreePathSettings),
       workspaceRoot
     )
     if (existsSync(worktreePath)) {
@@ -1358,10 +1356,7 @@ export async function createLocalWorktree(
     createdAt: now,
     orcaCreatedAt: now,
     orcaCreationSource: 'desktop',
-    orcaCreationWorkspaceLayout: {
-      path: settings.workspaceDir,
-      nestWorkspaces: settings.nestWorkspaces
-    },
+    orcaCreationWorkspaceLayout: getWorktreeCreationLayout(repo, settings),
     baseRef: baseBranch,
     ...(checkoutExistingBranch ? { preserveBranchOnDelete: true } : {}),
     ...(configuredPushTarget ? { pushTarget: configuredPushTarget } : {}),

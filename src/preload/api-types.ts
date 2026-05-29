@@ -633,6 +633,7 @@ export type PreloadApi = {
           | 'repoIcon'
           | 'hookSettings'
           | 'worktreeBaseRef'
+          | 'worktreeBasePath'
           | 'kind'
           | 'issueSourcePreference'
           | 'externalWorktreeVisibility'

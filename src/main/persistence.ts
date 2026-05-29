@@ -478,7 +478,7 @@ function readLegacySidekickFlag(parsed: PersistedState | undefined): boolean | u
 }
 
 function sanitizeRepoUpdatesForPersistence<
-  T extends Partial<Pick<Repo, 'badgeColor' | 'repoIcon'>>
+  T extends Partial<Pick<Repo, 'badgeColor' | 'repoIcon' | 'worktreeBasePath'>>
 >(updates: T): T {
   const sanitized = { ...updates }
   if ('badgeColor' in sanitized) {
@@ -495,6 +495,13 @@ function sanitizeRepoUpdatesForPersistence<
       delete sanitized.repoIcon
     } else {
       sanitized.repoIcon = repoIcon
+    }
+  }
+  if ('worktreeBasePath' in sanitized && sanitized.worktreeBasePath !== undefined) {
+    if (typeof sanitized.worktreeBasePath === 'string') {
+      sanitized.worktreeBasePath = sanitized.worktreeBasePath.trim() || undefined
+    } else {
+      delete sanitized.worktreeBasePath
     }
   }
   return sanitized
@@ -2264,6 +2271,7 @@ export class Store {
         | 'repoIcon'
         | 'hookSettings'
         | 'worktreeBaseRef'
+        | 'worktreeBasePath'
         | 'kind'
         | 'symlinkPaths'
         | 'issueSourcePreference'
@@ -2310,6 +2318,10 @@ export class Store {
     ) {
       delete repo.issueSourcePreference
       delete sanitizedUpdates.issueSourcePreference
+    }
+    if ('worktreeBasePath' in sanitizedUpdates && sanitizedUpdates.worktreeBasePath === undefined) {
+      delete repo.worktreeBasePath
+      delete sanitizedUpdates.worktreeBasePath
     }
     if (
       'externalWorktreeVisibility' in sanitizedUpdates &&

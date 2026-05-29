@@ -1,9 +1,11 @@
 import {
   getRuntimePathBasename,
+  isRuntimePathAbsolute,
   isWindowsAbsolutePathLike,
   normalizeRuntimePathForComparison,
   normalizeRuntimePathSeparators,
-  relativePathInsideRoot
+  relativePathInsideRoot,
+  resolveRuntimePath
 } from './cross-platform-path'
 import { parseWslUncPath } from './wsl-paths'
 import type {
@@ -44,12 +46,31 @@ export function effectiveExternalWorktreeVisibility(
 
 export function buildKnownOrcaWorkspaceLayouts(
   settings: Pick<GlobalSettings, 'workspaceDir' | 'nestWorkspaces' | 'workspaceDirHistory'>,
-  repo?: Pick<Repo, 'path' | 'connectionId'>
+  repo?: Pick<Repo, 'path' | 'connectionId' | 'worktreeBasePath'>
 ): OrcaWorkspaceLayout[] {
   const layouts: OrcaWorkspaceLayout[] = []
-  if (!repo?.connectionId && settings.workspaceDir) {
-    layouts.push({ path: settings.workspaceDir, nestWorkspaces: settings.nestWorkspaces })
-    layouts.push(...(settings.workspaceDirHistory ?? []))
+  const repoBasePath = getRepoWorktreeBasePath(repo)
+  if (repo && repoBasePath) {
+    layouts.push({
+      path: resolveWorkspaceLayoutPath(repo.path, repoBasePath),
+      nestWorkspaces: settings.nestWorkspaces
+    })
+  }
+  if (settings.workspaceDir && shouldIncludeWorkspaceLayout(repo, settings.workspaceDir)) {
+    layouts.push({
+      path: repo
+        ? resolveWorkspaceLayoutPath(repo.path, settings.workspaceDir)
+        : settings.workspaceDir,
+      nestWorkspaces: settings.nestWorkspaces
+    })
+    layouts.push(
+      ...(settings.workspaceDirHistory ?? [])
+        .filter((layout) => shouldIncludeWorkspaceLayout(repo, layout.path))
+        .map((layout) => ({
+          ...layout,
+          path: repo ? resolveWorkspaceLayoutPath(repo.path, layout.path) : layout.path
+        }))
+    )
   }
 
   const wslLayouts = repo ? buildWslWorkspaceLayouts(repo.path, settings) : []
@@ -64,6 +85,34 @@ export function buildKnownOrcaWorkspaceLayouts(
     seen.add(key)
     return Boolean(layout.path)
   })
+}
+
+function getRepoWorktreeBasePath(
+  repo: Pick<Repo, 'worktreeBasePath'> | undefined
+): string | undefined {
+  const trimmed = repo?.worktreeBasePath?.trim()
+  return trimmed || undefined
+}
+
+function resolveWorkspaceLayoutPath(repoPath: string, layoutPath: string): string {
+  return isRuntimePathAbsoluteForRepo(repoPath, layoutPath)
+    ? normalizeRuntimePathSeparators(layoutPath)
+    : resolveRuntimePath(repoPath, layoutPath)
+}
+
+function isRuntimePathAbsoluteForRepo(repoPath: string, layoutPath: string): boolean {
+  const pathFlavor =
+    isWindowsAbsolutePathLike(repoPath) || isWindowsAbsolutePathLike(layoutPath)
+      ? 'windows'
+      : 'posix'
+  return isRuntimePathAbsolute(layoutPath, pathFlavor)
+}
+
+function shouldIncludeWorkspaceLayout(
+  repo: Pick<Repo, 'path' | 'connectionId'> | undefined,
+  layoutPath: string
+): boolean {
+  return !repo?.connectionId || !isRuntimePathAbsoluteForRepo(repo.path, layoutPath)
 }
 
 function buildWslWorkspaceLayouts(

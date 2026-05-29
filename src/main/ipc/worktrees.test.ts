@@ -492,6 +492,50 @@ describe('registerWorktreeHandlers', () => {
     })
   })
 
+  it('uses a repo-specific worktree base path when creating local worktrees', async () => {
+    store.getRepo.mockReturnValue({
+      id: 'repo-1',
+      path: '/workspace/repo',
+      displayName: 'repo',
+      badgeColor: '#000',
+      addedAt: 0,
+      worktreeBaseRef: null,
+      worktreeBasePath: '../worktrees'
+    })
+    listWorktreesMock.mockResolvedValue([
+      {
+        path: '../worktrees/feature',
+        head: 'abc123',
+        branch: 'feature',
+        isBare: false,
+        isMainWorktree: false
+      }
+    ])
+
+    await handlers['worktrees:create'](null, {
+      repoId: 'repo-1',
+      name: 'feature'
+    })
+
+    expect(computeWorktreePathMock).toHaveBeenCalledWith('feature', '/workspace/repo', {
+      nestWorkspaces: false,
+      workspaceDir: '../worktrees'
+    })
+    expect(addWorktreeMock).toHaveBeenCalledWith(
+      '/workspace/repo',
+      '../worktrees/feature',
+      'feature',
+      'origin/main',
+      false
+    )
+    expect(store.setWorktreeMeta).toHaveBeenCalledWith(
+      'repo-1::../worktrees/feature',
+      expect.objectContaining({
+        orcaCreationWorkspaceLayout: { path: '../worktrees', nestWorkspaces: false }
+      })
+    )
+  })
+
   it('uses branchNameOverride for the git branch while keeping the sanitized worktree path', async () => {
     listWorktreesMock.mockResolvedValue([
       {
@@ -1387,20 +1431,20 @@ describe('registerWorktreeHandlers', () => {
     expect(provider.addWorktree).toHaveBeenCalledWith(
       '/remote/repo',
       'sparse-dashboard',
-      '/remote/repo/../sparse-dashboard',
+      '/remote/sparse-dashboard',
       { base: 'origin/main', noCheckout: true }
     )
     expect(provider.exec).toHaveBeenCalledWith(
       ['sparse-checkout', 'init', '--cone'],
-      '/remote/repo/../sparse-dashboard'
+      '/remote/sparse-dashboard'
     )
     expect(provider.exec).toHaveBeenCalledWith(
       ['sparse-checkout', 'set', '--', 'apps/mobile', 'packages/shared'],
-      '/remote/repo/../sparse-dashboard'
+      '/remote/sparse-dashboard'
     )
     expect(provider.exec).toHaveBeenCalledWith(
       ['checkout', 'sparse-dashboard'],
-      '/remote/repo/../sparse-dashboard'
+      '/remote/sparse-dashboard'
     )
     expect(store.setWorktreeMeta).toHaveBeenCalledWith(
       'repo-ssh::/remote/sparse-dashboard',
@@ -1468,9 +1512,9 @@ describe('registerWorktreeHandlers', () => {
 
     expect(provider.exec).toHaveBeenCalledWith(
       ['config', '--local', '--unset-all', 'branch.sparse-dashboard.base'],
-      '/remote/repo/../sparse-dashboard'
+      '/remote/sparse-dashboard'
     )
-    expect(provider.removeWorktree).toHaveBeenCalledWith('/remote/repo/../sparse-dashboard', true, {
+    expect(provider.removeWorktree).toHaveBeenCalledWith('/remote/sparse-dashboard', true, {
       deleteBranch: true,
       forceBranchDelete: true
     })

@@ -337,7 +337,7 @@ function buildDetectedGitWorktrees(
   gitWorktrees: GitWorktreeInfo[]
 ): DetectedWorktree[] {
   const settings = store.getSettings()
-  const knownOrcaLayouts = repo.connectionId ? [] : buildKnownOrcaWorkspaceLayouts(settings, repo)
+  const knownOrcaLayouts = buildKnownOrcaWorkspaceLayouts(settings, repo)
   const isLegacyRepoForVisibility = isLegacyRepoForExternalWorktreeVisibility(repo)
   return gitWorktrees.map((gitWorktree) => {
     const worktreeId = `${repo.id}::${gitWorktree.path}`
@@ -953,9 +953,7 @@ export function registerWorktreeHandlers(
         if (!registeredWorktree) {
           const fsProvider = repo.connectionId ? getSshFilesystemProvider(repo.connectionId) : null
           let canCleanOrphanedDirectory = false
-          const knownOrcaLayouts = repo.connectionId
-            ? []
-            : buildKnownOrcaWorkspaceLayouts(store.getSettings(), repo)
+          const knownOrcaLayouts = buildKnownOrcaWorkspaceLayouts(store.getSettings(), repo)
           if (
             canCleanupUnregisteredOrcaWorktreeDirectory({
               meta: removedMeta,

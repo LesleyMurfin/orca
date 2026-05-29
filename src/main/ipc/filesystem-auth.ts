@@ -1,8 +1,12 @@
+/* eslint-disable max-lines -- Why: filesystem authorization keeps root
+discovery, canonicalization, and registered-worktree cache checks together so
+the security boundary is auditable end to end. */
 import { resolve, relative, dirname, basename, isAbsolute } from 'path'
 import { realpathSync } from 'fs'
 import { realpath } from 'fs/promises'
 import type { Store } from '../persistence'
 import { isRepoRoot, listRepoWorktrees } from '../repo-worktrees'
+import { computeWorkspaceRoot, getWorktreePathSettings } from './worktree-logic'
 
 export const PATH_ACCESS_DENIED_MESSAGE =
   'Access denied: path resolves outside allowed directories. If this blocks a legitimate workflow, please file a GitHub issue.'
@@ -59,10 +63,19 @@ export function isDescendantOrEqual(resolvedTarget: string, resolvedBase: string
 }
 
 export function getAllowedRoots(store: Store): string[] {
-  const roots = getLocalRepos(store).map((repo) => resolve(repo.path))
-  const workspaceDir = store.getSettings().workspaceDir
-  if (workspaceDir) {
-    roots.push(resolve(workspaceDir))
+  const localRepos = getLocalRepos(store)
+  const settings = store.getSettings()
+  const roots = localRepos.map((repo) => resolve(repo.path))
+  if (settings.workspaceDir) {
+    if (localRepos.length === 0) {
+      roots.push(resolve(settings.workspaceDir))
+    } else {
+      for (const repo of localRepos) {
+        roots.push(
+          resolve(computeWorkspaceRoot(repo.path, getWorktreePathSettings(repo, settings)))
+        )
+      }
+    }
   }
   return roots
 }

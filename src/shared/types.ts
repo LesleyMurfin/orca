@@ -86,6 +86,8 @@ export type Repo = {
   kind?: RepoKind
   gitUsername?: string
   worktreeBaseRef?: string
+  /** Optional repo-scoped workspace root override. Relative paths resolve from `path`. */
+  worktreeBasePath?: string
   hookSettings?: RepoHookSettings
   /** SSH target ID for remote repos. null/undefined = local. */
   connectionId?: string | null
