@@ -206,6 +206,7 @@ describe('tab title tooltips', () => {
         tabCount={1}
         hasTabsToRight={false}
         isActive={true}
+        isPinned={false}
         isExpanded={false}
         onActivate={vi.fn()}
         onClose={vi.fn()}
@@ -213,6 +214,7 @@ describe('tab title tooltips', () => {
         onCloseToRight={vi.fn()}
         onSetCustomTitle={vi.fn()}
         onSetTabColor={vi.fn()}
+        onTogglePin={vi.fn()}
         onToggleExpand={vi.fn()}
         onSplitGroup={vi.fn()}
         dragData={makeDragData('terminal', 'terminal-1')}
@@ -232,12 +234,14 @@ describe('tab title tooltips', () => {
       <BrowserTab
         tab={makeBrowserTab({ title: '' })}
         isActive={false}
+        isPinned={false}
         hasTabsToRight={false}
         onActivate={vi.fn()}
         onClose={vi.fn()}
         onCloseToRight={vi.fn()}
         onSplitGroup={vi.fn()}
         onDuplicate={vi.fn()}
+        onTogglePin={vi.fn()}
         dragData={makeDragData('browser', 'browser-1')}
       />
     )
@@ -255,6 +259,7 @@ describe('tab title tooltips', () => {
       <EditorFileTab
         file={makeEditorFile({ externalMutation: 'renamed', isPreview: true })}
         isActive={false}
+        isPinned={false}
         hasTabsToRight={false}
         statusByRelativePath={new Map<string, GitFileStatus>()}
         onActivate={vi.fn()}
@@ -262,6 +267,7 @@ describe('tab title tooltips', () => {
         onCloseToRight={vi.fn()}
         onCloseAll={vi.fn()}
         onPin={vi.fn()}
+        onTogglePin={vi.fn()}
         onSplitGroup={vi.fn()}
         dragData={makeDragData('editor', 'editor-tab-1')}
       />

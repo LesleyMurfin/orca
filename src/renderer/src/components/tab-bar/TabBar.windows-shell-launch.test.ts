@@ -1,12 +1,20 @@
+/* oxlint-disable max-lines -- Why: Windows shell launch menu assertions share
+ * the TabBar shallow-render harness and platform-specific store mocks. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const appStoreSnapshot: {
   activeTabId: string | null
   activeTabType: 'terminal' | 'editor' | 'browser' | null
+  unifiedTabsByWorktree: Record<string, unknown[]>
+  activeGroupIdByWorktree: Record<string, string>
 } = {
   activeTabId: null,
-  activeTabType: null
+  activeTabType: null,
+  unifiedTabsByWorktree: {},
+  activeGroupIdByWorktree: {}
 }
+const pinTabMock: (tabId: string) => void = vi.fn()
+const unpinTabMock: (tabId: string) => void = vi.fn()
 
 const useAppStoreMock = vi.fn(
   (
@@ -14,6 +22,10 @@ const useAppStoreMock = vi.fn(
       activeTabId: string | null
       activeTabType: 'terminal' | 'editor' | 'browser' | null
       gitStatusByWorktree: Record<string, never[]>
+      unifiedTabsByWorktree: Record<string, unknown[]>
+      activeGroupIdByWorktree: Record<string, string>
+      pinTab: typeof pinTabMock
+      unpinTab: typeof unpinTabMock
       settings: {
         terminalWindowsShell: 'powershell.exe' | 'cmd.exe' | 'wsl.exe'
         terminalWindowsPowerShellImplementation: 'auto' | 'powershell.exe' | 'pwsh.exe'
@@ -24,6 +36,10 @@ const useAppStoreMock = vi.fn(
       activeTabId: appStoreSnapshot.activeTabId,
       activeTabType: appStoreSnapshot.activeTabType,
       gitStatusByWorktree: {},
+      unifiedTabsByWorktree: appStoreSnapshot.unifiedTabsByWorktree,
+      activeGroupIdByWorktree: appStoreSnapshot.activeGroupIdByWorktree,
+      pinTab: pinTabMock,
+      unpinTab: unpinTabMock,
       settings: {
         terminalWindowsShell: 'powershell.exe',
         terminalWindowsPowerShellImplementation: 'pwsh.exe'
@@ -72,6 +88,10 @@ useAppStoreExport.getState = vi.fn(() => ({
   activeTabId: appStoreSnapshot.activeTabId,
   activeTabType: appStoreSnapshot.activeTabType,
   gitStatusByWorktree: {},
+  unifiedTabsByWorktree: appStoreSnapshot.unifiedTabsByWorktree,
+  activeGroupIdByWorktree: appStoreSnapshot.activeGroupIdByWorktree,
+  pinTab: pinTabMock,
+  unpinTab: unpinTabMock,
   settings: {
     terminalWindowsShell: 'powershell.exe',
     terminalWindowsPowerShellImplementation: 'pwsh.exe'
@@ -224,6 +244,7 @@ describe('TabBar PowerShell launch wiring', () => {
     vi.resetModules()
     appStoreSnapshot.activeTabId = null
     appStoreSnapshot.activeTabType = null
+    appStoreSnapshot.unifiedTabsByWorktree = {}
     vi.stubGlobal('navigator', { userAgent: 'Windows' })
   })
 

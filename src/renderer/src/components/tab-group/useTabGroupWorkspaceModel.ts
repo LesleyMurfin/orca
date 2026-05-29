@@ -204,6 +204,9 @@ export function useTabGroupWorkspaceModel({
       if (!item) {
         return
       }
+      if (item.isPinned) {
+        return
+      }
       const runtimeEnvironmentId = useAppStore
         .getState()
         .settings?.activeRuntimeEnvironmentId?.trim()
@@ -251,7 +254,7 @@ export function useTabGroupWorkspaceModel({
     (itemIds: string[]) => {
       for (const itemId of itemIds) {
         const item = groupTabs.find((candidate) => candidate.id === itemId)
-        if (!item) {
+        if (!item || item.isPinned) {
           continue
         }
         const runtimeEnvironmentId = useAppStore

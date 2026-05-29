@@ -561,7 +561,7 @@ export function FloatingTerminalPanel({
         : (state.unifiedTabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? [])
       const items = visibleIds
         .map((visibleId) => resolveGroupTabFromVisibleId(currentGroupTabs, visibleId))
-        .filter((item): item is Tab => item !== null)
+        .filter((item): item is Tab => item !== null && !item.isPinned)
       if (items.length === 0) {
         return
       }

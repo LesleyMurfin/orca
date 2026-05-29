@@ -1062,11 +1062,37 @@ describe('TabsSlice', () => {
       expect(updated.isPreview).toBe(false)
     })
 
+    it('moves pinned tabs before unpinned siblings', () => {
+      const t1 = store.getState().createUnifiedTab(WT, 'terminal')
+      const t2 = store.getState().createUnifiedTab(WT, 'terminal')
+      const t3 = store.getState().createUnifiedTab(WT, 'terminal')
+
+      store.getState().pinTab(t3.id)
+      store.getState().pinTab(t2.id)
+
+      expect(store.getState().groupsByWorktree[WT][0].tabOrder).toEqual([t3.id, t2.id, t1.id])
+      expect(store.getState().unifiedTabsByWorktree[WT].map((tab) => tab.sortOrder)).toEqual([
+        2, 1, 0
+      ])
+    })
+
     it('unpins a tab', () => {
       const tab = store.getState().createUnifiedTab(WT, 'terminal')
       store.getState().pinTab(tab.id)
       store.getState().unpinTab(tab.id)
       expect(store.getState().unifiedTabsByWorktree[WT][0].isPinned).toBe(false)
+    })
+
+    it('keeps remaining pinned tabs before a tab that was unpinned', () => {
+      const t1 = store.getState().createUnifiedTab(WT, 'terminal')
+      const t2 = store.getState().createUnifiedTab(WT, 'terminal')
+      const t3 = store.getState().createUnifiedTab(WT, 'terminal')
+      store.getState().pinTab(t2.id)
+      store.getState().pinTab(t3.id)
+
+      store.getState().unpinTab(t2.id)
+
+      expect(store.getState().groupsByWorktree[WT][0].tabOrder).toEqual([t3.id, t2.id, t1.id])
     })
   })
 

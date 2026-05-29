@@ -99,6 +99,12 @@ function getShortcutPlatform(): NodeJS.Platform {
 const BROWSER_AUTOMATION_BOOTSTRAP_LEASE_MS = 10_000
 const browserAutomationBootstrapLeaseByPageId = new Map<string, { token: string; timer: number }>()
 
+function isPinnedSessionTab(store: AppState, worktreeId: string, visibleId: string): boolean {
+  return (store.unifiedTabsByWorktree[worktreeId] ?? []).some(
+    (tab) => (tab.id === visibleId || tab.entityId === visibleId) && tab.isPinned
+  )
+}
+
 function releaseBrowserAutomationBootstrapLease(browserPageId: string): void {
   const existing = browserAutomationBootstrapLeaseByPageId.get(browserPageId)
   if (!existing) {
@@ -1203,7 +1209,13 @@ export function useIpcEvents(): void {
         const store = useAppStore.getState()
         const browserTarget = resolveBrowserSessionTabTarget(store, worktreeId, tabId)
         if (browserTarget) {
+          if (isPinnedSessionTab(store, worktreeId, browserTarget.workspaceId)) {
+            return
+          }
           store.closeBrowserTab(browserTarget.workspaceId)
+          return
+        }
+        if (isPinnedSessionTab(store, worktreeId, tabId)) {
           return
         }
         store.closeUnifiedTab(tabId)
@@ -1273,7 +1285,15 @@ export function useIpcEvents(): void {
           const detail: CloseTerminalPaneDetail = { tabId, paneRuntimeId }
           window.dispatchEvent(new CustomEvent(CLOSE_TERMINAL_PANE_EVENT, { detail }))
         } else {
-          useAppStore.getState().closeTab(tabId)
+          const store = useAppStore.getState()
+          const worktreeId =
+            Object.entries(store.tabsByWorktree).find(([, tabs]) =>
+              tabs.some((tab) => tab.id === tabId)
+            )?.[0] ?? null
+          if (worktreeId && isPinnedSessionTab(store, worktreeId, tabId)) {
+            return
+          }
+          store.closeTab(tabId)
         }
       })
     )
@@ -1572,6 +1592,17 @@ export function useIpcEvents(): void {
             if (owningWorkspace) {
               const [workspaceId, pages] = owningWorkspace
               if (pages.length <= 1) {
+                const owningWorktreeId =
+                  Object.entries(store.browserTabsByWorktree).find(([, tabs]) =>
+                    tabs.some((tab) => tab.id === workspaceId)
+                  )?.[0] ?? null
+                if (owningWorktreeId && isPinnedSessionTab(store, owningWorktreeId, workspaceId)) {
+                  window.api.ui.replyTabClose({
+                    requestId: data.requestId,
+                    error: `Browser tab ${workspaceId} is pinned`
+                  })
+                  return
+                }
                 store.closeBrowserTab(workspaceId)
               } else {
                 store.closeBrowserPage(tabToClose)
@@ -1584,6 +1615,17 @@ export function useIpcEvents(): void {
             window.api.ui.replyTabClose({
               requestId: data.requestId,
               error: `Browser tab ${explicitTargetId} not found`
+            })
+            return
+          }
+          const owningWorktreeId =
+            Object.entries(store.browserTabsByWorktree).find(([, tabs]) =>
+              tabs.some((tab) => tab.id === tabToClose)
+            )?.[0] ?? null
+          if (owningWorktreeId && isPinnedSessionTab(store, owningWorktreeId, tabToClose)) {
+            window.api.ui.replyTabClose({
+              requestId: data.requestId,
+              error: `Browser tab ${tabToClose} is pinned`
             })
             return
           }
@@ -1652,6 +1694,12 @@ export function useIpcEvents(): void {
       window.api.ui.onCloseActiveTab(() => {
         const store = useAppStore.getState()
         if (store.activeTabType === 'browser' && store.activeBrowserTabId) {
+          if (
+            store.activeWorktreeId &&
+            isPinnedSessionTab(store, store.activeWorktreeId, store.activeBrowserTabId)
+          ) {
+            return
+          }
           if (isRuntimeEnvironmentActive() && store.activeWorktreeId) {
             const environmentId = getActiveRuntimeEnvironmentId()
             if (!isWebRuntimeSessionActive(environmentId)) {

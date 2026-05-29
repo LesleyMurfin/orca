@@ -65,6 +65,12 @@ vi.mock('lucide-react', () => ({
   Pencil: function Pencil(props: Record<string, unknown>) {
     return { type: 'Pencil', props }
   },
+  Pin: function Pin(props: Record<string, unknown>) {
+    return { type: 'Pin', props }
+  },
+  PinOff: function PinOff(props: Record<string, unknown>) {
+    return { type: 'PinOff', props }
+  },
   Rows2: function Rows2(props: Record<string, unknown>) {
     return { type: 'Rows2', props }
   },
@@ -189,6 +195,7 @@ async function renderEditorFileTab(
   const element = module.default({
     file,
     isActive: true,
+    isPinned: false,
     hasTabsToRight: false,
     statusByRelativePath: new Map(),
     onActivate,
@@ -196,6 +203,7 @@ async function renderEditorFileTab(
     onCloseToRight: () => {},
     onCloseAll: () => {},
     onPin: () => {},
+    onTogglePin: () => {},
     onSplitGroup: () => {},
     dragData: {
       kind: 'tab',
