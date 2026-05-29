@@ -178,6 +178,10 @@ import { getCommitMessageModelDiscoveryHostKeyForScope } from '../../../../share
 import { getRuntimeGitScope } from '@/runtime/runtime-git-client'
 import { getRepositorySourceControlAiSectionId } from '@/components/settings/repository-settings-targets'
 import { hasExpandedCommitFailureDetails, summarizeCommitFailure } from './commit-failure-summary'
+import {
+  isSourceControlSplitOpenModifier,
+  type SourceControlRowOpenEvent
+} from './source-control-split-open'
 
 export type SourceControlScope = 'all' | 'uncommitted'
 type AbortConflictOperation = Extract<GitConflictOperation, 'merge' | 'rebase'>
@@ -895,6 +899,7 @@ export function HostedReviewHeaderLink({
 
 function SourceControlInner(): React.JSX.Element {
   const sourceControlRef = useRef<HTMLDivElement>(null)
+  const isMac = useMemo(() => navigator.userAgent.includes('Mac'), [])
   // Why: React setState is async, so a rapid double-click on the Commit
   // button can both pass the isCommitting state guard before the disabled
   // state re-renders. A ref flipped synchronously at the start of
@@ -967,6 +972,9 @@ function SourceControlInner(): React.JSX.Element {
   const openConflictFile = useAppStore((s) => s.openConflictFile)
   const openConflictReview = useAppStore((s) => s.openConflictReview)
   const openBranchDiff = useAppStore((s) => s.openBranchDiff)
+  const createEmptySplitGroup = useAppStore((s) => s.createEmptySplitGroup)
+  const groupsByWorktree = useAppStore((s) => s.groupsByWorktree)
+  const activeGroupIdByWorktree = useAppStore((s) => s.activeGroupIdByWorktree)
   const openAllDiffs = useAppStore((s) => s.openAllDiffs)
   const openBranchAllDiffs = useAppStore((s) => s.openBranchAllDiffs)
   const openCommitAllDiffs = useAppStore((s) => s.openCommitAllDiffs)
@@ -2824,16 +2832,36 @@ function SourceControlInner(): React.JSX.Element {
     ]
   )
 
+  // Why: modifier-click should keep the current pane intact by opening the
+  // selected Source Control file in a fresh split to the right.
+  const resolveSplitTargetGroupId = useCallback(
+    (event?: SourceControlRowOpenEvent): string | undefined => {
+      if (!event || !activeWorktreeId || !isSourceControlSplitOpenModifier(event, isMac)) {
+        return undefined
+      }
+      const sourceGroupId =
+        activeGroupIdByWorktree[activeWorktreeId] ?? groupsByWorktree[activeWorktreeId]?.[0]?.id
+      if (!sourceGroupId) {
+        return undefined
+      }
+      return createEmptySplitGroup(activeWorktreeId, sourceGroupId, 'right') ?? undefined
+    },
+    [activeGroupIdByWorktree, activeWorktreeId, createEmptySplitGroup, groupsByWorktree, isMac]
+  )
+
   const handleOpenDiff = useCallback(
-    (entry: GitStatusEntry) => {
+    (entry: GitStatusEntry, event?: SourceControlRowOpenEvent) => {
       if (!activeWorktreeId || !worktreePath) {
         return
       }
+      const targetGroupId = resolveSplitTargetGroupId(event)
       if (entry.conflictKind && entry.conflictStatus) {
         if (entry.conflictStatus === 'unresolved') {
           trackConflictPath(activeWorktreeId, entry.path, entry.conflictKind)
         }
-        openConflictFile(activeWorktreeId, worktreePath, entry, detectLanguage(entry.path))
+        openConflictFile(activeWorktreeId, worktreePath, entry, detectLanguage(entry.path), {
+          targetGroupId
+        })
         return
       }
       const language = detectLanguage(entry.path)
@@ -2847,21 +2875,27 @@ function SourceControlInner(): React.JSX.Element {
       // files keep the existing diff-tab flow until the diff-tab type is
       // eventually collapsed (see reviews/changes-view-mode-plan.md §"Follow-up").
       if (language === 'markdown' && entry.area === 'unstaged') {
-        openFile({
-          filePath,
-          relativePath: entry.path,
-          worktreeId: activeWorktreeId,
-          language,
-          mode: 'edit'
-        })
+        openFile(
+          {
+            filePath,
+            relativePath: entry.path,
+            worktreeId: activeWorktreeId,
+            language,
+            mode: 'edit'
+          },
+          { targetGroupId }
+        )
         setEditorViewMode(filePath, 'changes')
         return
       }
-      openDiff(activeWorktreeId, filePath, entry.path, language, entry.area === 'staged')
+      openDiff(activeWorktreeId, filePath, entry.path, language, entry.area === 'staged', {
+        targetGroupId
+      })
     },
     [
       activeWorktreeId,
       worktreePath,
+      resolveSplitTargetGroupId,
       trackConflictPath,
       openConflictFile,
       openDiff,
@@ -2874,6 +2908,7 @@ function SourceControlInner(): React.JSX.Element {
     useSourceControlSelection({
       flatEntries: visibleSelectionEntries,
       onOpenDiff: handleOpenDiff,
+      shouldOpenAsSplit: (event) => isSourceControlSplitOpenModifier(event, isMac),
       containerRef: sourceControlRef
     })
 
@@ -3439,7 +3474,7 @@ function SourceControlInner(): React.JSX.Element {
   }, [])
 
   const openCommittedDiff = useCallback(
-    (entry: GitBranchChangeEntry) => {
+    (entry: GitBranchChangeEntry, event?: SourceControlRowOpenEvent) => {
       if (
         !activeWorktreeId ||
         !worktreePath ||
@@ -3453,10 +3488,11 @@ function SourceControlInner(): React.JSX.Element {
         worktreePath,
         entry,
         branchSummary,
-        detectLanguage(entry.path)
+        detectLanguage(entry.path),
+        { targetGroupId: resolveSplitTargetGroupId(event) }
       )
     },
-    [activeWorktreeId, branchSummary, openBranchDiff, worktreePath]
+    [activeWorktreeId, branchSummary, openBranchDiff, resolveSplitTargetGroupId, worktreePath]
   )
 
   const openHistoryCommitDiff = useCallback(
@@ -4488,7 +4524,7 @@ function SourceControlInner(): React.JSX.Element {
                           worktreePath={worktreePath}
                           depth={node.depth}
                           onRevealInExplorer={revealInExplorer}
-                          onOpen={() => openCommittedDiff(node.entry)}
+                          onOpen={(event) => openCommittedDiff(node.entry, event)}
                           commentCount={diffCommentCountByPath.get(node.entry.path) ?? 0}
                           showPathHint={false}
                         />
@@ -4501,7 +4537,7 @@ function SourceControlInner(): React.JSX.Element {
                         currentWorktreeId={currentWorktreeId}
                         worktreePath={worktreePath}
                         onRevealInExplorer={revealInExplorer}
-                        onOpen={() => openCommittedDiff(entry)}
+                        onOpen={(event) => openCommittedDiff(entry, event)}
                         commentCount={diffCommentCountByPath.get(entry.path) ?? 0}
                       />
                     )))}
@@ -6230,7 +6266,7 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
   onSelect?: (e: React.MouseEvent, key: string, entry: GitStatusEntry) => void
   onContextMenu?: (key: string) => void
   onRevealInExplorer: (worktreeId: string, absolutePath: string) => void
-  onOpen: (entry: GitStatusEntry) => void
+  onOpen: (entry: GitStatusEntry, event?: SourceControlRowOpenEvent) => void
   onStage: (filePath: string) => Promise<void>
   onUnstage: (filePath: string) => Promise<void>
   onDiscard: (entry: GitStatusEntry) => void
@@ -6300,7 +6336,7 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
           if (onSelect) {
             onSelect(e, entryKey, entry)
           } else {
-            onOpen(entry)
+            onOpen(entry, e)
           }
         }}
       >
@@ -6435,7 +6471,7 @@ function BranchEntryRow({
   worktreePath: string
   depth?: number
   onRevealInExplorer: (worktreeId: string, absolutePath: string) => void
-  onOpen: () => void
+  onOpen: (event: React.MouseEvent<HTMLDivElement>) => void
   commentCount: number
   showPathHint?: boolean
 }): React.JSX.Element {

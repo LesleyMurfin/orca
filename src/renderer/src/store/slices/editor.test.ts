@@ -321,6 +321,27 @@ describe('createEditorSlice openDiff', () => {
     ])
     expect(store.getState().activeFileId).toBe('wt-1::diff::staged::file.ts')
   })
+
+  it('opens the visible diff tab in the requested split group', () => {
+    const store = createEditorTabsStore()
+    const sourceTab = store.getState().createUnifiedTab('wt-1', 'terminal', { id: 'terminal-1' })
+    const targetGroupId = store.getState().createEmptySplitGroup('wt-1', sourceTab.groupId, 'right')
+    if (!targetGroupId) {
+      throw new Error('expected split group')
+    }
+
+    store
+      .getState()
+      .openDiff('wt-1', '/repo/file.ts', 'file.ts', 'typescript', false, { targetGroupId })
+
+    const diffTab = store
+      .getState()
+      .unifiedTabsByWorktree['wt-1']?.find((tab) => tab.contentType === 'diff')
+
+    expect(diffTab?.groupId).toBe(targetGroupId)
+    expect(diffTab?.entityId).toBe('wt-1::diff::unstaged::file.ts')
+    expect(store.getState().activeGroupIdByWorktree['wt-1']).toBe(targetGroupId)
+  })
 })
 
 describe('createEditorSlice floating editor activation', () => {
