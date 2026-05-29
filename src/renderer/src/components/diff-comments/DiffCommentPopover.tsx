@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { CornerDownLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
@@ -43,7 +43,6 @@ export function DiffCommentPopover({
   // fresh id/createdAt. Tracked in React state (not a ref) so the button can
   // reflect the in-flight status to the user.
   const [submitting, setSubmitting] = useState(false)
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const popoverRef = useRef<HTMLDivElement | null>(null)
   // Why: stash onCancel in a ref so the document mousedown listener below can
   // read the freshest callback without listing `onCancel` in its dependency
@@ -59,8 +58,10 @@ export function DiffCommentPopover({
   // "Line N" label as the dialog's accessible name.
   const labelId = useId()
 
-  useEffect(() => {
-    textareaRef.current?.focus()
+  const focusTextareaRef = useCallback((textarea: HTMLTextAreaElement | null): void => {
+    // Why: the draft field should receive focus as soon as the popover mounts;
+    // no external system needs a post-render Effect for this.
+    textarea?.focus()
   }, [])
 
   // Why: Monaco's editor area does not bubble a synthetic React click up to
@@ -126,7 +127,7 @@ export function DiffCommentPopover({
             : `Line ${lineNumber}`)}
       </div>
       <textarea
-        ref={textareaRef}
+        ref={focusTextareaRef}
         className="orca-diff-comment-popover-textarea"
         placeholder={placeholder}
         value={body}
