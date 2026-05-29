@@ -3123,6 +3123,19 @@ describe('Droid hook normalization', () => {
     expect(result).toBeNull()
   })
 
+  it('SubagentStop does not mark Droid done for mission progress', () => {
+    const result = _internals.normalizeHookPayload(
+      'droid',
+      buildBody({
+        hook_event_name: 'SubagentStop',
+        last_assistant_message: '# Completed Wrote the requested validation assertions'
+      }),
+      'production'
+    )
+
+    expect(result).toBeNull()
+  })
+
   it('PreToolUse maps to working and surfaces the tool name and input preview', () => {
     const result = _internals.normalizeHookPayload(
       'droid',

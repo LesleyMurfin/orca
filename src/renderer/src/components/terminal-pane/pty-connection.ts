@@ -66,7 +66,7 @@ const SSH_SESSION_EXPIRED_ERROR = 'SSH_SESSION_EXPIRED'
 const REMOTE_PTY_ID_PREFIX = 'remote:'
 const PTY_CONNECT_DIAG_LIMIT = 200
 const AGENT_TASK_COMPLETE_NOTIFICATION_GRACE_MS = 250
-const AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS = 1000
+const AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS = 1500
 const AGENT_TASK_COMPLETE_NOTIFICATION_DETAIL_MAX_AGE_MS = 10_000
 const COMMAND_CODE_OUTPUT_DONE_SETTLE_MS = 1500
 const HIDDEN_OUTPUT_RESTORE_SCROLLBACK_ROWS = 5000
@@ -92,6 +92,13 @@ function hasAgentNotificationDetail(entry: AgentStatusEntry | undefined): boolea
     Date.now() - entry.updatedAt <= AGENT_TASK_COMPLETE_NOTIFICATION_DETAIL_MAX_AGE_MS &&
     (entry.lastAssistantMessage || entry.toolName || entry.toolInput)
   )
+}
+
+function canDispatchAgentNotificationAfterGrace(entry: AgentStatusEntry | undefined): boolean {
+  // Why: hook-backed goal/mission loops can report `done` between milestones.
+  // User-input states may notify as soon as detail arrives, but `done` waits
+  // for the max quiet window so resumed work can cancel the pending banner.
+  return hasAgentNotificationDetail(entry) && entry?.state !== 'done'
 }
 
 function recordPtyConnectDiagnostic(message: string): void {
@@ -836,7 +843,7 @@ export function connectPanePty(
         return
       }
       const entry = useAppStore.getState().agentStatusByPaneKey[cacheKey]
-      if (hasAgentNotificationDetail(entry)) {
+      if (canDispatchAgentNotificationAfterGrace(entry)) {
         dispatch()
       }
     }

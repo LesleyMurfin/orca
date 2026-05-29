@@ -33,6 +33,8 @@ function createRejectableDeferred<T>(): {
   return { promise, reject: rejectDeferred }
 }
 
+const HOOK_DONE_QUIET_MS = 1_500
+
 describe('agent completion coordinator', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -309,6 +311,7 @@ describe('agent completion coordinator', () => {
       agentType: 'codex'
     })
     coordinator.observeClassifiedTitleCompletion('codex done')
+    vi.advanceTimersByTime(HOOK_DONE_QUIET_MS)
 
     expect(dispatchCompletion).toHaveBeenCalledTimes(1)
     expect(dispatchCompletion).toHaveBeenCalledWith('codex')
@@ -456,6 +459,7 @@ describe('agent completion coordinator', () => {
       prompt: '',
       agentType: 'codex'
     })
+    vi.advanceTimersByTime(HOOK_DONE_QUIET_MS)
 
     expect(dispatchCompletion).toHaveBeenCalledTimes(2)
   })
@@ -548,6 +552,49 @@ describe('agent completion coordinator', () => {
     })
 
     expect(dispatchCompletion).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels a hook completion when the same turn resumes work before the quiet window', () => {
+    const dispatchCompletion = vi.fn()
+    const coordinator = createAgentCompletionCoordinator({
+      paneKey: 'tab-1:leaf-1',
+      getPtyId: () => 'pty-1',
+      getSettings: () => null,
+      inspectProcess: vi.fn(),
+      dispatchCompletion,
+      isLive: () => true
+    })
+
+    coordinator.observeHookStatus({
+      state: 'working',
+      prompt: 'run the goal',
+      agentType: 'codex'
+    })
+    coordinator.observeHookStatus({
+      state: 'done',
+      prompt: 'run the goal',
+      agentType: 'codex'
+    })
+    vi.advanceTimersByTime(HOOK_DONE_QUIET_MS - 1)
+    expect(dispatchCompletion).not.toHaveBeenCalled()
+
+    coordinator.observeHookStatus({
+      state: 'working',
+      prompt: 'run the goal',
+      agentType: 'codex'
+    })
+    vi.advanceTimersByTime(HOOK_DONE_QUIET_MS)
+    expect(dispatchCompletion).not.toHaveBeenCalled()
+
+    coordinator.observeHookStatus({
+      state: 'done',
+      prompt: 'run the goal',
+      agentType: 'codex'
+    })
+    vi.advanceTimersByTime(HOOK_DONE_QUIET_MS)
+
+    expect(dispatchCompletion).toHaveBeenCalledTimes(1)
+    expect(dispatchCompletion).toHaveBeenCalledWith('codex')
   })
 
   it.each([

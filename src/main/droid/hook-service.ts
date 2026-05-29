@@ -21,6 +21,9 @@ const DROID_EVENTS = [
   { eventName: 'SessionStart', definition: { hooks: [{ type: 'command', command: '' }] } },
   { eventName: 'UserPromptSubmit', definition: { hooks: [{ type: 'command', command: '' }] } },
   { eventName: 'Stop', definition: { hooks: [{ type: 'command', command: '' }] } },
+  // Why: sub-droid completion is mission progress, not parent Droid completion.
+  // The listener intentionally ignores SubagentStop so it cannot notify.
+  { eventName: 'SubagentStop', definition: { hooks: [{ type: 'command', command: '' }] } },
   {
     eventName: 'PreToolUse',
     definition: { matcher: '*', hooks: [{ type: 'command', command: '' }] }

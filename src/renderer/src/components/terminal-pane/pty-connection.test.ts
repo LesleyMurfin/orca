@@ -23,6 +23,7 @@ async function flushAsyncTicks(count = 6): Promise<void> {
 const toastInfo = vi.fn()
 const LEAF_1 = '11111111-1111-4111-8111-111111111111' as const
 const LEAF_2 = '22222222-2222-4222-8222-222222222222' as const
+const AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS = 1_500
 
 function leafIdForPane(paneId: number): string {
   return paneId === 2 ? LEAF_2 : LEAF_1
@@ -3376,7 +3377,7 @@ describe('connectPanePty', () => {
 
     bellHandler()
     idleHandler('* Codex done')
-    vi.advanceTimersByTime(250)
+    vi.advanceTimersByTime(AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS)
     await flushAsyncTicks()
 
     expect(window.api.notifications.dispatch).toHaveBeenCalledTimes(1)
@@ -3427,7 +3428,7 @@ describe('connectPanePty', () => {
     expect(deps.dispatchNotification).toHaveBeenCalledWith(
       expect.objectContaining({ source: 'terminal-bell' })
     )
-    vi.advanceTimersByTime(1000)
+    vi.advanceTimersByTime(AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS)
     expect(deps.dispatchNotification).not.toHaveBeenCalledWith(
       expect.objectContaining({ source: 'agent-task-complete' })
     )
@@ -3827,7 +3828,7 @@ describe('connectPanePty', () => {
     titleHandler('experimental-agent-observability', 'experimental-agent-observability')
     await flushAsyncTicks()
 
-    vi.advanceTimersByTime(1000)
+    vi.advanceTimersByTime(AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS)
 
     expect(deps.dispatchNotification).toHaveBeenCalledWith({
       source: 'agent-task-complete',
@@ -3902,7 +3903,7 @@ describe('connectPanePty', () => {
       agentType: 'codex',
       lastAssistantMessage: 'Done.'
     })
-    vi.advanceTimersByTime(250)
+    vi.advanceTimersByTime(AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS)
 
     expect(deps.dispatchNotification).toHaveBeenCalledWith({
       source: 'agent-task-complete',
@@ -3945,6 +3946,50 @@ describe('connectPanePty', () => {
     expect(deps.dispatchNotification).not.toHaveBeenCalledWith(
       expect.objectContaining({ source: 'agent-task-complete' })
     )
+  })
+
+  it('cancels a title task-complete notification when the agent resumes before quiet', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+    const transport = createMockTransport()
+    transportFactoryQueue.push(transport)
+
+    vi.useFakeTimers()
+    const pane = createPane(1)
+    const manager = createManager(1)
+    const deps = createDeps()
+
+    connectPanePty(pane as never, manager as never, deps as never)
+
+    const idleHandler = createdTransportOptions[0]?.onAgentBecameIdle as
+      | ((title: string) => void)
+      | undefined
+    const workingHandler = createdTransportOptions[0]?.onAgentBecameWorking as
+      | (() => void)
+      | undefined
+    if (!idleHandler || !workingHandler) {
+      throw new Error('Expected idle and working handlers to be registered')
+    }
+
+    idleHandler('* Codex done')
+    vi.advanceTimersByTime(AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS - 1)
+    expect(deps.dispatchNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'agent-task-complete' })
+    )
+
+    workingHandler()
+    vi.advanceTimersByTime(AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS)
+    expect(deps.dispatchNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'agent-task-complete' })
+    )
+
+    idleHandler('* Codex done')
+    vi.advanceTimersByTime(AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS)
+
+    expect(deps.dispatchNotification).toHaveBeenCalledWith({
+      source: 'agent-task-complete',
+      terminalTitle: '* Codex done',
+      paneKey: makePaneKey('tab-1', LEAF_1)
+    })
   })
 
   // Why: show-until-interact — a real keystroke through xterm onData is the
@@ -4269,7 +4314,7 @@ describe('connectPanePty', () => {
     expect(mockStoreState.markTerminalTabUnread).not.toHaveBeenCalled()
     expect(dispatchNotification).not.toHaveBeenCalled()
 
-    vi.advanceTimersByTime(250)
+    vi.advanceTimersByTime(AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS)
     await flushAsyncTicks()
 
     expect(dispatchNotification).toHaveBeenCalledWith({
@@ -4399,7 +4444,7 @@ describe('connectPanePty', () => {
       lastAssistantMessage: 'Delayed status arrived.'
     }
 
-    vi.advanceTimersByTime(250)
+    vi.advanceTimersByTime(AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS)
     await flushAsyncTicks()
 
     expect(window.api.notifications.dispatch).toHaveBeenCalledWith(
@@ -4457,6 +4502,8 @@ describe('connectPanePty', () => {
     }
     notifyStoreSubscribers()
     await flushAsyncTicks()
+    vi.advanceTimersByTime(AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS - 350)
+    await flushAsyncTicks()
 
     expect(window.api.notifications.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -4508,7 +4555,7 @@ describe('connectPanePty', () => {
     }
 
     idleHandler('* Codex done')
-    vi.advanceTimersByTime(1000)
+    vi.advanceTimersByTime(AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS)
     await flushAsyncTicks()
 
     const dispatchArgs = (window.api.notifications.dispatch as ReturnType<typeof vi.fn>).mock

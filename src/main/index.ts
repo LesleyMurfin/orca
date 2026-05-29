@@ -988,14 +988,16 @@ function driveSyntheticTitleFromHook(
   // decorated "<Agent> ready" label rather than the bare native title — which
   // for cursor the detector deliberately treats as a no-op so cursor's own
   // per-turn re-emissions cannot clobber our synthesized state. The
-  // done/permission frames also carry a trailing BEL (0x07 outside of any OSC
-  // sequence) so the tab-level unread badge + notification dispatch in
-  // pty-connection lights up — those key off BEL, not the working→idle title
-  // transition.
+  // Permission frames also carry a trailing BEL (0x07 outside of any OSC
+  // sequence) so user-input-required states light up immediately. Done frames
+  // intentionally avoid the extra BEL: hook/status completion notifications
+  // own final-task attention and can cancel milestone noise during loops.
   stopSyntheticTitleSpinner(paneKey)
-  const label =
-    state === 'blocked' || state === 'waiting' ? profile.permissionLabel : profile.idleLabel
-  sendSyntheticTitle(ptyId, `\x1b]0;${label}\x07\x07`, { force: true })
+  const needsUserInput = state === 'blocked' || state === 'waiting'
+  const label = needsUserInput ? profile.permissionLabel : profile.idleLabel
+  sendSyntheticTitle(ptyId, `\x1b]0;${label}\x07${needsUserInput ? '\x07' : ''}`, {
+    force: true
+  })
 }
 
 app.whenReady().then(async () => {
