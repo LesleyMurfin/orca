@@ -67,8 +67,7 @@ import {
   sortMarkdownReviewNotes,
   type MarkdownReviewNote
 } from '@/lib/markdown-review-notes'
-import { QuickLaunchAgentMenuItems } from '@/components/tab-bar/QuickLaunchButton'
-import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
+import { ReviewNotesSendMenuContent } from './ReviewNotesSendMenuContent'
 import {
   richMarkdownAnnotationHighlightPluginKey,
   type RichMarkdownAnnotationHighlightRange
@@ -1572,21 +1571,16 @@ export default function RichMarkdownEditor({
                   type="button"
                   className="rich-markdown-review-rail-send"
                   disabled={unsentMarkdownReviewNotes.length === 0}
-                  title={
-                    unsentMarkdownReviewNotes.length === 0
-                      ? 'All notes sent'
-                      : 'Send notes to a new agent'
-                  }
-                  aria-label="Send notes to a new agent"
+                  title={unsentMarkdownReviewNotes.length === 0 ? 'All notes sent' : 'Send notes'}
+                  aria-label="Send notes"
                 >
                   <Send className="size-3.5" />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="min-w-[180px]">
-                <QuickLaunchAgentMenuItems
+                <ReviewNotesSendMenuContent
                   worktreeId={worktreeId}
                   groupId={worktreeId}
-                  onFocusTerminal={focusTerminalTabSurface}
                   prompt={unsentMarkdownReviewPrompt}
                   promptDelivery="submit-after-ready"
                   launchSource="notes_send"
@@ -1622,8 +1616,8 @@ export default function RichMarkdownEditor({
                           type="button"
                           className="rich-markdown-review-note-send"
                           disabled={Boolean(comment.sentAt)}
-                          title={comment.sentAt ? 'Note already sent' : 'Send note to a new agent'}
-                          aria-label="Send note to a new agent"
+                          title={comment.sentAt ? 'Note already sent' : 'Send note'}
+                          aria-label="Send note"
                           onMouseDown={(event) => event.stopPropagation()}
                           onClick={(event) => event.stopPropagation()}
                         >
@@ -1631,10 +1625,9 @@ export default function RichMarkdownEditor({
                         </button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="min-w-[180px]">
-                        <QuickLaunchAgentMenuItems
+                        <ReviewNotesSendMenuContent
                           worktreeId={worktreeId}
                           groupId={worktreeId}
-                          onFocusTerminal={focusTerminalTabSurface}
                           prompt={formatMarkdownReviewNotes(
                             [comment as MarkdownReviewNote],
                             markdownReviewContent

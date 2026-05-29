@@ -494,6 +494,13 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
     })
   }),
   defineMethod({
+    name: 'terminal.isRunningAgent',
+    params: TerminalHandle,
+    handler: async (params, { runtime }) => ({
+      isRunningAgent: await runtime.isTerminalRunningAgent(params.terminal)
+    })
+  }),
+  defineMethod({
     name: 'terminal.rename',
     params: TerminalRename,
     handler: async (params, { runtime }) => ({

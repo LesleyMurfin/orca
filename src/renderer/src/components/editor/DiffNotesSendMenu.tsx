@@ -12,8 +12,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { QuickLaunchAgentMenuItems } from '@/components/tab-bar/QuickLaunchButton'
-import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
+import { ReviewNotesSendMenuContent } from './ReviewNotesSendMenuContent'
 import { formatDiffComments } from '@/lib/diff-comments-format'
 import { cn } from '@/lib/utils'
 
@@ -66,9 +65,7 @@ export function DiffNotesSendMenu({
                 triggerClassName
               )}
               disabled={!hasUnsentNotes}
-              aria-label={
-                triggerLabel ? `Send ${triggerLabel} to a new agent` : 'Send notes to a new agent'
-              }
+              aria-label={triggerLabel ? `Send ${triggerLabel}` : 'Send notes'}
               onClick={(event) => event.stopPropagation()}
             >
               {triggerLabel ? (
@@ -89,7 +86,7 @@ export function DiffNotesSendMenu({
           </DropdownMenuTrigger>
         </TooltipTrigger>
         <TooltipContent side="bottom" sideOffset={6}>
-          {hasUnsentNotes ? 'Send notes to a new agent' : 'All notes sent'}
+          {hasUnsentNotes ? 'Send notes' : 'All notes sent'}
         </TooltipContent>
       </Tooltip>
       <DropdownMenuContent align={align} className="min-w-[220px]">
@@ -104,10 +101,9 @@ export function DiffNotesSendMenu({
                 <NoteScopeMenuRow label="This file" count={unsentFileNotes.length} />
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="min-w-[180px]">
-                <QuickLaunchAgentMenuItems
+                <ReviewNotesSendMenuContent
                   worktreeId={worktreeId}
                   groupId={groupId}
-                  onFocusTerminal={focusTerminalTabSurface}
                   prompt={unsentFilePrompt}
                   promptDelivery="submit-after-ready"
                   launchSource="notes_send"
@@ -125,10 +121,9 @@ export function DiffNotesSendMenu({
                 <NoteScopeMenuRow label="All unsent notes" count={unsentNotes.length} />
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="min-w-[180px]">
-                <QuickLaunchAgentMenuItems
+                <ReviewNotesSendMenuContent
                   worktreeId={worktreeId}
                   groupId={groupId}
-                  onFocusTerminal={focusTerminalTabSurface}
                   prompt={unsentPrompt}
                   promptDelivery="submit-after-ready"
                   launchSource="notes_send"
@@ -138,10 +133,9 @@ export function DiffNotesSendMenu({
             </DropdownMenuSub>
           </>
         ) : (
-          <QuickLaunchAgentMenuItems
+          <ReviewNotesSendMenuContent
             worktreeId={worktreeId}
             groupId={groupId}
-            onFocusTerminal={focusTerminalTabSurface}
             prompt={unsentPrompt}
             promptDelivery="submit-after-ready"
             launchSource="notes_send"
