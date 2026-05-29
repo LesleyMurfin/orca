@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -19,6 +19,7 @@ export function SshPassphraseDialog(): React.JSX.Element | null {
   const [value, setValue] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const focusFrameRef = useRef<number | null>(null)
 
   const open = request !== null
 
@@ -36,12 +37,25 @@ export function SshPassphraseDialog(): React.JSX.Element | null {
     }
   }
 
-  // DOM focus is a side effect that must remain in useEffect.
-  useEffect(() => {
-    if (requestId) {
-      requestAnimationFrame(() => inputRef.current?.focus())
-    }
-  }, [requestId])
+  const setInputRef = useCallback(
+    (input: HTMLInputElement | null): void => {
+      inputRef.current = input
+      if (focusFrameRef.current !== null) {
+        cancelAnimationFrame(focusFrameRef.current)
+        focusFrameRef.current = null
+      }
+      if (!input || !requestId) {
+        return
+      }
+      focusFrameRef.current = requestAnimationFrame(() => {
+        focusFrameRef.current = null
+        if (inputRef.current === input) {
+          input.focus()
+        }
+      })
+    },
+    [requestId]
+  )
 
   const handleSubmit = useCallback(async () => {
     if (!request || !value) {
@@ -105,7 +119,7 @@ export function SshPassphraseDialog(): React.JSX.Element | null {
           </label>
           <Input
             id="ssh-credential-input"
-            ref={inputRef}
+            ref={setInputRef}
             type="password"
             value={value}
             onChange={(e) => setValue(e.target.value)}
