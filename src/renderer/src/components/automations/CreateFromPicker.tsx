@@ -19,8 +19,28 @@ import {
 
 const DEFAULT_VALUE = '__project_default__'
 
+type BranchSearchState = {
+  repoId: string
+  query: string
+  results: string[]
+  isSearching: boolean
+}
+
 function displayBranchName(branch: string): string {
   return branch.replace(/^refs\/heads\//, '')
+}
+
+function createBranchSearchState(repoId: string): BranchSearchState {
+  return {
+    repoId,
+    query: '',
+    results: [],
+    isSearching: false
+  }
+}
+
+function resolveBranchSearchState(state: BranchSearchState, repoId: string): BranchSearchState {
+  return state.repoId === repoId ? state : createBranchSearchState(repoId)
 }
 
 export function CreateFromPicker({
@@ -46,9 +66,18 @@ export function CreateFromPicker({
   const inputRef = React.useRef<HTMLInputElement | null>(null)
   const focusFrameRef = React.useRef<number | null>(null)
   const [defaultBaseRef, setDefaultBaseRef] = React.useState<string | null>(null)
-  const [query, setQuery] = React.useState('')
-  const [searchResults, setSearchResults] = React.useState<string[]>([])
-  const [isSearching, setIsSearching] = React.useState(false)
+  const [branchSearchState, setBranchSearchState] = React.useState(() =>
+    createBranchSearchState(repoId)
+  )
+  const resolvedBranchSearchState = resolveBranchSearchState(branchSearchState, repoId)
+  if (resolvedBranchSearchState !== branchSearchState) {
+    // Why: branch search rows are repo-scoped; clear stale query/results before
+    // the next repo's picker can render old branches for one frame.
+    setBranchSearchState(resolvedBranchSearchState)
+  }
+  const query = resolvedBranchSearchState.query
+  const searchResults = resolvedBranchSearchState.results
+  const isSearching = resolvedBranchSearchState.isSearching
   const effectiveDefault = repo?.worktreeBaseRef ?? defaultBaseRef
   const selectedValue = value || DEFAULT_VALUE
   const selectedLabel =
@@ -87,6 +116,33 @@ export function CreateFromPicker({
       focusFrameRef.current = null
     }
   }, [])
+  const setQuery = React.useCallback(
+    (nextQuery: string): void => {
+      setBranchSearchState((current) => ({
+        ...resolveBranchSearchState(current, repoId),
+        query: nextQuery
+      }))
+    },
+    [repoId]
+  )
+  const setSearchResults = React.useCallback(
+    (results: string[]): void => {
+      setBranchSearchState((current) => ({
+        ...resolveBranchSearchState(current, repoId),
+        results
+      }))
+    },
+    [repoId]
+  )
+  const setIsSearching = React.useCallback(
+    (isSearching: boolean): void => {
+      setBranchSearchState((current) => ({
+        ...resolveBranchSearchState(current, repoId),
+        isSearching
+      }))
+    },
+    [repoId]
+  )
 
   React.useEffect(() => {
     if (!repoId) {
@@ -109,12 +165,6 @@ export function CreateFromPicker({
       stale = true
     }
   }, [activeRuntimeEnvironmentId, repoId])
-
-  React.useEffect(() => {
-    setQuery('')
-    setSearchResults([])
-    setIsSearching(false)
-  }, [repoId])
 
   React.useEffect(() => {
     const trimmedQuery = query.trim()
@@ -149,7 +199,7 @@ export function CreateFromPicker({
       stale = true
       window.clearTimeout(timer)
     }
-  }, [activeRuntimeEnvironmentId, open, query, repoId])
+  }, [activeRuntimeEnvironmentId, open, query, repoId, setIsSearching, setSearchResults])
 
   return (
     <div className="space-y-2">
