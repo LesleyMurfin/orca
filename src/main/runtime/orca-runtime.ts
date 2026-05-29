@@ -76,6 +76,7 @@ import {
 } from '../agent-trust-presets'
 import { applyAgentStatusHooksEnabled } from '../agent-hooks/managed-agent-hook-controls'
 import { upsertProjectTrustLevelInContent } from '../codex/config-toml-trust'
+import { getRemoteOrcaCodexHomePath } from '../../shared/remote-codex-home'
 import {
   isWindowsAbsolutePathLike,
   isPathInsideOrEqual,
@@ -7186,14 +7187,35 @@ export class OrcaRuntimeService {
     remoteHome: string,
     workspacePath: string
   ): Promise<void> {
-    const codexDir = `${remoteHome}/.codex`
-    const configPath = `${codexDir}/config.toml`
+    const systemCodexHome = `${remoteHome.replace(/\/+$/, '')}/.codex`
+    const runtimeCodexHome = getRemoteOrcaCodexHomePath(remoteHome)
+    const errors: unknown[] = []
+    for (const codexHome of [systemCodexHome, runtimeCodexHome]) {
+      try {
+        await this.writeRemoteCodexProjectTrust(fsProvider, codexHome, workspacePath)
+      } catch (error) {
+        errors.push(error)
+      }
+    }
+    if (errors.length === 2) {
+      throw errors[0]
+    }
+  }
+
+  private async writeRemoteCodexProjectTrust(
+    fsProvider: IFilesystemProvider,
+    codexHome: string,
+    workspacePath: string
+  ): Promise<void> {
+    const configPath = `${codexHome}/config.toml`
     const existing = await this.readRemoteTextFile(fsProvider, configPath)
     const updated = upsertProjectTrustLevelInContent(existing, workspacePath, 'trusted')
     if (updated === existing) {
       return
     }
-    await fsProvider.createDir(codexDir)
+    // Why: remote Codex may run under either ~/.codex or Orca's managed
+    // CODEX_HOME depending on relay hook availability; both homes need trust.
+    await fsProvider.createDir(codexHome)
     await fsProvider.writeFile(configPath, updated)
   }
 

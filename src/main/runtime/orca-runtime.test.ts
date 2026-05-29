@@ -7711,12 +7711,21 @@ describe('OrcaRuntimeService', () => {
       expect(detectRemoteAgentsMock).not.toHaveBeenCalled()
       expect(muxRequestMock).toHaveBeenCalledWith('session.resolveHome', { path: '~' })
       expect(fsProvider.createDir).toHaveBeenCalledWith('/home/dev/.codex')
+      expect(fsProvider.createDir).toHaveBeenCalledWith('/home/dev/.orca/codex-runtime-home/home')
       expect(fsProvider.writeFile).toHaveBeenCalledWith(
         '/home/dev/.codex/config.toml',
         expect.stringContaining('[projects."/remote/mobile-codex-draft"]')
       )
       expect(fsProvider.writeFile).toHaveBeenCalledWith(
         '/home/dev/.codex/config.toml',
+        expect.stringContaining('trust_level = "trusted"')
+      )
+      expect(fsProvider.writeFile).toHaveBeenCalledWith(
+        '/home/dev/.orca/codex-runtime-home/home/config.toml',
+        expect.stringContaining('[projects."/remote/mobile-codex-draft"]')
+      )
+      expect(fsProvider.writeFile).toHaveBeenCalledWith(
+        '/home/dev/.orca/codex-runtime-home/home/config.toml',
         expect.stringContaining('trust_level = "trusted"')
       )
       expect(spawn).toHaveBeenCalledWith(
@@ -7727,9 +7736,9 @@ describe('OrcaRuntimeService', () => {
           worktreeId: result.worktree.id
         })
       )
-      expect(fsProvider.writeFile.mock.invocationCallOrder[0]).toBeLessThan(
-        spawn.mock.invocationCallOrder[0]!
-      )
+      for (const order of fsProvider.writeFile.mock.invocationCallOrder) {
+        expect(order).toBeLessThan(spawn.mock.invocationCallOrder[0]!)
+      }
       expect(metaById[result.worktree.id]).toMatchObject({ createdWithAgent: 'codex' })
     } finally {
       unregisterSshFilesystemProvider('ssh-1')
@@ -7821,12 +7830,22 @@ describe('OrcaRuntimeService', () => {
 
       expect(detectRemoteAgentsMock).not.toHaveBeenCalled()
       expect(muxRequestMock).toHaveBeenCalledWith('session.resolveHome', { path: '~' })
+      expect(fsProvider.createDir).toHaveBeenCalledWith('/home/dev/.codex')
+      expect(fsProvider.createDir).toHaveBeenCalledWith('/home/dev/.orca/codex-runtime-home/home')
       expect(fsProvider.writeFile).toHaveBeenCalledWith(
         '/home/dev/.codex/config.toml',
         expect.stringContaining('[projects."/remote/mobile-codex-command"]')
       )
       expect(fsProvider.writeFile).toHaveBeenCalledWith(
         '/home/dev/.codex/config.toml',
+        expect.stringContaining('trust_level = "trusted"')
+      )
+      expect(fsProvider.writeFile).toHaveBeenCalledWith(
+        '/home/dev/.orca/codex-runtime-home/home/config.toml',
+        expect.stringContaining('[projects."/remote/mobile-codex-command"]')
+      )
+      expect(fsProvider.writeFile).toHaveBeenCalledWith(
+        '/home/dev/.orca/codex-runtime-home/home/config.toml',
         expect.stringContaining('trust_level = "trusted"')
       )
       expect(spawn).toHaveBeenCalledWith(
@@ -7837,9 +7856,9 @@ describe('OrcaRuntimeService', () => {
           worktreeId: result.worktree.id
         })
       )
-      expect(fsProvider.writeFile.mock.invocationCallOrder[0]).toBeLessThan(
-        spawn.mock.invocationCallOrder[0]!
-      )
+      for (const order of fsProvider.writeFile.mock.invocationCallOrder) {
+        expect(order).toBeLessThan(spawn.mock.invocationCallOrder[0]!)
+      }
       expect(metaById[result.worktree.id]).toMatchObject({ createdWithAgent: 'codex' })
     } finally {
       unregisterSshFilesystemProvider('ssh-1')
