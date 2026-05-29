@@ -123,6 +123,7 @@ import {
 } from '../../shared/keybindings'
 import { isGitRepoKind } from '../../shared/repo-kind'
 import { showTerminalShortcutCaptureNotification } from '@/lib/terminal-shortcut-capture-notification'
+import { resolveMountedLazyModalIds, type LazyModalId } from './lazy-modal-mount-state'
 
 const isMac = navigator.userAgent.includes('Mac')
 const isWindows = !isMac && navigator.userAgent.includes('Windows')
@@ -423,7 +424,7 @@ function App(): React.JSX.Element {
   const canGoForwardWorktree = useAppStore(canGoForwardWorktreeHistory)
   const titlebarLeftControlsRef = useRef<HTMLDivElement | null>(null)
   const [collapsedSidebarHeaderWidth, setCollapsedSidebarHeaderWidth] = useState(0)
-  const [mountedLazyModalIds, setMountedLazyModalIds] = useState(() => new Set<string>())
+  const [mountedLazyModalIds, setMountedLazyModalIds] = useState<Set<LazyModalId>>(() => new Set())
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null)
   const featureTipsPromptedThisSessionRef = useRef(false)
   const featureTipsSuppressedByOnboardingThisSessionRef = useRef(false)
@@ -1323,28 +1324,12 @@ function App(): React.JSX.Element {
     return () => observer.disconnect()
   }, [isFullScreen, settings?.showTitlebarAppName, showSidebar, workspaceActive, sidebarOpen])
 
-  useEffect(() => {
-    if (
-      activeModal !== 'quick-open' &&
-      activeModal !== 'worktree-palette' &&
-      activeModal !== 'new-workspace-composer' &&
-      activeModal !== 'workspace-cleanup' &&
-      activeModal !== 'feature-wall' &&
-      activeModal !== 'feature-tips'
-    ) {
-      return
-    }
-    setMountedLazyModalIds((currentIds) => {
-      if (currentIds.has(activeModal)) {
-        return currentIds
-      }
-      const nextIds = new Set(currentIds)
-      // Why: lazy-load these modals only after first use, then keep them mounted
-      // so repeat opens preserve their local state and avoid re-fetch flashes.
-      nextIds.add(activeModal)
-      return nextIds
-    })
-  }, [activeModal])
+  const resolvedMountedLazyModalIds = resolveMountedLazyModalIds(activeModal, mountedLazyModalIds)
+  if (resolvedMountedLazyModalIds !== mountedLazyModalIds) {
+    // Why: lazy-load these modals only after first use, then keep them mounted
+    // so repeat opens preserve their local state and avoid re-fetch flashes.
+    setMountedLazyModalIds(new Set(resolvedMountedLazyModalIds))
+  }
 
   // Why: extracted so both the full-width titlebar (settings/landing) and
   // the sidebar-width left header (workspace view) can share the same
@@ -1697,16 +1682,18 @@ function App(): React.JSX.Element {
           {/* Why: root overlays can render Radix <Tooltip>s; keep them inside
             the shared provider so lazy surfaces mount safely from any entry point. */}
           <Suspense fallback={null}>
-            {mountedLazyModalIds.has('new-workspace-composer') ? (
+            {resolvedMountedLazyModalIds.has('new-workspace-composer') ? (
               <NewWorkspaceComposerModal />
             ) : null}
-            {mountedLazyModalIds.has('workspace-cleanup') ? <WorkspaceCleanupDialog /> : null}
+            {resolvedMountedLazyModalIds.has('workspace-cleanup') ? (
+              <WorkspaceCleanupDialog />
+            ) : null}
           </Suspense>
           <Suspense fallback={null}>
-            {mountedLazyModalIds.has('quick-open') ? <QuickOpen /> : null}
-            {mountedLazyModalIds.has('worktree-palette') ? <WorktreeJumpPalette /> : null}
-            {mountedLazyModalIds.has('feature-wall') ? <FeatureWallModal /> : null}
-            {mountedLazyModalIds.has('feature-tips') ? <FeatureTipsModal /> : null}
+            {resolvedMountedLazyModalIds.has('quick-open') ? <QuickOpen /> : null}
+            {resolvedMountedLazyModalIds.has('worktree-palette') ? <WorktreeJumpPalette /> : null}
+            {resolvedMountedLazyModalIds.has('feature-wall') ? <FeatureWallModal /> : null}
+            {resolvedMountedLazyModalIds.has('feature-tips') ? <FeatureTipsModal /> : null}
           </Suspense>
           {/* Why: mount PetOverlay only after persisted UI hydration, with
           both independent pet toggles allowing it; otherwise a hidden pet
