@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { pickQuickWorkspaceAgent } from './quick-workspace-agent-selection'
+import {
+  pickQuickWorkspaceAgent,
+  resolveQuickWorkspaceAgentSelection
+} from './quick-workspace-agent-selection'
 
 describe('pickQuickWorkspaceAgent', () => {
   it('uses the first enabled catalog agent while detection is pending', () => {
@@ -15,5 +18,51 @@ describe('pickQuickWorkspaceAgent', () => {
   it('uses detected enabled agents after detection resolves', () => {
     expect(pickQuickWorkspaceAgent(null, ['codex'], ['claude'])).toBe('codex')
     expect(pickQuickWorkspaceAgent('codex', ['claude', 'codex'], ['codex'])).toBe('claude')
+  })
+})
+
+describe('resolveQuickWorkspaceAgentSelection', () => {
+  it('uses the preferred quick agent until the user picks an override', () => {
+    expect(
+      resolveQuickWorkspaceAgentSelection({
+        quickAgentOverride: undefined,
+        preferredQuickAgent: 'claude',
+        detectedAgentIds: ['claude', 'codex'],
+        disabledTuiAgents: []
+      })
+    ).toEqual({ quickAgent: 'claude', quickAgentOverride: undefined })
+  })
+
+  it('keeps explicit blank overrides stable', () => {
+    expect(
+      resolveQuickWorkspaceAgentSelection({
+        quickAgentOverride: null,
+        preferredQuickAgent: 'claude',
+        detectedAgentIds: ['claude'],
+        disabledTuiAgents: []
+      })
+    ).toEqual({ quickAgent: null, quickAgentOverride: null })
+  })
+
+  it('keeps an available user override', () => {
+    expect(
+      resolveQuickWorkspaceAgentSelection({
+        quickAgentOverride: 'codex',
+        preferredQuickAgent: 'claude',
+        detectedAgentIds: new Set(['claude', 'codex']),
+        disabledTuiAgents: []
+      })
+    ).toEqual({ quickAgent: 'codex', quickAgentOverride: 'codex' })
+  })
+
+  it('replaces an unavailable override with the preferred quick agent', () => {
+    expect(
+      resolveQuickWorkspaceAgentSelection({
+        quickAgentOverride: 'codex',
+        preferredQuickAgent: 'claude',
+        detectedAgentIds: ['claude'],
+        disabledTuiAgents: []
+      })
+    ).toEqual({ quickAgent: 'claude', quickAgentOverride: 'claude' })
   })
 })
