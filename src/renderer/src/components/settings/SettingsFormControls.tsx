@@ -449,7 +449,6 @@ export function FontAutocomplete({
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
-  const optionRefs = useRef(new Map<string, HTMLButtonElement>())
   const listboxId = useId()
 
   if (value !== prevValue) {
@@ -504,19 +503,6 @@ export function FontAutocomplete({
       setHighlightedIndex(Math.max(selectedIndex, 0))
     }
   }
-
-  useEffect(() => {
-    if (!open || highlightedIndex < 0) {
-      return
-    }
-
-    const highlightedFont = filteredSuggestions[highlightedIndex]
-    if (!highlightedFont) {
-      return
-    }
-
-    optionRefs.current.get(highlightedFont)?.scrollIntoView({ block: 'nearest' })
-  }, [filteredSuggestions, highlightedIndex, open])
 
   // Why: notify the consumer of the currently-highlighted font so it can
   // render a live preview. Closing the dropdown or moving past all options
@@ -665,11 +651,9 @@ export function FontAutocomplete({
                     role="option"
                     aria-selected={index === highlightedIndex}
                     ref={(element) => {
-                      if (element) {
-                        optionRefs.current.set(font, element)
-                        return
+                      if (element && index === highlightedIndex) {
+                        element.scrollIntoView({ block: 'nearest' })
                       }
-                      optionRefs.current.delete(font)
                     }}
                     onMouseDown={(e) => e.preventDefault()}
                     onMouseEnter={() => setHighlightedIndex(index)}
