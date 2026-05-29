@@ -320,6 +320,8 @@ import type { AddWorktreeResult } from '../git/worktree'
 import { isENOENT } from '../ipc/filesystem-auth'
 import {
   createSetupRunnerScript,
+  getDefaultTabCommandTrustContent,
+  getDefaultTabsLaunch,
   getEffectiveHooks,
   getEffectiveSetupRunPolicy,
   hasUnrecognizedOrcaYamlKeys,
@@ -632,7 +634,8 @@ type RuntimeNotifier = {
     repoId: string,
     worktreeId: string,
     setup?: CreateWorktreeResult['setup'],
-    startup?: WorktreeStartupLaunch
+    startup?: WorktreeStartupLaunch,
+    defaultTabs?: CreateWorktreeResult['defaultTabs']
   ): void
   createTerminal(worktreeId: string, opts: { command?: string; title?: string }): void
   revealTerminalSession?(
@@ -6609,9 +6612,9 @@ export class OrcaRuntimeService {
 
   private getSetupHookTrustPayload(
     repo: Repo,
-    setupScript: string | undefined
+    scriptContentValue: string | undefined
   ): { contentHash: string; scriptContent: string } | undefined {
-    const scriptContent = setupScript?.trim()
+    const scriptContent = scriptContentValue?.trim()
     if (!scriptContent || repo.hookSettings?.commandSourcePolicy === 'local-only') {
       return undefined
     }
@@ -6651,7 +6654,10 @@ export class OrcaRuntimeService {
           hooks,
           setupRunPolicy: getEffectiveSetupRunPolicy(repo),
           source: hooks ? 'orca.yaml' : null,
-          setupTrust: this.getSharedSetupHookTrustPayload(repo, hooks?.scripts?.setup)
+          setupTrust: this.getSharedSetupHookTrustPayload(
+            repo,
+            getDefaultTabCommandTrustContent(hooks)
+          )
         }
       } catch {
         return {
@@ -6671,7 +6677,10 @@ export class OrcaRuntimeService {
       hooks,
       setupRunPolicy,
       source: hasFile ? 'orca.yaml' : hooks ? 'legacy' : null,
-      setupTrust: this.getSharedSetupHookTrustPayload(repo, sharedHooks?.scripts?.setup)
+      setupTrust: this.getSharedSetupHookTrustPayload(
+        repo,
+        getDefaultTabCommandTrustContent(sharedHooks)
+      )
     }
   }
 
@@ -6691,9 +6700,7 @@ export class OrcaRuntimeService {
         if (result.isBinary) {
           return { hasHooks: false, hooks: null, mayNeedUpdate: false }
         }
-        const { parse } = await import('yaml')
-        const parsed = parse(result.content)
-        return { hasHooks: true, hooks: parsed, mayNeedUpdate: false }
+        return { hasHooks: true, hooks: parseOrcaYaml(result.content), mayNeedUpdate: false }
       } catch {
         return { hasHooks: false, hooks: null, mayNeedUpdate: false }
       }
@@ -7773,12 +7780,22 @@ export class OrcaRuntimeService {
     // Why: CLI-created worktrees do not have a renderer preview to mismatch
     // against. Trust is granted by the direct CLI invocation (`--run-hooks`),
     // so loading the setup hook from the created worktree is intentional here.
+    const yamlHooks = loadHooks(worktreePath)
     const hooks = getEffectiveHooks(repo, worktreePath)
     // Why: setupDecision lets mobile/CLI callers control whether the setup
     // script runs. 'skip' suppresses it, 'run' forces it, 'inherit' (default)
     // defers to the repo's orca.yaml setupRunPolicy. runHooks === true maps
     // to 'run' for backwards compatibility with the desktop create flow.
     const effectiveDecision = args.runHooks ? 'run' : (args.setupDecision ?? 'inherit')
+    let defaultTabs: CreateWorktreeResult['defaultTabs']
+    try {
+      defaultTabs = getDefaultTabsLaunch(yamlHooks, repo, effectiveDecision)
+    } catch (error) {
+      console.warn(`[hooks] default tab commands skipped for ${worktreePath}:`, error)
+      defaultTabs = yamlHooks?.defaultTabs
+        ? { tabs: yamlHooks.defaultTabs, runCommands: false }
+        : undefined
+    }
     const shouldRunSetup = hooks?.scripts.setup && shouldRunSetupForCreate(repo, effectiveDecision)
     if (shouldRunSetup && hooks?.scripts.setup) {
       if (this.authoritativeWindowId !== null) {
@@ -7890,9 +7907,21 @@ export class OrcaRuntimeService {
       // the user can watch prompts/output in a visible pane.
       const activationSetup = didSpawnSetup ? undefined : setup
       if (effectiveStartup && !didSpawnStartup) {
-        this.notifier?.activateWorktree(repo.id, worktree.id, activationSetup, effectiveStartup)
+        this.notifier?.activateWorktree(
+          repo.id,
+          worktree.id,
+          activationSetup,
+          effectiveStartup,
+          defaultTabs
+        )
       } else {
-        this.notifier?.activateWorktree(repo.id, worktree.id, activationSetup)
+        this.notifier?.activateWorktree(
+          repo.id,
+          worktree.id,
+          activationSetup,
+          undefined,
+          defaultTabs
+        )
       }
     } else if (this.ptyController?.spawn) {
       try {
@@ -7927,6 +7956,7 @@ export class OrcaRuntimeService {
       },
       ...(lineageInput ? { lineage, warnings: lineageWarnings } : {}),
       ...(setup ? { setup } : {}),
+      ...(defaultTabs ? { defaultTabs } : {}),
       ...(warning ? { warning } : {}),
       ...(addResult.localBaseRefRefresh
         ? { localBaseRefRefresh: addResult.localBaseRefRefresh }

@@ -680,6 +680,10 @@ export type WorkspaceSessionState = {
    *  older builds — hydration tolerates missing/partial maps and the
    *  active worktree is seeded on first restore. */
   lastVisitedAtByWorktreeId?: Record<string, number>
+  /** Worktrees whose repo-defined default terminal tabs have already been
+   *  considered. Persisted so closing all tabs and re-opening the workspace
+   *  does not recreate the template. */
+  defaultTerminalTabsAppliedByWorktreeId?: Record<string, true>
 }
 
 // ─── GitHub ──────────────────────────────────────────────────────────
@@ -1292,6 +1296,13 @@ export type OrcaHooks = {
     archive?: string // Runs before worktree is archived
   }
   issueCommand?: string // Shared default command for linked GitHub issues
+  defaultTabs?: OrcaDefaultTabTemplate[] // Terminal tabs to create once for a new worktree
+}
+
+export type OrcaDefaultTabTemplate = {
+  title?: string
+  color?: string
+  command?: string
 }
 
 export type RepoHookSettings = {
@@ -1314,6 +1325,11 @@ export type WorktreeSetupLaunch = {
 export type WorktreeStartupLaunch = {
   command: string
   env?: Record<string, string>
+}
+
+export type WorktreeDefaultTabsLaunch = {
+  tabs: OrcaDefaultTabTemplate[]
+  runCommands: boolean
 }
 
 export type CreateSparseCheckoutRequest = {
@@ -1381,6 +1397,7 @@ export type CreateWorktreeResult = {
   lineage?: WorktreeLineage | null
   warnings?: WorktreeLineageWarning[]
   setup?: WorktreeSetupLaunch
+  defaultTabs?: WorktreeDefaultTabsLaunch
   warning?: string
   initialBaseStatus?: WorktreeBaseStatusEvent
   localBaseRefRefresh?: LocalBaseRefRefreshResult

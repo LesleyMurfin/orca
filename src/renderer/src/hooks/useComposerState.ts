@@ -1873,6 +1873,7 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
       activateAndRevealWorktree(worktree.id, {
         sidebarRevealBehavior: 'auto',
         setup: result.setup,
+        defaultTabs: result.defaultTabs,
         issueCommand,
         ...(startupPlan
           ? {
@@ -2141,6 +2142,7 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
         activateAndRevealWorktree(worktree.id, {
           sidebarRevealBehavior: 'auto',
           setup: result.setup,
+          defaultTabs: result.defaultTabs,
           ...(startupPlan
             ? {
                 startup: {

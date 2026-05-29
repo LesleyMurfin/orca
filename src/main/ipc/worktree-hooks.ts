@@ -12,9 +12,11 @@ import {
   hasHooksFile,
   hasUnrecognizedOrcaYamlKeys,
   loadHooks,
+  parseOrcaYaml,
   readIssueCommand,
   writeIssueCommand
 } from '../hooks'
+import { joinWorktreeRelativePath } from '../runtime/runtime-relative-paths'
 
 export function registerHooksHandlers(store: Store): void {
   ipcMain.removeHandler('hooks:check')
@@ -36,13 +38,11 @@ export function registerHooksHandlers(store: Store): void {
         return { hasHooks: false, hooks: null, mayNeedUpdate: false }
       }
       try {
-        const result = await fsProvider.readFile(join(repo.path, '.orca.yaml'))
+        const result = await fsProvider.readFile(joinWorktreeRelativePath(repo.path, 'orca.yaml'))
         if (result.isBinary) {
           return { hasHooks: false, hooks: null, mayNeedUpdate: false }
         }
-        const { parse } = await import('yaml')
-        const parsed = parse(result.content)
-        return { hasHooks: true, hooks: parsed, mayNeedUpdate: false }
+        return { hasHooks: true, hooks: parseOrcaYaml(result.content), mayNeedUpdate: false }
       } catch {
         return { hasHooks: false, hooks: null, mayNeedUpdate: false }
       }

@@ -52,6 +52,7 @@ export type WorkspaceSessionSnapshot = Pick<
   | 'worktreesByRepo'
   | 'lastKnownRelayPtyIdByTabId'
   | 'lastVisitedAtByWorktreeId'
+  | 'defaultTerminalTabsAppliedByWorktreeId'
 >
 
 // Why: the App-level Zustand subscriber that debounces session writes uses
@@ -83,7 +84,8 @@ export const SESSION_RELEVANT_FIELDS = [
   'repos',
   'worktreesByRepo',
   'lastKnownRelayPtyIdByTabId',
-  'lastVisitedAtByWorktreeId'
+  'lastVisitedAtByWorktreeId',
+  'defaultTerminalTabsAppliedByWorktreeId'
 ] as const satisfies readonly (keyof WorkspaceSessionSnapshot)[]
 
 type _MissingSessionField = Exclude<
@@ -316,6 +318,11 @@ export function buildWorkspaceSessionPayload(
       snapshot.lastVisitedAtByWorktreeId &&
       Object.keys(snapshot.lastVisitedAtByWorktreeId).length > 0
         ? snapshot.lastVisitedAtByWorktreeId
+        : undefined,
+    defaultTerminalTabsAppliedByWorktreeId:
+      snapshot.defaultTerminalTabsAppliedByWorktreeId &&
+      Object.keys(snapshot.defaultTerminalTabsAppliedByWorktreeId).length > 0
+        ? snapshot.defaultTerminalTabsAppliedByWorktreeId
         : undefined
   }
 
