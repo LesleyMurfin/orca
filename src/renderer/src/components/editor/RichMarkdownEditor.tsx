@@ -945,9 +945,7 @@ export default function RichMarkdownEditor({
     }
   })
 
-  useEffect(() => {
-    editorRef.current = editor ?? null
-  }, [editor])
+  editorRef.current = editor ?? null
 
   const clearAnnotationHighlight = useCallback((): void => {
     const ed = editorRef.current
@@ -1114,10 +1112,7 @@ export default function RichMarkdownEditor({
   }, [editor, markdownDocuments])
 
   const handleLocalImagePick = useLocalImagePick(editor, filePath, worktreeId, runtimeEnvironmentId)
-
-  useEffect(() => {
-    handleLocalImagePickRef.current = handleLocalImagePick
-  }, [handleLocalImagePick])
+  handleLocalImagePickRef.current = handleLocalImagePick
 
   const {
     handleLinkSave,
@@ -1163,9 +1158,7 @@ export default function RichMarkdownEditor({
     rootRef,
     scrollContainerRef
   })
-  useEffect(() => {
-    openSearchRef.current = openSearch
-  }, [openSearch])
+  openSearchRef.current = openSearch
 
   const navigateToTableOfContentsItem = useCallback(
     (id: string): void => {
@@ -1275,9 +1268,7 @@ export default function RichMarkdownEditor({
     setAnnotationTarget(null)
   }, [annotationTarget, canAnnotateRichMarkdown])
 
-  useEffect(() => {
-    handleEmojiPickRef.current = openEmojiMenu
-  }, [openEmojiMenu])
+  handleEmojiPickRef.current = openEmojiMenu
 
   const filteredSlashCommands = useMemo(() => {
     const query = slashMenu?.query.trim().toLowerCase() ?? ''
@@ -1290,15 +1281,9 @@ export default function RichMarkdownEditor({
     })
   }, [slashMenu?.query])
 
-  useEffect(() => {
-    slashMenuRef.current = slashMenu
-  }, [slashMenu])
-  useEffect(() => {
-    filteredSlashCommandsRef.current = filteredSlashCommands
-  }, [filteredSlashCommands])
-  useEffect(() => {
-    selectedCommandIndexRef.current = selectedCommandIndex
-  }, [selectedCommandIndex])
+  slashMenuRef.current = slashMenu
+  filteredSlashCommandsRef.current = filteredSlashCommands
+  selectedCommandIndexRef.current = selectedCommandIndex
   useEffect(() => {
     setSelectedCommandIndex(0)
   }, [slashMenu?.query])
@@ -1329,15 +1314,9 @@ export default function RichMarkdownEditor({
     return { docLinkRows: rows, docLinkTotalMatches: matches.length }
   }, [docLinkMenu, markdownDocuments])
 
-  useEffect(() => {
-    docLinkMenuRef.current = docLinkMenu
-  }, [docLinkMenu])
-  useEffect(() => {
-    filteredDocLinkRowsRef.current = docLinkRows
-  }, [docLinkRows])
-  useEffect(() => {
-    selectedDocLinkIndexRef.current = selectedDocLinkIndex
-  }, [selectedDocLinkIndex])
+  docLinkMenuRef.current = docLinkMenu
+  filteredDocLinkRowsRef.current = docLinkRows
+  selectedDocLinkIndexRef.current = selectedDocLinkIndex
   useEffect(() => {
     if (docLinkRows.length === 0) {
       setSelectedDocLinkIndex(0)
