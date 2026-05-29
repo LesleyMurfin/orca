@@ -155,9 +155,25 @@ export default function GitLabItemDialog({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [refreshNonce, setRefreshNonce] = useState(0)
-  const [commentDraft, setCommentDraft] = useState('')
+  const itemId = item?.id ?? null
+  const [commentDraftState, setCommentDraftState] = useState<{
+    itemId: string | null
+    value: string
+  }>(() => ({ itemId, value: '' }))
+  const commentDraft = commentDraftState.itemId === itemId ? commentDraftState.value : ''
+  if (commentDraftState.itemId !== itemId) {
+    // Why: comment drafts are tied to one GitLab item, so switching the sheet
+    // target must not leave a draft that could post to the wrong MR/issue.
+    setCommentDraftState({ itemId, value: '' })
+  }
   const [commentSubmitting, setCommentSubmitting] = useState(false)
   const [actionInFlight, setActionInFlight] = useState<'close' | 'reopen' | 'merge' | null>(null)
+  const updateCommentDraft = useCallback(
+    (value: string): void => {
+      setCommentDraftState({ itemId, value })
+    },
+    [itemId]
+  )
 
   useEffect(() => {
     if (!item || !repoPath) {
@@ -195,12 +211,6 @@ export default function GitLabItemDialog({
       stale = true
     }
   }, [item, repoPath, refreshNonce])
-
-  // Why: clear the comment draft when the sheet target changes so the
-  // user doesn't accidentally post one MR's draft against another.
-  useEffect(() => {
-    setCommentDraft('')
-  }, [item?.id])
 
   const handleRefresh = useCallback(() => {
     setRefreshNonce((n) => n + 1)
@@ -274,7 +284,9 @@ export default function GitLabItemDialog({
           ? await window.api.gl.addMRComment({ repoPath, iid: item.number, body })
           : await window.api.gl.addIssueComment({ repoPath, number: item.number, body })
       if (res.ok) {
-        setCommentDraft('')
+        setCommentDraftState((current) =>
+          current.itemId === itemId ? { itemId, value: '' } : current
+        )
         handleRefresh()
       } else {
         toast.error(res.error)
@@ -282,7 +294,7 @@ export default function GitLabItemDialog({
     } finally {
       setCommentSubmitting(false)
     }
-  }, [commentDraft, item, repoPath, handleRefresh])
+  }, [commentDraft, item, itemId, repoPath, handleRefresh])
 
   // Why: GitMerge for MRs visually disambiguates from GitBranch (and
   // matches gitlab.com's MR iconography); CircleDot stays on issues.
@@ -416,7 +428,7 @@ export default function GitLabItemDialog({
               <div className="flex items-end gap-2">
                 <textarea
                   value={commentDraft}
-                  onChange={(e) => setCommentDraft(e.target.value)}
+                  onChange={(e) => updateCommentDraft(e.target.value)}
                   placeholder={`Comment on ${prefix}${item.number}…`}
                   rows={2}
                   disabled={commentSubmitting}
