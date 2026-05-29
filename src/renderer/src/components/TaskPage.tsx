@@ -1286,7 +1286,7 @@ function PRReviewCell({
     () => item.reviewRequests ?? []
   )
   const patchWorkItem = useAppStore((s) => s.patchWorkItem)
-  const [activeReviewerIndex, setActiveReviewerIndex] = useState(0)
+  const [activeReviewerCursor, setActiveReviewerCursor] = useState({ resetKey: '', index: 0 })
   const [submitting, setSubmitting] = useState(false)
   const settings = useAppStore((s) => s.settings)
   const reviewerInputRef = useRef<HTMLInputElement | null>(null)
@@ -1397,9 +1397,24 @@ function PRReviewCell({
     [everyoneElseReviewerRows, suggestedReviewerRows]
   )
 
-  useEffect(() => {
-    setActiveReviewerIndex(0)
-  }, [reviewerQuery, actionableReviewerRows.length])
+  const reviewerCursorResetKey = `${reviewerQuery}\u0000${actionableReviewerRows.length}`
+  if (activeReviewerCursor.resetKey !== reviewerCursorResetKey) {
+    setActiveReviewerCursor({ resetKey: reviewerCursorResetKey, index: 0 })
+  }
+  const activeReviewerIndex =
+    activeReviewerCursor.resetKey === reviewerCursorResetKey ? activeReviewerCursor.index : 0
+  const setActiveReviewerIndex = useCallback(
+    (nextIndex: number | ((current: number) => number)): void => {
+      setActiveReviewerCursor((current) => {
+        const currentIndex = current.resetKey === reviewerCursorResetKey ? current.index : 0
+        return {
+          resetKey: reviewerCursorResetKey,
+          index: typeof nextIndex === 'function' ? nextIndex(currentIndex) : nextIndex
+        }
+      })
+    },
+    [reviewerCursorResetKey]
+  )
 
   if (item.type !== 'pr') {
     return <span className="text-[11px] text-muted-foreground">Issue</span>
