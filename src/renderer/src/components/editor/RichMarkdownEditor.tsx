@@ -56,7 +56,7 @@ import { getRelativePathInsideRoot, normalizeRelativePath } from '@/lib/path'
 import { DiffCommentPopover } from '../diff-comments/DiffCommentPopover'
 import { DiffCommentCard } from '../diff-comments/DiffCommentCard'
 import { isMarkdownComment } from '@/lib/diff-comment-compat'
-import { MessageSquare, Plus, Send } from 'lucide-react'
+import { Check, Copy, MessageSquare, Plus, Send } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -67,6 +67,7 @@ import {
   sortMarkdownReviewNotes,
   type MarkdownReviewNote
 } from '@/lib/markdown-review-notes'
+import { copyMarkdownReviewNotesForAgent } from '@/lib/markdown-review-note-copy'
 import { QuickLaunchAgentMenuItems } from '@/components/tab-bar/QuickLaunchButton'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import {
@@ -561,6 +562,8 @@ export default function RichMarkdownEditor({
     null
   )
   const [reviewRailOpen, setReviewRailOpen] = useState(false)
+  const [reviewNotesCopied, setReviewNotesCopied] = useState(false)
+  const [copiedReviewNoteId, setCopiedReviewNoteId] = useState<string | null>(null)
   const [notePositions, setNotePositions] = useState<RichMarkdownNotePosition[]>([])
   const annotationPopoverRef = useRef<RichMarkdownAnnotationTarget | null>(null)
   const canAnnotateRichMarkdownRef = useRef(false)
@@ -1247,6 +1250,55 @@ export default function RichMarkdownEditor({
     ]
   )
 
+  const handleCopyMarkdownReviewNotes = useCallback(async (): Promise<void> => {
+    try {
+      const copied = await copyMarkdownReviewNotesForAgent({
+        notes: markdownReviewNotes,
+        content: markdownReviewContent,
+        writeClipboardText: window.api.ui.writeClipboardText
+      })
+      if (copied) {
+        setReviewNotesCopied(true)
+      }
+    } catch {
+      // Best-effort clipboard action; failures usually mean the window is not focused.
+    }
+  }, [markdownReviewContent, markdownReviewNotes])
+
+  const handleCopyMarkdownReviewNote = useCallback(
+    async (note: MarkdownReviewNote): Promise<void> => {
+      try {
+        const copied = await copyMarkdownReviewNotesForAgent({
+          notes: [note],
+          content: markdownReviewContent,
+          writeClipboardText: window.api.ui.writeClipboardText
+        })
+        if (copied) {
+          setCopiedReviewNoteId(note.id)
+        }
+      } catch {
+        // Best-effort clipboard action; failures usually mean the window is not focused.
+      }
+    },
+    [markdownReviewContent]
+  )
+
+  useEffect(() => {
+    if (!reviewNotesCopied) {
+      return
+    }
+    const timeout = window.setTimeout(() => setReviewNotesCopied(false), 1600)
+    return () => window.clearTimeout(timeout)
+  }, [reviewNotesCopied])
+
+  useEffect(() => {
+    if (!copiedReviewNoteId) {
+      return
+    }
+    const timeout = window.setTimeout(() => setCopiedReviewNoteId(null), 1600)
+    return () => window.clearTimeout(timeout)
+  }, [copiedReviewNoteId])
+
   const openAnnotationPopover = useCallback((): void => {
     if (!annotationTarget || !canAnnotateRichMarkdown) {
       return
@@ -1566,11 +1618,20 @@ export default function RichMarkdownEditor({
               <MessageSquare className="size-3.5" />
               <span>{markdownComments.length}</span>
             </button>
+            <button
+              type="button"
+              className="rich-markdown-review-rail-action"
+              title={reviewNotesCopied ? 'Copied notes' : 'Copy notes for agent'}
+              aria-label={reviewNotesCopied ? 'Copied notes' : 'Copy notes for agent'}
+              onClick={() => void handleCopyMarkdownReviewNotes()}
+            >
+              {reviewNotesCopied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+            </button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  className="rich-markdown-review-rail-send"
+                  className="rich-markdown-review-rail-action"
                   disabled={unsentMarkdownReviewNotes.length === 0}
                   title={
                     unsentMarkdownReviewNotes.length === 0
@@ -1616,39 +1677,65 @@ export default function RichMarkdownEditor({
                   onSubmitEdit={(body) => updateDiffComment(worktreeId, comment.id, body)}
                   onContentResize={syncNotePositions}
                   headerActions={
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          type="button"
-                          className="rich-markdown-review-note-send"
-                          disabled={Boolean(comment.sentAt)}
-                          title={comment.sentAt ? 'Note already sent' : 'Send note to a new agent'}
-                          aria-label="Send note to a new agent"
-                          onMouseDown={(event) => event.stopPropagation()}
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          <Send className="size-3.5" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="min-w-[180px]">
-                        <QuickLaunchAgentMenuItems
-                          worktreeId={worktreeId}
-                          groupId={worktreeId}
-                          onFocusTerminal={focusTerminalTabSurface}
-                          prompt={formatMarkdownReviewNotes(
-                            [comment as MarkdownReviewNote],
-                            markdownReviewContent
-                          )}
-                          promptDelivery="submit-after-ready"
-                          launchSource="notes_send"
-                          onPromptDelivered={() =>
-                            void clearDeliveredDiffComments(worktreeId, [
-                              comment as MarkdownReviewNote
-                            ])
-                          }
-                        />
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                    <>
+                      <button
+                        type="button"
+                        className="rich-markdown-review-note-action"
+                        title={
+                          copiedReviewNoteId === comment.id ? 'Copied note' : 'Copy note for agent'
+                        }
+                        aria-label={
+                          copiedReviewNoteId === comment.id ? 'Copied note' : 'Copy note for agent'
+                        }
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          void handleCopyMarkdownReviewNote(comment as MarkdownReviewNote)
+                        }}
+                      >
+                        {copiedReviewNoteId === comment.id ? (
+                          <Check className="size-3.5" />
+                        ) : (
+                          <Copy className="size-3.5" />
+                        )}
+                      </button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className="rich-markdown-review-note-action"
+                            disabled={Boolean(comment.sentAt)}
+                            title={
+                              comment.sentAt ? 'Note already sent' : 'Send note to a new agent'
+                            }
+                            aria-label="Send note to a new agent"
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <Send className="size-3.5" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="min-w-[180px]">
+                          <QuickLaunchAgentMenuItems
+                            worktreeId={worktreeId}
+                            groupId={worktreeId}
+                            onFocusTerminal={focusTerminalTabSurface}
+                            prompt={formatMarkdownReviewNotes(
+                              [comment as MarkdownReviewNote],
+                              markdownReviewContent
+                            )}
+                            promptDelivery="submit-after-ready"
+                            launchSource="notes_send"
+                            onPromptDelivered={() =>
+                              void clearDeliveredDiffComments(worktreeId, [
+                                comment as MarkdownReviewNote
+                              ])
+                            }
+                          />
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </>
                   }
                 />
               </div>

@@ -88,7 +88,7 @@
 }
 
 .rich-markdown-review-rail-toggle,
-.rich-markdown-review-rail-send {
+.rich-markdown-review-rail-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -107,20 +107,20 @@
   font-weight: 600;
 }
 
-.rich-markdown-review-rail-send {
+.rich-markdown-review-rail-action {
   width: 26px;
   padding: 0;
 }
 
 .rich-markdown-review-rail-toggle:hover,
 .rich-markdown-review-rail-toggle[aria-expanded='true'],
-.rich-markdown-review-rail-send:hover:not(:disabled) {
+.rich-markdown-review-rail-action:hover:not(:disabled) {
   background: var(--accent);
   color: var(--foreground);
 }
 
-.rich-markdown-review-rail-send:disabled,
-.rich-markdown-review-note-send:disabled {
+.rich-markdown-review-rail-action:disabled,
+.rich-markdown-review-note-action:disabled {
   cursor: default;
   opacity: 0.45;
 }
@@ -142,7 +142,7 @@
   pointer-events: auto;
 }
 
-.rich-markdown-review-note-send {
+.rich-markdown-review-note-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -157,7 +157,7 @@
   z-index: 1;
 }
 
-.rich-markdown-review-note-send:hover:not(:disabled) {
+.rich-markdown-review-note-action:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--foreground) 20%, transparent);
   background: color-mix(in srgb, var(--foreground) 6%, transparent);
   color: var(--foreground);

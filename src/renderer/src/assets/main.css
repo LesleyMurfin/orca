@@ -2413,15 +2413,15 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
   text-decoration: underline;
 }
 
-/* Why: keep edit + delete close together but visually distinct from the meta
-   label. Both share the same subtle button styling; only delete recolours on
-   hover (destructive intent). */
+/* Why: keep copy/edit/delete close together but visually distinct from the
+   meta label. Only delete recolours on hover (destructive intent). */
 .orca-diff-comment-actions {
   display: inline-flex;
   align-items: center;
   gap: 2px;
 }
 
+.orca-diff-comment-copy,
 .orca-diff-comment-edit {
   display: inline-flex;
   align-items: center;
@@ -2437,6 +2437,7 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
   z-index: 1;
 }
 
+.orca-diff-comment-copy:hover,
 .orca-diff-comment-edit:hover {
   color: var(--foreground);
   border-color: color-mix(in srgb, var(--foreground) 20%, transparent);

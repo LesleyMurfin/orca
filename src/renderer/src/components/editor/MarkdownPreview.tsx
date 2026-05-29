@@ -78,6 +78,7 @@ import {
   sortMarkdownReviewNotes,
   type MarkdownReviewNote
 } from '@/lib/markdown-review-notes'
+import { copyMarkdownReviewNotesForAgent } from '@/lib/markdown-review-note-copy'
 import { QuickLaunchAgentMenuItems } from '@/components/tab-bar/QuickLaunchButton'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import { findWorktreeById } from '@/store/slices/worktree-helpers'
@@ -459,14 +460,11 @@ export default function MarkdownPreview({
   const [activeAnnotationBlockKey, setActiveAnnotationBlockKey] = useState<string | null>(null)
   const [reviewPanelOpen, setReviewPanelOpen] = useState(false)
   const [reviewNotesCopied, setReviewNotesCopied] = useState(false)
+  const [copiedReviewNoteId, setCopiedReviewNoteId] = useState<string | null>(null)
   const [activeReviewCommentId, setActiveReviewCommentId] = useState<string | null>(null)
   const markdownReviewNotes = useMemo(
     () => sortMarkdownReviewNotes(markdownComments as MarkdownReviewNote[]),
     [markdownComments]
-  )
-  const markdownReviewPrompt = useMemo(
-    () => formatMarkdownReviewNotes(markdownReviewNotes, renderedContent),
-    [markdownReviewNotes, renderedContent]
   )
   const unsentMarkdownReviewNotes = useMemo(
     () => markdownReviewNotes.filter((note) => !note.sentAt),
@@ -711,16 +709,37 @@ export default function MarkdownPreview({
   }, [closeSearch, isSearchOpen, keybindings, openSearch])
 
   const handleCopyMarkdownReviewNotes = useCallback(async (): Promise<void> => {
-    if (markdownReviewNotes.length === 0) {
-      return
-    }
     try {
-      await window.api.ui.writeClipboardText(markdownReviewPrompt)
-      setReviewNotesCopied(true)
+      const copied = await copyMarkdownReviewNotesForAgent({
+        notes: markdownReviewNotes,
+        content: renderedContent,
+        writeClipboardText: window.api.ui.writeClipboardText
+      })
+      if (copied) {
+        setReviewNotesCopied(true)
+      }
     } catch {
       // Best-effort clipboard action; failures usually mean the window is not focused.
     }
-  }, [markdownReviewNotes.length, markdownReviewPrompt])
+  }, [markdownReviewNotes, renderedContent])
+
+  const handleCopyMarkdownReviewNote = useCallback(
+    async (note: MarkdownReviewNote): Promise<void> => {
+      try {
+        const copied = await copyMarkdownReviewNotesForAgent({
+          notes: [note],
+          content: renderedContent,
+          writeClipboardText: window.api.ui.writeClipboardText
+        })
+        if (copied) {
+          setCopiedReviewNoteId(note.id)
+        }
+      } catch {
+        // Best-effort clipboard action; failures usually mean the window is not focused.
+      }
+    },
+    [renderedContent]
+  )
 
   useEffect(() => {
     if (!reviewNotesCopied) {
@@ -729,6 +748,14 @@ export default function MarkdownPreview({
     const timeout = window.setTimeout(() => setReviewNotesCopied(false), 1600)
     return () => window.clearTimeout(timeout)
   }, [reviewNotesCopied])
+
+  useEffect(() => {
+    if (!copiedReviewNoteId) {
+      return
+    }
+    const timeout = window.setTimeout(() => setCopiedReviewNoteId(null), 1600)
+    return () => window.clearTimeout(timeout)
+  }, [copiedReviewNoteId])
 
   const scrollToReviewNote = useCallback((comment: DiffComment): void => {
     setActiveReviewCommentId(comment.id)
@@ -815,6 +842,30 @@ export default function MarkdownPreview({
                 sentAt={comment.sentAt}
                 onDelete={() => void deleteDiffComment(sourceWorktree.id, comment.id)}
                 onSubmitEdit={(body) => updateDiffComment(sourceWorktree.id, comment.id, body)}
+                headerActions={
+                  <button
+                    type="button"
+                    className="orca-diff-comment-copy"
+                    title={
+                      copiedReviewNoteId === comment.id ? 'Copied note' : 'Copy note for agent'
+                    }
+                    aria-label={
+                      copiedReviewNoteId === comment.id ? 'Copied note' : 'Copy note for agent'
+                    }
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      void handleCopyMarkdownReviewNote(comment as MarkdownReviewNote)
+                    }}
+                  >
+                    {copiedReviewNoteId === comment.id ? (
+                      <Check className="size-3.5" />
+                    ) : (
+                      <Copy className="size-3.5" />
+                    )}
+                  </button>
+                }
               />
             </div>
           ))}
@@ -825,7 +876,9 @@ export default function MarkdownPreview({
       activeAnnotationBlockKey,
       activeReviewCommentId,
       addDiffComment,
+      copiedReviewNoteId,
       deleteDiffComment,
+      handleCopyMarkdownReviewNote,
       markdownAnnotationsEnabled,
       markdownComments,
       sourceRelativePath,
@@ -1483,6 +1536,8 @@ export default function MarkdownPreview({
           copied={reviewNotesCopied}
           onClose={() => setReviewPanelOpen(false)}
           onCopy={() => void handleCopyMarkdownReviewNotes()}
+          copiedNoteId={copiedReviewNoteId}
+          onCopyNote={(note) => void handleCopyMarkdownReviewNote(note)}
           onSelect={scrollToReviewNote}
           onDelete={(id) => void deleteDiffComment(sourceWorktree.id, id)}
           onSubmitEdit={(id, body) => updateDiffComment(sourceWorktree.id, id, body)}
@@ -1509,6 +1564,8 @@ function MarkdownReviewNotesPanel({
   copied,
   onClose,
   onCopy,
+  copiedNoteId,
+  onCopyNote,
   onSelect,
   onDelete,
   onSubmitEdit,
@@ -1522,6 +1579,8 @@ function MarkdownReviewNotesPanel({
   copied: boolean
   onClose: () => void
   onCopy: () => void
+  copiedNoteId: string | null
+  onCopyNote: (note: MarkdownReviewNote) => void
   onSelect: (note: MarkdownReviewNote) => void
   onDelete: (id: string) => void
   onSubmitEdit: (id: string, body: string) => Promise<boolean>
@@ -1612,6 +1671,26 @@ function MarkdownReviewNotesPanel({
                 sentAt={note.sentAt}
                 onDelete={() => onDelete(note.id)}
                 onSubmitEdit={(body) => onSubmitEdit(note.id, body)}
+                headerActions={
+                  <button
+                    type="button"
+                    className="orca-diff-comment-copy"
+                    title={copiedNoteId === note.id ? 'Copied note' : 'Copy note for agent'}
+                    aria-label={copiedNoteId === note.id ? 'Copied note' : 'Copy note for agent'}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      onCopyNote(note)
+                    }}
+                  >
+                    {copiedNoteId === note.id ? (
+                      <Check className="size-3.5" />
+                    ) : (
+                      <Copy className="size-3.5" />
+                    )}
+                  </button>
+                }
               />
             </div>
           ))
