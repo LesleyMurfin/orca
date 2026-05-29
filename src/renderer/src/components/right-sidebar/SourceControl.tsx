@@ -177,6 +177,12 @@ import type { SourceControlAiOperation } from '../../../../shared/source-control
 import { getCommitMessageModelDiscoveryHostKeyForScope } from '../../../../shared/commit-message-host-key'
 import { getRuntimeGitScope } from '@/runtime/runtime-git-client'
 import { getRepositorySourceControlAiSectionId } from '@/components/settings/repository-settings-targets'
+import {
+  getCommitFailureDialogWorktreeKey,
+  shouldShowCommitFailureDialog,
+  syncCommitFailureDialogState,
+  type CommitFailureDialogState
+} from './commit-failure-dialog-state'
 import { hasExpandedCommitFailureDetails, summarizeCommitFailure } from './commit-failure-summary'
 
 export type SourceControlScope = 'all' | 'uncommitted'
@@ -5218,18 +5224,24 @@ export function CommitArea({
         : false,
     [commitError, commitFailureSummary]
   )
-  const commitFailureIdentity = `${worktreeId ?? 'no-worktree'}:${commitError ?? ''}`
-  const [commitFailureDialogState, setCommitFailureDialogState] = useState<{
-    identity: string
-    open: boolean
-  }>({ identity: commitFailureIdentity, open: false })
-  const isCommitFailureDialogOpen =
-    commitFailureDialogState.open && commitFailureDialogState.identity === commitFailureIdentity
+  // Why: the details dialog is scoped to the worktree, not the exact stderr
+  // text, so a retried commit can refresh an open dialog with newer output.
+  const commitFailureWorktreeKey = getCommitFailureDialogWorktreeKey(worktreeId)
+  const [commitFailureDialogState, setCommitFailureDialogState] =
+    useState<CommitFailureDialogState>({
+      worktreeKey: commitFailureWorktreeKey,
+      open: false
+    })
+  const isCommitFailureDialogOpen = shouldShowCommitFailureDialog(
+    commitFailureDialogState,
+    commitFailureWorktreeKey,
+    hasCommitFailureDetails
+  )
   const setCommitFailureDialogOpen = useCallback(
     (open: boolean) => {
-      setCommitFailureDialogState({ identity: commitFailureIdentity, open })
+      setCommitFailureDialogState({ worktreeKey: commitFailureWorktreeKey, open })
     },
-    [commitFailureIdentity]
+    [commitFailureWorktreeKey]
   )
   const handleFixCommitFailureWithAI = useCallback(async (): Promise<boolean> => {
     const launched = await onFixCommitFailureWithAI()
@@ -5244,11 +5256,9 @@ export function CommitArea({
 
   useEffect(() => {
     setCommitFailureDialogState((current) =>
-      current.identity === commitFailureIdentity
-        ? current
-        : { identity: commitFailureIdentity, open: false }
+      syncCommitFailureDialogState(current, commitFailureWorktreeKey, hasCommitFailureDetails)
     )
-  }, [commitFailureIdentity])
+  }, [commitFailureWorktreeKey, hasCommitFailureDetails])
 
   // Why: most primary-kind labels are anchored by a directional icon so
   // the affirmative Commit (✓) reads distinctly from the remote-state
@@ -5500,9 +5510,9 @@ export function CommitArea({
           )}
         </div>
       )}
-      {commitError && commitFailureSummary && (
+      {commitError && commitFailureSummary && hasCommitFailureDetails && (
         <Dialog
-          key={commitFailureIdentity}
+          key={commitFailureWorktreeKey}
           open={isCommitFailureDialogOpen}
           onOpenChange={setCommitFailureDialogOpen}
         >
