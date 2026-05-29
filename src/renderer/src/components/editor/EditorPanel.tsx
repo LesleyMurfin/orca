@@ -50,6 +50,7 @@ function EditorPanelInner({
   const [copiedPathToast, setCopiedPathToast] = useState<{ fileId: string; token: number } | null>(
     null
   )
+  const copiedPathResetTimerRef = useRef<number | null>(null)
   const [showMarkdownTableOfContents, setShowMarkdownTableOfContents] = useState(false)
   const [sideBySide, setSideBySide] = useState(settings?.diffDefaultView === 'side-by-side')
   const [prevDiffView, setPrevDiffView] = useState(settings?.diffDefaultView)
@@ -89,13 +90,6 @@ function EditorPanelInner({
   useEffect(() => acquireExportPdfListener(), [])
   useClosedEditorTabCleanup(openFiles)
   useMarkdownPreviewShortcut({ activeFile, panelRef, openMarkdownPreview })
-  useEffect(() => {
-    if (!copiedPathToast) {
-      return
-    }
-    const timeout = window.setTimeout(() => setCopiedPathToast(null), 1500)
-    return () => window.clearTimeout(timeout)
-  }, [copiedPathToast])
 
   const handleContentChangeForFile = useCallback(
     (file: typeof activeFile, content: string) => {
@@ -181,8 +175,19 @@ function EditorPanelInner({
     }
     try {
       await window.api.ui.writeClipboardText(copyState.copyText)
+      if (copiedPathResetTimerRef.current !== null) {
+        window.clearTimeout(copiedPathResetTimerRef.current)
+      }
       setCopiedPathToast({ fileId: activeFile.id, token: Date.now() })
+      copiedPathResetTimerRef.current = window.setTimeout(() => {
+        setCopiedPathToast(null)
+        copiedPathResetTimerRef.current = null
+      }, 1500)
     } catch {
+      if (copiedPathResetTimerRef.current !== null) {
+        window.clearTimeout(copiedPathResetTimerRef.current)
+        copiedPathResetTimerRef.current = null
+      }
       setCopiedPathToast(null)
     }
   }, [activeFile])
