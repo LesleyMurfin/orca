@@ -89,6 +89,54 @@ function getLinearTaskSourceStatus(
   return checked ? 'not_connected' : 'checking'
 }
 
+type OnboardingStepId = (typeof STEPS)[number]['id']
+
+type SkippedOnboardingPreferenceOptions = {
+  currentStepId: OnboardingStepId
+  themeBeforePreview: GlobalSettings['theme'] | null
+  settingsTheme: GlobalSettings['theme'] | undefined
+  selectedAgent: TuiAgent | null
+  setTheme: (theme: GlobalSettings['theme']) => void
+  applyTheme: (theme: GlobalSettings['theme']) => void
+  updateSettings: (updates: Partial<GlobalSettings>) => Promise<void> | void
+  setError: (message: string | null) => void
+}
+
+export async function prepareSkippedOnboardingPreferences({
+  currentStepId,
+  themeBeforePreview,
+  settingsTheme,
+  selectedAgent,
+  setTheme,
+  applyTheme,
+  updateSettings,
+  setError
+}: SkippedOnboardingPreferenceOptions): Promise<boolean> {
+  try {
+    // Why: theme tiles save immediately for a stable preview, but skip still
+    // means "do not keep this step's choice."
+    if (currentStepId === 'theme') {
+      const themeToRestore = themeBeforePreview ?? settingsTheme
+      if (themeToRestore) {
+        setTheme(themeToRestore)
+        applyTheme(themeToRestore)
+        await updateSettings({ theme: themeToRestore })
+      }
+    }
+    // Why: the repo step seeds folder terminals from saved settings. Preserve
+    // the visible agent choice when optional preferences are skipped.
+    if (currentStepId === 'agent' && selectedAgent) {
+      await updateSettings({ defaultTuiAgent: selectedAgent })
+    }
+    return true
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    setError(message)
+    toast.error('Could not save progress', { description: message })
+    return false
+  }
+}
+
 export function useOnboardingFlow(
   onboarding: OnboardingState,
   onOnboardingChange: (state: OnboardingState) => void,
@@ -935,20 +983,18 @@ export function useOnboardingFlow(
       return
     }
     const durationMs = consumeStepDurationMs()
-    // Why: theme tiles save immediately for a stable preview, but skip still
-    // means "do not keep this step's choice."
-    if (currentStep.id === 'theme') {
-      const themeBeforePreview = themeStepEntryThemeRef.current ?? settings?.theme
-      if (themeBeforePreview) {
-        setTheme(themeBeforePreview)
-        applyDocumentTheme(themeBeforePreview)
-        await updateSettings({ theme: themeBeforePreview })
-      }
-    }
-    // Why: the repo step seeds folder terminals from saved settings. Preserve
-    // the visible agent choice when optional preferences are skipped.
-    if (currentStep.id === 'agent' && selectedAgent) {
-      await updateSettings({ defaultTuiAgent: selectedAgent })
+    const preferencesSaved = await prepareSkippedOnboardingPreferences({
+      currentStepId: currentStep.id,
+      themeBeforePreview: themeStepEntryThemeRef.current,
+      settingsTheme: settings?.theme,
+      selectedAgent,
+      setTheme,
+      applyTheme: applyDocumentTheme,
+      updateSettings,
+      setError
+    })
+    if (!preferencesSaved) {
+      return
     }
     const stepId = currentStep.id
     const stepNumber = currentStep.stepNumber
