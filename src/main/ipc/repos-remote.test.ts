@@ -40,7 +40,9 @@ const {
     exec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' })
   },
   mockFilesystemProvider: {
-    readDir: vi.fn().mockResolvedValue([])
+    readDir: vi.fn().mockResolvedValue([]),
+    readFile: vi.fn().mockRejectedValue(new Error('not found')),
+    stat: vi.fn().mockRejectedValue(new Error('not found'))
   },
   mockMultiplexer: {
     request: vi.fn(),
@@ -135,6 +137,10 @@ describe('projectGroups IPC validation', () => {
     mockStore.getRepos.mockReturnValue([])
     mockFilesystemProvider.readDir.mockReset()
     mockFilesystemProvider.readDir.mockResolvedValue([])
+    mockFilesystemProvider.readFile.mockReset()
+    mockFilesystemProvider.readFile.mockRejectedValue(new Error('not found'))
+    mockFilesystemProvider.stat.mockReset()
+    mockFilesystemProvider.stat.mockRejectedValue(new Error('not found'))
     mockGitProvider.isGitRepoAsync.mockReset()
     mockGitProvider.isGitRepoAsync.mockResolvedValue({ isRepo: true, rootPath: null })
     mockMultiplexer.notify.mockReset()
@@ -167,6 +173,12 @@ describe('projectGroups IPC validation', () => {
       isRepo: path === '/srv/platform/api',
       rootPath: null
     }))
+    mockFilesystemProvider.stat.mockImplementation(async (path: string) => {
+      if (path === '/srv/platform/api/.git') {
+        return { type: 'directory', size: 0, mtime: 0 }
+      }
+      throw new Error('not found')
+    })
     mockFilesystemProvider.readDir.mockImplementation(async (dirPath: string) =>
       dirPath === '/srv/platform' ? [{ name: 'api', isDirectory: true, isSymlink: false }] : []
     )
@@ -195,6 +207,13 @@ describe('projectGroups IPC validation', () => {
       isRepo: gitRepos.has(path),
       rootPath: null
     }))
+    mockFilesystemProvider.stat.mockImplementation(async (path: string) => {
+      const repoPath = path.replace(/\/\.git$/, '')
+      if (path.endsWith('/.git') && gitRepos.has(repoPath)) {
+        return { type: 'directory', size: 0, mtime: 0 }
+      }
+      throw new Error('not found')
+    })
     mockFilesystemProvider.readDir.mockImplementation(async (dirPath: string) => {
       if (dirPath === '/srv/platform') {
         return [
@@ -257,6 +276,12 @@ describe('projectGroups IPC validation', () => {
       isRepo: path === '/srv/platform/api',
       rootPath: null
     }))
+    mockFilesystemProvider.stat.mockImplementation(async (path: string) => {
+      if (path === '/srv/platform/api/.git') {
+        return { type: 'directory', size: 0, mtime: 0 }
+      }
+      throw new Error('not found')
+    })
     mockFilesystemProvider.readDir.mockImplementation(async (dirPath: string) =>
       dirPath === '/srv/platform' ? [{ name: 'api', isDirectory: true, isSymlink: false }] : []
     )
@@ -306,6 +331,13 @@ describe('projectGroups IPC validation', () => {
       isRepo: repoPaths.includes(path),
       rootPath: null
     }))
+    mockFilesystemProvider.stat.mockImplementation(async (path: string) => {
+      const repoPath = path.replace(/\/\.git$/, '')
+      if (path.endsWith('/.git') && repoPaths.includes(repoPath)) {
+        return { type: 'directory', size: 0, mtime: 0 }
+      }
+      throw new Error('not found')
+    })
     mockFilesystemProvider.readDir.mockImplementation(async (dirPath: string) =>
       dirPath === '/srv/platform'
         ? repoPaths.map((repoPath) => ({
@@ -359,6 +391,12 @@ describe('projectGroups IPC validation', () => {
       isRepo: path === '/srv/platform/api',
       rootPath: null
     }))
+    mockFilesystemProvider.stat.mockImplementation(async (path: string) => {
+      if (path === '/srv/platform/api/.git') {
+        return { type: 'directory', size: 0, mtime: 0 }
+      }
+      throw new Error('not found')
+    })
     mockFilesystemProvider.readDir.mockImplementation(async (dirPath: string) =>
       dirPath === '/srv/platform' ? [{ name: 'api', isDirectory: true, isSymlink: false }] : []
     )

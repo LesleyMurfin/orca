@@ -16,6 +16,31 @@ async function makeGitRepo(path: string): Promise<void> {
   await mkdir(join(path, '.git'), { recursive: true })
 }
 
+function posixTestFilesystem(args: {
+  directories: Map<string, string[]>
+  gitRepos: Set<string>
+  files?: Map<string, string>
+}) {
+  return {
+    readDirectory: async (dirPath: string) =>
+      (args.directories.get(dirPath) ?? []).map((name) => ({
+        name,
+        isDirectory: !args.files?.has(`${dirPath}/${name}`)
+      })),
+    readTextFile: async (path: string) => {
+      const content = args.files?.get(path)
+      if (content === undefined) {
+        throw new Error('not found')
+      }
+      return content
+    },
+    joinPath: (parentPath: string, childName: string) => `${parentPath}/${childName}`,
+    basename: (path: string) => path.split('/').at(-1) ?? path,
+    hasGitMarker: (path: string) => args.gitRepos.has(path),
+    isSelectedPathGitRepo: (path: string) => args.gitRepos.has(path)
+  }
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })))
   tempDirs = []
@@ -71,13 +96,7 @@ describe('scanNestedRepos', () => {
     const result = await scanNestedRepos({
       path: '/workspace',
       options: { maxRepos: 100 },
-      filesystem: {
-        readDirectory: async (dirPath) =>
-          (directories.get(dirPath) ?? []).map((name) => ({ name, isDirectory: true })),
-        joinPath: (parentPath, childName) => `${parentPath}/${childName}`,
-        basename: (path) => path.split('/').at(-1) ?? path,
-        isGitRepoPath: (path) => gitRepos.has(path)
-      }
+      filesystem: posixTestFilesystem({ directories, gitRepos })
     })
 
     expect(result.repos).toHaveLength(100)
@@ -106,13 +125,11 @@ describe('scanNestedRepos', () => {
     const result = await scanNestedRepos({
       path: '/workspace',
       filesystem: {
+        ...posixTestFilesystem({ directories, gitRepos }),
         readDirectory: async (dirPath) => {
           readOrder.push(dirPath)
           return (directories.get(dirPath) ?? []).map((name) => ({ name, isDirectory: true }))
-        },
-        joinPath: (parentPath, childName) => `${parentPath}/${childName}`,
-        basename: (path) => path.split('/').at(-1) ?? path,
-        isGitRepoPath: (path) => gitRepos.has(path)
+        }
       }
     })
 
@@ -131,6 +148,46 @@ describe('scanNestedRepos', () => {
       '/workspace/alpha-folder/alpha-nested/a-alpha-grandchild'
     ])
     expect(result.repos.map((repo) => repo.depth)).toEqual([1, 1, 2, 2, 2, 3])
+  })
+
+  it('uses gitignore rules to avoid scanning ignored directories', async () => {
+    const directories = new Map([
+      ['/workspace', ['.gitignore', 'active', 'ignored']],
+      ['/workspace/active', ['repo']],
+      ['/workspace/ignored', ['repo']]
+    ])
+    const files = new Map([['/workspace/.gitignore', 'ignored/\n']])
+    const gitRepos = new Set(['/workspace/active/repo', '/workspace/ignored/repo'])
+
+    const result = await scanNestedRepos({
+      path: '/workspace',
+      filesystem: posixTestFilesystem({ directories, gitRepos, files })
+    })
+
+    expect(result.repos.map((repo) => repo.path)).toEqual(['/workspace/active/repo'])
+  })
+
+  it('does not use selected-path git checks while traversing children', async () => {
+    const directories = new Map([
+      ['/workspace', ['repo']],
+      ['/workspace/repo', []]
+    ])
+    const gitRepos = new Set(['/workspace/repo'])
+    const selectedPathChecks: string[] = []
+
+    const result = await scanNestedRepos({
+      path: '/workspace',
+      filesystem: {
+        ...posixTestFilesystem({ directories, gitRepos }),
+        isSelectedPathGitRepo: (path) => {
+          selectedPathChecks.push(path)
+          return false
+        }
+      }
+    })
+
+    expect(result.repos.map((repo) => repo.path)).toEqual(['/workspace/repo'])
+    expect(selectedPathChecks).toEqual(['/workspace'])
   })
 
   it('skips heavy directories and respects result caps', async () => {

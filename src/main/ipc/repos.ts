@@ -288,11 +288,21 @@ async function scanNestedReposForIpc(args: {
       readDirectory: async (dirPath) =>
         (await fsProvider.readDir(dirPath)).map((entry) => ({
           name: entry.name,
-          isDirectory: entry.isDirectory
+          isDirectory: entry.isDirectory,
+          isFile: !entry.isDirectory && !entry.isSymlink
         })),
+      readTextFile: async (filePath) => (await fsProvider.readFile(filePath)).content,
       joinPath: (parentPath, childName) => posix.join(parentPath, childName),
       basename: (path) => posix.basename(path),
-      isGitRepoPath: async (path) => {
+      hasGitMarker: async (path) => {
+        try {
+          const marker = await fsProvider.stat(posix.join(path, '.git'))
+          return marker.type === 'directory' || marker.type === 'file'
+        } catch {
+          return false
+        }
+      },
+      isSelectedPathGitRepo: async (path) => {
         try {
           return (await gitProvider.isGitRepoAsync(path)).isRepo
         } catch {

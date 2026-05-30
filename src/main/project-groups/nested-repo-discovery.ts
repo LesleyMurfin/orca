@@ -1,4 +1,4 @@
-import { readdir, stat } from 'fs/promises'
+import { readFile, readdir, stat } from 'fs/promises'
 import { basename, join } from 'path'
 import type {
   NestedRepoCandidate,
@@ -10,13 +10,30 @@ import { isGitRepo } from '../git/repo'
 type NestedRepoDirectoryEntry = {
   name: string
   isDirectory: boolean
+  isFile?: boolean
 }
 
 type NestedRepoScanFilesystem = {
   readDirectory: (dirPath: string) => Promise<NestedRepoDirectoryEntry[]>
+  readTextFile?: (filePath: string) => Promise<string>
   joinPath: (parentPath: string, childName: string) => string
   basename: (path: string) => string
-  isGitRepoPath: (path: string) => Promise<boolean> | boolean
+  hasGitMarker: (path: string) => Promise<boolean> | boolean
+  isSelectedPathGitRepo: (path: string) => Promise<boolean> | boolean
+}
+
+type IgnoreRule = {
+  pattern: string
+  negate: boolean
+  basenameOnly: boolean
+  baseSegments: string[]
+}
+
+type TraversalFolder = {
+  path: string
+  depth: number
+  segments: string[]
+  ignoreRules: IgnoreRule[]
 }
 
 const DEFAULT_MAX_DEPTH = 3
@@ -34,6 +51,8 @@ const SKIPPED_DIRS = new Set([
   '.turbo',
   '.parcel-cache'
 ])
+
+const VCS_METADATA_DIRS = new Set(['.git', '.svn', '.hg', '.jj', '.sl', '.repo', 'CVS'])
 
 function normalizeScanOptions(options: unknown): Required<NestedRepoScanOptions> {
   const raw = options && typeof options === 'object' ? (options as NestedRepoScanOptions) : {}
@@ -54,10 +73,86 @@ function normalizeScanOptions(options: unknown): Required<NestedRepoScanOptions>
 }
 
 function shouldSkipDirectory(name: string, depth: number): boolean {
+  if (VCS_METADATA_DIRS.has(name)) {
+    return true
+  }
   if (SKIPPED_DIRS.has(name)) {
     return true
   }
   return depth > 0 && name.startsWith('.')
+}
+
+function globSegmentMatches(pattern: string, value: string): boolean {
+  if (!pattern.includes('*') && !pattern.includes('?')) {
+    return pattern === value
+  }
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+  const regex = new RegExp(`^${escaped.replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')}$`)
+  return regex.test(value)
+}
+
+function pathSegmentsMatch(patternSegments: string[], candidateSegments: string[]): boolean {
+  if (patternSegments.length !== candidateSegments.length) {
+    return false
+  }
+  return patternSegments.every((segment, index) =>
+    globSegmentMatches(segment, candidateSegments[index] ?? '')
+  )
+}
+
+function parseGitignoreRules(content: string, baseSegments: string[]): IgnoreRule[] {
+  return content
+    .split(/\r?\n/)
+    .map((rawLine) => rawLine.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#'))
+    .map((line) => {
+      const negate = line.startsWith('!')
+      const unprefixed = negate ? line.slice(1) : line
+      const pattern = unprefixed.replace(/^\/+/, '').replace(/\/+$/, '')
+      return {
+        pattern,
+        negate,
+        basenameOnly: !pattern.includes('/'),
+        baseSegments
+      }
+    })
+    .filter((rule) => rule.pattern.length > 0)
+}
+
+function isIgnoredByRules(name: string, segments: string[], rules: IgnoreRule[]): boolean {
+  let ignored = false
+  for (const rule of rules) {
+    if (segments.length <= rule.baseSegments.length) {
+      continue
+    }
+    const relativeSegments = segments.slice(rule.baseSegments.length)
+    const matches = rule.basenameOnly
+      ? relativeSegments.some((segment) => globSegmentMatches(rule.pattern, segment))
+      : pathSegmentsMatch(rule.pattern.split('/'), relativeSegments)
+    if (matches) {
+      ignored = !rule.negate
+    }
+  }
+  return ignored || shouldSkipDirectory(name, segments.length - 1)
+}
+
+async function readGitignoreRules(args: {
+  folderPath: string
+  entries: NestedRepoDirectoryEntry[]
+  filesystem: NestedRepoScanFilesystem
+  baseSegments: string[]
+}): Promise<IgnoreRule[]> {
+  if (!args.filesystem.readTextFile || !args.entries.some((entry) => entry.name === '.gitignore')) {
+    return []
+  }
+  try {
+    const content = await args.filesystem.readTextFile(
+      args.filesystem.joinPath(args.folderPath, '.gitignore')
+    )
+    return parseGitignoreRules(content, args.baseSegments)
+  } catch {
+    return []
+  }
 }
 
 async function hasGitMarker(dirPath: string): Promise<boolean> {
@@ -74,7 +169,11 @@ async function readLocalDirectory(dirPath: string): Promise<NestedRepoDirectoryE
   const result: NestedRepoDirectoryEntry[] = []
   for (const name of entries) {
     const childStat = await stat(join(dirPath, name)).catch(() => null)
-    result.push({ name, isDirectory: childStat?.isDirectory() === true })
+    result.push({
+      name,
+      isDirectory: childStat?.isDirectory() === true,
+      isFile: childStat?.isFile() === true
+    })
   }
   return result
 }
@@ -91,12 +190,14 @@ export async function scanNestedRepos(args: {
   let timedOut = false
   const filesystem = args.filesystem ?? {
     readDirectory: readLocalDirectory,
+    readTextFile: (path: string) => readFile(path, 'utf8'),
     joinPath: join,
     basename,
-    isGitRepoPath: async (path: string) => isGitRepo(path) || (await hasGitMarker(path))
+    hasGitMarker,
+    isSelectedPathGitRepo: async (path: string) => isGitRepo(path) || (await hasGitMarker(path))
   }
 
-  if (await filesystem.isGitRepoPath(args.path)) {
+  if (await filesystem.isSelectedPathGitRepo(args.path)) {
     return {
       selectedPath: args.path,
       selectedPathKind: 'git_repo',
@@ -108,7 +209,9 @@ export async function scanNestedRepos(args: {
     }
   }
 
-  const foldersToTraverse = [{ path: args.path, depth: 0 }]
+  const foldersToTraverse: TraversalFolder[] = [
+    { path: args.path, depth: 0, segments: [], ignoreRules: [] }
+  ]
   let nextFolderIndex = 0
 
   while (nextFolderIndex < foldersToTraverse.length) {
@@ -131,6 +234,15 @@ export async function scanNestedRepos(args: {
     } catch {
       continue
     }
+    const currentIgnoreRules = [
+      ...currentFolder.ignoreRules,
+      ...(await readGitignoreRules({
+        folderPath: currentFolder.path,
+        entries,
+        filesystem,
+        baseSegments: currentFolder.segments
+      }))
+    ]
 
     const dirs = entries
       .filter((entry) => entry.isDirectory)
@@ -145,11 +257,14 @@ export async function scanNestedRepos(args: {
         timedOut = true
         break
       }
-      if (shouldSkipDirectory(name, currentFolder.depth)) {
+      const childSegments = [...currentFolder.segments, name]
+      if (isIgnoredByRules(name, childSegments, currentIgnoreRules)) {
         continue
       }
       const childPath = filesystem.joinPath(currentFolder.path, name)
-      if (await filesystem.isGitRepoPath(childPath)) {
+      // Why: broad scans should use cheap filesystem markers instead of
+      // spawning Git for every candidate directory, especially over SSH.
+      if (await filesystem.hasGitMarker(childPath)) {
         repos.push({
           path: childPath,
           displayName: filesystem.basename(childPath),
@@ -162,7 +277,12 @@ export async function scanNestedRepos(args: {
       // Why: group import should prefer nearby sibling repos over spending the
       // bounded scan inside an alphabetically early, deeply nested folder.
       if (currentFolder.depth < options.maxDepth) {
-        foldersToTraverse.push({ path: childPath, depth: currentFolder.depth + 1 })
+        foldersToTraverse.push({
+          path: childPath,
+          depth: currentFolder.depth + 1,
+          segments: childSegments,
+          ignoreRules: currentIgnoreRules
+        })
       }
     }
   }
