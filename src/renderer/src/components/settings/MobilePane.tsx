@@ -53,6 +53,7 @@ export function MobilePane(): React.JSX.Element {
   const [refreshingNetworkInterfaces, setRefreshingNetworkInterfaces] = useState(false)
   const [codeCopied, setCodeCopied] = useState(false)
   const [deviceCountAtQr, setDeviceCountAtQr] = useState<number | null>(null)
+  const devicesRef = useRef<PairedDevice[]>([])
   const codeCopiedResetTimerRef = useRef<number | null>(null)
   // Why: clipboard IPC can resolve after settings navigation; avoid starting
   // a reset timer that will outlive this pane.
@@ -78,6 +79,7 @@ export function MobilePane(): React.JSX.Element {
   const loadDevices = useCallback(async () => {
     try {
       const result = await window.api.mobile.listDevices()
+      devicesRef.current = result.devices
       setDevices(result.devices)
     } catch {
       // Silently fail — device list is non-critical
@@ -117,9 +119,10 @@ export function MobilePane(): React.JSX.Element {
           setQrDataUrl(result.qrDataUrl)
           setPairingUrl(result.pairingUrl)
           setEndpoint(result.endpoint)
-          // Why: polling needs the device count from the moment this QR was minted,
-          // not a later count after `loadDevices` refreshes the paired-device list.
-          setDeviceCountAtQr(devices.length)
+          // Why: async QR generation may overlap a device-list refresh; use
+          // the latest committed list, then keep this baseline ahead of the
+          // post-QR refresh below.
+          setDeviceCountAtQr(devicesRef.current.length)
           clearCodeCopiedResetTimer()
           setCodeCopied(false)
           void loadDevices()
@@ -132,7 +135,7 @@ export function MobilePane(): React.JSX.Element {
         setLoading(false)
       }
     },
-    [clearCodeCopiedResetTimer, devices.length, loadDevices, selectedAddress]
+    [clearCodeCopiedResetTimer, loadDevices, selectedAddress]
   )
 
   useEffect(() => {
@@ -172,7 +175,11 @@ export function MobilePane(): React.JSX.Element {
   async function revokeDevice(deviceId: string) {
     try {
       await window.api.mobile.revokeDevice({ deviceId })
-      setDevices((prev) => prev.filter((d) => d.deviceId !== deviceId))
+      setDevices((prev) => {
+        const nextDevices = prev.filter((d) => d.deviceId !== deviceId)
+        devicesRef.current = nextDevices
+        return nextDevices
+      })
       toast.success('Device revoked')
     } catch {
       toast.error('Failed to revoke device')
