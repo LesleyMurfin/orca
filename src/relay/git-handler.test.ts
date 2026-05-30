@@ -442,6 +442,18 @@ describe('GitHandler', () => {
       expect(result.originalContent).toBe('original')
       expect(result.modifiedContent).toBe('modified')
     })
+
+    it('rejects diff paths that traverse outside the worktree', async () => {
+      gitInit(tmpDir)
+
+      await expect(
+        dispatcher.callRequest('git.diff', {
+          worktreePath: tmpDir,
+          filePath: '../outside.txt',
+          staged: false
+        })
+      ).rejects.toThrow('outside the worktree')
+    })
   })
 
   describe('discard', () => {
