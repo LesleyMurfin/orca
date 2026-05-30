@@ -29,15 +29,17 @@ function parseFilePathTrailingLineTarget(filePath: string): TerminalFileUrlTarge
 }
 
 export function resolveTerminalFileUrlTarget(parsed: URL): TerminalFileUrlTarget | null {
+  const decodedPathname = decodeURIComponent(parsed.pathname)
+  let filePath: string
   if (parsed.hostname && parsed.hostname !== 'localhost') {
-    return null
-  }
-
-  let filePath = decodeURIComponent(parsed.pathname)
-  // Why: on Windows, file:///C:/foo yields pathname "/C:/foo". The leading
-  // slash must be stripped to produce a valid Windows path ("C:/foo").
-  if (/^\/[A-Za-z]:/.test(filePath)) {
-    filePath = filePath.slice(1)
+    // Why: file://server/share/path is the URL form of a Windows UNC path.
+    filePath = `//${parsed.hostname}${decodedPathname}`
+  } else if (/^\/[A-Za-z]:/.test(decodedPathname)) {
+    // Why: on Windows, file:///C:/foo yields pathname "/C:/foo". The leading
+    // slash must be stripped to produce a valid Windows path ("C:/foo").
+    filePath = decodedPathname.slice(1)
+  } else {
+    filePath = decodedPathname
   }
 
   const hashTarget = parseFileUrlLineHash(parsed.hash)
