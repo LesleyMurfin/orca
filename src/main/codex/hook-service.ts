@@ -491,7 +491,11 @@ function cleanupLegacySystemManagedHooks(): void {
       definitions,
       isManagedCommand
     )
-    trustEntries.push(...eventTrustEntries)
+    // Why: generated hooks.json files can contain enough legacy entries to
+    // exceed V8's argument limit if these rows are spread into push().
+    for (const entry of eventTrustEntries) {
+      trustEntries.push(entry)
+    }
     const cleaned = removeManagedCommands(definitions, isManagedCommand)
     removedManagedHook ||= definitions.some((definition) =>
       hookDefinitionHasManagedCommand(definition, isManagedCommand)
