@@ -61,7 +61,15 @@ function flushPanePtyResizeHold(paneElement: HTMLElement): void {
 }
 
 function cancelPanePtyResizeHold(paneElement: HTMLElement): void {
-  resizeHolds.delete(paneElement)
+  const state = resizeHolds.get(paneElement)
+  if (!state) {
+    return
+  }
+  state.depth -= 1
+  state.pending = null
+  if (state.depth <= 0) {
+    resizeHolds.delete(paneElement)
+  }
 }
 
 function collectPaneElements(root: HTMLElement | null, panes: Set<HTMLElement>): void {

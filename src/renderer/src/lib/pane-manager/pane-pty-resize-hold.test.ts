@@ -79,4 +79,24 @@ describe('pane PTY resize hold', () => {
     expect(pane.dispatched).toHaveLength(0)
     expect(queuePanePtyResizeIfHeld(pane as unknown as HTMLElement, 120, 30)).toBe(false)
   })
+
+  it('keeps an outer hold active when an overlapping hold is cancelled', () => {
+    globalThis.CustomEvent = MockCustomEvent as unknown as typeof CustomEvent
+    const pane = new MockElement(['pane'])
+
+    const outer = holdPtyResizesForPaneSubtrees([pane as unknown as HTMLElement])
+    const inner = holdPtyResizesForPaneSubtrees([pane as unknown as HTMLElement])
+    expect(queuePanePtyResizeIfHeld(pane as unknown as HTMLElement, 100, 30)).toBe(true)
+
+    inner.cancel()
+
+    expect(pane.dispatched).toHaveLength(0)
+    expect(queuePanePtyResizeIfHeld(pane as unknown as HTMLElement, 120, 32)).toBe(true)
+
+    outer.flush()
+
+    expect(pane.dispatched).toHaveLength(1)
+    expect((pane.dispatched[0] as CustomEvent).detail).toEqual({ cols: 120, rows: 32 })
+    expect(queuePanePtyResizeIfHeld(pane as unknown as HTMLElement, 130, 32)).toBe(false)
+  })
 })
