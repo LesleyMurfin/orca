@@ -148,14 +148,23 @@ export function DiffSectionItem({
       }
     }, 0)
   }, [modelPathBase])
+  const disposeDiffModelsRef = useRef(disposeDiffModels)
+  disposeDiffModelsRef.current = disposeDiffModels
+
+  const setSectionRootNode = useCallback((node: HTMLDivElement | null): void => {
+    if (node) {
+      return
+    }
+    // Why: virtualized diff rows remount as their keyed section/collapse state
+    // changes; the row root is the owner of the detached Monaco models.
+    disposeDiffModelsRef.current()
+  }, [])
 
   useEffect(() => {
     if (section.collapsed) {
       disposeDiffModels()
     }
   }, [disposeDiffModels, section.collapsed])
-
-  useEffect(() => () => disposeDiffModels(), [disposeDiffModels])
 
   // Why: only forward the pending scroll id when it matches a comment in this
   // section so unrelated sections don't keep re-rendering their decorator
@@ -418,7 +427,7 @@ export function DiffSectionItem({
   }, [index, loadSection])
 
   return (
-    <div className="border-b border-border">
+    <div ref={setSectionRootNode} className="border-b border-border">
       <DiffSectionHeader
         path={section.path}
         dirty={section.dirty}
