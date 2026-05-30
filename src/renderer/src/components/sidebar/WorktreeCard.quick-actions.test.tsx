@@ -2,11 +2,16 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import type { ReactNode } from 'react'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GlobalSettings, Repo, Worktree, WorktreeCardProperty } from '../../../../shared/types'
+import type { WorkspacePortScanResult } from '../../../../shared/workspace-ports'
 import type WorktreeCardComponent from './WorktreeCard'
+import { branchDisplayName, shouldShowWorktreeBranchLabel } from './WorktreeCardHelpers'
 import type * as WorkspaceDeleteQuickAction from './workspace-delete-quick-action'
 
 const fetchHostedReviewForBranch = vi.fn()
 const fetchIssue = vi.fn()
+const recordFeatureInteraction = vi.fn()
+const setWorkspacePortScan = vi.fn()
+const setWorkspacePortScanRefreshing = vi.fn()
 const openModal = vi.fn()
 const updateWorktreeMeta = vi.fn()
 
@@ -15,6 +20,7 @@ let tabsByWorktree: Record<string, { id: string }[]> = {}
 let ptyIdsByTabId: Record<string, string[]> = {}
 let browserTabsByWorktree: Record<string, { id: string }[]> = {}
 let settings: Partial<GlobalSettings> | null = null
+let workspacePortScan: WorkspacePortScanResult | null = null
 let workspaceDeleteModifierPressed = false
 let WorktreeCard: typeof WorktreeCardComponent
 
@@ -28,10 +34,14 @@ vi.mock('@/store', () => ({
       hostedReviewCache: {},
       issueCache: {},
       openModal,
+      recordFeatureInteraction,
       remoteBranchConflictByWorktreeId: {},
       settings,
+      setWorkspacePortScan,
+      setWorkspacePortScanRefreshing,
       sshConnectionStates: new Map(),
       sshTargetLabels: new Map(),
+      workspacePortScan: workspacePortScan ? { key: 'test-scan', result: workspacePortScan } : null,
       browserTabsByWorktree,
       ptyIdsByTabId,
       tabsByWorktree,
@@ -115,6 +125,24 @@ function makeWorktree(overrides: Partial<Worktree> = {}): Worktree {
   }
 }
 
+describe('worktree branch label helpers', () => {
+  it('normalizes full refs/heads branch labels for display', () => {
+    expect(branchDisplayName('refs/heads/feature/hide-branch')).toBe('feature/hide-branch')
+    expect(branchDisplayName('refs/heads/')).toBe('')
+  })
+
+  it('hides blank and trim-only duplicate branch labels', () => {
+    expect(shouldShowWorktreeBranchLabel('', 'workspace')).toBe(false)
+    expect(shouldShowWorktreeBranchLabel('   ', 'workspace')).toBe(false)
+    expect(shouldShowWorktreeBranchLabel('quick-action', ' quick-action ')).toBe(false)
+  })
+
+  it('shows case-only differences and custom workspace titles', () => {
+    expect(shouldShowWorktreeBranchLabel('quick-action', 'Quick-action')).toBe(true)
+    expect(shouldShowWorktreeBranchLabel('quick-action', 'Custom workspace')).toBe(true)
+  })
+})
+
 describe('WorktreeCard quick actions', () => {
   beforeAll(async () => {
     WorktreeCard = (await import('./WorktreeCard')).default
@@ -127,6 +155,7 @@ describe('WorktreeCard quick actions', () => {
     ptyIdsByTabId = {}
     browserTabsByWorktree = {}
     settings = null
+    workspacePortScan = null
     workspaceDeleteModifierPressed = false
   })
 
@@ -139,12 +168,12 @@ describe('WorktreeCard quick actions', () => {
     expect(markup).toContain('data-workspace-board-preserve-open=""')
   })
 
-  it('keeps the branch row by default when it repeats the workspace title', () => {
+  it('hides the repeated branch row by default when it repeats the workspace title', () => {
     worktreeCardProperties = []
 
     const markup = renderToStaticMarkup(
       <WorktreeCard
-        worktree={makeWorktree({ displayName: 'quick-action', branch: 'quick-action' })}
+        worktree={makeWorktree({ displayName: 'quick-action', branch: 'refs/heads/quick-action' })}
         repo={makeRepo()}
         isActive={false}
         hideRepoBadge
@@ -152,18 +181,17 @@ describe('WorktreeCard quick actions', () => {
     )
 
     expect(markup).toContain('quick-action')
-    expect(markup).toContain('text-[11px] text-muted-foreground truncate leading-none')
-    expect(markup).toContain('data-worktree-card-meta-row=""')
+    expect(markup).not.toContain('text-[11px] text-muted-foreground truncate leading-none')
+    expect(markup).not.toContain('data-worktree-card-meta-row=""')
     expect(markup).toContain('tabindex="0"')
   })
 
-  it('hides the repeated branch row only when compact cards are enabled', () => {
+  it('hides the repeated branch row when the title only differs by whitespace', () => {
     worktreeCardProperties = []
-    settings = { experimentalCompactWorktreeCards: true }
 
     const markup = renderToStaticMarkup(
       <WorktreeCard
-        worktree={makeWorktree({ displayName: 'quick-action', branch: 'quick-action' })}
+        worktree={makeWorktree({ displayName: ' quick-action ', branch: 'quick-action' })}
         repo={makeRepo()}
         isActive={false}
         hideRepoBadge
@@ -174,9 +202,42 @@ describe('WorktreeCard quick actions', () => {
     expect(markup).toContain('tabindex="0"')
   })
 
+  it('does not render an empty branch metadata row', () => {
+    worktreeCardProperties = []
+
+    const markup = renderToStaticMarkup(
+      <WorktreeCard
+        worktree={makeWorktree({ displayName: 'detached workspace', branch: 'refs/heads/' })}
+        repo={makeRepo()}
+        isActive={false}
+        hideRepoBadge
+      />
+    )
+
+    expect(markup).toContain('detached workspace')
+    expect(markup).not.toContain('text-[11px] text-muted-foreground truncate leading-none')
+    expect(markup).not.toContain('data-worktree-card-meta-row=""')
+  })
+
+  it('keeps the folder badge instead of branch text for folder repositories', () => {
+    worktreeCardProperties = []
+
+    const markup = renderToStaticMarkup(
+      <WorktreeCard
+        worktree={makeWorktree({ displayName: 'folder workspace', branch: 'folder workspace' })}
+        repo={{ ...makeRepo(), kind: 'folder' }}
+        isActive={false}
+        hideRepoBadge
+      />
+    )
+
+    expect(markup).toContain('Folder')
+    expect(markup).toContain('data-worktree-card-meta-row=""')
+    expect(markup).not.toContain('text-[11px] text-muted-foreground truncate leading-none')
+  })
+
   it('keeps the branch row when the workspace has a custom title', () => {
     worktreeCardProperties = []
-    settings = { experimentalCompactWorktreeCards: true }
 
     const markup = renderToStaticMarkup(
       <WorktreeCard
@@ -188,6 +249,24 @@ describe('WorktreeCard quick actions', () => {
     )
 
     expect(markup).toContain('Custom workspace')
+    expect(markup).toContain('quick-action')
+    expect(markup).toContain('data-worktree-card-meta-row=""')
+    expect(markup).toContain('text-[11px] text-muted-foreground truncate leading-none')
+  })
+
+  it('keeps the branch row when case differs from the workspace title', () => {
+    worktreeCardProperties = []
+
+    const markup = renderToStaticMarkup(
+      <WorktreeCard
+        worktree={makeWorktree({ displayName: 'Quick-action', branch: 'quick-action' })}
+        repo={makeRepo()}
+        isActive={false}
+        hideRepoBadge
+      />
+    )
+
+    expect(markup).toContain('Quick-action')
     expect(markup).toContain('quick-action')
     expect(markup).toContain('data-worktree-card-meta-row=""')
     expect(markup).toContain('text-[11px] text-muted-foreground truncate leading-none')
@@ -211,7 +290,64 @@ describe('WorktreeCard quick actions', () => {
 
     expect(markup).toContain('primary')
     expect(markup).not.toContain('aria-label="Primary worktree"')
+    expect(markup).not.toContain('data-worktree-card-meta-row=""')
+  })
+
+  it('keeps the non-compact metadata row for details after hiding a duplicate branch', () => {
+    worktreeCardProperties = ['comment']
+
+    const markup = renderToStaticMarkup(
+      <WorktreeCard
+        worktree={makeWorktree({
+          displayName: 'quick-action',
+          branch: 'quick-action',
+          comment: 'Needs follow-up'
+        })}
+        repo={makeRepo()}
+        isActive={false}
+        hideRepoBadge
+      />
+    )
+
     expect(markup).toContain('data-worktree-card-meta-row=""')
+    expect(markup).toContain('aria-label="Workspace metadata"')
+    expect(markup).not.toContain('text-[11px] text-muted-foreground truncate leading-none')
+  })
+
+  it('keeps the non-compact metadata row for ports after hiding a duplicate branch', () => {
+    worktreeCardProperties = ['ports']
+    const worktree = makeWorktree({ displayName: 'quick-action', branch: 'quick-action' })
+    workspacePortScan = {
+      platform: 'unknown',
+      scannedAt: 1,
+      ports: [
+        {
+          id: 'port-1',
+          kind: 'workspace',
+          bindHost: '127.0.0.1',
+          connectHost: '127.0.0.1',
+          port: 5173,
+          pid: 1234,
+          processName: 'vite',
+          protocol: 'http',
+          owner: {
+            worktreeId: worktree.id,
+            repoId: worktree.repoId,
+            displayName: worktree.displayName,
+            path: worktree.path,
+            confidence: 'cwd'
+          }
+        }
+      ]
+    }
+
+    const markup = renderToStaticMarkup(
+      <WorktreeCard worktree={worktree} repo={makeRepo()} isActive={false} hideRepoBadge />
+    )
+
+    expect(markup).toContain('data-worktree-card-meta-row=""')
+    expect(markup).toContain('aria-label="1 live port"')
+    expect(markup).not.toContain('text-[11px] text-muted-foreground truncate leading-none')
   })
 
   it('moves unread and primary into the title row when compact cards are enabled', () => {

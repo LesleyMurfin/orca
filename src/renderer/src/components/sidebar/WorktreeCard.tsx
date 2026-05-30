@@ -33,7 +33,12 @@ import type {
   IssueInfo,
   LinearIssue
 } from '../../../../shared/types'
-import { branchDisplayName, CONFLICT_OPERATION_LABELS, FilledBellIcon } from './WorktreeCardHelpers'
+import {
+  branchDisplayName,
+  CONFLICT_OPERATION_LABELS,
+  FilledBellIcon,
+  shouldShowWorktreeBranchLabel
+} from './WorktreeCardHelpers'
 import {
   WorktreeCardDetailsHover,
   WorktreeCardMetaBadges,
@@ -185,9 +190,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
 
   const branch = branchDisplayName(worktree.branch)
   const isFolder = repo ? isFolderRepo(repo) : false
-  // Why: compact cards are experimental because mixed card heights can be
-  // surprising; the default keeps the explicit branch row visible.
-  const showBranch = !isFolder && (!compactCards || branch !== worktree.displayName)
+  const showBranch = !isFolder && shouldShowWorktreeBranchLabel(branch, worktree.displayName)
   const hostedReviewCacheKey =
     repo && branch
       ? getHostedReviewCacheKey(repo.path, branch, settings, repo.id, repo.connectionId)
@@ -558,15 +561,13 @@ const WorktreeCard = React.memo(function WorktreeCard({
     (!!repo && !hideRepoBadge) ||
     isFolder ||
     (!!conflictOperation && conflictOperation !== 'unknown')
-  // Why: disabled mode intentionally restores the explicit metadata lane; only
-  // the experimental path removes the row when it would add no visible content.
-  const hasMetaRow = !compactCards || hasMetadataBadge || showBranch || cacheStartedAt != null
   const showUnreadQuickAction = cardProps.includes('unread')
   const showTitleRowUnread = compactCards && showUnreadQuickAction
   const showLeftUnread = !compactCards && showUnreadQuickAction
   const showTitleRowPrimary = compactCards && worktree.isMainWorktree && !isFolder
   const showTitleRowDetails = compactCards && (hasDetails || hasPorts)
   const showMetaRowDetails = !compactCards && (hasDetails || hasPorts)
+  const hasMetaRow = hasMetadataBadge || showBranch || cacheStartedAt != null || showMetaRowDetails
   const showHeaderActions =
     showTitleRowUnread || showTitleRowPrimary || showTitleRowDetails || showDeleteQuickAction
 

@@ -163,7 +163,12 @@ function makeLineage(worktree: Worktree, parent: Worktree): WorktreeLineage {
   }
 }
 
-function setLineageFixtureState(groupBy: 'none' | 'repo' = 'none'): void {
+function setLineageFixtureState(
+  groupBy: 'none' | 'repo' = 'none',
+  options: {
+    child?: Partial<Pick<Worktree, 'displayName' | 'branch' | 'linkedIssue' | 'comment'>>
+  } = {}
+): void {
   const repo = makeRepo()
   const parent = makeWorktree({
     id: 'parent',
@@ -179,6 +184,7 @@ function setLineageFixtureState(groupBy: 'none' | 'repo' = 'none'): void {
     branch: 'child-branch',
     sortOrder: 20
   })
+  Object.assign(child, options.child)
   const grandchild = makeWorktree({
     id: 'grandchild',
     instanceId: 'grandchild-instance',
@@ -363,5 +369,49 @@ describe('WorktreeList lineage child card renderer', () => {
     const parentRow = markup.match(/<div[^>]*id="worktree-list-option-parent"[^>]*>/)?.[0] ?? ''
 
     expect(parentRow).toContain('style="padding-left:18px"')
+  })
+
+  it('hides duplicate lineage child branch rows when grouped by repo', async () => {
+    setLineageFixtureState('repo', {
+      child: {
+        displayName: 'child-branch',
+        branch: 'refs/heads/child-branch',
+        linkedIssue: 42,
+        comment: 'Keep the issue row'
+      }
+    })
+    const markup = await renderWorktreeListMarkup()
+
+    expect(markup).not.toContain('data-worktree-lineage-child-meta-row="child"')
+    expect(markup).not.toContain('data-worktree-lineage-child-branch="child"')
+    expect(markup).toContain('#42')
+    expect(markup).toContain('Keep the issue row')
+  })
+
+  it('keeps custom-title lineage child branch rows visible', async () => {
+    setLineageFixtureState('repo', {
+      child: {
+        displayName: 'Custom child',
+        branch: 'child-branch'
+      }
+    })
+    const markup = await renderWorktreeListMarkup()
+
+    expect(markup).toContain('data-worktree-lineage-child-meta-row="child"')
+    expect(markup).toContain('data-worktree-lineage-child-branch="child"')
+  })
+
+  it('keeps lineage child repo badges outside repo grouping after hiding duplicate branches', async () => {
+    setLineageFixtureState('none', {
+      child: {
+        displayName: 'child-branch',
+        branch: 'child-branch'
+      }
+    })
+    const markup = await renderWorktreeListMarkup()
+
+    expect(markup).toContain('data-worktree-lineage-child-meta-row="child"')
+    expect(markup).toContain('data-worktree-lineage-child-repo-badge="child"')
+    expect(markup).not.toContain('data-worktree-lineage-child-branch="child"')
   })
 })

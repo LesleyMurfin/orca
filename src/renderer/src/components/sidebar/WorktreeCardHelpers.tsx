@@ -13,6 +13,17 @@ export function branchDisplayName(branch: string): string {
   return branch.replace(/^refs\/heads\//, '')
 }
 
+export function shouldShowWorktreeBranchLabel(
+  branchLabel: string,
+  workspaceTitle: string
+): boolean {
+  const comparableBranchLabel = branchLabel.trim()
+  if (comparableBranchLabel.length === 0) {
+    return false
+  }
+  return comparableBranchLabel !== workspaceTitle.trim()
+}
+
 export function prStateLabel(state: PRState): string {
   return state.charAt(0).toUpperCase() + state.slice(1)
 }
