@@ -8,6 +8,7 @@ import type {
   SourceControlAiModelChoice,
   SourceControlAiSettings
 } from '../../../../shared/source-control-ai-types'
+import { buildBranchNamePrompt } from '../../../../shared/branch-name-from-work'
 import {
   clearSourceControlAiModelChoiceForHost,
   normalizeSourceControlAiSettings,
@@ -46,6 +47,10 @@ type SourceControlAiConfigPatch =
   | ((current: SourceControlAiSettings) => Partial<SourceControlAiSettings>)
 
 const INHERIT_BRANCH_MODEL_VALUE = '__inherit_branch_model__'
+const BUILT_IN_BRANCH_NAME_PROMPT = buildBranchNamePrompt({
+  firstPrompt: '{first agent prompt}',
+  assistantMessage: '{agent initial response, when available}'
+})
 
 function readSourceControlSettings(settings: GlobalSettings): SourceControlAiSettings {
   return normalizeSourceControlAiSettings(settings.sourceControlAi, settings.commitMessageAi)
@@ -113,6 +118,7 @@ export function AutoRenameBranchFromWorkSetting({
   latestConfigRef.current = config
   const settingsWriteQueueRef = useRef<Promise<void>>(Promise.resolve())
   const [optionsOpen, setOptionsOpen] = useState(false)
+  const [builtInPromptOpen, setBuiltInPromptOpen] = useState(false)
   const persistedBranchNamePrompt = config.instructionsByOperation.branchName ?? ''
   const [branchNamePromptDraft, setBranchNamePromptDraft] = useState(persistedBranchNamePrompt)
   const [isSavingPrompt, setIsSavingPrompt] = useState(false)
@@ -324,8 +330,8 @@ export function AutoRenameBranchFromWorkSetting({
               <div className="space-y-0.5">
                 <Label htmlFor="git-auto-rename-branch-name-prompt">Branch name prompt</Label>
                 <p className="text-xs text-muted-foreground">
-                  This prompt is appended only when Auto-Rename Branch From Work summarizes the
-                  first agent prompt. Output guardrails still force a short kebab-case branch leaf.
+                  Appended to Orca&apos;s built-in branch-name prompt. The built-in prompt still
+                  requires a short lowercase kebab-case branch leaf.
                 </p>
               </div>
               <textarea
@@ -364,6 +370,38 @@ export function AutoRenameBranchFromWorkSetting({
                 </div>
               </div>
             </div>
+
+            <Collapsible open={builtInPromptOpen} onOpenChange={setBuiltInPromptOpen}>
+              <div className="border-t border-border/50 pt-3">
+                <CollapsibleTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="-ml-2 h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    Built-in prompt
+                    <ChevronDown
+                      className={cn(
+                        'size-3.5 transition-transform',
+                        builtInPromptOpen && 'rotate-180'
+                      )}
+                    />
+                  </Button>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="mt-2 space-y-2">
+                    <p className="text-xs text-muted-foreground">
+                      Your Branch name prompt is appended as{' '}
+                      <code className="font-mono">Additional user prompt</code>.
+                    </p>
+                    <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                      {BUILT_IN_BRANCH_NAME_PROMPT}
+                    </pre>
+                  </div>
+                </CollapsibleContent>
+              </div>
+            </Collapsible>
 
             <div className="flex flex-col gap-3 border-t border-border/50 pt-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="space-y-0.5">
