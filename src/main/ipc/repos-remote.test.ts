@@ -183,6 +183,54 @@ describe('projectGroups IPC validation', () => {
     })
   })
 
+  it('prioritizes shallow sibling repositories before truncated SSH archive scans', async () => {
+    const archivedRepoNames = Array.from(
+      { length: 101 },
+      (_, index) => `archived-service-${String(index + 1).padStart(3, '0')}`
+    )
+    const archivedRepoPaths = archivedRepoNames.map((name) => `/srv/platform/archive/${name}`)
+    const gitRepos = new Set(['/srv/platform/z-web-client', ...archivedRepoPaths])
+
+    mockGitProvider.isGitRepoAsync.mockImplementation(async (path: string) => ({
+      isRepo: gitRepos.has(path),
+      rootPath: null
+    }))
+    mockFilesystemProvider.readDir.mockImplementation(async (dirPath: string) => {
+      if (dirPath === '/srv/platform') {
+        return [
+          { name: 'archive', isDirectory: true, isSymlink: false },
+          { name: 'z-web-client', isDirectory: true, isSymlink: false }
+        ]
+      }
+      if (dirPath === '/srv/platform/archive') {
+        return archivedRepoNames.map((name) => ({
+          name,
+          isDirectory: true,
+          isSymlink: false
+        }))
+      }
+      return []
+    })
+
+    const result = await handlers.get('projectGroups:scanNested')!(null, {
+      path: '/srv/platform',
+      connectionId: 'conn-1'
+    })
+
+    expect(result).toMatchObject({
+      selectedPath: '/srv/platform',
+      selectedPathKind: 'non_git_folder',
+      truncated: true
+    })
+    expect((result as { repos: { path: string }[] }).repos).toHaveLength(100)
+    expect((result as { repos: { path: string }[] }).repos[0].path).toBe(
+      '/srv/platform/z-web-client'
+    )
+    expect((result as { repos: { path: string }[] }).repos.map((repo) => repo.path)).toContain(
+      '/srv/platform/z-web-client'
+    )
+  })
+
   it('rejects local nested scans with relative paths', async () => {
     await expect(
       handlers.get('projectGroups:scanNested')!(null, {

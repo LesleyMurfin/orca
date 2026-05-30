@@ -51,18 +51,26 @@ describe('scanNestedRepos', () => {
 
   it('prefers shallow sibling repos before descending into non-repo folders', async () => {
     const directories = new Map([
-      ['/workspace', ['ai-service', 'archive', 'billing-service']],
-      ['/workspace/archive', ['deep-service']]
+      ['/workspace', ['archive', 'z-web-client']],
+      [
+        '/workspace/archive',
+        Array.from(
+          { length: 101 },
+          (_, index) => `archived-service-${String(index + 1).padStart(3, '0')}`
+        )
+      ]
     ])
     const gitRepos = new Set([
-      '/workspace/ai-service',
-      '/workspace/billing-service',
-      '/workspace/archive/deep-service'
+      '/workspace/z-web-client',
+      ...Array.from(
+        { length: 101 },
+        (_, index) => `/workspace/archive/archived-service-${String(index + 1).padStart(3, '0')}`
+      )
     ])
 
     const result = await scanNestedRepos({
       path: '/workspace',
-      options: { maxRepos: 2 },
+      options: { maxRepos: 100 },
       filesystem: {
         readDirectory: async (dirPath) =>
           (directories.get(dirPath) ?? []).map((name) => ({ name, isDirectory: true })),
@@ -72,11 +80,57 @@ describe('scanNestedRepos', () => {
       }
     })
 
-    expect(result.repos.map((repo) => repo.path)).toEqual([
-      '/workspace/ai-service',
-      '/workspace/billing-service'
-    ])
+    expect(result.repos).toHaveLength(100)
+    expect(result.repos[0].path).toBe('/workspace/z-web-client')
+    expect(result.repos.map((repo) => repo.path)).toContain('/workspace/z-web-client')
     expect(result.truncated).toBe(true)
+  })
+
+  it('orders discovered repos by BFS parent queue and alphabetical children per directory', async () => {
+    const directories = new Map([
+      ['/workspace', ['omega-root', 'gamma-folder', 'beta-root', 'alpha-folder']],
+      ['/workspace/alpha-folder', ['z-alpha-child', 'm-alpha-child', 'alpha-nested']],
+      ['/workspace/gamma-folder', ['a-gamma-child']],
+      ['/workspace/alpha-folder/alpha-nested', ['a-alpha-grandchild']]
+    ])
+    const gitRepos = new Set([
+      '/workspace/beta-root',
+      '/workspace/omega-root',
+      '/workspace/alpha-folder/m-alpha-child',
+      '/workspace/alpha-folder/z-alpha-child',
+      '/workspace/gamma-folder/a-gamma-child',
+      '/workspace/alpha-folder/alpha-nested/a-alpha-grandchild'
+    ])
+    const readOrder: string[] = []
+
+    const result = await scanNestedRepos({
+      path: '/workspace',
+      filesystem: {
+        readDirectory: async (dirPath) => {
+          readOrder.push(dirPath)
+          return (directories.get(dirPath) ?? []).map((name) => ({ name, isDirectory: true }))
+        },
+        joinPath: (parentPath, childName) => `${parentPath}/${childName}`,
+        basename: (path) => path.split('/').at(-1) ?? path,
+        isGitRepoPath: (path) => gitRepos.has(path)
+      }
+    })
+
+    expect(readOrder).toEqual([
+      '/workspace',
+      '/workspace/alpha-folder',
+      '/workspace/gamma-folder',
+      '/workspace/alpha-folder/alpha-nested'
+    ])
+    expect(result.repos.map((repo) => repo.path)).toEqual([
+      '/workspace/beta-root',
+      '/workspace/omega-root',
+      '/workspace/alpha-folder/m-alpha-child',
+      '/workspace/alpha-folder/z-alpha-child',
+      '/workspace/gamma-folder/a-gamma-child',
+      '/workspace/alpha-folder/alpha-nested/a-alpha-grandchild'
+    ])
+    expect(result.repos.map((repo) => repo.depth)).toEqual([1, 1, 2, 2, 2, 3])
   })
 
   it('skips heavy directories and respects result caps', async () => {
