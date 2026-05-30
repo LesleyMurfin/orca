@@ -330,6 +330,11 @@ export default function WorkspaceKanbanDrawer({
   const handleWorktreeActivate = useCallback(() => {
     onOpenChange(false)
   }, [onOpenChange])
+  const handleHeaderClose = useCallback(() => {
+    // Why: generic Radix close requests stay ignored so sidebar drag/outside
+    // dismiss rules remain explicit; the header X is a board-owned close path.
+    onOpenChange(false)
+  }, [onOpenChange])
   const handleSheetOpenChange = useCallback(
     (nextOpen: boolean) => {
       // Why: Radix treats any outside pointer release as a dismiss request.
@@ -561,7 +566,7 @@ export default function WorkspaceKanbanDrawer({
           onRemoveStatus={handleRemoveStatus}
           onAddStatus={handleAddStatus}
           onFilterMenuOpenChange={onMenuOpenChange}
-          onClose={() => onOpenChange(false)}
+          onClose={handleHeaderClose}
         />
         <div
           ref={boardRef}
