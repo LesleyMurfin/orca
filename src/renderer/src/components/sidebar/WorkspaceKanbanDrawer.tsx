@@ -561,6 +561,7 @@ export default function WorkspaceKanbanDrawer({
           onRemoveStatus={handleRemoveStatus}
           onAddStatus={handleAddStatus}
           onFilterMenuOpenChange={onMenuOpenChange}
+          onClose={() => onOpenChange(false)}
         />
         <div
           ref={boardRef}
