@@ -107,6 +107,7 @@ type KeyboardHandlersDeps = {
   setSearchOpen: React.Dispatch<React.SetStateAction<boolean>>
   onSearchSelectedText: (text: string) => void
   onRequestClosePane: (paneId: number) => void
+  onSplitPaneCommand?: () => void
   searchOpenRef: React.RefObject<boolean>
   searchStateRef: React.RefObject<SearchState>
   macOptionAsAltRef: React.RefObject<MacOptionAsAlt>
@@ -130,6 +131,7 @@ export function useTerminalKeyboardShortcuts({
   setSearchOpen,
   onSearchSelectedText,
   onRequestClosePane,
+  onSplitPaneCommand,
   searchOpenRef,
   searchStateRef,
   macOptionAsAltRef,
@@ -367,6 +369,7 @@ export function useTerminalKeyboardShortcuts({
         if (!pane) {
           return
         }
+        onSplitPaneCommand?.()
         const ptyId = paneTransportsRef.current.get(pane.id)?.getPtyId() ?? null
         if (splitWebRuntimeTerminal(ptyId, action.direction)) {
           return
@@ -418,6 +421,7 @@ export function useTerminalKeyboardShortcuts({
     setSearchOpen,
     onSearchSelectedText,
     onRequestClosePane,
+    onSplitPaneCommand,
     searchOpenRef,
     searchStateRef,
     macOptionAsAltRef,

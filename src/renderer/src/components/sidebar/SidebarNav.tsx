@@ -1,5 +1,15 @@
 import React from 'react'
-import { Bell, CalendarClock, EyeOff, Github, Gitlab, List, Search, Smartphone } from 'lucide-react'
+import {
+  Bell,
+  CalendarClock,
+  EyeOff,
+  Github,
+  Gitlab,
+  List,
+  ListChecks,
+  Search,
+  Smartphone
+} from 'lucide-react'
 import { useAppStore } from '@/store'
 import { useRepoMap } from '@/store/selectors'
 import { cn } from '@/lib/utils'
@@ -7,6 +17,10 @@ import { isGitRepoKind } from '../../../../shared/repo-kind'
 import type { GlobalSettings } from '../../../../shared/types'
 import { getTaskPresetQuery, PER_REPO_FETCH_LIMIT } from '@/lib/new-workspace'
 import { LinearIcon } from '@/components/icons/LinearIcon'
+import {
+  getFeatureWallSetupSteps,
+  type FeatureWallSetupStepId
+} from '../../../../shared/feature-wall-setup-steps'
 import {
   normalizeVisibleTaskProviders,
   restoreAvailableDefaultTaskProvider,
@@ -21,6 +35,7 @@ import {
   ContextMenuItem,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+import { useSetupGuideProgress } from '../setup-guide/use-setup-guide-progress'
 
 export function shouldShowAgentsButton(
   settings: Pick<GlobalSettings, 'experimentalActivity'> | null | undefined
@@ -41,6 +56,7 @@ const SidebarNav = React.memo(function SidebarNav() {
   const openActivityPage = useAppStore((s) => s.openActivityPage)
   const openMobilePage = useAppStore((s) => s.openMobilePage)
   const openModal = useAppStore((s) => s.openModal)
+  const activeModal = useAppStore((s) => s.activeModal)
   const updateSettings = useAppStore((s) => s.updateSettings)
   const activeView = useAppStore((s) => s.activeView)
   const repos = useAppStore((s) => s.repos)
@@ -130,17 +146,49 @@ const SidebarNav = React.memo(function SidebarNav() {
   ])
 
   const tasksActive = activeView === 'tasks'
+  const setupActive = activeModal === 'setup-guide'
   const automationsActive = activeView === 'automations'
   const activityActive = activeView === 'activity'
   const mobileActive = activeView === 'mobile'
   const activityUnreadCount = useActivityUnreadCount(showAgentsButton, 'sidebar-badge')
   const mobileOnboardingBadge = useMobileSidebarOnboardingBadge(showMobileButton)
+  // Why: the sidebar count must be warmed before click so it matches the modal
+  // count instead of changing while the lazy modal is mounting.
+  const setupProgress = useSetupGuideProgress(true, false, false, {
+    refreshAdvancedState: setupActive
+  })
+  const firstUnfinishedSetupStepId = React.useMemo<FeatureWallSetupStepId>(() => {
+    const firstUnfinished = getFeatureWallSetupSteps('core').find(
+      (step) => !setupProgress.stepDone[step.id]
+    )
+    return firstUnfinished?.id ?? 'default-agent'
+  }, [setupProgress.stepDone])
   const hideMobileButton = React.useCallback(() => {
     void updateSettings({ showMobileButton: false })
   }, [updateSettings])
 
   return (
     <div className="flex flex-col gap-0.5 px-2 pt-2 pb-1">
+      <button
+        type="button"
+        onClick={() => openModal('setup-guide', { setupStepId: firstUnfinishedSetupStepId })}
+        aria-current={setupActive ? 'page' : undefined}
+        className={cn(
+          'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] font-medium tracking-tight transition-colors',
+          setupActive
+            ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+            : 'text-sidebar-foreground/60 hover:bg-sidebar-foreground/8'
+        )}
+      >
+        <ListChecks
+          className={cn('size-4 shrink-0', !setupActive && 'text-sidebar-foreground/30')}
+          strokeWidth={setupActive ? 2.25 : 1.75}
+        />
+        <span className="flex-1">Getting started with Orca</span>
+        <span className="font-mono text-[11px] text-muted-foreground">
+          {setupProgress.coreDoneCount}/{setupProgress.coreTotal}
+        </span>
+      </button>
       {showTasksButton ? (
         <button
           type="button"

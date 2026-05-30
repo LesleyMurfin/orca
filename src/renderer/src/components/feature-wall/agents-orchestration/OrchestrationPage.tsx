@@ -31,8 +31,12 @@ const INITIAL_CHILD_PENDING: RowPending = {
 // fade in. Keep it slow enough to read at a glance.
 const CREATING_CHILDREN_MS = 1400
 
-export function OrchestrationPage(props: { active: boolean; reducedMotion: boolean }): JSX.Element {
-  const { active, reducedMotion } = props
+export function OrchestrationPage(props: {
+  active: boolean
+  reducedMotion: boolean
+  onCycleComplete?: () => void
+}): JSX.Element {
+  const { active, reducedMotion, onCycleComplete } = props
   const stageRef = useRef<HTMLDivElement | null>(null)
   const arrowsRef = useRef<SVGSVGElement | null>(null)
   const bubbleLayerRef = useRef<HTMLDivElement | null>(null)
@@ -205,7 +209,10 @@ export function OrchestrationPage(props: { active: boolean; reducedMotion: boole
     }
 
     const loop = (): void => {
-      runOnce(() => later(loop, 1400))
+      runOnce(() => {
+        onCycleComplete?.()
+        later(loop, 1400)
+      })
     }
 
     later(loop, 80)
@@ -222,7 +229,7 @@ export function OrchestrationPage(props: { active: boolean; reducedMotion: boole
         cleanupLayer.innerHTML = ''
       }
     }
-  }, [active, reducedMotion])
+  }, [active, onCycleComplete, reducedMotion])
 
   return (
     <div

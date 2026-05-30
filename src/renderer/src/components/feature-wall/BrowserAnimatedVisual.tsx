@@ -150,8 +150,11 @@ const TERM_ENTRIES: readonly { entry: TermEntry; minPhase: Phase }[] = [
   }
 ]
 
-export function BrowserAnimatedVisual(props: { reducedMotion: boolean }): JSX.Element {
-  const { reducedMotion } = props
+export function BrowserAnimatedVisual(props: {
+  reducedMotion: boolean
+  onCycleComplete?: () => void
+}): JSX.Element {
+  const { reducedMotion, onCycleComplete } = props
 
   const [phase, setPhase] = useState<Phase>('idle')
   const [typedChars, setTypedChars] = useState(0)
@@ -411,6 +414,7 @@ export function BrowserAnimatedVisual(props: { reducedMotion: boolean }): JSX.El
         if (cancelled) {
           return
         }
+        onCycleComplete?.()
 
         await wait(RESET_HOLD_MS)
       }
@@ -421,7 +425,7 @@ export function BrowserAnimatedVisual(props: { reducedMotion: boolean }): JSX.El
       cancelled = true
       timeouts.forEach((id) => window.clearTimeout(id))
     }
-  }, [reducedMotion])
+  }, [onCycleComplete, reducedMotion])
 
   const isIntroPhase =
     phase === 'idle' ||
@@ -518,13 +522,12 @@ export function BrowserAnimatedVisual(props: { reducedMotion: boolean }): JSX.El
                     'grid items-center gap-2 rounded-md px-2 py-[5px]',
                     newtabRowActive ? 'bg-foreground/[0.06]' : null
                   )}
-                  style={{ gridTemplateColumns: '18px 1fr auto' }}
+                  style={{ gridTemplateColumns: '18px 1fr' }}
                 >
                   <span className="inline-flex size-[13px] items-center justify-center text-foreground">
                     <GlobeGlyph />
                   </span>
                   <span className="text-[11.5px] text-foreground">New Browser Tab</span>
-                  <span className="font-mono text-[10.5px] text-muted-foreground">⌘⇧B</span>
                 </div>
                 <DropdownSkeletonRow widthPct={52} />
               </div>

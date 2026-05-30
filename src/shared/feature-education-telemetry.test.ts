@@ -12,6 +12,9 @@ describe('feature education telemetry constants', () => {
 
   it('normalizes unknown telemetry sources to a bounded fallback', () => {
     expect(normalizeFeatureEducationSource('tasks_open')).toBe('tasks_open')
+    expect(normalizeFeatureEducationSource('workspace_agent_sessions_visible')).toBe(
+      'workspace_agent_sessions_visible'
+    )
     expect(normalizeFeatureEducationSource('https://example.com/private')).toBe('unknown')
     expect(normalizeFeatureEducationSource(null)).toBe('unknown')
   })

@@ -13,8 +13,9 @@ export function AgentsOrchestrationVisual(props: {
   activeStepId: AgentsStepId
   widthPx?: number
   heightPx?: number
+  onCycleComplete?: () => void
 }): JSX.Element {
-  const { reducedMotion, activeStepId, widthPx, heightPx } = props
+  const { reducedMotion, activeStepId, widthPx, heightPx, onCycleComplete } = props
   return (
     <div
       className="relative flex flex-col text-foreground"
@@ -30,6 +31,7 @@ export function AgentsOrchestrationVisual(props: {
         <OrchestrationPage
           active={activeStepId === 'orchestration'}
           reducedMotion={reducedMotion}
+          onCycleComplete={onCycleComplete}
         />
       </Page>
     </div>

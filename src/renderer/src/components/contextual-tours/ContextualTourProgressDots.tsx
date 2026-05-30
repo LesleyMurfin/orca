@@ -9,7 +9,7 @@ export function ContextualTourProgressDots({
   total: number
 }): JSX.Element {
   if (total <= 1) {
-    return <span className="text-[11px] font-medium text-muted-foreground">Step {current}</span>
+    return <span aria-hidden="true" className="h-1.5 w-4" />
   }
   return (
     <div

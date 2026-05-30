@@ -10,6 +10,7 @@ import {
   useInstalledAgentSkill
 } from '@/hooks/useInstalledAgentSkills'
 import { AgentSkillSetupPanel } from './AgentSkillSetupPanel'
+import { useAppStore } from '@/store'
 
 export function OrchestrationSetupCard(props: {
   compact?: boolean
@@ -45,6 +46,7 @@ export function OrchestrationSetupCard(props: {
       terminalHeightPx={terminalHeightPx}
       preInstallNotice={AGENT_SKILL_CLI_PREREQUISITE_NOTICE}
       onBeforeOpenTerminal={async () => {
+        useAppStore.getState().recordFeatureInteraction('agent-orchestration-setup')
         await ensureOrcaCliAvailableForAgentSkillTerminal()
       }}
       showRecheckWhenInstalled={false}

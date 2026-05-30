@@ -19,6 +19,7 @@ type UseTerminalPaneContextMenuDeps = {
   fallbackCwd: string
   toggleExpandPane: (paneId: number) => void
   onRequestClosePane: (paneId: number) => void
+  onSplitPaneCommand?: () => void
   onSetTitle: (paneId: number) => void
   onPasteError: (message: string) => void
   rightClickToPaste: boolean
@@ -52,6 +53,7 @@ export function useTerminalPaneContextMenu({
   fallbackCwd,
   toggleExpandPane,
   onRequestClosePane,
+  onSplitPaneCommand,
   onSetTitle,
   onPasteError,
   rightClickToPaste
@@ -134,6 +136,7 @@ export function useTerminalPaneContextMenu({
     if (!pane) {
       return
     }
+    onSplitPaneCommand?.()
     const ptyId = paneTransportsRef.current.get(pane.id)?.getPtyId() ?? null
     if (splitWebRuntimeTerminal(ptyId, direction)) {
       return

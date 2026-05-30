@@ -1,5 +1,8 @@
+import type { FeatureInteractionId } from './feature-interactions'
+
 export type ContextualTourId =
   | 'workspace-board'
+  | 'workspace-agent-sessions'
   | 'browser'
   | 'tasks'
   | 'automations'
@@ -9,13 +12,17 @@ export type ContextualTourStepControl = {
   kind: 'auto-rename-branch-from-work'
 }
 
+export type ContextualTourStepPlacement = 'top' | 'right' | 'bottom' | 'left'
+
 export type ContextualTourStep = {
   title: string
   body: string
   targetSelector: string
   requiredForStart?: boolean
   fallbackCopy?: string
+  preferredPlacement?: ContextualTourStepPlacement
   control?: ContextualTourStepControl
+  advanceOnFeatureInteraction?: FeatureInteractionId
 }
 
 export type ContextualTour = {
@@ -43,6 +50,19 @@ export const CONTEXTUAL_TOURS = [
         title: 'Drag cards and tune density',
         body: 'Drop cards into lanes, resize columns, or switch compact mode from the board controls.',
         targetSelector: '[data-contextual-tour-target="workspace-board-cards"]'
+      }
+    ]
+  },
+  {
+    id: 'workspace-agent-sessions',
+    steps: [
+      {
+        title: 'Split panes for agents',
+        body: 'Use the right-click menu or {terminal.splitRight} to split the terminal and keep multiple agent sessions visible at once.',
+        targetSelector: '[data-contextual-tour-target="workspace-agent-terminal-tip"]',
+        requiredForStart: true,
+        preferredPlacement: 'bottom',
+        advanceOnFeatureInteraction: 'terminal-pane-split'
       }
     ]
   },
@@ -116,14 +136,14 @@ export const CONTEXTUAL_TOURS = [
     allowedActiveModals: ['new-workspace-composer'],
     steps: [
       {
-        title: 'Pick the code to work in',
-        body: 'Workspaces are how Orca isolates each task, so you can work on many in parallel. Choose the project this task belongs in.',
+        title: 'Pick a project',
+        body: 'Orca isolates each task in its own worktree, branched off your base. Pick the project this one should branch from.',
         targetSelector: '[data-contextual-tour-target="workspace-creation-project"]',
         requiredForStart: true
       },
       {
-        title: 'Name it now or let Orca do it',
-        body: 'Type a name if you know it. Or leave the field blank and let Orca rename the workspace after the first agent message.',
+        title: 'Name it, or start from existing work',
+        body: 'Start a workspace from a task source to inherit the title. Or leave it blank to auto-name it from your first agent message.',
         targetSelector: '[data-contextual-tour-target="workspace-creation-name"]',
         control: { kind: 'auto-rename-branch-from-work' }
       },

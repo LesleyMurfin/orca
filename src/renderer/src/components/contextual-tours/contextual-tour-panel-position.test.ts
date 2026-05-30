@@ -71,4 +71,17 @@ describe('contextual tour panel position', () => {
     expect(position.placement).toBe('bottom')
     expect(position.top).toBeGreaterThanOrEqual(80 + 12)
   })
+
+  it('honors a preferred placement for anchored tip-style tours', () => {
+    const position = clampContextualTourPanelPosition({
+      targetRect: { left: 280, right: 1160, top: 452, bottom: 453, width: 880, height: 1 },
+      viewport: { width: 1512, height: 900 },
+      panel: { width: 320, height: 140 },
+      preferredPlacement: 'bottom'
+    })
+
+    expect(position.placement).toBe('bottom')
+    expect(position.top).toBe(465)
+    expect(position.left).toBe(560)
+  })
 })

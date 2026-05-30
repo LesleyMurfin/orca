@@ -104,6 +104,27 @@ function mergeFeatureInteractionState(
   return merged
 }
 
+function getContextualTourProgressionForFeatureInteraction(
+  state: AppState,
+  id: FeatureInteractionId
+): 'advance' | 'complete' | null {
+  if (!state.activeContextualTourId) {
+    return null
+  }
+  const tour = getContextualTour(state.activeContextualTourId)
+  const step = tour.steps[state.activeContextualTourStepIndex]
+  if (step?.advanceOnFeatureInteraction !== id) {
+    return null
+  }
+  return getNextVisibleContextualTourStepIndex({
+    tour,
+    currentStepIndex: state.activeContextualTourStepIndex,
+    targetExists: hasContextualTourTarget
+  }) === null
+    ? 'complete'
+    : 'advance'
+}
+
 function clampPetSize(size: number): number {
   if (!Number.isFinite(size)) {
     return PET_SIZE_DEFAULT
@@ -501,6 +522,7 @@ export type UISlice = {
     | 'workspace-cleanup'
     | 'project-added'
     | 'worktree-visibility'
+    | 'setup-guide'
     | 'feature-wall'
     | 'feature-tips'
     | 'new-workspace-composer'
@@ -528,7 +550,8 @@ export type UISlice = {
   requestContextualTour: (
     id: ContextualTourId,
     source: string,
-    wasFeaturePreviouslyInteracted?: boolean
+    wasFeaturePreviouslyInteracted?: boolean,
+    options?: { force?: boolean }
   ) => void
   suppressContextualTour: (id: ContextualTourId, source: string) => void
   advanceContextualTour: () => void
@@ -982,11 +1005,13 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
       return { featureTipsSeenIds: next }
     }),
   featureInteractions: {},
-  recordFeatureInteraction: (id) =>
+  recordFeatureInteraction: (id) => {
+    let tourProgression: 'advance' | 'complete' | null = null
     set((s) => {
       if (!s.persistedUIReady) {
         return s
       }
+      tourProgression = getContextualTourProgressionForFeatureInteraction(s, id)
       const existing = s.featureInteractions[id]
       const next: FeatureInteractionState = {
         ...s.featureInteractions,
@@ -1010,7 +1035,13 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
         persist.catch(console.error)
       }
       return { featureInteractions: next }
-    }),
+    })
+    if (tourProgression === 'complete') {
+      get().completeContextualTour()
+    } else if (tourProgression === 'advance') {
+      get().advanceContextualTour()
+    }
+  },
   contextualToursSeenIds: [],
   contextualToursAutoEligible: null,
   activeContextualTourId: null,
@@ -1043,16 +1074,16 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
         ? s
         : { contextualToursBlockingSurfaceVisible: visible }
     ),
-  requestContextualTour: (id, source, wasFeaturePreviouslyInteracted) =>
+  requestContextualTour: (id, source, wasFeaturePreviouslyInteracted, options) =>
     set((s) => {
       const tour = getContextualTour(id)
       const decision = getContextualTourRequestDecision({
         tour,
         persistedUIReady: s.persistedUIReady,
-        autoEligible: s.contextualToursAutoEligible === true,
+        autoEligible: options?.force === true || s.contextualToursAutoEligible === true,
         onboardingVisible: s.contextualToursOnboardingVisible,
-        seenIds: s.contextualToursSeenIds,
-        sessionConsumed: s.contextualTourShownThisSession,
+        seenIds: options?.force === true ? [] : s.contextualToursSeenIds,
+        sessionConsumed: options?.force === true ? false : s.contextualTourShownThisSession,
         activeTourId: s.activeContextualTourId,
         activeModal: s.activeModal,
         blockingSurfaceVisible: s.contextualToursBlockingSurfaceVisible,

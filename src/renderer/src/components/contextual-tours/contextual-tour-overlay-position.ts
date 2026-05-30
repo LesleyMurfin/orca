@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react'
+import type { ContextualTourStepPlacement } from '../../../../shared/contextual-tours'
 import type { ContextualTourPanelPlacement } from './contextual-tour-panel-position'
 import {
   clampContextualTourPanelPosition,
@@ -16,6 +17,7 @@ export function getContextualTourOverlayPanelPosition(args: {
   targetRect: DOMRect
   panelElement: HTMLElement | null
   panelHost: HTMLElement | null
+  preferredPlacement?: ContextualTourStepPlacement
   viewport: { width: number; height: number }
 }): ContextualTourOverlayPanelPosition {
   const panelRect = args.panelElement?.getBoundingClientRect()
@@ -25,7 +27,8 @@ export function getContextualTourOverlayPanelPosition(args: {
   const clamped = clampContextualTourPanelPosition({
     targetRect: args.targetRect,
     viewport: args.viewport,
-    panel
+    panel,
+    preferredPlacement: args.preferredPlacement
   })
   const cssPosition = getContextualTourPanelCssPosition({
     position: clamped,

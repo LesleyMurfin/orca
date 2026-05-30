@@ -214,6 +214,7 @@ const NewWorkspaceComposerModal = lazy(() => import('./components/NewWorkspaceCo
 const WorkspaceCleanupDialog = lazy(
   () => import('./components/workspace-cleanup/WorkspaceCleanupDialog')
 )
+const SetupGuideModal = lazy(() => import('./components/setup-guide/SetupGuideModal'))
 const FeatureWallModal = lazy(() => import('./components/feature-wall/FeatureWallModal'))
 const FeatureTipsModal = lazy(() => import('./components/feature-tips/FeatureTipsModal'))
 // Why: lazy-loaded so the WebP asset + overlay module aren't fetched unless
@@ -1349,6 +1350,7 @@ function App(): React.JSX.Element {
       activeModal !== 'worktree-palette' &&
       activeModal !== 'new-workspace-composer' &&
       activeModal !== 'workspace-cleanup' &&
+      activeModal !== 'setup-guide' &&
       activeModal !== 'feature-wall' &&
       activeModal !== 'feature-tips'
     ) {
@@ -1725,6 +1727,7 @@ function App(): React.JSX.Element {
           <Suspense fallback={null}>
             {mountedLazyModalIds.has('quick-open') ? <QuickOpen /> : null}
             {mountedLazyModalIds.has('worktree-palette') ? <WorktreeJumpPalette /> : null}
+            {mountedLazyModalIds.has('setup-guide') ? <SetupGuideModal /> : null}
             {mountedLazyModalIds.has('feature-wall') ? <FeatureWallModal /> : null}
             {mountedLazyModalIds.has('feature-tips') ? <FeatureTipsModal /> : null}
           </Suspense>

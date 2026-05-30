@@ -6,6 +6,7 @@ import {
   trackContextualTourOutcome,
   trackContextualTourShown
 } from '@/lib/feature-education-telemetry'
+import { formatShortcutLabel } from '@/hooks/useShortcutLabel'
 import {
   getContextualTourStepCopy,
   getContextualTourStepProgress,
@@ -34,6 +35,7 @@ export function ContextualTourOverlay(): JSX.Element | null {
   const onboardingVisible = useAppStore((s) => s.contextualToursOnboardingVisible)
   const blockingSurfaceVisible = useAppStore((s) => s.contextualToursBlockingSurfaceVisible)
   const activeTourSuppressed = useAppStore((s) => s.activeContextualTourSuppressed)
+  const keybindings = useAppStore((s) => s.keybindings)
   const markContextualToursSeen = useAppStore((s) => s.markContextualToursSeen)
   const advanceContextualTour = useAppStore((s) => s.advanceContextualTour)
   const regressContextualTour = useAppStore((s) => s.regressContextualTour)
@@ -169,8 +171,9 @@ export function ContextualTourOverlay(): JSX.Element | null {
       targetElement: target.element,
       progress,
       title: activeStep.title,
-      body: getContextualTourStepCopy(activeStep),
+      body: formatContextualTourStepCopy(getContextualTourStepCopy(activeStep), keybindings),
       control: activeStep.control,
+      preferredPlacement: activeStep.preferredPlacement,
       isLastStep: progress.current === progress.total,
       isFirstStep: progress.current === 1,
       panelHost: getContextualTourPanelHost(target.element)
@@ -182,6 +185,7 @@ export function ContextualTourOverlay(): JSX.Element | null {
     advanceContextualTour,
     cancelContextualTour,
     emitContextualTourOutcome,
+    keybindings,
     measureVersion
   ])
 
@@ -284,6 +288,7 @@ export function ContextualTourOverlay(): JSX.Element | null {
     targetRect: renderState.rect,
     panelElement: panelRef.current,
     panelHost: renderState.panelHost,
+    preferredPlacement: renderState.preferredPlacement,
     viewport
   })
 
@@ -310,5 +315,15 @@ export function ContextualTourOverlay(): JSX.Element | null {
       }}
       onOverlayKeyDownCapture={handleContextualTourOverlayKeyDown}
     />
+  )
+}
+
+function formatContextualTourStepCopy(
+  copy: string,
+  keybindings: Parameters<typeof formatShortcutLabel>[1]
+): string {
+  return copy.replace(
+    '{terminal.splitRight}',
+    formatShortcutLabel('terminal.splitRight', keybindings)
   )
 }

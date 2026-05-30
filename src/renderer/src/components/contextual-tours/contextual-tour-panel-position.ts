@@ -21,6 +21,7 @@ export function clampContextualTourPanelPosition(args: {
   targetRect: Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom' | 'width' | 'height'>
   viewport: ViewportSize
   panel: PanelSize
+  preferredPlacement?: ContextualTourPanelPlacement
   gap?: number
   margin?: number
 }): ContextualTourPanelPosition {
@@ -35,7 +36,17 @@ export function clampContextualTourPanelPosition(args: {
   let placement: ContextualTourPanelPlacement
   let left: number
   let top: number
-  if (roomRight >= panel.width + gap || roomRight >= roomLeft) {
+  if (args.preferredPlacement) {
+    placement = args.preferredPlacement
+    const preferredPosition = getUnclampedPanelPosition({
+      placement,
+      targetRect,
+      panel,
+      gap
+    })
+    left = preferredPosition.left
+    top = preferredPosition.top
+  } else if (roomRight >= panel.width + gap || roomRight >= roomLeft) {
     placement = 'right'
     left = targetRect.right + gap
     top = targetRect.top + targetRect.height / 2 - panel.height / 2
@@ -77,6 +88,37 @@ export function clampContextualTourPanelPosition(args: {
       : clampNumber(targetCenterY - clampedTop, arrowMargin, panel.height - arrowMargin)
 
   return { left: clampedLeft, top: clampedTop, placement, arrowOffset }
+}
+
+function getUnclampedPanelPosition(args: {
+  placement: ContextualTourPanelPlacement
+  targetRect: Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom' | 'width' | 'height'>
+  panel: PanelSize
+  gap: number
+}): Pick<ContextualTourPanelPosition, 'left' | 'top'> {
+  const { placement, targetRect, panel, gap } = args
+  if (placement === 'top') {
+    return {
+      left: targetRect.left + targetRect.width / 2 - panel.width / 2,
+      top: targetRect.top - panel.height - gap
+    }
+  }
+  if (placement === 'bottom') {
+    return {
+      left: targetRect.left + targetRect.width / 2 - panel.width / 2,
+      top: targetRect.bottom + gap
+    }
+  }
+  if (placement === 'left') {
+    return {
+      left: targetRect.left - panel.width - gap,
+      top: targetRect.top + targetRect.height / 2 - panel.height / 2
+    }
+  }
+  return {
+    left: targetRect.right + gap,
+    top: targetRect.top + targetRect.height / 2 - panel.height / 2
+  }
 }
 
 export function getContextualTourPanelCssPosition(args: {

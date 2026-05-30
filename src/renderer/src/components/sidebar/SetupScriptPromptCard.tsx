@@ -8,13 +8,8 @@ import { track } from '@/lib/telemetry'
 import { cn } from '@/lib/utils'
 import { getRepositoryLocalCommandsSectionId } from '@/components/settings/repository-settings-targets'
 import { RepoBadgeMark } from '@/components/repo/RepoBadgeLabel'
-import {
-  checkRuntimeHooks,
-  inspectRuntimeSetupScriptImports,
-  type HookCheckResult
-} from '@/runtime/runtime-hooks-client'
+import { checkRuntimeHooks, inspectRuntimeSetupScriptImports } from '@/runtime/runtime-hooks-client'
 import { getDefaultRepoHookSettings } from '../../../../shared/constants'
-import { resolveHookCommandSourcePolicy } from '../../../../shared/hook-command-source-policy'
 import { isGitRepoKind } from '../../../../shared/repo-kind'
 import type { Repo, RepoHookSettings } from '../../../../shared/types'
 import type { SetupScriptImportCandidate } from '../../../../shared/setup-script-imports'
@@ -22,6 +17,7 @@ import {
   buildSetupScriptPromptActionTelemetry,
   buildSetupScriptPromptTelemetry
 } from '../../../../shared/setup-script-telemetry'
+import { buildImportedSetupHookSettings, hasEffectiveSetupCommand } from '@/lib/setup-script-status'
 
 type PromptState = {
   repoId: string
@@ -30,47 +26,18 @@ type PromptState = {
   candidate: SetupScriptImportCandidate | null
 }
 
-function hasEffectiveSetupCommand(repo: Repo, hooksResult: HookCheckResult): boolean {
-  const localSetup = repo.hookSettings?.scripts?.setup?.trim()
-  const sharedSetup = hooksResult.hooks?.scripts?.setup?.trim()
-  const rawPolicy = repo.hookSettings?.commandSourcePolicy
-  const sourcePolicy = resolveHookCommandSourcePolicy(rawPolicy, {
-    hasLocalScript: Boolean(localSetup)
-  })
-
-  if (sourcePolicy === 'local-only') {
-    return Boolean(localSetup)
-  }
-
-  if (sourcePolicy === 'run-both') {
-    return Boolean(sharedSetup || localSetup)
-  }
-
-  return Boolean(sharedSetup)
-}
-
 function buildImportedHookSettings(
   repo: Repo,
   candidate: SetupScriptImportCandidate,
   hasSharedHooks: boolean
 ): RepoHookSettings {
-  const defaults = getDefaultRepoHookSettings()
-  const current = repo.hookSettings
-  return {
-    ...defaults,
-    ...current,
-    setupRunPolicy: current?.setupRunPolicy ?? defaults.setupRunPolicy,
-    // Why: imported setup commands are stored as local settings. If a shared
-    // hook file exists, run-both preserves its archive hook; otherwise local
-    // settings need to be authoritative so the imported setup actually runs.
-    commandSourcePolicy: hasSharedHooks ? 'run-both' : 'local-only',
-    scripts: {
-      ...defaults.scripts,
-      ...current?.scripts,
-      setup: candidate.setup,
-      archive: candidate.archive ?? current?.scripts?.archive ?? defaults.scripts.archive
-    }
-  }
+  return buildImportedSetupHookSettings(
+    repo,
+    candidate.setup,
+    candidate.archive,
+    hasSharedHooks,
+    getDefaultRepoHookSettings()
+  )
 }
 
 function formatCandidateSource(candidate: SetupScriptImportCandidate): string {

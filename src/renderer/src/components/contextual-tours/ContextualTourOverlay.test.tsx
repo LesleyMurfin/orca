@@ -14,6 +14,7 @@ import { useAppStore } from '@/store'
 type ClickableElementProps = {
   children?: ReactNode
   onClick?: () => void
+  'aria-label'?: string
 }
 
 const baseRenderState: ActiveTourRenderState = {
@@ -97,6 +98,38 @@ function findElementByText(
   return null
 }
 
+function findElementByAriaLabel(
+  node: ReactNode,
+  label: string
+): ReactElement<ClickableElementProps> | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const match = findElementByAriaLabel(child, label)
+      if (match) {
+        return match
+      }
+    }
+    return null
+  }
+
+  if (!isValidElement(node)) {
+    return null
+  }
+
+  const props = node.props as ClickableElementProps
+  if (props['aria-label'] === label) {
+    return node as ReactElement<ClickableElementProps>
+  }
+
+  for (const child of Children.toArray(props.children)) {
+    const match = findElementByAriaLabel(child, label)
+    if (match) {
+      return match
+    }
+  }
+  return null
+}
+
 describe('ContextualTourOverlaySurface', () => {
   it('renders visible progress and step copy', () => {
     const markup = renderToStaticMarkup(renderSurface())
@@ -106,7 +139,7 @@ describe('ContextualTourOverlaySurface', () => {
     expect(markup).toContain('Step 1 of 3')
     expect(markup).toContain('Choose the work source')
     expect(markup).toContain('Switch between connected providers')
-    expect(markup).toContain('Skip')
+    expect(markup).toContain('aria-label="Skip tour"')
     expect(markup).toContain('Next')
   })
 
@@ -126,12 +159,26 @@ describe('ContextualTourOverlaySurface', () => {
     expect(markup).toContain('Done')
   })
 
+  it('does not render a step label for single-step tours', () => {
+    const markup = renderToStaticMarkup(
+      renderSurface({
+        progress: { current: 1, total: 1 },
+        title: 'Split panes for agents',
+        isLastStep: true,
+        isFirstStep: true
+      })
+    )
+
+    expect(markup).not.toContain('Step 1')
+    expect(markup).toContain('Split panes for agents')
+  })
+
   it('renders configured step controls inside the tour panel', () => {
     const markup = renderToStaticMarkup(
       renderSurface({
         control: { kind: 'auto-rename-branch-from-work' },
-        title: 'Name it now or let Orca do it',
-        body: 'Type a name if you know it.'
+        title: 'Name it, or start from existing work',
+        body: 'Start a workspace from a task source to inherit the title.'
       })
     )
 
@@ -162,7 +209,7 @@ describe('ContextualTourOverlaySurface', () => {
     const onNext = vi.fn()
     const element = renderSurface({}, { onSkip, onNext })
 
-    findElementByText(element, 'Skip')?.props.onClick?.()
+    findElementByAriaLabel(element, 'Skip tour')?.props.onClick?.()
     findElementByText(element, 'Next')?.props.onClick?.()
 
     expect(onSkip).toHaveBeenCalledWith('tasks')

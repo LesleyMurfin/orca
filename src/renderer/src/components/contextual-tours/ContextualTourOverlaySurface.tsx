@@ -1,11 +1,12 @@
 import { createPortal } from 'react-dom'
 import { type CSSProperties, type JSX, type KeyboardEvent, type RefObject } from 'react'
-import { ArrowLeft, ArrowRight } from 'lucide-react'
+import { ArrowLeft, ArrowRight, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/store'
 import type {
   ContextualTourId,
+  ContextualTourStepPlacement,
   ContextualTourStepControl
 } from '../../../../shared/contextual-tours'
 import { ContextualTourArrow } from './ContextualTourArrow'
@@ -24,6 +25,7 @@ export type ActiveTourRenderState = {
   title: string
   body: string
   control?: ContextualTourStepControl
+  preferredPlacement?: ContextualTourStepPlacement
   isLastStep: boolean
   isFirstStep: boolean
   panelHost: HTMLElement | null
@@ -57,7 +59,7 @@ if (typeof window !== 'undefined') {
 }
 
 const PANEL_BASE_CLASSES =
-  'rounded-lg border border-border bg-popover text-popover-foreground shadow-[0_10px_24px_rgba(0,0,0,0.18)] backdrop-blur-[2px]'
+  'orca-contextual-tour-panel rounded-lg border border-border text-popover-foreground backdrop-blur-[2px]'
 
 const PANEL_ANIMATION_CLASSES = 'animate-in fade-in-0 zoom-in-95 duration-200 ease-out'
 
@@ -104,7 +106,17 @@ export function ContextualTourOverlaySurface({
     >
       {panelPlacement ? <ContextualTourArrow placement={panelPlacement} /> : null}
       <div key={stepKey} className="animate-in fade-in-0 duration-150 ease-out p-4">
-        <h2 className="text-sm font-semibold tracking-tight text-foreground">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label={renderState.isLastStep ? 'Dismiss tour' : 'Skip tour'}
+          onClick={() => onSkip(activeTourId)}
+          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+        >
+          <X />
+        </Button>
+        <h2 className="pr-6 text-sm font-semibold tracking-tight text-foreground">
           {renderState.title}
         </h2>
         <p className="mt-1.5 text-xs leading-5 text-muted-foreground">{renderState.body}</p>
@@ -121,15 +133,6 @@ export function ContextualTourOverlaySurface({
                 Back
               </Button>
             ) : null}
-            <Button
-              type="button"
-              variant="ghost"
-              size="xs"
-              aria-label={renderState.isLastStep ? 'Dismiss tour' : 'Skip tour'}
-              onClick={() => onSkip(activeTourId)}
-            >
-              {renderState.isLastStep ? 'Dismiss' : 'Skip'}
-            </Button>
             <Button type="button" size="xs" onClick={onNext}>
               {renderState.isLastStep ? 'Done' : 'Next'}
               {!renderState.isLastStep ? <ArrowRight /> : null}
