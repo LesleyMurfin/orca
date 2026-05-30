@@ -365,6 +365,38 @@ describe('handleOscLink', () => {
     })
   })
 
+  it('opens UNC file URL links with line and column anchors', async () => {
+    setPlatform('Windows')
+
+    handleOscLink(
+      'file://Server/Share/Repo/src/app.ts#L12C3',
+      { metaKey: false, ctrlKey: true },
+      {
+        ...deps,
+        worktreePath: '//Server/Share/Repo'
+      }
+    )
+    await flushAsyncWork()
+    await flushDoubleRaf()
+
+    expect(authorizeExternalPathMock).toHaveBeenCalledWith({
+      targetPath: '//server/Share/Repo/src/app.ts'
+    })
+    expect(openFileMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filePath: '//server/Share/Repo/src/app.ts',
+        relativePath: 'src/app.ts'
+      })
+    )
+    expect(setPendingEditorRevealMock).toHaveBeenNthCalledWith(1, null)
+    expect(setPendingEditorRevealMock).toHaveBeenNthCalledWith(2, {
+      filePath: '//server/Share/Repo/src/app.ts',
+      line: 12,
+      column: 3,
+      matchLength: 0
+    })
+  })
+
   it('opens relative OSC file links against the terminal cwd', async () => {
     setPlatform('Macintosh')
 

@@ -13,6 +13,15 @@ describe('terminal path helpers', () => {
     expect(toWorktreeRelativePath('C:\\repo\\src\\file.ts', 'C:\\repo')).toBe('src/file.ts')
   })
 
+  it('keeps worktree-relative paths on forward-slash UNC external files', () => {
+    expect(isPathInsideWorktree('//server/share/repo/src/file.ts', '//Server/Share/Repo')).toBe(
+      true
+    )
+    expect(toWorktreeRelativePath('//server/share/repo/src/file.ts', '//Server/Share/Repo')).toBe(
+      'src/file.ts'
+    )
+  })
+
   describe('extractTerminalFileLinks bare-filename tokens', () => {
     it('does not treat regular URL hosts as local file paths', () => {
       expect(
