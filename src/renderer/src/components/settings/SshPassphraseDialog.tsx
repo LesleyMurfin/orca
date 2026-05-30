@@ -37,6 +37,8 @@ export function SshPassphraseDialog(): React.JSX.Element | null {
     }
   }
 
+  // Why: focusing from the ref callback avoids a passive request-id Effect while
+  // still canceling stale frames when the request or mounted input changes.
   const setInputRef = useCallback(
     (input: HTMLInputElement | null): void => {
       inputRef.current = input
