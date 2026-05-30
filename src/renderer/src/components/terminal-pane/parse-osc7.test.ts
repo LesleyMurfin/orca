@@ -18,6 +18,16 @@ describe('parseOsc7', () => {
     expect(parseOsc7('file:///C:/Users/jin/repo')).toBe('C:/Users/jin/repo')
   })
 
+  it('preserves Windows UNC cwd paths', () => {
+    expect(parseOsc7('file://server/share/project', { preserveHostAsUnc: true })).toBe(
+      '\\\\server\\share\\project'
+    )
+  })
+
+  it('keeps POSIX host-prefixed paths unchanged by default', () => {
+    expect(parseOsc7('file://server/share/project')).toBe('/share/project')
+  })
+
   it('returns null for non-file URIs', () => {
     expect(parseOsc7('http://example.com/')).toBeNull()
   })
