@@ -17,7 +17,7 @@ describe('electron-builder config', () => {
     async () => {
       const root = await mkdtemp(join(tmpdir(), 'orca-electron-builder-config-'))
       const resourcesDir = join(root, 'linux-unpacked', 'resources')
-      const launcherPath = join(resourcesDir, 'bin', 'orca')
+      const launcherPath = join(resourcesDir, 'bin', 'orca-ide')
       await mkdir(join(resourcesDir, 'bin'), { recursive: true })
       await writeFile(launcherPath, '#!/usr/bin/env bash\n', { encoding: 'utf8', mode: 0o644 })
 
@@ -29,4 +29,14 @@ describe('electron-builder config', () => {
       expect((await stat(launcherPath)).mode & 0o111).not.toBe(0)
     }
   )
+
+  it('builds RPMs without changing existing Linux artifact names', () => {
+    expect(electronBuilderConfig.linux.target).toEqual(['AppImage', 'deb', 'rpm'])
+    expect(electronBuilderConfig.appImage.artifactName).toBe('orca-linux.${ext}')
+    expect(electronBuilderConfig.deb.artifactName).toBe('orca-ide_${version}_${arch}.${ext}')
+    expect(electronBuilderConfig.rpm).toMatchObject({
+      packageName: 'orca-ide',
+      artifactName: 'orca-ide-${version}.${arch}.${ext}'
+    })
+  })
 })
