@@ -11,4 +11,8 @@ describe('resolveTerminalFileUrlTarget', () => {
       column: 3
     })
   })
+
+  it('returns null for malformed file URL escapes', () => {
+    expect(resolveTerminalFileUrlTarget(new URL('file:///tmp/%E0%A4%A.txt'))).toBeNull()
+  })
 })

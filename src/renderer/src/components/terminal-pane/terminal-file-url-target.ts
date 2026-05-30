@@ -29,7 +29,12 @@ function parseFilePathTrailingLineTarget(filePath: string): TerminalFileUrlTarge
 }
 
 export function resolveTerminalFileUrlTarget(parsed: URL): TerminalFileUrlTarget | null {
-  const decodedPathname = decodeURIComponent(parsed.pathname)
+  let decodedPathname: string
+  try {
+    decodedPathname = decodeURIComponent(parsed.pathname)
+  } catch {
+    return null
+  }
   let filePath: string
   if (parsed.hostname && parsed.hostname !== 'localhost') {
     // Why: file://server/share/path is the URL form of a Windows UNC path.
