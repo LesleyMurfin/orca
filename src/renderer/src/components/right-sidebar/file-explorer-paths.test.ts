@@ -27,4 +27,11 @@ describe('file explorer paths', () => {
   it('builds reveal ancestors for Windows paths even when casing differs', () => {
     expect(getRevealAncestorDirs('C:\\Repo', 'c:\\repo\\src\\app.ts')).toEqual(['C:\\Repo\\src'])
   })
+
+  it('builds reveal ancestors for Windows drive-root worktrees', () => {
+    expect(getRevealAncestorDirs('C:\\', 'c:\\repo\\src\\app.ts')).toEqual([
+      'C:\\repo',
+      'C:\\repo\\src'
+    ])
+  })
 })
