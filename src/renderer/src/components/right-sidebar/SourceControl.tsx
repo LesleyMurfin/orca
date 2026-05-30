@@ -919,7 +919,7 @@ export function HostedReviewHeaderLink({
 }
 
 function SourceControlInner(): React.JSX.Element {
-  const sourceControlRef = useRef<HTMLDivElement>(null)
+  const sourceControlRef = useRef<HTMLDivElement | null>(null)
   const pendingCommentEditorRevealFrameIdsRef = useRef<number[]>([])
   // Why: React setState is async, so a rapid double-click on the Commit
   // button can both pass the isCommitting state guard before the disabled
@@ -1029,8 +1029,13 @@ function SourceControlInner(): React.JSX.Element {
     useState<PendingDiffCommentsClear | null>(null)
   const [isClearingDiffComments, setIsClearingDiffComments] = useState(false)
 
-  useEffect(() => {
-    return () => cancelSourceControlEditorRevealFrames(pendingCommentEditorRevealFrameIdsRef)
+  const setSourceControlRoot = useCallback((node: HTMLDivElement | null) => {
+    // Why: markdown-note reveal frames target the Source Control surface; cancel
+    // them when that surface unmounts instead of from a passive Effect.
+    if (node === null) {
+      cancelSourceControlEditorRevealFrames(pendingCommentEditorRevealFrameIdsRef)
+    }
+    sourceControlRef.current = node
   }, [])
 
   const handleCopyDiffComments = useCallback(async (): Promise<void> => {
@@ -3911,7 +3916,7 @@ function SourceControlInner(): React.JSX.Element {
 
   return (
     <>
-      <div ref={sourceControlRef} className="relative flex h-full flex-col overflow-hidden">
+      <div ref={setSourceControlRoot} className="relative flex h-full flex-col overflow-hidden">
         <div className="flex items-center px-3 pt-2 border-b border-border">
           {(['all', 'uncommitted'] as const).map((value) => (
             <button
