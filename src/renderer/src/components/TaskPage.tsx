@@ -3731,6 +3731,7 @@ export default function TaskPage(): React.JSX.Element {
     (issue: LinearIssue): void => {
       const linkedWorkItem: LinkedWorkItemSummary = {
         type: 'issue',
+        provider: 'linear',
         number: 0,
         title: issue.title,
         url: issue.url,
@@ -3760,9 +3761,11 @@ export default function TaskPage(): React.JSX.Element {
     (issue: JiraIssue): void => {
       const linkedWorkItem: LinkedWorkItemSummary = {
         type: 'issue',
+        provider: 'jira',
         number: 0,
         title: `${issue.key} ${issue.title}`,
-        url: issue.url
+        url: issue.url,
+        jiraIdentifier: issue.key
       }
       openModal('new-workspace-composer', {
         linkedWorkItem,
