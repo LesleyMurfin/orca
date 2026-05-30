@@ -22,15 +22,9 @@ import {
 import { useConfirmationDialog } from '@/components/confirmation-dialog'
 import { presentGitHubPRMergeState } from '@/components/github-pr-merge-state'
 import type { PRInfo, Repo, Worktree } from '../../../../shared/types'
+import type { GitHubPRMergeMethod } from '../../../../shared/types'
+import { resolveGitHubPRMergeMethods } from '../../../../shared/github-pr-merge-methods'
 import { runWorktreeDelete } from '../sidebar/delete-worktree-flow'
-
-const MERGE_METHODS = ['squash', 'merge', 'rebase'] as const
-
-const MERGE_LABELS: Record<(typeof MERGE_METHODS)[number], string> = {
-  squash: 'Squash and merge',
-  merge: 'Create a merge commit',
-  rebase: 'Rebase and merge'
-}
 
 export default function PRActions({
   pr,
@@ -52,6 +46,7 @@ export default function PRActions({
   const [actionError, setActionError] = useState<string | null>(null)
 
   const mergePresentation = presentGitHubPRMergeState(pr)
+  const mergeMethods = resolveGitHubPRMergeMethods(pr.mergeMethodSettings)
   const isUpdatingPRState = stateUpdating !== null
   const primaryMergeDisabled =
     merging ||
@@ -62,7 +57,7 @@ export default function PRActions({
   const menuDisabled = merging || isUpdatingPRState
 
   const handleMerge = useCallback(
-    async (method: 'merge' | 'squash' | 'rebase' = 'squash') => {
+    async (method: GitHubPRMergeMethod = mergeMethods.defaultMethod) => {
       setMerging(true)
       setActionError(null)
       try {
@@ -84,7 +79,7 @@ export default function PRActions({
         setMerging(false)
       }
     },
-    [repo.id, repo.path, pr.number, pr.prRepo, onRefreshPR]
+    [repo.id, repo.path, pr.number, pr.prRepo, onRefreshPR, mergeMethods.defaultMethod]
   )
 
   const handleAutoMerge = useCallback(async () => {
@@ -195,7 +190,7 @@ export default function PRActions({
                     onClick={() =>
                       mergePresentation.autoMergeAction && !mergePresentation.directMergeAvailable
                         ? void handleAutoMerge()
-                        : void handleMerge('squash')
+                        : void handleMerge(mergeMethods.defaultMethod)
                     }
                     disabled={primaryMergeDisabled}
                   >
@@ -207,7 +202,7 @@ export default function PRActions({
                     {merging
                       ? 'Working...'
                       : mergePresentation.directMergeAvailable
-                        ? 'Squash and merge'
+                        ? mergeMethods.defaultLabel
                         : (mergePresentation.autoMergeAction?.label ?? mergePresentation.label)}
                   </Button>
                 </span>
@@ -252,14 +247,14 @@ export default function PRActions({
                     <DropdownMenuSeparator />
                   </>
                 )}
-                {MERGE_METHODS.map((method) => (
+                {mergeMethods.methods.map(({ method, label }) => (
                   <DropdownMenuItem
                     key={method}
                     disabled={directMergeDisabled}
                     onSelect={() => void handleMerge(method)}
                   >
                     <GitMerge className="size-3.5" />
-                    {MERGE_LABELS[method]}
+                    {label}
                   </DropdownMenuItem>
                 ))}
                 <DropdownMenuSeparator />
