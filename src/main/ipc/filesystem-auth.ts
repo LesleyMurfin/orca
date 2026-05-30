@@ -52,8 +52,7 @@ export function isDescendantOrEqual(resolvedTarget: string, resolvedBase: string
   // where relative('D:\\repo', 'C:\\etc\\passwd') returns absolute path 'C:\\etc\\passwd'
   return (
     rel !== '' &&
-    rel !== '..' &&
-    !rel.startsWith(`..${sep}`) &&
+    !(rel === '..' || rel.startsWith(`..${sep}`)) &&
     !isAbsolute(rel) &&
     resolve(resolvedBase, rel) === resolvedTarget
   )
