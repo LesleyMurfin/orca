@@ -32,6 +32,9 @@ describe('sftp-upload', () => {
     expect(sftp.createWriteStream).toHaveBeenCalledWith('/remote/.logo.orca-upload', {
       flags: 'wx'
     })
+    const writeStream = vi.mocked(sftp.createWriteStream).mock.results[0]?.value as Writable
+    expect(writeStream.listenerCount('close')).toBe(0)
+    expect(writeStream.listenerCount('error')).toBe(0)
   })
 
   it('uses no-clobber writes for nested files during exclusive directory upload', async () => {
@@ -48,6 +51,9 @@ describe('sftp-upload', () => {
     expect(sftp.createWriteStream).toHaveBeenCalledWith('/remote/assets/nested/asset.txt', {
       flags: 'wx'
     })
+    const writeStream = vi.mocked(sftp.createWriteStream).mock.results[0]?.value as Writable
+    expect(writeStream.listenerCount('close')).toBe(0)
+    expect(writeStream.listenerCount('error')).toBe(0)
   })
 
   it('does not create the remote file when the local source is a symlink', async () => {
