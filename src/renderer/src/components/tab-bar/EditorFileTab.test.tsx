@@ -212,6 +212,7 @@ async function renderEditorFileTab(
       unifiedTabId: file.id,
       visibleTabId: file.id,
       tabType: 'editor',
+      isPinned: false,
       label: file.relativePath,
       iconPath: file.filePath
     }

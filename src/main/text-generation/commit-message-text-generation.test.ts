@@ -610,6 +610,42 @@ describe('generateCommitMessageFromContext', () => {
     })
   })
 
+  it('reports empty remote commit-message output as an empty message', async () => {
+    let operation = ''
+    const result = await generateCommitMessageFromContext(
+      {
+        branch: 'main',
+        stagedSummary: 'M\tREADME.md',
+        stagedPatch: '+hello'
+      },
+      {
+        agentId: 'custom',
+        model: '',
+        customAgentCommand: 'agent'
+      },
+      {
+        kind: 'remote',
+        cwd: '/repo',
+        missingBinaryLocation: 'remote PATH',
+        execute: async (_plan, _cwd, _timeoutMs, requestedOperation) => {
+          operation = requestedOperation
+          return {
+            stdout: '   \n',
+            stderr: '',
+            exitCode: 0,
+            timedOut: false
+          }
+        }
+      }
+    )
+
+    expect(operation).toBe('commit-message')
+    expect(result).toEqual({
+      success: false,
+      error: 'agent returned an empty message.'
+    })
+  })
+
   it('sanitizes remote execution transport failures', async () => {
     const result = await generateCommitMessageFromContext(
       {
@@ -813,6 +849,130 @@ describe('generateCommitMessageFromContext', () => {
     expect(children[1]?.kill).not.toHaveBeenCalled()
   })
 
+  it('keeps local pull-request cancellation from stopping commit-message generation', async () => {
+    const children: {
+      kill: ReturnType<typeof vi.fn>
+      listeners: Map<string, (value: unknown) => void>
+    }[] = []
+    spawnMock.mockImplementation(() => {
+      const listeners = new Map<string, (value: unknown) => void>()
+      const child = {
+        pid: 123 + children.length,
+        kill: vi.fn(),
+        stdout: { on: vi.fn((event, callback) => listeners.set(`stdout:${event}`, callback)) },
+        stderr: { on: vi.fn((event, callback) => listeners.set(`stderr:${event}`, callback)) },
+        stdin: { end: vi.fn() },
+        on: vi.fn((event, callback) => listeners.set(event, callback))
+      }
+      children.push({ kill: child.kill, listeners })
+      return child as never
+    })
+
+    const commit = generateCommitMessageFromContext(
+      {
+        branch: 'main',
+        stagedSummary: 'M\tREADME.md',
+        stagedPatch: '+hello'
+      },
+      {
+        agentId: 'custom',
+        model: '',
+        customAgentCommand: 'agent'
+      },
+      {
+        kind: 'local',
+        cwd: '/repo'
+      }
+    )
+    const pullRequest = generatePullRequestFieldsFromContext(
+      {
+        branch: 'feature/pr-fields',
+        base: 'main',
+        branchChangedByPreparation: false,
+        currentTitle: '',
+        currentBody: '',
+        currentDraft: false,
+        commitSummary: '- feat: update README',
+        changeSummary: 'M\tREADME.md',
+        patch: '+hello'
+      },
+      {
+        agentId: 'custom',
+        model: '',
+        customAgentCommand: 'agent'
+      },
+      {
+        kind: 'local',
+        cwd: '/repo'
+      }
+    )
+
+    cancelGeneratePullRequestFieldsLocal('/repo')
+
+    expect(children[0]?.kill).not.toHaveBeenCalled()
+    expect(children[1]?.kill).toHaveBeenCalledWith('SIGKILL')
+
+    const commitStdout = children[0]?.listeners.get('stdout:data')
+    commitStdout?.(Buffer.from('Update README\n'))
+    children[0]?.listeners.get('close')?.(0)
+    children[1]?.listeners.get('close')?.(null)
+
+    await expect(commit).resolves.toEqual({
+      success: true,
+      message: 'Update README',
+      agentLabel: 'agent'
+    })
+    await expect(pullRequest).resolves.toEqual({
+      success: false,
+      error: 'Generation canceled.',
+      canceled: true,
+      branchChangedByPreparation: false
+    })
+  })
+
+  it('reports empty remote pull-request field output as empty details', async () => {
+    let operation = ''
+    const result = await generatePullRequestFieldsFromContext(
+      {
+        branch: 'feature/pr-fields',
+        base: 'main',
+        branchChangedByPreparation: false,
+        currentTitle: '',
+        currentBody: '',
+        currentDraft: false,
+        commitSummary: '- feat: update README',
+        changeSummary: 'M\tREADME.md',
+        patch: '+hello'
+      },
+      {
+        agentId: 'custom',
+        model: '',
+        customAgentCommand: 'agent'
+      },
+      {
+        kind: 'remote',
+        cwd: '/repo',
+        missingBinaryLocation: 'remote PATH',
+        execute: async (_plan, _cwd, _timeoutMs, requestedOperation) => {
+          operation = requestedOperation
+          return {
+            stdout: '   \n',
+            stderr: '',
+            exitCode: 0,
+            timedOut: false
+          }
+        }
+      }
+    )
+
+    expect(operation).toBe('pull-request-fields')
+    expect(result).toEqual({
+      success: false,
+      error: 'agent returned an empty details.',
+      branchChangedByPreparation: false
+    })
+  })
+
   it('reports branch changes when pull request field output cannot be parsed', async () => {
     const listeners = new Map<string, (value: unknown) => void>()
     spawnMock.mockReturnValue({
@@ -902,6 +1062,70 @@ describe('generateCommitMessageFromContext', () => {
       canceled: true,
       branchChangedByPreparation: true
     })
+  })
+
+  it('settles local commit-message cancellation even when the killed child does not close', async () => {
+    vi.useFakeTimers()
+    try {
+      const listeners = new Map<string, (value: unknown) => void>()
+      const removeListener = (key: string, callback: (value: unknown) => void): void => {
+        if (listeners.get(key) === callback) {
+          listeners.delete(key)
+        }
+      }
+      const child = {
+        pid: 123,
+        kill: vi.fn(),
+        stdout: {
+          on: vi.fn((event, callback) => listeners.set(`stdout:${event}`, callback)),
+          off: vi.fn((event, callback) => removeListener(`stdout:${event}`, callback))
+        },
+        stderr: {
+          on: vi.fn((event, callback) => listeners.set(`stderr:${event}`, callback)),
+          off: vi.fn((event, callback) => removeListener(`stderr:${event}`, callback))
+        },
+        stdin: { end: vi.fn() },
+        on: vi.fn((event, callback) => listeners.set(event, callback)),
+        off: vi.fn((event, callback) => removeListener(event, callback))
+      }
+      spawnMock.mockReturnValue(child as never)
+
+      const pending = generateCommitMessageFromContext(
+        {
+          branch: 'main',
+          stagedSummary: 'M\tREADME.md',
+          stagedPatch: '+hello'
+        },
+        {
+          agentId: 'custom',
+          model: '',
+          customAgentCommand: 'agent'
+        },
+        {
+          kind: 'local',
+          cwd: '/repo'
+        }
+      )
+      const outcomePromise = pending.then((result) =>
+        !result.success && result.canceled ? 'canceled' : 'other'
+      )
+
+      cancelGenerateCommitMessageLocal('/repo')
+      expect(child.kill).toHaveBeenCalledWith('SIGKILL')
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      const outcome = await Promise.race([outcomePromise, Promise.resolve('pending')])
+
+      expect(outcome).toBe('canceled')
+      expect(listeners.has('stdout:data')).toBe(false)
+      expect(listeners.has('stderr:data')).toBe(false)
+      expect(listeners.has('error')).toBe(false)
+      expect(listeners.has('close')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('routes Windows batch-script agent commands through cmd.exe', async () => {

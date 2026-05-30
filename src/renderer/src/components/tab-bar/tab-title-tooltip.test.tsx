@@ -1,16 +1,19 @@
 import { cloneElement, isValidElement, type ReactElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   BrowserTab as BrowserTabState,
   GitFileStatus,
-  TerminalTab
+  TerminalTab,
+  TuiAgent
 } from '../../../../shared/types'
 import type { OpenFile } from '../../store/slices/editor'
 import type { TabDragItemData } from '../tab-group/useTabDragSplit'
 import BrowserTab from './BrowserTab'
 import EditorFileTab from './EditorFileTab'
 import SortableTab from './SortableTab'
+
+let mockTabAgent: TuiAgent | null = null
 
 vi.mock('@dnd-kit/sortable', () => ({
   useSortable: ({ id }: { id: string }) => ({
@@ -73,6 +76,19 @@ vi.mock('./shell-icons', () => ({
   ShellIcon: () => <span data-shell-icon />
 }))
 
+vi.mock('@/lib/agent-catalog', () => ({
+  AgentIcon: ({ agent }: { agent: string }) => <span data-agent-catalog-icon={agent} />
+}))
+
+vi.mock('@/lib/agent-title-decoration', () => ({
+  stripLeadingAgentTitleDecoration: (title: string) =>
+    title.replace(/^(?:[✳✦⏲◇✋⠀-⣿]+|[.*]\s)\s*/, '').trimStart() || title
+}))
+
+vi.mock('@/lib/use-tab-agent', () => ({
+  useTabAgent: () => mockTabAgent
+}))
+
 vi.mock('../../store', () => ({
   useAppStore: (selector: (state: { unreadTerminalTabs: Record<string, boolean> }) => unknown) =>
     selector({ unreadTerminalTabs: {} })
@@ -132,6 +148,7 @@ function makeDragData(tabType: TabDragItemData['tabType'], visibleTabId: string)
     unifiedTabId: `unified-${visibleTabId}`,
     visibleTabId,
     tabType,
+    isPinned: false,
     label: visibleTabId
   }
 }
@@ -199,6 +216,10 @@ function makeEditorFile(overrides: Partial<OpenFile & { tabId?: string }> = {}):
 }
 
 describe('tab title tooltips', () => {
+  beforeEach(() => {
+    mockTabAgent = null
+  })
+
   it('uses the terminal custom title for the visible label and tooltip trigger content', () => {
     const markup = renderToStaticMarkup(
       <SortableTab
@@ -227,6 +248,36 @@ describe('tab title tooltips', () => {
     expect(root).toContain('data-tooltip-trigger="true"')
     expect(root).toContain('role="tab"')
     expect(root).toContain('tabindex="0"')
+  })
+
+  it("shows the provider icon while stripping the agent's leading status glyph from the label", () => {
+    mockTabAgent = 'claude'
+    const markup = renderToStaticMarkup(
+      <SortableTab
+        tab={makeTerminalTab({ title: '✳ Claude Code' })}
+        tabCount={1}
+        hasTabsToRight={false}
+        isActive={true}
+        isPinned={false}
+        isExpanded={false}
+        onActivate={vi.fn()}
+        onClose={vi.fn()}
+        onCloseOthers={vi.fn()}
+        onCloseToRight={vi.fn()}
+        onSetCustomTitle={vi.fn()}
+        onSetTabColor={vi.fn()}
+        onTogglePin={vi.fn()}
+        onToggleExpand={vi.fn()}
+        onSplitGroup={vi.fn()}
+        dragData={makeDragData('terminal', 'terminal-1')}
+      />
+    )
+
+    expect(markup).toContain('data-agent-icon="claude"')
+    expectTooltipContent(markup, 'Claude Code')
+    expect(markup).toContain('<span class="truncate max-w-[72px] mr-1">Claude Code</span>')
+    expect(markup).not.toContain('data-shell-icon="generic"')
+    expect(markup).not.toContain('>✳ Claude Code</span>')
   })
 
   it('uses the browser tab fallback label from the tab prop, not the live URL', () => {

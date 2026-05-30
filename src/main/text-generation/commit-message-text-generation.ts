@@ -84,6 +84,8 @@ export type RemoteCommitMessageExecResult = {
   spawnError?: string
 }
 
+export type TextGenerationOperation = 'commit-message' | 'pull-request-fields' | 'branch-name'
+
 export type CommitMessageGenerationTarget =
   | { kind: 'local'; cwd: string; env?: NodeJS.ProcessEnv }
   | {
@@ -92,7 +94,8 @@ export type CommitMessageGenerationTarget =
       execute: (
         plan: CommitMessagePlan,
         cwd: string,
-        timeoutMs: number
+        timeoutMs: number,
+        operation: TextGenerationOperation
       ) => Promise<RemoteCommitMessageExecResult>
       missingBinaryLocation: string
     }
@@ -428,13 +431,11 @@ function killProcessTree(child: ChildProcess): void {
   }
 }
 
-type LocalGenerationOperation = 'commit-message' | 'pull-request-fields' | 'branch-name'
-
 // Keying by operation plus `local:${cwd}` keeps local cancellation independent
 // from SSH worktrees and from other generation features in the same worktree.
 const cancelTokensByLane = new Map<string, () => void>()
 
-function localLaneKey(operation: LocalGenerationOperation, cwd: string): string {
+function localLaneKey(operation: TextGenerationOperation, cwd: string): string {
   return `${operation}:local:${cwd}`
 }
 
@@ -447,7 +448,7 @@ async function runLocalPlan(
   cwd: string,
   env: NodeJS.ProcessEnv | undefined,
   emptyResultName = 'message',
-  operation: LocalGenerationOperation = 'commit-message'
+  operation: TextGenerationOperation = 'commit-message'
 ): Promise<InternalTextGenerationResult> {
   const { binary, args, stdinPayload, label } = plan
   return new Promise((resolve) => {
@@ -490,11 +491,18 @@ async function runLocalPlan(
     let canceledByUser = false
     const laneKey = localLaneKey(operation, cwd)
     let cancelToken: (() => void) | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let detachChildListeners = (): void => {}
     const finalize = (result: InternalTextGenerationResult): void => {
       if (settled) {
         return
       }
       settled = true
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+      detachChildListeners()
       if (cancelToken && cancelTokensByLane.get(laneKey) === cancelToken) {
         cancelTokensByLane.delete(laneKey)
       }
@@ -504,10 +512,13 @@ async function runLocalPlan(
     cancelToken = () => {
       canceledByUser = true
       killProcessTree(child)
+      // Why: cancellation is a user-visible UI command; do not wait for a
+      // wedged agent CLI to emit `close` before the request leaves loading.
+      finalize({ success: false, error: 'Generation canceled.', canceled: true })
     }
     cancelTokensByLane.set(laneKey, cancelToken)
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       killProcessTree(child)
       finalize({
         success: false,
@@ -515,7 +526,7 @@ async function runLocalPlan(
       })
     }, GENERATION_TIMEOUT_MS)
 
-    child.stdout?.on('data', (chunk: Buffer) => {
+    const onStdoutData = (chunk: Buffer): void => {
       stdoutBytes += chunk.byteLength
       if (stdoutBytes > MAX_AGENT_OUTPUT_BYTES) {
         outputLimitExceeded = true
@@ -523,8 +534,8 @@ async function runLocalPlan(
         return
       }
       stdout += chunk.toString('utf-8')
-    })
-    child.stderr?.on('data', (chunk: Buffer) => {
+    }
+    const onStderrData = (chunk: Buffer): void => {
       stderrBytes += chunk.byteLength
       if (stderrBytes > MAX_AGENT_OUTPUT_BYTES) {
         outputLimitExceeded = true
@@ -532,9 +543,8 @@ async function runLocalPlan(
         return
       }
       stderr += chunk.toString('utf-8')
-    })
-    child.on('error', (error) => {
-      clearTimeout(timer)
+    }
+    const onError = (error: Error): void => {
       const code = (error as NodeJS.ErrnoException).code
       if (code === 'ENOENT') {
         finalize({
@@ -548,9 +558,8 @@ async function runLocalPlan(
         success: false,
         error: `${label} failed to start. Check the agent command in Settings and try again.`
       })
-    })
-    child.on('close', (code) => {
-      clearTimeout(timer)
+    }
+    const onClose = (code: number | null): void => {
       if (canceledByUser) {
         finalize({ success: false, error: 'Generation canceled.', canceled: true })
         return
@@ -560,7 +569,17 @@ async function runLocalPlan(
         return
       }
       finalizeFromAgentOutput({ code, stdout, stderr, label, emptyResultName, finalize })
-    })
+    }
+    child.stdout?.on('data', onStdoutData)
+    child.stderr?.on('data', onStderrData)
+    child.on('error', onError)
+    child.on('close', onClose)
+    detachChildListeners = () => {
+      child.stdout?.off?.('data', onStdoutData)
+      child.stderr?.off?.('data', onStderrData)
+      child.off?.('error', onError)
+      child.off?.('close', onClose)
+    }
 
     child.stdin?.end(stdinPayload ?? undefined)
   })
@@ -621,12 +640,13 @@ function finalizeFromAgentOutput(args: {
 async function runRemotePlan(
   plan: CommitMessagePlan,
   target: Extract<CommitMessageGenerationTarget, { kind: 'remote' }>,
-  emptyResultName = 'message'
+  emptyResultName = 'message',
+  operation: TextGenerationOperation = 'commit-message'
 ): Promise<InternalTextGenerationResult> {
   const { binary, label } = plan
   let result: RemoteCommitMessageExecResult
   try {
-    result = await target.execute(plan, target.cwd, GENERATION_TIMEOUT_MS)
+    result = await target.execute(plan, target.cwd, GENERATION_TIMEOUT_MS, operation)
   } catch (error) {
     console.error('[commit-message] Remote generator request failed:', error)
     return {
@@ -709,8 +729,8 @@ export async function generateCommitMessageFromContext(
 
   const internalResult =
     target.kind === 'remote'
-      ? await runRemotePlan(planned.plan, target, 'details')
-      : await runLocalPlan(planned.plan, target.cwd, target.env, 'details')
+      ? await runRemotePlan(planned.plan, target)
+      : await runLocalPlan(planned.plan, target.cwd, target.env)
   return formatCommitMessageGenerationResult(internalResult)
 }
 
@@ -761,7 +781,7 @@ export async function generatePullRequestFieldsFromContext(
 
   const internalResult =
     target.kind === 'remote'
-      ? await runRemotePlan(planned.plan, target)
+      ? await runRemotePlan(planned.plan, target, 'details', 'pull-request-fields')
       : await runLocalPlan(planned.plan, target.cwd, target.env, 'details', 'pull-request-fields')
   return formatPullRequestFieldsGenerationResult(internalResult, context)
 }
@@ -788,7 +808,7 @@ export async function generateBranchNameFromContext(
 
   const internalResult =
     target.kind === 'remote'
-      ? await runRemotePlan(planned.plan, target, 'branch name')
+      ? await runRemotePlan(planned.plan, target, 'branch name', 'branch-name')
       : await runLocalPlan(planned.plan, target.cwd, target.env, 'branch name', 'branch-name')
   if (!internalResult.success) {
     return internalResult

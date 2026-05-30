@@ -180,6 +180,17 @@ function partitionPinnedTabOrder(tabOrder: string[], tabs: Tab[], movingTabId: s
   return [...pinnedIds, movingTabId, ...unpinnedIds]
 }
 
+function preservePinnedTabBoundary(
+  currentTabOrder: string[],
+  requestedTabOrder: string[],
+  tabs: Tab[]
+): string[] {
+  const tabById = new Map(tabs.map((tab) => [tab.id, tab]))
+  const pinnedIds = dedupeTabOrder(currentTabOrder).filter((id) => tabById.get(id)?.isPinned)
+  const unpinnedIds = dedupeTabOrder(requestedTabOrder).filter((id) => !tabById.get(id)?.isPinned)
+  return [...pinnedIds, ...unpinnedIds]
+}
+
 function applyTabOrderSortValues(tabs: Tab[], tabOrder: string[]): Tab[] {
   const orderMap = new Map(tabOrder.map((id, index) => [id, index]))
   return tabs.map((tab) => {
@@ -738,10 +749,11 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
         if (!group) {
           continue
         }
-        // Why: drag-and-drop should preserve a single canonical position for
-        // each tab. Sanitizing here restores the invariant at the store
-        // boundary so later group operations do not branch on duplicate ids.
-        const nextTabOrder = dedupeTabOrder(tabIds)
+        const currentTabs = state.unifiedTabsByWorktree[worktreeId] ?? []
+        // Why: drag payloads can arrive from local dnd, paired web runtime,
+        // or stale state. Sanitize once at the store boundary and keep pinned
+        // tabs in their protected left prefix even if a reorder payload crosses it.
+        const nextTabOrder = preservePinnedTabBoundary(group.tabOrder, tabIds, currentTabs)
         reordered = true
         const orderMap = new Map(nextTabOrder.map((id, index) => [id, index]))
         return {
@@ -751,7 +763,7 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
           },
           unifiedTabsByWorktree: {
             ...state.unifiedTabsByWorktree,
-            [worktreeId]: (state.unifiedTabsByWorktree[worktreeId] ?? []).map((tab) => {
+            [worktreeId]: currentTabs.map((tab) => {
               const sortOrder = orderMap.get(tab.id)
               return sortOrder === undefined ? tab : { ...tab, sortOrder }
             })

@@ -128,6 +128,7 @@ export default function BrowserTab({
     id: tab.id,
     data: dragData
   })
+  const dragListeners = isPinned ? undefined : listeners
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuPoint, setMenuPoint] = useState({ x: 0, y: 0 })
 
@@ -169,7 +170,7 @@ export default function BrowserTab({
       ref={setNodeRef}
       data-pinned={isPinned ? 'true' : 'false'}
       {...attributes}
-      {...listeners}
+      {...dragListeners}
       className={`group relative flex items-center h-full px-1.5 text-xs cursor-pointer select-none shrink-0 outline-none focus:outline-none focus-visible:outline-none border-t ${hasTabsToRight ? 'border-r' : ''} border-border bg-card ${getDropIndicatorClasses(dropIndicator ?? null)} ${
         isActive ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
       }`}
@@ -178,7 +179,7 @@ export default function BrowserTab({
           return
         }
         onActivate()
-        listeners?.onPointerDown?.(e)
+        dragListeners?.onPointerDown?.(e)
       }}
       onMouseDown={(e) => {
         if (e.button === 1) {

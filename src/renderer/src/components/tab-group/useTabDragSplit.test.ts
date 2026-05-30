@@ -20,6 +20,7 @@ function makeDragData(groupId: string, unifiedTabId = 'tab-1'): TabDragItemData 
     unifiedTabId,
     visibleTabId: unifiedTabId,
     tabType: 'editor',
+    isPinned: false,
     label: unifiedTabId
   }
 }
@@ -58,5 +59,18 @@ describe('canDropTabIntoPaneBody', () => {
         worktreeId: 'wt-1'
       })
     ).toBe(true)
+  })
+
+  it('rejects pinned tab pane-body drops', () => {
+    expect(
+      canDropTabIntoPaneBody({
+        activeDrag: { ...makeDragData('group-1'), isPinned: true },
+        groupsByWorktree: {
+          'wt-1': [makeGroup('group-1', ['tab-1']), makeGroup('group-2', ['tab-2'])]
+        },
+        overGroupId: 'group-2',
+        worktreeId: 'wt-1'
+      })
+    ).toBe(false)
   })
 })

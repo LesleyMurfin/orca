@@ -15,7 +15,7 @@ import {
   useSensor,
   useSensors
 } from '@dnd-kit/core'
-import type { TabGroup } from '../../../../shared/types'
+import type { TabGroup, TuiAgent } from '../../../../shared/types'
 import type { RuntimeMobileSessionTabMove } from '../../../../shared/runtime-types'
 import { useAppStore } from '../../store'
 import {
@@ -41,6 +41,7 @@ export type TabDragItemData = {
   unifiedTabId: string
   visibleTabId: string
   tabType: 'terminal' | 'editor' | 'browser'
+  isPinned: boolean
   /** Rendered by the DragOverlay ghost that follows the cursor across
    *  groups. Source tab strips use overflow-hidden, so without the overlay
    *  the dragged tab would be invisible once the cursor leaves its own
@@ -48,6 +49,11 @@ export type TabDragItemData = {
   label: string
   iconPath?: string
   color?: string | null
+  /** Coding-harness agent running in a terminal tab, so the drag ghost shows
+   *  the provider glyph and matches the resting tab. Resolved per-tab in
+   *  SortableTab (not at the TabBar level) to avoid re-rendering the whole tab
+   *  strip on every agent-status ping. */
+  agent?: TuiAgent | null
 }
 
 export type TabPaneDropData = {
@@ -87,7 +93,7 @@ export function canDropTabIntoPaneBody({
   overGroupId: string
   worktreeId: string
 }): boolean {
-  if (!activeDrag || activeDrag.worktreeId !== worktreeId) {
+  if (!activeDrag || activeDrag.worktreeId !== worktreeId || activeDrag.isPinned) {
     return false
   }
 
@@ -290,7 +296,7 @@ export function useTabDragSplit({
   const onDragStart = useCallback(
     (event: DragStartEvent) => {
       const dragData = event.active.data.current
-      if (!isTabDragData(dragData) || dragData.worktreeId !== worktreeId) {
+      if (!isTabDragData(dragData) || dragData.worktreeId !== worktreeId || dragData.isPinned) {
         clearDragState()
         return
       }
@@ -322,7 +328,12 @@ export function useTabDragSplit({
       const activeData = event.active.data.current
       const overData = event.over?.data.current
 
-      if (!event.over || !isTabDragData(activeData) || activeData.worktreeId !== worktreeId) {
+      if (
+        !event.over ||
+        !isTabDragData(activeData) ||
+        activeData.worktreeId !== worktreeId ||
+        activeData.isPinned
+      ) {
         clearDragState()
         return
       }

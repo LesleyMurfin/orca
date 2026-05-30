@@ -813,6 +813,22 @@ describe('TabsSlice', () => {
       const sorted = [...tabs].sort((a, b) => a.sortOrder - b.sortOrder)
       expect(sorted.map((t) => t.id)).toEqual([t3.id, t1.id, t2.id])
     })
+
+    it('keeps pinned tabs at the left edge when a reorder payload crosses them', () => {
+      const pinned = store.getState().createUnifiedTab(WT, 'terminal')
+      const first = store.getState().createUnifiedTab(WT, 'terminal')
+      const second = store.getState().createUnifiedTab(WT, 'terminal')
+      store.getState().pinTab(pinned.id)
+
+      const groupId = store.getState().groupsByWorktree[WT][0].id
+      store.getState().reorderUnifiedTabs(groupId, [first.id, second.id, pinned.id])
+
+      expect(store.getState().groupsByWorktree[WT][0].tabOrder).toEqual([
+        pinned.id,
+        first.id,
+        second.id
+      ])
+    })
   })
 
   describe('setTabGroupSplitRatio', () => {

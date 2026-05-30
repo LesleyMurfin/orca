@@ -18,6 +18,7 @@ function makeDragData(overrides: Partial<TabDragItemData> = {}): TabDragItemData
     unifiedTabId: 'tab-active',
     visibleTabId: 'tab-active',
     tabType: 'editor',
+    isPinned: false,
     label: 'file.ts',
     ...overrides
   }

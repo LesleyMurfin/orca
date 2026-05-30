@@ -143,6 +143,7 @@ async function renderBrowserTab(tab: BrowserTabState): Promise<unknown> {
       unifiedTabId: tab.id,
       visibleTabId: tab.id,
       tabType: 'browser',
+      isPinned: false,
       label: tab.title
     },
     dropIndicator: undefined
