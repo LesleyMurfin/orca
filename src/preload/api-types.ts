@@ -62,6 +62,7 @@ import type {
   IssueInfo,
   JiraComment,
   JiraConnectionStatus,
+  JiraCreateField,
   JiraCreateIssueArgs,
   JiraIssue,
   JiraIssueFilter,
@@ -1348,6 +1349,11 @@ export type PreloadApi = {
     issueComments: (args: { key: string; siteId?: string }) => Promise<JiraComment[]>
     listProjects: (args?: { siteId?: JiraSiteSelection }) => Promise<JiraProject[]>
     listIssueTypes: (args: { projectIdOrKey: string; siteId?: string }) => Promise<JiraIssueType[]>
+    listCreateFields: (args: {
+      projectIdOrKey: string
+      issueTypeId: string
+      siteId?: string
+    }) => Promise<JiraCreateField[]>
     listPriorities: (args?: { siteId?: string }) => Promise<JiraPriority[]>
     listAssignableUsers: (args: {
       key: string

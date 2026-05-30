@@ -1211,6 +1211,8 @@ export type {
   JiraComment,
   JiraConnectArgs,
   JiraConnectionStatus,
+  JiraCreateField,
+  JiraCreateFieldAllowedValue,
   JiraCreateIssueArgs,
   JiraCreateIssueResult,
   JiraIssue,
