@@ -108,24 +108,28 @@ export async function scanNestedRepos(args: {
     }
   }
 
-  const visit = async (dirPath: string, depth: number): Promise<void> => {
+  const foldersToTraverse = [{ path: args.path, depth: 0 }]
+  let nextFolderIndex = 0
+
+  while (nextFolderIndex < foldersToTraverse.length) {
     if (repos.length >= options.maxRepos) {
       truncated = true
-      return
+      break
     }
     if (Date.now() - startedAt > options.timeoutMs) {
       timedOut = true
-      return
+      break
     }
-    if (depth > options.maxDepth) {
-      return
+    const currentFolder = foldersToTraverse[nextFolderIndex++]
+    if (currentFolder.depth > options.maxDepth) {
+      continue
     }
 
     let entries: NestedRepoDirectoryEntry[]
     try {
-      entries = await filesystem.readDirectory(dirPath)
+      entries = await filesystem.readDirectory(currentFolder.path)
     } catch {
-      return
+      continue
     }
 
     const dirs = entries
@@ -135,31 +139,34 @@ export async function scanNestedRepos(args: {
       const name = entry.name
       if (repos.length >= options.maxRepos) {
         truncated = true
-        return
+        break
       }
       if (Date.now() - startedAt > options.timeoutMs) {
         timedOut = true
-        return
+        break
       }
-      if (shouldSkipDirectory(name, depth)) {
+      if (shouldSkipDirectory(name, currentFolder.depth)) {
         continue
       }
-      const childPath = filesystem.joinPath(dirPath, name)
+      const childPath = filesystem.joinPath(currentFolder.path, name)
       if (await filesystem.isGitRepoPath(childPath)) {
         repos.push({
           path: childPath,
           displayName: filesystem.basename(childPath),
-          depth: depth + 1
+          depth: currentFolder.depth + 1
         })
         // Project Groups organize sibling repos; nested repos stay hidden until a
         // later UI can explain and select submodule-style layouts explicitly.
         continue
       }
-      await visit(childPath, depth + 1)
+      // Why: group import should prefer nearby sibling repos over spending the
+      // bounded scan inside an alphabetically early, deeply nested folder.
+      if (currentFolder.depth < options.maxDepth) {
+        foldersToTraverse.push({ path: childPath, depth: currentFolder.depth + 1 })
+      }
     }
   }
 
-  await visit(args.path, 0)
   return {
     selectedPath: args.path,
     selectedPathKind: 'non_git_folder',

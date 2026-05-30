@@ -49,6 +49,36 @@ describe('scanNestedRepos', () => {
     expect(result.repos.map((repo) => repo.displayName)).toEqual(['service'])
   })
 
+  it('prefers shallow sibling repos before descending into non-repo folders', async () => {
+    const directories = new Map([
+      ['/workspace', ['ai-service', 'archive', 'billing-service']],
+      ['/workspace/archive', ['deep-service']]
+    ])
+    const gitRepos = new Set([
+      '/workspace/ai-service',
+      '/workspace/billing-service',
+      '/workspace/archive/deep-service'
+    ])
+
+    const result = await scanNestedRepos({
+      path: '/workspace',
+      options: { maxRepos: 2 },
+      filesystem: {
+        readDirectory: async (dirPath) =>
+          (directories.get(dirPath) ?? []).map((name) => ({ name, isDirectory: true })),
+        joinPath: (parentPath, childName) => `${parentPath}/${childName}`,
+        basename: (path) => path.split('/').at(-1) ?? path,
+        isGitRepoPath: (path) => gitRepos.has(path)
+      }
+    })
+
+    expect(result.repos.map((repo) => repo.path)).toEqual([
+      '/workspace/ai-service',
+      '/workspace/billing-service'
+    ])
+    expect(result.truncated).toBe(true)
+  })
+
   it('skips heavy directories and respects result caps', async () => {
     const root = await tempRoot()
     await mkdir(join(root, 'node_modules', 'ignored'), { recursive: true })
