@@ -52,6 +52,7 @@ export function MobilePane(): React.JSX.Element {
   const [selectedAddress, setSelectedAddress] = useState<string | undefined>(undefined)
   const [refreshingNetworkInterfaces, setRefreshingNetworkInterfaces] = useState(false)
   const [codeCopied, setCodeCopied] = useState(false)
+  const [deviceCountAtQr, setDeviceCountAtQr] = useState<number | null>(null)
   const codeCopiedResetTimerRef = useRef<number | null>(null)
   // Why: clipboard IPC can resolve after settings navigation; avoid starting
   // a reset timer that will outlive this pane.
@@ -116,6 +117,9 @@ export function MobilePane(): React.JSX.Element {
           setQrDataUrl(result.qrDataUrl)
           setPairingUrl(result.pairingUrl)
           setEndpoint(result.endpoint)
+          // Why: polling needs the device count from the moment this QR was minted,
+          // not a later count after `loadDevices` refreshes the paired-device list.
+          setDeviceCountAtQr(devices.length)
           clearCodeCopiedResetTimer()
           setCodeCopied(false)
           void loadDevices()
@@ -128,24 +132,13 @@ export function MobilePane(): React.JSX.Element {
         setLoading(false)
       }
     },
-    [clearCodeCopiedResetTimer, loadDevices, selectedAddress]
+    [clearCodeCopiedResetTimer, devices.length, loadDevices, selectedAddress]
   )
 
   useEffect(() => {
     void loadDevices()
     void loadNetworkInterfaces()
   }, [loadDevices, loadNetworkInterfaces])
-
-  // Why: after generating a QR code the device only appears once the phone
-  // actually connects (lastSeenAt > 0). Poll until a new device shows up.
-  const [deviceCountAtQr, setDeviceCountAtQr] = useState<number | null>(null)
-  useEffect(() => {
-    if (!qrDataUrl) {
-      setDeviceCountAtQr(null)
-      return
-    }
-    setDeviceCountAtQr(devices.length)
-  }, [qrDataUrl]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useMobilePairingDevicePolling({
     deviceCountAtQr,
