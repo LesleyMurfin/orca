@@ -3,6 +3,7 @@ import {
   MAX_IMAGE_VIEWER_ZOOM,
   MIN_IMAGE_VIEWER_ZOOM,
   clampImageViewerZoom,
+  getAnchoredImageViewerScrollOffset,
   getNextWheelImageViewerZoom,
   getPinchZoomFactor,
   getZoomedImageLayoutSize,
@@ -102,5 +103,35 @@ describe('image viewer zoom helpers', () => {
         zoom: 1
       })
     ).toBeNull()
+  })
+
+  it('keeps the zoom anchor stable by moving the scroll offset', () => {
+    expect(
+      getAnchoredImageViewerScrollOffset({
+        scrollOffset: 100,
+        anchorOffset: 200,
+        currentZoom: 1,
+        nextZoom: 2
+      })
+    ).toBe(400)
+    expect(
+      getAnchoredImageViewerScrollOffset({
+        scrollOffset: 400,
+        anchorOffset: 200,
+        currentZoom: 2,
+        nextZoom: 1
+      })
+    ).toBe(100)
+  })
+
+  it('leaves scroll unchanged when the current zoom is invalid', () => {
+    expect(
+      getAnchoredImageViewerScrollOffset({
+        scrollOffset: 100,
+        anchorOffset: 200,
+        currentZoom: 0,
+        nextZoom: 2
+      })
+    ).toBe(100)
   })
 })

@@ -1,26 +1,22 @@
 import { Image as ImageIcon, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
-import {
-  type CSSProperties,
-  type JSX,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from 'react'
+import { type JSX, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import ImageViewerPopup from './ImageViewerPopup'
 import PdfViewer from './PdfViewer'
+import {
+  type ApplyImageViewerZoomChange,
+  applyAnchoredImageViewerZoomChange,
+  applyImageSurfaceWheel,
+  getElementSurfaceSize,
+  getImageLayoutStyle
+} from './image-viewer-dom-zoom'
 import {
   IMAGE_VIEWER_ZOOM_STEP,
   MAX_IMAGE_VIEWER_ZOOM,
   MIN_IMAGE_VIEWER_ZOOM,
   type ImageViewerImageDimensions,
   type ImageViewerSurfaceSize,
-  clampImageViewerZoom,
-  getNextWheelImageViewerZoom,
-  getZoomedImageLayoutSize,
-  shouldHandleImageZoomWheel
+  getZoomedImageLayoutSize
 } from './image-viewer-zoom'
 
 const FALLBACK_IMAGE_MIME_TYPE = 'image/png'
@@ -30,39 +26,6 @@ type ImageViewerProps = {
   filePath: string
   mimeType?: string
   layout?: 'fill' | 'intrinsic'
-}
-
-function getElementSurfaceSize(element: HTMLElement): ImageViewerSurfaceSize {
-  return {
-    width: element.clientWidth,
-    height: element.clientHeight
-  }
-}
-
-function getImageLayoutStyle(size: ImageViewerImageDimensions | null): CSSProperties | undefined {
-  if (!size) {
-    return undefined
-  }
-
-  return {
-    width: `${size.width}px`,
-    height: `${size.height}px`
-  }
-}
-
-function applyImageSurfaceWheel(
-  event: WheelEvent,
-  applyZoomChange: (getNextZoom: (currentZoom: number) => number) => void
-): void {
-  if (!shouldHandleImageZoomWheel(event)) {
-    return
-  }
-
-  event.preventDefault()
-  event.stopPropagation()
-  applyZoomChange((currentZoom) =>
-    getNextWheelImageViewerZoom(currentZoom, event.deltaY, event.deltaMode)
-  )
 }
 
 export default function ImageViewer({
@@ -125,11 +88,11 @@ export default function ImageViewer({
     () => getImageLayoutStyle(popupImageLayoutSize),
     [popupImageLayoutSize]
   )
-  const applyInlineZoomChange = useCallback((getNextZoom: (currentZoom: number) => number) => {
-    setInlineZoom((currentZoom) => clampImageViewerZoom(getNextZoom(currentZoom)))
+  const applyInlineZoomChange = useCallback<ApplyImageViewerZoomChange>((getNextZoom, anchor) => {
+    applyAnchoredImageViewerZoomChange(inlineSurfaceRef.current, setInlineZoom, getNextZoom, anchor)
   }, [])
-  const applyPopupZoomChange = useCallback((getNextZoom: (currentZoom: number) => number) => {
-    setPopupZoom((currentZoom) => clampImageViewerZoom(getNextZoom(currentZoom)))
+  const applyPopupZoomChange = useCallback<ApplyImageViewerZoomChange>((getNextZoom, anchor) => {
+    applyAnchoredImageViewerZoomChange(popupSurfaceRef.current, setPopupZoom, getNextZoom, anchor)
   }, [])
   const openPopup = useCallback(() => {
     setPopupZoom(inlineZoom)

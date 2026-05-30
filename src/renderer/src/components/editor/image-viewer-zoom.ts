@@ -24,6 +24,11 @@ export type ImageViewerSurfaceSize = {
   height: number
 }
 
+export type ImageViewerZoomAnchor = {
+  x: number
+  y: number
+}
+
 export function clampImageViewerZoom(next: number): number {
   return Math.min(MAX_IMAGE_VIEWER_ZOOM, Math.max(MIN_IMAGE_VIEWER_ZOOM, next))
 }
@@ -100,4 +105,22 @@ export function getZoomedImageLayoutSize({
     width: imageDimensions.width * fitScale * boundedZoom,
     height: imageDimensions.height * fitScale * boundedZoom
   }
+}
+
+export function getAnchoredImageViewerScrollOffset({
+  scrollOffset,
+  anchorOffset,
+  currentZoom,
+  nextZoom
+}: {
+  scrollOffset: number
+  anchorOffset: number
+  currentZoom: number
+  nextZoom: number
+}): number {
+  if (currentZoom <= 0) {
+    return scrollOffset
+  }
+
+  return (scrollOffset + anchorOffset) * (nextZoom / currentZoom) - anchorOffset
 }
