@@ -14,6 +14,13 @@ type ReactElementLike = {
   props: Record<string, unknown>
 }
 
+type TestPanelBounds = {
+  height: number
+  left: number
+  top: number
+  width: number
+}
+
 type FloatingPanelStoreState = {
   tabsByWorktree: Record<string, TerminalTab[]>
   browserTabsByWorktree: Record<string, BrowserTab[]>
@@ -60,6 +67,7 @@ type FloatingPanelStoreState = {
 const hookRuntime = vi.hoisted(() => ({
   effects: [] as EffectCallback[],
   index: 0,
+  layoutEffects: [] as EffectCallback[],
   values: [] as unknown[]
 }))
 
@@ -97,6 +105,11 @@ const saveDialogBox = vi.hoisted(() => ({
   fileId: null as string | null
 }))
 
+const boundsBox = vi.hoisted(() => ({
+  defaultBounds: { height: 480, left: 20, top: 20, width: 720 } as TestPanelBounds,
+  defaultBoundsQueue: [] as TestPanelBounds[]
+}))
+
 vi.mock('react', async () => {
   const actual = await vi.importActual<typeof import('react')>('react') // eslint-disable-line @typescript-eslint/consistent-type-imports -- vi.importActual requires inline import()
   return {
@@ -104,6 +117,9 @@ vi.mock('react', async () => {
     useCallback: <T,>(callback: T) => callback,
     useEffect: (effect: EffectCallback) => {
       hookRuntime.effects.push(effect)
+    },
+    useLayoutEffect: (effect: EffectCallback) => {
+      hookRuntime.layoutEffects.push(effect)
     },
     useMemo: <T,>(factory: () => T) => factory(),
     useRef: <T,>(initialValue: T) => {
@@ -290,7 +306,10 @@ vi.mock('./FloatingTerminalWindowControls', () => ({
 
 vi.mock('./floating-terminal-panel-bounds', () => ({
   clampFloatingTerminalBounds: (bounds: unknown) => bounds,
-  getDefaultFloatingTerminalBounds: () => ({ height: 480, left: 20, top: 20, width: 720 }),
+  getDefaultFloatingTerminalBounds: () => {
+    const nextBounds = boundsBox.defaultBoundsQueue.shift() ?? boundsBox.defaultBounds
+    return { ...nextBounds }
+  },
   getMaximizedFloatingTerminalBounds: () => ({ height: 700, left: 0, top: 0, width: 1000 })
 }))
 
@@ -471,6 +490,13 @@ function runEffects(): void {
   }
 }
 
+function runLayoutEffects(): void {
+  const effects = hookRuntime.layoutEffects.splice(0)
+  for (const effect of effects) {
+    effect()
+  }
+}
+
 async function flushAsyncWork(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
@@ -516,8 +542,11 @@ describe('FloatingTerminalPanel close behavior', () => {
     vi.clearAllMocks()
     hookRuntime.effects = []
     hookRuntime.index = 0
+    hookRuntime.layoutEffects = []
     hookRuntime.values = []
     saveDialogBox.fileId = null
+    boundsBox.defaultBounds = { height: 480, left: 20, top: 20, width: 720 }
+    boundsBox.defaultBoundsQueue = []
     resetStore()
     mocks.createTab.mockReturnValue(makeTab({ id: 'created-tab' }))
     mocks.createWebRuntimeSessionBrowserTab.mockResolvedValue(false)
@@ -588,6 +617,28 @@ describe('FloatingTerminalPanel close behavior', () => {
     runEffects()
 
     expect(panelElement.focus).toHaveBeenCalledWith({ preventScroll: true })
+  })
+
+  it('normalizes stale first-open bounds before effects run', async () => {
+    boundsBox.defaultBoundsQueue = [
+      { height: 480, left: 20, top: 20, width: 720 },
+      { height: 480, left: 456, top: 20, width: 720 }
+    ]
+    vi.stubGlobal('window', {
+      ...window,
+      innerWidth: 1200
+    })
+
+    await renderPanel(true)
+    runLayoutEffects()
+    const element = await renderPanel(true)
+    const panel = findByProp(element, 'data-floating-terminal-panel')
+
+    expect(panel.props.style).toMatchObject({
+      left: 456,
+      width: 720
+    })
+    expect(mocks.getFloatingTerminalCwd).not.toHaveBeenCalled()
   })
 
   it('minimizes the empty floating workspace from the empty state', async () => {

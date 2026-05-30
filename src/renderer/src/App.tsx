@@ -365,18 +365,19 @@ function App(): React.JSX.Element {
 
   const setFloatingTerminalOpenWithFocus = useCallback(
     (nextOpen: SetStateAction<boolean>): void => {
-      setFloatingTerminalOpen((currentOpen) => {
-        const resolvedOpen = typeof nextOpen === 'function' ? nextOpen(currentOpen) : nextOpen
-        if (resolvedOpen && !currentOpen) {
-          useAppStore.getState().recordFeatureInteraction('floating-workspace')
-          rememberFloatingTerminalReturnFocus()
-        } else if (!resolvedOpen && currentOpen) {
-          restoreFloatingTerminalReturnFocus()
-        }
-        return resolvedOpen
-      })
+      const resolvedOpen =
+        typeof nextOpen === 'function' ? nextOpen(floatingTerminalOpen) : nextOpen
+      // Why: recordFeatureInteraction updates Zustand subscribers; doing it
+      // inside React's state updater logs a render-phase update warning.
+      if (resolvedOpen && !floatingTerminalOpen) {
+        useAppStore.getState().recordFeatureInteraction('floating-workspace')
+        rememberFloatingTerminalReturnFocus()
+      } else if (!resolvedOpen && floatingTerminalOpen) {
+        restoreFloatingTerminalReturnFocus()
+      }
+      setFloatingTerminalOpen(resolvedOpen)
     },
-    [rememberFloatingTerminalReturnFocus, restoreFloatingTerminalReturnFocus]
+    [floatingTerminalOpen, rememberFloatingTerminalReturnFocus, restoreFloatingTerminalReturnFocus]
   )
 
   useEffect(() => {

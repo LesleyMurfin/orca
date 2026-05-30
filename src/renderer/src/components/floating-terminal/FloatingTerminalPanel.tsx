@@ -2,7 +2,16 @@
  * resizing, orchestration setup, and mixed terminal/browser/editor tab
  * handling in one surface so the floating worktree does not drift from the
  * main tab model while still keeping the DOM-mounted panes local. */
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 import { FileText, Globe, Minus, TerminalSquare } from 'lucide-react'
 import { toast } from 'sonner'
 import BrowserPane from '@/components/browser-pane/BrowserPane'
@@ -342,7 +351,10 @@ export function FloatingTerminalPanel({
     handleSaveDialogCancel()
   }, [handleSaveDialogCancel])
 
-  if (open && !normalizedInitialBoundsRef.current && typeof window !== 'undefined') {
+  useLayoutEffect(() => {
+    if (!open || normalizedInitialBoundsRef.current || typeof window === 'undefined') {
+      return
+    }
     normalizedInitialBoundsRef.current = true
     const rightGap = window.innerWidth - bounds.left - bounds.width
     if (rightGap > 160) {
@@ -350,7 +362,7 @@ export function FloatingTerminalPanel({
       // dimensions. Normalize before the first open paint to avoid a visible jump.
       setBounds(getDefaultFloatingTerminalBounds())
     }
-  }
+  }, [bounds.left, bounds.width, open])
 
   useEffect(() => {
     void window.api.app
