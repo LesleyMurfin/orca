@@ -50,6 +50,22 @@ describe('sftp-upload', () => {
     })
   })
 
+  it('uploads nested directories whose names start with dotdot characters', async () => {
+    const localDir = await mkdtemp(join(tmpdir(), 'orca-sftp-upload-'))
+    await mkdir(join(localDir, '..assets'))
+    await writeFile(join(localDir, '..assets', 'asset.txt'), 'asset')
+    const sftp = createSftpMock()
+
+    await uploadDirectory(sftp, localDir, '/remote/assets', await realpath(localDir), {
+      exclusive: true
+    })
+
+    expect(sftp.mkdir).toHaveBeenCalledWith('/remote/assets/..assets', expect.any(Function))
+    expect(sftp.createWriteStream).toHaveBeenCalledWith('/remote/assets/..assets/asset.txt', {
+      flags: 'wx'
+    })
+  })
+
   it('does not create the remote file when the local source is a symlink', async () => {
     const localDir = await mkdtemp(join(tmpdir(), 'orca-sftp-upload-'))
     await writeFile(join(localDir, 'target.txt'), 'secret')

@@ -1,7 +1,7 @@
 import { constants } from 'fs'
 import type { ReadStream } from 'fs'
 import { lstat, open, readdir, realpath } from 'fs/promises'
-import { isAbsolute, join as pathJoin, relative } from 'path'
+import { isAbsolute, join as pathJoin, relative, sep } from 'path'
 import type { SFTPWrapper } from 'ssh2'
 
 export function mkdirSftp(
@@ -147,7 +147,11 @@ async function assertLocalUploadPathInsideRoot(
 ): Promise<void> {
   const candidateRealPath = await realpath(candidatePath)
   const relativeToRoot = relative(rootRealPath, candidateRealPath)
-  if (relativeToRoot !== '' && (relativeToRoot.startsWith('..') || isAbsolute(relativeToRoot))) {
+  // Why: `..name` is a valid child path; only `..` and `../...` escape.
+  if (
+    relativeToRoot !== '' &&
+    (relativeToRoot === '..' || relativeToRoot.startsWith(`..${sep}`) || isAbsolute(relativeToRoot))
+  ) {
     throw new Error(`Path escaped upload root: ${candidatePath}`)
   }
 }
