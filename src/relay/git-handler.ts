@@ -139,7 +139,7 @@ export class GitHandler {
     // path.join. Without validation, ../../etc/passwd traverses outside the worktree.
     const resolved = path.resolve(worktreePath, filePath)
     const rel = path.relative(path.resolve(worktreePath), resolved)
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
       throw new Error(`Path "${filePath}" resolves outside the worktree`)
     }
     return computeDiff(

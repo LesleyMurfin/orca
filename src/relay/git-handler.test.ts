@@ -424,6 +424,24 @@ describe('GitHandler', () => {
       expect(result.originalContent).toBe('original')
       expect(result.modifiedContent).toBe('staged-content')
     })
+
+    it('returns diff for tracked files in valid dot-dot-prefixed directories', async () => {
+      gitInit(tmpDir)
+      mkdirSync(path.join(tmpDir, '..fixtures'))
+      writeFileSync(path.join(tmpDir, '..fixtures', 'file.txt'), 'original')
+      gitCommit(tmpDir, 'initial')
+      writeFileSync(path.join(tmpDir, '..fixtures', 'file.txt'), 'modified')
+
+      const result = (await dispatcher.callRequest('git.diff', {
+        worktreePath: tmpDir,
+        filePath: '..fixtures/file.txt',
+        staged: false
+      })) as { kind: string; originalContent: string; modifiedContent: string }
+
+      expect(result.kind).toBe('text')
+      expect(result.originalContent).toBe('original')
+      expect(result.modifiedContent).toBe('modified')
+    })
   })
 
   describe('discard', () => {
