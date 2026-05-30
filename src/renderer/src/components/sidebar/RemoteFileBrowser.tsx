@@ -58,6 +58,7 @@ export function RemoteFileBrowser({
   const inputRef = useRef<HTMLInputElement>(null)
   const fileHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Cache directory listings by absolute resolved path for the lifetime of
   // the picker so ordinary typing issues at most one remote call per newly
   // committed segment. targetId does not change within a picker instance.
@@ -85,6 +86,9 @@ export function RemoteFileBrowser({
       }
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current)
+      }
+      if (clickTimerRef.current) {
+        clearTimeout(clickTimerRef.current)
       }
     }
   }, [])
@@ -404,15 +408,6 @@ export function RemoteFileBrowser({
   }, [resolvedPath, onSelect])
 
   // Single-click navigates; double-click on a folder selects it.
-  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => {
-    return () => {
-      if (clickTimerRef.current) {
-        clearTimeout(clickTimerRef.current)
-      }
-    }
-  }, [])
-
   // When preview is active, row clicks must be relative to the preview path,
   // not the committed `resolvedPath`.
   const listParentPath = preview?.resolvedPath ?? resolvedPath
