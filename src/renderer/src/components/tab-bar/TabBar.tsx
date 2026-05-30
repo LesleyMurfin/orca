@@ -198,34 +198,15 @@ function TabBarInner({
       ),
     [agentCmdOverrides, defaultAgent, detectedIds]
   )
-  const [runtimeHostPlatform, setRuntimeHostPlatform] = useState<NodeJS.Platform | null>(null)
-  useEffect(() => {
-    if (
-      !(globalThis as { __ORCA_WEB_CLIENT__?: boolean }).__ORCA_WEB_CLIENT__ ||
-      !activeRuntimeEnvironmentId
-    ) {
-      setRuntimeHostPlatform(null)
-      return
-    }
-    let cancelled = false
-    void window.api.runtime
-      .getStatus()
-      .then((status) => {
-        if (!cancelled) {
-          setRuntimeHostPlatform(status.hostPlatform ?? null)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setRuntimeHostPlatform(null)
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [activeRuntimeEnvironmentId])
-  const shouldShowWindowsShellMenu = isWindows || runtimeHostPlatform === 'win32'
-  const windowsTerminalCapabilities = useWindowsTerminalCapabilities(shouldShowWindowsShellMenu)
+  const shouldProbeWindowsShellCapabilities =
+    isWindows ||
+    (((globalThis as { __ORCA_WEB_CLIENT__?: boolean }).__ORCA_WEB_CLIENT__ ?? false) &&
+      activeRuntimeEnvironmentId !== null)
+  const windowsTerminalCapabilities = useWindowsTerminalCapabilities(
+    shouldProbeWindowsShellCapabilities
+  )
+  const shouldShowWindowsShellMenu =
+    isWindows || windowsTerminalCapabilities.hostPlatform === 'win32'
   const resolvedGroupId = groupId ?? worktreeId
 
   const statusByRelativePath = useMemo(() => buildStatusMap(gitStatusEntries), [gitStatusEntries])

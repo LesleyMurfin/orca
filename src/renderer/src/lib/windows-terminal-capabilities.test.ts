@@ -10,23 +10,27 @@ function stubTerminalCapabilityApi(args: {
   wslAvailable: boolean
   pwshAvailable: boolean
   wslDistros?: string[]
+  hostPlatform?: NodeJS.Platform | null
 }): {
   wslIsAvailable: ReturnType<typeof vi.fn>
   wslListDistros: ReturnType<typeof vi.fn>
   pwshIsAvailable: ReturnType<typeof vi.fn>
+  runtimeGetStatus: ReturnType<typeof vi.fn>
 } {
   const wslIsAvailable = vi.fn().mockResolvedValue(args.wslAvailable)
   const wslListDistros = vi.fn().mockResolvedValue(args.wslDistros ?? [])
   const pwshIsAvailable = vi.fn().mockResolvedValue(args.pwshAvailable)
+  const runtimeGetStatus = vi.fn().mockResolvedValue({ hostPlatform: args.hostPlatform ?? 'win32' })
 
   vi.stubGlobal('window', {
     api: {
       wsl: { isAvailable: wslIsAvailable, listDistros: wslListDistros },
-      pwsh: { isAvailable: pwshIsAvailable }
+      pwsh: { isAvailable: pwshIsAvailable },
+      runtime: { getStatus: runtimeGetStatus }
     }
   })
 
-  return { wslIsAvailable, wslListDistros, pwshIsAvailable }
+  return { wslIsAvailable, wslListDistros, pwshIsAvailable, runtimeGetStatus }
 }
 
 describe('windows terminal capabilities', () => {
@@ -45,6 +49,7 @@ describe('windows terminal capabilities', () => {
       wslAvailable: false,
       wslDistros: [],
       pwshAvailable: false,
+      hostPlatform: null,
       isLoading: false
     })
 
@@ -52,12 +57,14 @@ describe('windows terminal capabilities', () => {
       wslAvailable: true,
       wslDistros: [],
       pwshAvailable: true,
+      hostPlatform: 'win32',
       isLoading: false
     })
     expect(getCachedWindowsTerminalCapabilities()).toEqual({
       wslAvailable: true,
       wslDistros: [],
       pwshAvailable: true,
+      hostPlatform: 'win32',
       isLoading: false
     })
 
@@ -72,7 +79,8 @@ describe('windows terminal capabilities', () => {
     vi.stubGlobal('window', {
       api: {
         wsl: { isAvailable: wslIsAvailable, listDistros: vi.fn().mockResolvedValue([]) },
-        pwsh: { isAvailable: pwshIsAvailable }
+        pwsh: { isAvailable: pwshIsAvailable },
+        runtime: { getStatus: vi.fn().mockResolvedValue({ hostPlatform: 'win32' }) }
       }
     })
 
@@ -80,6 +88,7 @@ describe('windows terminal capabilities', () => {
       wslAvailable: true,
       wslDistros: [],
       pwshAvailable: false,
+      hostPlatform: 'win32',
       isLoading: false
     })
   })
@@ -90,7 +99,8 @@ describe('windows terminal capabilities', () => {
     vi.stubGlobal('window', {
       api: {
         wsl: { isAvailable: wslIsAvailable, listDistros: vi.fn().mockResolvedValue([]) },
-        pwsh: { isAvailable: pwshIsAvailable }
+        pwsh: { isAvailable: pwshIsAvailable },
+        runtime: { getStatus: vi.fn().mockResolvedValue({ hostPlatform: 'win32' }) }
       }
     })
 
@@ -113,7 +123,8 @@ describe('windows terminal capabilities', () => {
     vi.stubGlobal('window', {
       api: {
         wsl: { isAvailable: wslIsAvailable, listDistros: vi.fn().mockResolvedValue([]) },
-        pwsh: { isAvailable: pwshIsAvailable }
+        pwsh: { isAvailable: pwshIsAvailable },
+        runtime: { getStatus: vi.fn().mockResolvedValue({ hostPlatform: 'win32' }) }
       }
     })
 

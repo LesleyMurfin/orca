@@ -4,6 +4,7 @@ export type WindowsTerminalCapabilities = {
   wslAvailable: boolean
   wslDistros: string[]
   pwshAvailable: boolean
+  hostPlatform: NodeJS.Platform | null
   isLoading: boolean
 }
 
@@ -11,6 +12,7 @@ const UNAVAILABLE_CAPABILITIES: WindowsTerminalCapabilities = {
   wslAvailable: false,
   wslDistros: [],
   pwshAvailable: false,
+  hostPlatform: null,
   isLoading: false
 }
 
@@ -51,16 +53,26 @@ export function loadWindowsTerminalCapabilities(
     return pendingCapabilities
   }
 
-  // Why: Settings and the tab bar need one shared answer. Separate probes can
-  // leave Settings rendering without WSL while the "+" menu already shows it.
+  // Why: Settings, status bar, and paired web tab bars need one shared answer.
+  // Separate probes can leave one surface showing stale Windows shell choices.
   const requestId = ++latestCapabilityRequestId
   pendingCapabilities = Promise.all([
     window.api.wsl.isAvailable().catch(() => false),
     window.api.wsl.listDistros().catch(() => []),
-    window.api.pwsh.isAvailable().catch(() => false)
+    window.api.pwsh.isAvailable().catch(() => false),
+    window.api.runtime
+      .getStatus()
+      .then((status) => status.hostPlatform ?? null)
+      .catch(() => null)
   ])
-    .then(([wslAvailable, wslDistros, pwshAvailable]) => {
-      const capabilities = { wslAvailable, wslDistros, pwshAvailable, isLoading: false }
+    .then(([wslAvailable, wslDistros, pwshAvailable, hostPlatform]) => {
+      const capabilities = {
+        wslAvailable,
+        wslDistros,
+        pwshAvailable,
+        hostPlatform,
+        isLoading: false
+      }
       if (requestId === latestCapabilityRequestId) {
         pendingCapabilities = null
         publish(capabilities, now)
