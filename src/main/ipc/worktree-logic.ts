@@ -8,6 +8,7 @@ import type {
   WorktreeMeta
 } from '../../shared/types'
 import { resolveRuntimePath } from '../../shared/cross-platform-path'
+import { isWslUncPath } from '../../shared/wsl-paths'
 import { splitWorktreeId } from '../../shared/worktree-id'
 import { DEFAULT_WORKSPACE_STATUS_ID } from '../../shared/workspace-statuses'
 import { getWslHome, parseWslPath } from '../wsl'
@@ -234,7 +235,7 @@ function shouldMirrorWorkspaceDirInsideWsl(repoPath: string, workspaceDir: strin
   if (isWorkspaceDirRelativeToRepo(repoPath, workspaceDir)) {
     return false
   }
-  return !parseWslPath(workspaceDir)
+  return !isWslUncPath(workspaceDir)
 }
 
 /**
