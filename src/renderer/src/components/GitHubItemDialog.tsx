@@ -66,7 +66,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import CommentMarkdown from '@/components/sidebar/CommentMarkdown'
 import { detectLanguage } from '@/lib/language-detect'
-import { isScreenSubmitShortcut } from '@/lib/screen-submit-shortcut'
 import { cn } from '@/lib/utils'
 import { DiffSectionItem } from '@/components/editor/DiffSectionItem'
 import { useMountedRef } from '@/hooks/useMountedRef'
@@ -105,6 +104,7 @@ import { useAppStore } from '@/store'
 import { callRuntimeRpc, getActiveRuntimeTarget } from '@/runtime/runtime-rpc-client'
 import { useRepoLabels, useRepoAssignees, useImmediateMutation } from '@/hooks/useIssueMetadata'
 import { useRepoLabelsBySlug, useRepoAssigneesBySlug } from '@/hooks/useGitHubSlugMetadata'
+import { GitHubMarkdownComposer } from '@/components/github/GitHubMarkdownComposer'
 import IssueSourceIndicator, { sameGitHubOwnerRepo } from '@/components/github/IssueSourceIndicator'
 import {
   getGitHubPRReviewerRows,
@@ -164,18 +164,6 @@ function parseOwnerRepoFromItemUrl(url: string): GitHubOwnerRepo | null {
 const MonacoCodeExcerpt = lazy(() => import('@/components/editor/MonacoCodeExcerpt'))
 
 export type ItemDialogTab = 'conversation' | 'checks' | 'files'
-
-type MentionOption = {
-  login: string
-  name?: string | null
-  avatarUrl?: string
-  source: string
-}
-
-type MentionQuery = {
-  atIndex: number
-  query: string
-}
 
 const CODE_CONTEXT_EXPAND_STEP = 5
 const CODE_CONTEXT_FALLBACK_LINES = 20
@@ -258,80 +246,6 @@ function formatRelativeTime(input: string): string {
   }
   const diffDays = Math.round(diffHours / 24)
   return formatter.format(diffDays, 'day')
-}
-
-function findMentionQuery(value: string, caret: number): MentionQuery | null {
-  const beforeCaret = value.slice(0, caret)
-  const match = /(^|[\s([{,])@([A-Za-z0-9-]*)$/.exec(beforeCaret)
-  if (!match) {
-    return null
-  }
-  const query = match[2] ?? ''
-  return {
-    atIndex: beforeCaret.length - query.length - 1,
-    query
-  }
-}
-
-function buildMentionOptions({
-  item,
-  comments,
-  participants,
-  assignableUsers
-}: {
-  item: GitHubWorkItem
-  comments: PRComment[]
-  participants: GitHubAssignableUser[]
-  assignableUsers: GitHubAssignableUser[]
-}): MentionOption[] {
-  const byLogin = new Map<string, MentionOption>()
-  const add = (
-    login: string | null | undefined,
-    source: string,
-    avatarUrl?: string,
-    name?: string | null
-  ): void => {
-    if (!login || login === 'ghost') {
-      return
-    }
-    const key = login.toLowerCase()
-    const existing = byLogin.get(key)
-    if (existing) {
-      if (!existing.avatarUrl && avatarUrl) {
-        existing.avatarUrl = avatarUrl
-      }
-      if (!existing.name && name) {
-        existing.name = name
-      }
-      return
-    }
-    byLogin.set(key, { login, source, avatarUrl, name })
-  }
-
-  add(item.author, item.type === 'pr' ? 'PR author' : 'Issue author')
-  for (const comment of comments) {
-    add(comment.author, 'Commenter', comment.authorAvatarUrl)
-  }
-  for (const user of participants) {
-    add(user.login, 'Participant', user.avatarUrl, user.name)
-  }
-  for (const user of assignableUsers) {
-    add(user.login, 'Team member', user.avatarUrl, user.name)
-  }
-
-  return Array.from(byLogin.values())
-}
-
-function filterMentionOptions(options: MentionOption[], query: string): MentionOption[] {
-  const normalizedQuery = query.toLowerCase()
-  const filtered = normalizedQuery
-    ? options.filter(
-        (option) =>
-          option.login.toLowerCase().includes(normalizedQuery) ||
-          (option.name ?? '').toLowerCase().includes(normalizedQuery)
-      )
-    : options
-  return filtered.slice(0, 8)
 }
 
 function getStateLabel(item: GitHubWorkItem): string {
@@ -2324,7 +2238,6 @@ function ConversationTab({
   loading,
   detailsLoaded,
   checks,
-  participants: detailsParticipants,
   localState,
   onStateChange,
   projectOrigin,
@@ -2345,7 +2258,6 @@ function ConversationTab({
   loading: boolean
   detailsLoaded: boolean
   checks: GitHubWorkItemDetails['checks']
-  participants: GitHubAssignableUser[]
   localState: GitHubWorkItem['state']
   onStateChange: (state: GitHubWorkItem['state']) => void
   projectOrigin: GitHubItemDialogProjectOrigin | undefined
@@ -2361,32 +2273,12 @@ function ConversationTab({
   const [bodyDraft, setBodyDraft] = useState(body)
   const [bodyEditing, setBodyEditing] = useState(false)
   const [bodySaving, setBodySaving] = useState(false)
-  const bodyTextareaRef = useRef<HTMLTextAreaElement>(null)
-  const bodyTextareaFocusFrameRef = useRef<number | null>(null)
-  const repoAssignees = useRepoAssignees(repoPath, item.repoId)
   const commentCounts = useMemo(() => getPRCommentAudienceCounts(comments), [comments])
   const visibleComments = useMemo(
     () => filterPRCommentsByAudience(comments, commentFilter),
     [commentFilter, comments]
   )
   const visibleCommentGroups = useMemo(() => groupPRComments(visibleComments), [visibleComments])
-  const mentionOptions = useMemo(
-    () =>
-      buildMentionOptions({
-        item,
-        comments,
-        participants: detailsParticipants,
-        assignableUsers: repoAssignees.data
-      }),
-    [comments, detailsParticipants, item, repoAssignees.data]
-  )
-
-  const cancelBodyTextareaFocusFrame = useCallback((): void => {
-    if (bodyTextareaFocusFrameRef.current !== null) {
-      cancelAnimationFrame(bodyTextareaFocusFrameRef.current)
-      bodyTextareaFocusFrameRef.current = null
-    }
-  }, [])
 
   useEffect(() => {
     if (replyingTo !== null && !visibleComments.some((comment) => comment.id === replyingTo)) {
@@ -2399,19 +2291,6 @@ function ConversationTab({
       setBodyDraft(body)
     }
   }, [body, bodyEditing, item.id])
-
-  useEffect(() => {
-    if (!bodyEditing) {
-      cancelBodyTextareaFocusFrame()
-      return cancelBodyTextareaFocusFrame
-    }
-    cancelBodyTextareaFocusFrame()
-    bodyTextareaFocusFrameRef.current = requestAnimationFrame(() => {
-      bodyTextareaFocusFrameRef.current = null
-      bodyTextareaRef.current?.focus()
-    })
-    return cancelBodyTextareaFocusFrame
-  }, [bodyEditing, cancelBodyTextareaFocusFrame])
 
   const bodySlug = useMemo(() => parseOwnerRepoFromItemUrl(item.url), [item.url])
   const markdownGitHubRepo = useMemo(
@@ -2616,7 +2495,6 @@ function ConversationTab({
             placeholder={
               comment.path ? 'Reply in this review thread' : `Reply to @${comment.author}`
             }
-            mentionOptions={mentionOptions}
             onCancel={() => setReplyingTo(null)}
             onSubmit={(replyBody) => handleReply(comment, replyBody)}
           />
@@ -2739,27 +2617,14 @@ function ConversationTab({
                 <LoaderCircle className="size-4 animate-spin text-muted-foreground" />
               </div>
             ) : bodyEditing ? (
-              <MentionTextarea
-                textareaRef={bodyTextareaRef}
+              <GitHubMarkdownComposer
                 value={bodyDraft}
-                onValueChange={setBodyDraft}
-                onKeyDown={(event) => {
-                  if (event.key === 'Escape') {
-                    event.preventDefault()
-                    setBodyDraft(body)
-                    setBodyEditing(false)
-                    return
-                  }
-                  if (isScreenSubmitShortcut(event)) {
-                    event.preventDefault()
-                    void handleSaveBody()
-                  }
-                }}
+                onChange={setBodyDraft}
                 placeholder="Description"
-                rows={12}
-                mentionOptions={mentionOptions}
-                wrapperClassName="flex min-h-64 w-full items-stretch"
-                className="scrollbar-sleek block min-h-64 w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-[13px] leading-5 placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                disabled={bodySaving}
+                autoFocus
+                minHeightClassName="min-h-64"
+                onSubmitShortcut={() => void handleSaveBody()}
               />
             ) : body.trim() ? (
               <CommentMarkdown
@@ -2832,7 +2697,6 @@ function ConversationTab({
             repoId={item.repoId}
             issueNumber={item.number}
             itemType={item.type}
-            mentionOptions={mentionOptions}
             onCommentAdded={onCommentAdded}
           />
         )}
@@ -3115,19 +2979,16 @@ function CommentReactions({
 function CommentReplyForm({
   className,
   placeholder,
-  mentionOptions,
   onCancel,
   onSubmit
 }: {
   className?: string
   placeholder: string
-  mentionOptions: MentionOption[]
   onCancel: () => void
   onSubmit: (body: string) => Promise<boolean>
 }): React.JSX.Element {
   const [body, setBody] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const mountedRef = useRef(true)
 
   useEffect(() => {
@@ -3135,10 +2996,6 @@ function CommentReplyForm({
     return () => {
       mountedRef.current = false
     }
-  }, [])
-
-  useEffect(() => {
-    textareaRef.current?.focus()
   }, [])
 
   const submit = useCallback(async () => {
@@ -3164,25 +3021,14 @@ function CommentReplyForm({
 
   return (
     <div className={cn('rounded-md border border-border/50 bg-background/60 p-2', className)}>
-      <MentionTextarea
-        textareaRef={textareaRef}
+      <GitHubMarkdownComposer
         value={body}
-        onValueChange={setBody}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') {
-            e.preventDefault()
-            onCancel()
-            return
-          }
-          if (isScreenSubmitShortcut(e)) {
-            e.preventDefault()
-            void submit()
-          }
-        }}
+        onChange={setBody}
         placeholder={placeholder}
-        rows={3}
-        mentionOptions={mentionOptions}
-        className="scrollbar-sleek min-h-20 w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 text-[13px] placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        disabled={submitting}
+        autoFocus
+        minHeightClassName="min-h-24"
+        onSubmitShortcut={() => void submit()}
       />
       <div className="mt-2 flex justify-end gap-2">
         <Button variant="ghost" size="sm" onClick={onCancel}>
@@ -4060,149 +3906,6 @@ function ChecksTab({
   )
 }
 
-function MentionTextarea({
-  value,
-  onValueChange,
-  onKeyDown,
-  placeholder,
-  rows,
-  className,
-  wrapperClassName,
-  mentionOptions,
-  textareaRef
-}: {
-  value: string
-  onValueChange: (value: string) => void
-  onKeyDown?: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void
-  placeholder: string
-  rows: number
-  className?: string
-  wrapperClassName?: string
-  mentionOptions: MentionOption[]
-  textareaRef: React.RefObject<HTMLTextAreaElement | null>
-}): React.JSX.Element {
-  const [mentionQuery, setMentionQuery] = useState<MentionQuery | null>(null)
-  const [activeIndex, setActiveIndex] = useState(0)
-  const suggestions = useMemo(
-    () => (mentionQuery ? filterMentionOptions(mentionOptions, mentionQuery.query) : []),
-    [mentionOptions, mentionQuery]
-  )
-  const showSuggestions = mentionQuery !== null && suggestions.length > 0
-
-  const syncMentionQuery = useCallback((textarea: HTMLTextAreaElement): void => {
-    const nextQuery = findMentionQuery(textarea.value, textarea.selectionStart)
-    setMentionQuery(nextQuery)
-    setActiveIndex(0)
-  }, [])
-
-  const insertMention = useCallback(
-    (option: MentionOption): void => {
-      const textarea = textareaRef.current
-      const caret = textarea?.selectionStart ?? value.length
-      const query = textarea ? findMentionQuery(value, caret) : mentionQuery
-      if (!query) {
-        return
-      }
-      const suffix = value[caret] && !/\s/.test(value[caret]) ? ' ' : ''
-      const inserted = `@${option.login}${suffix}`
-      const nextValue = `${value.slice(0, query.atIndex)}${inserted}${value.slice(caret)}`
-      const nextCaret = query.atIndex + inserted.length
-      onValueChange(nextValue)
-      setMentionQuery(null)
-      requestAnimationFrame(() => {
-        textarea?.focus()
-        textarea?.setSelectionRange(nextCaret, nextCaret)
-      })
-    },
-    [mentionQuery, onValueChange, textareaRef, value]
-  )
-
-  return (
-    <div className={cn('relative min-w-0 flex-1', wrapperClassName)}>
-      {showSuggestions && (
-        <div className="absolute right-0 bottom-[calc(100%+6px)] left-0 z-50 max-h-64 overflow-y-auto rounded-md border border-border/70 bg-popover p-1 text-popover-foreground shadow-lg scrollbar-sleek">
-          {suggestions.map((option, index) => (
-            <button
-              key={option.login}
-              type="button"
-              onMouseDown={(event) => {
-                event.preventDefault()
-                insertMention(option)
-              }}
-              className={cn(
-                'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12px]',
-                index === activeIndex && 'bg-accent text-accent-foreground'
-              )}
-            >
-              {option.avatarUrl ? (
-                <img src={option.avatarUrl} alt="" className="size-5 shrink-0 rounded-full" />
-              ) : (
-                <div className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium text-muted-foreground">
-                  {option.login.slice(0, 1).toUpperCase()}
-                </div>
-              )}
-              <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-                <span className="shrink-0 font-medium">@{option.login}</span>
-                {option.name && (
-                  <>
-                    <span className="shrink-0 text-muted-foreground">|</span>
-                    <span className="truncate text-muted-foreground">{option.name}</span>
-                  </>
-                )}
-                <span className="shrink-0 text-muted-foreground">|</span>
-                <span className="shrink-0 text-[11px] text-muted-foreground">{option.source}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-      <textarea
-        ref={textareaRef}
-        value={value}
-        onChange={(event) => {
-          onValueChange(event.target.value)
-          syncMentionQuery(event.currentTarget)
-        }}
-        onClick={(event) => syncMentionQuery(event.currentTarget)}
-        onKeyUp={(event) => {
-          if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
-            syncMentionQuery(event.currentTarget)
-          }
-        }}
-        onBlur={() => setMentionQuery(null)}
-        onKeyDown={(event) => {
-          if (showSuggestions) {
-            if (event.key === 'ArrowDown') {
-              event.preventDefault()
-              setActiveIndex((current) => (current + 1) % suggestions.length)
-              return
-            }
-            if (event.key === 'ArrowUp') {
-              event.preventDefault()
-              setActiveIndex((current) => (current - 1 + suggestions.length) % suggestions.length)
-              return
-            }
-            if (event.key === 'Enter' || event.key === 'Tab') {
-              event.preventDefault()
-              insertMention(suggestions[activeIndex] ?? suggestions[0])
-              return
-            }
-            if (event.key === 'Escape') {
-              event.preventDefault()
-              setMentionQuery(null)
-              return
-            }
-          }
-          onKeyDown?.(event)
-        }}
-        placeholder={placeholder}
-        rows={rows}
-        className={className}
-      />
-    </div>
-  )
-}
-
 // Why: when the dialog opens for a Project row whose repo differs from the
 // active workspace, mutations must target the row's actual repo via
 // slug-addressed IPCs. Otherwise edits silently apply to the workspace's
@@ -5030,7 +4733,6 @@ function GHCommentComposer({
   repoId,
   issueNumber,
   itemType,
-  mentionOptions,
   onCommentAdded
 }: {
   className?: string
@@ -5038,12 +4740,10 @@ function GHCommentComposer({
   repoId?: string | null
   issueNumber: number
   itemType: 'issue' | 'pr'
-  mentionOptions: MentionOption[]
   onCommentAdded: (comment: PRComment) => void
 }): React.JSX.Element {
   const [body, setBody] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const mountedRef = useRef(true)
 
   useEffect(() => {
@@ -5051,15 +4751,6 @@ function GHCommentComposer({
     return () => {
       mountedRef.current = false
     }
-  }, [])
-
-  const autoGrow = useCallback(() => {
-    const el = textareaRef.current
-    if (!el) {
-      return
-    }
-    el.style.height = 'auto'
-    el.style.height = `${Math.max(80, Math.min(el.scrollHeight, 240))}px`
   }, [])
 
   const handleSubmit = useCallback(async () => {
@@ -5081,7 +4772,6 @@ function GHCommentComposer({
       }
       if (result.ok) {
         setBody('')
-        requestAnimationFrame(autoGrow)
         // Why: use the comment returned by GitHub so the optimistic row shows
         // the real login/avatar immediately instead of waiting for a reopen.
         onCommentAdded(result.comment)
@@ -5097,33 +4787,18 @@ function GHCommentComposer({
         setSubmitting(false)
       }
     }
-  }, [autoGrow, body, repoPath, repoId, issueNumber, itemType, onCommentAdded])
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (isScreenSubmitShortcut(e)) {
-        e.preventDefault()
-        handleSubmit()
-      }
-    },
-    [handleSubmit]
-  )
+  }, [body, repoPath, repoId, issueNumber, itemType, onCommentAdded])
 
   return (
     <div className={cn('flex flex-col items-start gap-2', className)}>
-      <MentionTextarea
-        textareaRef={textareaRef}
+      <GitHubMarkdownComposer
         value={body}
-        onValueChange={(nextValue) => {
-          setBody(nextValue)
-          requestAnimationFrame(autoGrow)
-        }}
-        onKeyDown={handleKeyDown}
+        onChange={setBody}
         placeholder="Add a comment…"
-        rows={4}
-        mentionOptions={mentionOptions}
-        wrapperClassName="flex min-h-20 w-full items-stretch"
-        className="scrollbar-sleek block h-20 max-h-[240px] min-h-20 w-full resize-none overflow-y-auto rounded-md border border-input bg-card px-3 py-2 text-[13px] leading-5 placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        disabled={submitting}
+        minHeightClassName="min-h-28"
+        className="w-full"
+        onSubmitShortcut={() => void handleSubmit()}
       />
       <Button
         onClick={handleSubmit}
@@ -5887,7 +5562,6 @@ export default function GitHubItemDialog({
                   loading={loading}
                   detailsLoaded={detailsLoaded}
                   checks={checks}
-                  participants={details?.participants ?? []}
                   localState={localState}
                   onStateChange={setLocalState}
                   projectOrigin={projectOrigin}
@@ -6004,7 +5678,6 @@ export default function GitHubItemDialog({
                   loading={loading}
                   detailsLoaded={detailsLoaded}
                   checks={checks}
-                  participants={details?.participants ?? []}
                   localState={localState}
                   onStateChange={setLocalState}
                   projectOrigin={projectOrigin}

@@ -6,6 +6,7 @@ import { ipcMain, webContents } from 'electron'
 import { resolve } from 'path'
 import type {
   Repo,
+  GitHubCreateIssueFields,
   GitHubIssueUpdate,
   GitHubOwnerRepo,
   GitHubPullRequestStateUpdate,
@@ -282,14 +283,19 @@ export function registerGitHubHandlers(store: Store, stats: StatsCollector): voi
 
   ipcMain.handle(
     'gh:createIssue',
-    (_event, args: { repoPath: string; title: string; body: string }) => {
+    (_event, args: { repoPath: string; title: string; body: string } & GitHubCreateIssueFields) => {
       const repo = assertRegisteredRepo(args, store)
+      const fields =
+        args.labels !== undefined || args.assignees !== undefined
+          ? { labels: args.labels, assignees: args.assignees }
+          : undefined
       return createIssue(
         repo.path,
         args.title,
         args.body,
         repo.issueSourcePreference,
-        repoConnectionId(repo)
+        repoConnectionId(repo),
+        fields
       )
     }
   )

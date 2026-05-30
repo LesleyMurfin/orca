@@ -938,6 +938,8 @@ export type PreloadApi = {
       repoId?: string
       title: string
       body: string
+      labels?: string[]
+      assignees?: string[]
     }) => Promise<{ ok: true; number: number; url: string } | { ok: false; error: string }>
     countWorkItems: (args: { repoPath: string; repoId?: string; query?: string }) => Promise<number>
     listWorkItems: (args: {

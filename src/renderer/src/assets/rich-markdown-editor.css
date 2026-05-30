@@ -59,6 +59,34 @@
   color: var(--foreground);
 }
 
+.github-markdown-composer .rich-markdown-editor-toolbar {
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--background) 92%, transparent);
+}
+
+.github-markdown-composer-editor {
+  min-height: 8rem;
+  padding: 12px 14px 18px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.github-markdown-composer-editor p,
+.github-markdown-composer-editor ul,
+.github-markdown-composer-editor ol,
+.github-markdown-composer-editor blockquote {
+  margin: 0.55em 0;
+}
+
+.github-markdown-composer-image-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  background: color-mix(in srgb, var(--muted) 38%, var(--background));
+}
+
 .orca-diff-comment-add-btn.rich-markdown-comment-add-btn {
   display: flex;
   width: 22px;

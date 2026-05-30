@@ -1130,6 +1130,11 @@ export type LinearComment = {
 
 // ─── Issue Mutations ────────────────────────────────────────────────
 
+export type GitHubCreateIssueFields = {
+  labels?: string[]
+  assignees?: string[]
+}
+
 export type GitHubIssueUpdate = {
   state?: 'open' | 'closed'
   title?: string

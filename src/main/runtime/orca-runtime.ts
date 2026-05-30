@@ -35,6 +35,7 @@ import type {
   DetectedWorktreeListResult,
   GitPushTarget,
   GitWorktreeInfo,
+  GitHubCreateIssueFields,
   GitHubOwnerRepo,
   GlobalSettings,
   PersistedUIState,
@@ -6488,7 +6489,8 @@ export class OrcaRuntimeService {
   async createRepoIssue(
     repoSelector: string,
     title: string,
-    body: string
+    body: string,
+    fields?: GitHubCreateIssueFields
   ): Promise<Awaited<ReturnType<typeof createIssue>>> {
     const repo = await this.resolveRepoSelector(repoSelector)
     return createIssue(
@@ -6496,7 +6498,8 @@ export class OrcaRuntimeService {
       title,
       body,
       repo.issueSourcePreference,
-      repo.connectionId ?? null
+      repo.connectionId ?? null,
+      fields
     )
   }
 

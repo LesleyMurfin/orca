@@ -5,6 +5,7 @@ surface is broad. */
 import type {
   ClassifiedError,
   GitHubAssignableUser,
+  GitHubCreateIssueFields,
   GitHubCommentResult,
   GitHubIssueUpdate,
   IssueInfo,
@@ -150,7 +151,8 @@ export async function createIssue(
   title: string,
   body: string,
   preference?: IssueSourcePreference,
-  connectionId?: string | null
+  connectionId?: string | null,
+  fields?: GitHubCreateIssueFields
 ): Promise<{ ok: true; number: number; url: string } | { ok: false; error: string }> {
   const trimmedTitle = title.trim()
   if (!trimmedTitle) {
@@ -164,19 +166,24 @@ export async function createIssue(
   }
   await acquire()
   try {
-    const { stdout } = await ghExecFileAsync(
-      [
-        'api',
-        '-X',
-        'POST',
-        `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues`,
-        '--raw-field',
-        `title=${trimmedTitle}`,
-        '--raw-field',
-        `body=${body}`
-      ],
-      ghOptions
-    )
+    const args = [
+      'api',
+      '-X',
+      'POST',
+      `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues`,
+      '--raw-field',
+      `title=${trimmedTitle}`,
+      '--raw-field',
+      `body=${body}`
+    ]
+    for (const label of fields?.labels ?? []) {
+      args.push('--raw-field', `labels[]=${label}`)
+    }
+    for (const assignee of fields?.assignees ?? []) {
+      args.push('--raw-field', `assignees[]=${assignee}`)
+    }
+
+    const { stdout } = await ghExecFileAsync(args, ghOptions)
     const data = JSON.parse(stdout) as { number?: number; html_url?: string; url?: string }
     if (typeof data.number !== 'number') {
       return { ok: false, error: 'Unexpected response from GitHub' }

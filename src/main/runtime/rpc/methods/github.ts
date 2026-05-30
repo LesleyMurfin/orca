@@ -148,7 +148,9 @@ const RemovePrReviewers = RepoSelector.extend({
 
 const CreateIssue = RepoSelector.extend({
   title: requiredString('Missing title'),
-  body: z.string()
+  body: z.string(),
+  labels: z.array(z.string()).optional(),
+  assignees: z.array(z.string()).optional()
 })
 
 const IssueUpdate = z.object({
@@ -478,8 +480,15 @@ export const GITHUB_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'github.createIssue',
     params: CreateIssue,
-    handler: async (params, { runtime }) =>
-      runtime.createRepoIssue(params.repo, params.title, params.body)
+    handler: async (params, { runtime }) => {
+      const fields =
+        params.labels !== undefined || params.assignees !== undefined
+          ? { labels: params.labels, assignees: params.assignees }
+          : undefined
+      return fields
+        ? runtime.createRepoIssue(params.repo, params.title, params.body, fields)
+        : runtime.createRepoIssue(params.repo, params.title, params.body)
+    }
   }),
   defineMethod({
     name: 'github.updateIssue',
