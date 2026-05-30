@@ -129,7 +129,8 @@ export type DecodedFrame = {
  * Incremental frame parser. Feed it chunks of data; it emits complete frames.
  */
 export class FrameDecoder {
-  private buffer = Buffer.alloc(0)
+  private buffer: Buffer = Buffer.alloc(0)
+  private discardBytesRemaining = 0
   private onFrame: (frame: DecodedFrame) => void
   private onError: ((err: Error) => void) | null
 
@@ -139,7 +140,17 @@ export class FrameDecoder {
   }
 
   feed(chunk: Buffer | Uint8Array): void {
-    this.buffer = Buffer.concat([this.buffer, chunk])
+    let incoming = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    if (this.discardBytesRemaining > 0) {
+      const bytesToDiscard = Math.min(this.discardBytesRemaining, incoming.length)
+      this.discardBytesRemaining -= bytesToDiscard
+      incoming = incoming.subarray(bytesToDiscard)
+      if (incoming.length === 0) {
+        return
+      }
+    }
+
+    this.buffer = this.buffer.length === 0 ? incoming : Buffer.concat([this.buffer, incoming])
 
     while (this.buffer.length >= HEADER_LENGTH) {
       const length = this.buffer.readUInt32BE(9)
@@ -150,14 +161,11 @@ export class FrameDecoder {
       // bytes as a new header, corrupting every future frame. Instead we
       // skip the entire oversized frame so the decoder stays synchronized.
       if (length > MAX_MESSAGE_SIZE) {
-        if (this.buffer.length < totalLength) {
-          break
-        }
-        this.buffer = this.buffer.subarray(totalLength)
-        const err = new Error(`Frame payload too large: ${length} bytes — discarded`)
-        if (this.onError) {
-          this.onError(err)
-        }
+        const bufferedPayloadBytes = this.buffer.length - HEADER_LENGTH
+        const bytesToDiscard = Math.min(bufferedPayloadBytes, length)
+        this.buffer = this.buffer.subarray(HEADER_LENGTH + bytesToDiscard)
+        this.discardBytesRemaining = length - bytesToDiscard
+        this.reportOversizedFrame(length)
         continue
       }
 
@@ -177,8 +185,16 @@ export class FrameDecoder {
     }
   }
 
+  private reportOversizedFrame(length: number): void {
+    const err = new Error(`Frame payload too large: ${length} bytes — discarded`)
+    if (this.onError) {
+      this.onError(err)
+    }
+  }
+
   reset(): void {
     this.buffer = Buffer.alloc(0)
+    this.discardBytesRemaining = 0
   }
 }
 
