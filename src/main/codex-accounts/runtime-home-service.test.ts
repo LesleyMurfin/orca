@@ -572,6 +572,28 @@ describe('CodexRuntimeHomeService', () => {
     )
   })
 
+  it('keeps Codex TUI config changes across launch preparation when system config is unchanged', async () => {
+    const systemCodexHome = getSystemCodexHomePath()
+    mkdirSync(systemCodexHome, { recursive: true })
+    writeFileSync(join(systemCodexHome, 'config.toml'), 'model = "system-model"\n', 'utf-8')
+    const store = createStore(createSettings())
+    const { CodexRuntimeHomeService } = await import('./runtime-home-service')
+    const service = new CodexRuntimeHomeService(store as never)
+
+    service.prepareForCodexLaunch()
+    writeFileSync(
+      join(getRuntimeCodexHomePath(), 'config.toml'),
+      ['model = "runtime-model"', 'model_reasoning_effort = "low"', ''].join('\n'),
+      'utf-8'
+    )
+    service.prepareForCodexLaunch()
+
+    const runtimeConfig = readFileSync(join(getRuntimeCodexHomePath(), 'config.toml'), 'utf-8')
+    expect(runtimeConfig).toContain('model = "runtime-model"')
+    expect(runtimeConfig).toContain('model_reasoning_effort = "low"')
+    expect(runtimeConfig).not.toContain('model = "system-model"')
+  })
+
   it('links system Codex user resources into the managed runtime home before launch', async () => {
     const systemCodexHome = getSystemCodexHomePath()
     mkdirSync(join(systemCodexHome, 'skills', 'review'), { recursive: true })
