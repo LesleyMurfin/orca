@@ -357,7 +357,17 @@ export function getDefaultTabsLaunch(
     return undefined
   }
   const hasCommands = tabs.some((tab) => Boolean(tab.command?.trim()))
-  const runCommands = hasCommands ? shouldRunSetupForCreate(repo, decision) : false
+  const sharedCommandPolicy = resolveHookCommandSourcePolicy(
+    repo.hookSettings?.commandSourcePolicy,
+    {
+      hasLocalScript: Boolean(repo.hookSettings?.scripts.setup?.trim())
+    }
+  )
+  // Why: default tab commands come from committed `orca.yaml`; a repo set to
+  // local-only may still use shared titles/colors, but must not execute them.
+  const canRunSharedCommands = sharedCommandPolicy !== 'local-only'
+  const runCommands =
+    hasCommands && canRunSharedCommands ? shouldRunSetupForCreate(repo, decision) : false
   return { tabs, runCommands }
 }
 

@@ -264,6 +264,31 @@ export default function NewWorkspaceComposerCard({
     selectedRepoSshStatus === 'disconnected' || selectedRepoSshStatus === null
       ? 'Connect'
       : 'Reconnect'
+  const setupConfigLabel =
+    setupConfig?.kind === 'default-tabs'
+      ? 'Default tab commands'
+      : setupConfig?.kind === 'setup-and-default-tabs'
+        ? 'Setup and default tab commands'
+        : 'Setup script'
+  const setupRunLabel =
+    setupConfig?.kind === 'default-tabs'
+      ? 'Run default tab commands'
+      : setupConfig?.kind === 'setup-and-default-tabs'
+        ? 'Run setup and default tab commands'
+        : 'Run setup command'
+  const setupAskLabel =
+    setupConfig?.kind === 'default-tabs'
+      ? 'Run default tab commands now?'
+      : setupConfig?.kind === 'setup-and-default-tabs'
+        ? 'Run setup and default tab commands now?'
+        : 'Run setup now?'
+  const setupRunButtonLabel =
+    setupConfig?.kind === 'default-tabs'
+      ? 'Run commands now'
+      : setupConfig?.kind === 'setup-and-default-tabs'
+        ? 'Run commands now'
+        : 'Run setup now'
+  const setupSkipButtonLabel = setupConfig?.kind === 'setup' ? 'Skip for now' : 'Skip commands'
 
   const handleSetDefaultAgent = React.useCallback(
     (next: TuiAgent | 'blank' | null) => {
@@ -531,7 +556,7 @@ export default function NewWorkspaceComposerCard({
                 <div className="space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <label className="text-xs font-medium text-muted-foreground">
-                      Setup script
+                      {setupConfigLabel}
                     </label>
                     <span className="rounded-full border border-border/70 bg-muted/45 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-foreground/70">
                       {setupConfig.source === 'yaml'
@@ -573,7 +598,7 @@ export default function NewWorkspaceComposerCard({
                             }
                             className="sr-only"
                           />
-                          <span>Run setup command</span>
+                          <span>{setupRunLabel}</span>
                         </label>
                       )
                     }
@@ -582,7 +607,7 @@ export default function NewWorkspaceComposerCard({
                   {requiresExplicitSetupChoice ? (
                     <div className="space-y-2">
                       <div className="text-[11px] font-medium text-muted-foreground">
-                        Run setup now?
+                        {setupAskLabel}
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
                         <Button
@@ -591,7 +616,7 @@ export default function NewWorkspaceComposerCard({
                           variant={setupDecision === 'run' ? 'default' : 'outline'}
                           size="sm"
                         >
-                          Run setup now
+                          {setupRunButtonLabel}
                         </Button>
                         <Button
                           type="button"
@@ -599,7 +624,7 @@ export default function NewWorkspaceComposerCard({
                           variant={setupDecision === 'skip' ? 'secondary' : 'outline'}
                           size="sm"
                         >
-                          Skip for now
+                          {setupSkipButtonLabel}
                         </Button>
                       </div>
                       {!setupDecision ? (

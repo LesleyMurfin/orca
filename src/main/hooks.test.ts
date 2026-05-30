@@ -836,7 +836,10 @@ describe('shouldRunSetupForCreate', () => {
 })
 
 describe('getDefaultTabsLaunch', () => {
-  const makeRepo = (setupRunPolicy?: 'ask' | 'run-by-default' | 'skip-by-default') =>
+  const makeRepo = (
+    setupRunPolicy?: 'ask' | 'run-by-default' | 'skip-by-default',
+    commandSourcePolicy?: 'local-only' | 'run-both' | 'shared-only'
+  ) =>
     ({
       id: 'test-id',
       path: '/test/repo',
@@ -846,6 +849,7 @@ describe('getDefaultTabsLaunch', () => {
       hookSettings: {
         mode: 'auto',
         setupRunPolicy,
+        commandSourcePolicy,
         scripts: { setup: '', archive: '' }
       }
     }) as unknown as Repo
@@ -873,6 +877,18 @@ describe('getDefaultTabsLaunch', () => {
     }
 
     expect(getDefaultTabsLaunch(hooks, makeRepo('ask'))).toEqual({
+      tabs: hooks.defaultTabs,
+      runCommands: false
+    })
+  })
+
+  it('does not run shared default tab commands when command source is local-only', () => {
+    const hooks = {
+      scripts: {},
+      defaultTabs: [{ title: 'Server', command: 'pnpm dev' }]
+    }
+
+    expect(getDefaultTabsLaunch(hooks, makeRepo('run-by-default', 'local-only'))).toEqual({
       tabs: hooks.defaultTabs,
       runCommands: false
     })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getWorkspaceSeedName, isGitLabIssueUrl } from './new-workspace'
+import { getSetupConfig, getWorkspaceSeedName, isGitLabIssueUrl } from './new-workspace'
 
 describe('getWorkspaceSeedName', () => {
   it('prefers an explicit name', () => {
@@ -122,5 +122,41 @@ describe('isGitLabIssueUrl', () => {
 
   it('does not classify GitHub issue URLs as GitLab issues', () => {
     expect(isGitLabIssueUrl('https://github.com/group/project/issues/123')).toBe(false)
+  })
+})
+
+describe('getSetupConfig', () => {
+  it('treats default tab commands as setup-decision commands', () => {
+    expect(
+      getSetupConfig(undefined, {
+        scripts: {},
+        defaultTabs: [
+          { title: 'Server', command: 'pnpm dev' },
+          { title: 'Notes' },
+          { command: 'codex' }
+        ]
+      })
+    ).toEqual({
+      source: 'yaml',
+      kind: 'default-tabs',
+      command: '# defaultTabs[1] Server\npnpm dev\n\n# defaultTabs[3]\ncodex'
+    })
+  })
+
+  it('ignores shared default tab commands when command source is local-only', () => {
+    expect(
+      getSetupConfig(
+        {
+          hookSettings: {
+            commandSourcePolicy: 'local-only',
+            scripts: {}
+          }
+        },
+        {
+          scripts: {},
+          defaultTabs: [{ title: 'Server', command: 'pnpm dev' }]
+        }
+      )
+    ).toBeNull()
   })
 })
