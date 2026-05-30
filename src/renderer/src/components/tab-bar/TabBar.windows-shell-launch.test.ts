@@ -351,7 +351,10 @@ describe('TabBar PowerShell launch wiring', () => {
     })
     appStoreSnapshot.activeRuntimeEnvironmentId = 'web-env-1'
     const capabilities = await import('@/lib/windows-terminal-capabilities')
-    await capabilities.loadWindowsTerminalCapabilities({ force: true })
+    await capabilities.loadWindowsTerminalCapabilities({
+      force: true,
+      cacheKey: 'runtime:web-env-1'
+    })
 
     const tabBarModule = await import('./TabBar')
     const candidate = tabBarModule.default ?? tabBarModule
@@ -387,5 +390,66 @@ describe('TabBar PowerShell launch wiring', () => {
       findDropdownMenuItemByText(expandNode(element), 'New Terminal: CMD Prompt')
     ).not.toBeNull()
     expect(findDropdownMenuItemByText(expandNode(element), 'New Terminal: WSL')).not.toBeNull()
+  })
+
+  it('does not reuse a Windows paired-host cache entry for another paired runtime', async () => {
+    vi.stubGlobal('navigator', { userAgent: 'Macintosh' })
+    vi.stubGlobal('__ORCA_WEB_CLIENT__', true)
+    vi.stubGlobal('window', {
+      api: {
+        wsl: {
+          isAvailable: vi.fn().mockResolvedValue(true),
+          listDistros: vi.fn().mockResolvedValue(['Ubuntu'])
+        },
+        pwsh: { isAvailable: vi.fn().mockResolvedValue(false) },
+        runtime: { getStatus: vi.fn().mockResolvedValue({ hostPlatform: 'win32' }) }
+      }
+    })
+    const capabilities = await import('@/lib/windows-terminal-capabilities')
+    await capabilities.loadWindowsTerminalCapabilities({ cacheKey: 'runtime:windows-env' })
+
+    vi.stubGlobal('window', {
+      api: {
+        wsl: {
+          isAvailable: vi.fn().mockResolvedValue(false),
+          listDistros: vi.fn().mockResolvedValue([])
+        },
+        pwsh: { isAvailable: vi.fn().mockResolvedValue(false) },
+        runtime: { getStatus: vi.fn().mockResolvedValue({ hostPlatform: 'linux' }) }
+      }
+    })
+    await capabilities.loadWindowsTerminalCapabilities({ cacheKey: 'runtime:linux-env' })
+    appStoreSnapshot.activeRuntimeEnvironmentId = 'linux-env'
+
+    const tabBarModule = await import('./TabBar')
+    const candidate = tabBarModule.default ?? tabBarModule
+    const TabBar =
+      typeof candidate === 'function'
+        ? candidate
+        : typeof (candidate as { type?: unknown }).type === 'function'
+          ? (candidate as { type: (props: Record<string, unknown>) => unknown }).type
+          : null
+    expect(TabBar).not.toBeNull()
+
+    const element = TabBar!({
+      tabs: [],
+      activeTabId: null,
+      worktreeId: 'wt-1',
+      expandedPaneByTabId: {},
+      onActivate: () => {},
+      onClose: () => {},
+      onCloseOthers: () => {},
+      onCloseToRight: () => {},
+      onNewTerminalTab: () => {},
+      onNewTerminalWithShell: () => {},
+      onNewBrowserTab: () => {},
+      onSetCustomTitle: () => {},
+      onSetTabColor: () => {},
+      onTogglePaneExpand: () => {}
+    })
+
+    expect(findDropdownMenuItemByText(expandNode(element), 'New Terminal: PowerShell')).toBeNull()
+    expect(findDropdownMenuItemByText(expandNode(element), 'New Terminal: CMD Prompt')).toBeNull()
+    expect(findDropdownMenuItemByText(expandNode(element), 'New Terminal: WSL')).toBeNull()
   })
 })

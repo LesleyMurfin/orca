@@ -20,7 +20,9 @@ function stubTerminalCapabilityApi(args: {
   const wslIsAvailable = vi.fn().mockResolvedValue(args.wslAvailable)
   const wslListDistros = vi.fn().mockResolvedValue(args.wslDistros ?? [])
   const pwshIsAvailable = vi.fn().mockResolvedValue(args.pwshAvailable)
-  const runtimeGetStatus = vi.fn().mockResolvedValue({ hostPlatform: args.hostPlatform ?? 'win32' })
+  const runtimeGetStatus = vi
+    .fn()
+    .mockResolvedValue({ hostPlatform: 'hostPlatform' in args ? args.hostPlatform : 'win32' })
 
   vi.stubGlobal('window', {
     api: {
@@ -114,6 +116,39 @@ describe('windows terminal capabilities', () => {
       wslAvailable: true
     })
 
+    expect(wslIsAvailable).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps paired runtime capabilities scoped by active environment', async () => {
+    const { wslIsAvailable, runtimeGetStatus } = stubTerminalCapabilityApi({
+      wslAvailable: true,
+      pwshAvailable: true
+    })
+
+    await expect(
+      loadWindowsTerminalCapabilities({ cacheKey: 'runtime:windows-env', now: 1_000 })
+    ).resolves.toMatchObject({
+      hostPlatform: 'win32',
+      wslAvailable: true
+    })
+
+    runtimeGetStatus.mockResolvedValue({ hostPlatform: 'linux' })
+    wslIsAvailable.mockResolvedValue(false)
+
+    await expect(
+      loadWindowsTerminalCapabilities({ cacheKey: 'runtime:linux-env', now: 2_000 })
+    ).resolves.toMatchObject({
+      hostPlatform: 'linux',
+      wslAvailable: false
+    })
+    await expect(
+      loadWindowsTerminalCapabilities({ cacheKey: 'runtime:windows-env', now: 3_000 })
+    ).resolves.toMatchObject({
+      hostPlatform: 'win32',
+      wslAvailable: true
+    })
+
+    expect(runtimeGetStatus).toHaveBeenCalledTimes(2)
     expect(wslIsAvailable).toHaveBeenCalledTimes(2)
   })
 

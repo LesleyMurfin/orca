@@ -198,12 +198,17 @@ function TabBarInner({
       ),
     [agentCmdOverrides, defaultAgent, detectedIds]
   )
+  const isWebClient = (globalThis as { __ORCA_WEB_CLIENT__?: boolean }).__ORCA_WEB_CLIENT__ ?? false
   const shouldProbeWindowsShellCapabilities =
-    isWindows ||
-    (((globalThis as { __ORCA_WEB_CLIENT__?: boolean }).__ORCA_WEB_CLIENT__ ?? false) &&
-      activeRuntimeEnvironmentId !== null)
+    isWindows || (isWebClient && activeRuntimeEnvironmentId !== null)
+  const windowsTerminalCapabilityCacheKey =
+    isWebClient && activeRuntimeEnvironmentId !== null
+      ? `runtime:${activeRuntimeEnvironmentId}`
+      : undefined
   const windowsTerminalCapabilities = useWindowsTerminalCapabilities(
-    shouldProbeWindowsShellCapabilities
+    shouldProbeWindowsShellCapabilities,
+    false,
+    windowsTerminalCapabilityCacheKey
   )
   const shouldShowWindowsShellMenu =
     isWindows || windowsTerminalCapabilities.hostPlatform === 'win32'
