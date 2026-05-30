@@ -16,6 +16,12 @@ async function makeGitRepo(path: string): Promise<void> {
   await mkdir(join(path, '.git'), { recursive: true })
 }
 
+async function makeBareGitRepo(path: string): Promise<void> {
+  await mkdir(join(path, 'objects'), { recursive: true })
+  await mkdir(join(path, 'refs'), { recursive: true })
+  await writeFile(join(path, 'HEAD'), 'ref: refs/heads/main\n')
+}
+
 function posixTestFilesystem(args: {
   directories: Map<string, string[]>
   gitRepos: Set<string>
@@ -165,6 +171,35 @@ describe('scanNestedRepos', () => {
     })
 
     expect(result.repos.map((repo) => repo.path)).toEqual(['/workspace/active/repo'])
+  })
+
+  it('keeps root-anchored gitignore rules scoped to their base directory', async () => {
+    const directories = new Map([
+      ['/workspace', ['.gitignore', 'active', 'ignored']],
+      ['/workspace/active', ['ignored']],
+      ['/workspace/active/ignored', ['repo']],
+      ['/workspace/ignored', ['repo']]
+    ])
+    const files = new Map([['/workspace/.gitignore', '/ignored\n']])
+    const gitRepos = new Set(['/workspace/active/ignored/repo', '/workspace/ignored/repo'])
+
+    const result = await scanNestedRepos({
+      path: '/workspace',
+      filesystem: posixTestFilesystem({ directories, gitRepos, files })
+    })
+
+    expect(result.repos.map((repo) => repo.path)).toEqual(['/workspace/active/ignored/repo'])
+  })
+
+  it('detects bare child repositories without scanning inside them', async () => {
+    const root = await tempRoot()
+    await makeBareGitRepo(join(root, 'mirror.git'))
+    await mkdir(join(root, 'mirror.git', 'refs', 'nested-repo'), { recursive: true })
+    await makeGitRepo(join(root, 'mirror.git', 'refs', 'nested-repo'))
+
+    const result = await scanNestedRepos({ path: root })
+
+    expect(result.repos.map((repo) => repo.displayName)).toEqual(['mirror.git'])
   })
 
   it('does not use selected-path git checks while traversing children', async () => {

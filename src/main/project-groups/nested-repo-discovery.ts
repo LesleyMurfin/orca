@@ -10,7 +10,6 @@ import { isGitRepo } from '../git/repo'
 type NestedRepoDirectoryEntry = {
   name: string
   isDirectory: boolean
-  isFile?: boolean
 }
 
 type NestedRepoScanFilesystem = {
@@ -92,12 +91,24 @@ function globSegmentMatches(pattern: string, value: string): boolean {
 }
 
 function pathSegmentsMatch(patternSegments: string[], candidateSegments: string[]): boolean {
-  if (patternSegments.length !== candidateSegments.length) {
-    return false
+  const matchFrom = (patternIndex: number, candidateIndex: number): boolean => {
+    if (patternIndex >= patternSegments.length) {
+      return candidateIndex >= candidateSegments.length
+    }
+    const pattern = patternSegments[patternIndex]
+    if (pattern === '**') {
+      return (
+        matchFrom(patternIndex + 1, candidateIndex) ||
+        (candidateIndex < candidateSegments.length && matchFrom(patternIndex, candidateIndex + 1))
+      )
+    }
+    return (
+      candidateIndex < candidateSegments.length &&
+      globSegmentMatches(pattern, candidateSegments[candidateIndex] ?? '') &&
+      matchFrom(patternIndex + 1, candidateIndex + 1)
+    )
   }
-  return patternSegments.every((segment, index) =>
-    globSegmentMatches(segment, candidateSegments[index] ?? '')
-  )
+  return matchFrom(0, 0)
 }
 
 function parseGitignoreRules(content: string, baseSegments: string[]): IgnoreRule[] {
@@ -108,11 +119,12 @@ function parseGitignoreRules(content: string, baseSegments: string[]): IgnoreRul
     .map((line) => {
       const negate = line.startsWith('!')
       const unprefixed = negate ? line.slice(1) : line
+      const anchored = unprefixed.startsWith('/')
       const pattern = unprefixed.replace(/^\/+/, '').replace(/\/+$/, '')
       return {
         pattern,
         negate,
-        basenameOnly: !pattern.includes('/'),
+        basenameOnly: !anchored && !pattern.includes('/'),
         baseSegments
       }
     })
@@ -126,9 +138,10 @@ function isIgnoredByRules(name: string, segments: string[], rules: IgnoreRule[])
       continue
     }
     const relativeSegments = segments.slice(rule.baseSegments.length)
+    const patternSegments = rule.pattern.split('/')
     const matches = rule.basenameOnly
       ? relativeSegments.some((segment) => globSegmentMatches(rule.pattern, segment))
-      : pathSegmentsMatch(rule.pattern.split('/'), relativeSegments)
+      : pathSegmentsMatch(patternSegments, relativeSegments)
     if (matches) {
       ignored = !rule.negate
     }
@@ -158,10 +171,18 @@ async function readGitignoreRules(args: {
 async function hasGitMarker(dirPath: string): Promise<boolean> {
   try {
     const marker = await stat(join(dirPath, '.git'))
-    return marker.isDirectory() || marker.isFile()
+    if (marker.isDirectory() || marker.isFile()) {
+      return true
+    }
   } catch {
-    return false
+    // Continue to cheap bare-repository marker checks below.
   }
+  const [head, objects, refs] = await Promise.all([
+    stat(join(dirPath, 'HEAD')).catch(() => null),
+    stat(join(dirPath, 'objects')).catch(() => null),
+    stat(join(dirPath, 'refs')).catch(() => null)
+  ])
+  return head?.isFile() === true && objects?.isDirectory() === true && refs?.isDirectory() === true
 }
 
 async function readLocalDirectory(dirPath: string): Promise<NestedRepoDirectoryEntry[]> {
@@ -171,8 +192,7 @@ async function readLocalDirectory(dirPath: string): Promise<NestedRepoDirectoryE
     const childStat = await stat(join(dirPath, name)).catch(() => null)
     result.push({
       name,
-      isDirectory: childStat?.isDirectory() === true,
-      isFile: childStat?.isFile() === true
+      isDirectory: childStat?.isDirectory() === true
     })
   }
   return result

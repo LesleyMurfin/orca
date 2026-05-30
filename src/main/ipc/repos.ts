@@ -288,8 +288,7 @@ async function scanNestedReposForIpc(args: {
       readDirectory: async (dirPath) =>
         (await fsProvider.readDir(dirPath)).map((entry) => ({
           name: entry.name,
-          isDirectory: entry.isDirectory,
-          isFile: !entry.isDirectory && !entry.isSymlink
+          isDirectory: entry.isDirectory
         })),
       readTextFile: async (filePath) => (await fsProvider.readFile(filePath)).content,
       joinPath: (parentPath, childName) => posix.join(parentPath, childName),
@@ -297,10 +296,18 @@ async function scanNestedReposForIpc(args: {
       hasGitMarker: async (path) => {
         try {
           const marker = await fsProvider.stat(posix.join(path, '.git'))
-          return marker.type === 'directory' || marker.type === 'file'
+          if (marker.type === 'directory' || marker.type === 'file') {
+            return true
+          }
         } catch {
-          return false
+          // Continue to cheap bare-repository marker checks below.
         }
+        const [head, objects, refs] = await Promise.all([
+          fsProvider.stat(posix.join(path, 'HEAD')).catch(() => null),
+          fsProvider.stat(posix.join(path, 'objects')).catch(() => null),
+          fsProvider.stat(posix.join(path, 'refs')).catch(() => null)
+        ])
+        return head?.type === 'file' && objects?.type === 'directory' && refs?.type === 'directory'
       },
       isSelectedPathGitRepo: async (path) => {
         try {

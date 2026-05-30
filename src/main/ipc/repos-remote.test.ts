@@ -195,6 +195,35 @@ describe('projectGroups IPC validation', () => {
     })
   })
 
+  it('detects nested bare repositories over a connected SSH filesystem', async () => {
+    mockGitProvider.isGitRepoAsync.mockResolvedValue({ isRepo: false, rootPath: null })
+    mockFilesystemProvider.stat.mockImplementation(async (path: string) => {
+      if (path === '/srv/platform/mirror.git/HEAD') {
+        return { type: 'file', size: 0, mtime: 0 }
+      }
+      if (path === '/srv/platform/mirror.git/objects' || path === '/srv/platform/mirror.git/refs') {
+        return { type: 'directory', size: 0, mtime: 0 }
+      }
+      throw new Error('not found')
+    })
+    mockFilesystemProvider.readDir.mockImplementation(async (dirPath: string) =>
+      dirPath === '/srv/platform'
+        ? [{ name: 'mirror.git', isDirectory: true, isSymlink: false }]
+        : []
+    )
+
+    const result = await handlers.get('projectGroups:scanNested')!(null, {
+      path: '/srv/platform',
+      connectionId: 'conn-1'
+    })
+
+    expect(result).toMatchObject({
+      selectedPath: '/srv/platform',
+      selectedPathKind: 'non_git_folder',
+      repos: [{ path: '/srv/platform/mirror.git', displayName: 'mirror.git' }]
+    })
+  })
+
   it('prioritizes shallow sibling repositories before truncated SSH archive scans', async () => {
     const archivedRepoNames = Array.from(
       { length: 101 },
