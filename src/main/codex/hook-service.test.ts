@@ -669,12 +669,16 @@ describe('CodexHookService', () => {
     )
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    expect(new CodexHookService().install().state).toBe('installed')
+    try {
+      expect(new CodexHookService().install().state).toBe('installed')
 
-    expect(warnSpy).not.toHaveBeenCalledWith(
-      '[codex-hook-service] failed to clean legacy Codex hooks',
-      expect.anything()
-    )
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        '[codex-hook-service] failed to clean legacy Codex hooks',
+        expect.anything()
+      )
+    } finally {
+      warnSpy.mockRestore()
+    }
     const systemHooks = JSON.parse(readFileSync(systemHooksPath, 'utf-8')) as {
       hooks: Record<string, unknown>
     }
