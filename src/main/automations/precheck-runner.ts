@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import type { ClientChannel } from 'ssh2'
 import type { AutomationPrecheck, AutomationPrecheckResult } from '../../shared/automations-types'
 import { MAX_AUTOMATION_PRECHECK_OUTPUT_CHARS } from '../../shared/automation-precheck'
@@ -73,6 +73,46 @@ function failedPrecheckResult(
   })
 }
 
+function killLocalPrecheckProcessTree(child: ChildProcess): ReturnType<typeof setTimeout> | null {
+  const pid = child.pid
+  if (!pid) {
+    child.kill()
+    return null
+  }
+
+  if (process.platform === 'win32') {
+    try {
+      // Why: shell prechecks can launch child processes; taskkill walks the
+      // Windows process tree so timeout means the command is actually stopped.
+      const killer = spawn('taskkill', ['/pid', String(pid), '/t', '/f'], {
+        stdio: 'ignore',
+        windowsHide: true
+      })
+      killer.on('error', () => child.kill())
+      killer.unref()
+    } catch {
+      child.kill()
+    }
+    return null
+  }
+
+  try {
+    process.kill(-pid, 'SIGTERM')
+  } catch {
+    child.kill()
+  }
+
+  const forceKillTimer = setTimeout(() => {
+    try {
+      process.kill(-pid, 'SIGKILL')
+    } catch {
+      /* process group already exited */
+    }
+  }, 2000)
+  forceKillTimer.unref?.()
+  return forceKillTimer
+}
+
 function runLocalPrecheck(
   precheck: AutomationPrecheck,
   target: Extract<AutomationPrecheckExecutionTarget, { type: 'local' }>
@@ -85,9 +125,11 @@ function runLocalPrecheck(
     let timedOut = false
     let settled = false
     let timeout: ReturnType<typeof setTimeout> | null = null
+    let forceKillTimer: ReturnType<typeof setTimeout> | null = null
 
     const child = spawn(precheck.command, {
       cwd: target.cwd,
+      detached: process.platform !== 'win32',
       env: process.env,
       shell: true,
       windowsHide: true
@@ -102,6 +144,10 @@ function runLocalPrecheck(
         clearTimeout(timeout)
         timeout = null
       }
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer)
+        forceKillTimer = null
+      }
       resolve(
         createPrecheckResult({ precheck, startedAt, stdout, stderr, exitCode, timedOut, error })
       )
@@ -109,7 +155,7 @@ function runLocalPrecheck(
 
     timeout = setTimeout(() => {
       timedOut = true
-      child.kill()
+      forceKillTimer = killLocalPrecheckProcessTree(child)
     }, timeoutMs)
 
     child.stdout?.setEncoding('utf8')
@@ -142,6 +188,7 @@ function runSshChannelPrecheck(args: {
   return new Promise((resolve) => {
     let stdout: TailBuffer = { content: '', truncated: false }
     let stderr: TailBuffer = { content: '', truncated: false }
+    let exitCode: number | null = null
     let timedOut = false
     let settled = false
     let timeout: ReturnType<typeof setTimeout> | null = null
@@ -176,11 +223,14 @@ function runSshChannelPrecheck(args: {
     channel.stderr.on('data', (data: Buffer | string) => {
       stderr = appendTail(stderr, data.toString())
     })
-    channel.on('close', (code: number | null | undefined) => {
-      settle(
-        typeof code === 'number' ? code : null,
-        timedOut ? `Precheck timed out after ${precheck.timeoutSeconds}s.` : null
-      )
+    channel.on('exit', (code: number | null) => {
+      exitCode = typeof code === 'number' ? code : null
+    })
+    channel.on('close', (code?: number | null) => {
+      if (typeof code === 'number') {
+        exitCode = code
+      }
+      settle(exitCode, timedOut ? `Precheck timed out after ${precheck.timeoutSeconds}s.` : null)
     })
   })
 }
