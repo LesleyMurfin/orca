@@ -10,7 +10,7 @@
 const OSC7_URI = /^file:\/\/([^/]*)(\/.*)$/
 
 type ParseOsc7Options = {
-  preserveHostAsUnc?: boolean
+  uncHost?: string | null
 }
 
 /**
@@ -33,9 +33,11 @@ export function parseOsc7(data: string, options: ParseOsc7Options = {}): string 
   if (!path) {
     return null
   }
-  if (options.preserveHostAsUnc) {
-    // Why: Windows UNC OSC-7 payloads use the URI host as the server name.
-    if (host && host.toLowerCase() !== 'localhost') {
+  const isWindowsDrivePath = /^\/[A-Za-z]:/.test(path)
+  if (options.uncHost && !isWindowsDrivePath) {
+    // Why: only the launch UNC server is known to be a Windows file host.
+    // Other OSC-7 hosts can come from SSH/Linux shells and must stay POSIX.
+    if (host.toLowerCase() === options.uncHost.toLowerCase()) {
       return `\\\\${host}${path.replace(/\//g, '\\')}`
     }
   }
@@ -44,7 +46,7 @@ export function parseOsc7(data: string, options: ParseOsc7Options = {}): string 
   // leading slash before the drive letter so we hand back `C:/Users/...`.
   // Renderer runs with sandbox + contextIsolation so process.platform is
   // unavailable; detect Windows paths by shape instead.
-  if (/^\/[A-Za-z]:/.test(path)) {
+  if (isWindowsDrivePath) {
     path = path.slice(1)
   }
   return path

@@ -19,9 +19,13 @@ describe('parseOsc7', () => {
   })
 
   it('preserves Windows UNC cwd paths', () => {
-    expect(parseOsc7('file://server/share/project', { preserveHostAsUnc: true })).toBe(
+    expect(parseOsc7('file://server/share/project', { uncHost: 'server' })).toBe(
       '\\\\server\\share\\project'
     )
+  })
+
+  it('does not treat unrelated OSC-7 hosts as UNC servers', () => {
+    expect(parseOsc7('file://remote/home/jin/repo', { uncHost: 'server' })).toBe('/home/jin/repo')
   })
 
   it('keeps POSIX host-prefixed paths unchanged by default', () => {
