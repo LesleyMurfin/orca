@@ -13,6 +13,7 @@ import type {
   TuiAgent,
   WorkspaceVisibleTabType
 } from '../../../../shared/types'
+import { resolveTerminalTabTitle } from '../../../../shared/tab-title-resolution'
 import { useAppStore } from '../../store'
 import { buildStatusMap } from '../right-sidebar/status-display'
 import type { OpenFile } from '../../store/slices/editor'
@@ -31,8 +32,15 @@ import { resolveWindowsShellLaunchTarget } from './windows-shell-launch'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import { useDetectedAgents } from '@/hooks/useDetectedAgents'
 import { launchAgentInNewTab } from '@/lib/launch-agent-in-new-tab'
-import { useWindowsTerminalCapabilities } from '@/lib/windows-terminal-capabilities'
+import {
+  getWindowsTerminalCapabilityOwnerKey,
+  useWindowsTerminalCapabilities
+} from '@/lib/windows-terminal-capabilities'
 import { useShortcutLabel } from '@/hooks/useShortcutLabel'
+import {
+  type BuiltInWindowsTerminalShell,
+  WINDOWS_GIT_BASH_SHELL
+} from '../../../../shared/windows-terminal-shell'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -108,9 +116,9 @@ type TabItem =
       data: BrowserTabState & { tabId?: string }
     }
 
-function getTabDragLabel(item: TabItem): string {
+function getTabDragLabel(item: TabItem, generatedTitlesEnabled: boolean): string {
   if (item.type === 'terminal') {
-    return item.data.customTitle ?? item.data.title
+    return resolveTerminalTabTitle(item.data, generatedTitlesEnabled, item.data.title)
   }
   if (item.type === 'browser') {
     return getBrowserTabLabel(item.data)
@@ -158,6 +166,7 @@ function TabBarInner({
   const newTerminalShortcut = useShortcutLabel('tab.newTerminal')
   const newBrowserShortcut = useShortcutLabel('tab.newBrowser')
   const newFileShortcut = useShortcutLabel('tab.newMarkdown')
+  const generatedTabTitlesEnabled = useAppStore((s) => s.settings?.tabAutoGenerateTitle === true)
   const gitStatusEntries = useAppStore(
     (s) => s.gitStatusByWorktree[worktreeId] ?? EMPTY_GIT_STATUS_ENTRIES
   )
@@ -170,6 +179,13 @@ function TabBarInner({
   const activeRuntimeEnvironmentId = useAppStore(
     (s) => s.settings?.activeRuntimeEnvironmentId?.trim() || null
   )
+  const worktreeHasRemoteConnection = useAppStore((s) => {
+    const worktree = Object.values(s.worktreesByRepo ?? {})
+      .flat()
+      .find((entry) => entry.id === worktreeId)
+    const repo = worktree ? s.repos?.find((entry) => entry.id === worktree.repoId) : null
+    return Boolean(repo?.connectionId)
+  })
   const unifiedNewTabLauncherEnabled = useAppStore(
     (s) => s.settings?.experimentalUnifiedNewTabLauncher === true
   )
@@ -224,8 +240,15 @@ function TabBarInner({
       cancelled = true
     }
   }, [activeRuntimeEnvironmentId])
-  const shouldShowWindowsShellMenu = isWindows || runtimeHostPlatform === 'win32'
-  const windowsTerminalCapabilities = useWindowsTerminalCapabilities(shouldShowWindowsShellMenu)
+  // Why: SSH-backed PTYs ignore local Windows shell overrides; showing these
+  // entries there promises PowerShell/CMD/Git Bash but opens the remote shell.
+  const shouldShowWindowsShellMenu =
+    (isWindows || runtimeHostPlatform === 'win32') && !worktreeHasRemoteConnection
+  const windowsTerminalCapabilities = useWindowsTerminalCapabilities(
+    shouldShowWindowsShellMenu,
+    false,
+    getWindowsTerminalCapabilityOwnerKey(activeRuntimeEnvironmentId)
+  )
   const resolvedGroupId = groupId ?? worktreeId
 
   const statusByRelativePath = useMemo(() => buildStatusMap(gitStatusEntries), [gitStatusEntries])
@@ -315,13 +338,24 @@ function TabBarInner({
       })
     }
   }
-  useEffect(
-    () => () => {
+
+  const clearPendingNewTabMenuFocusOnUnmountRef = useRef<
+    ((node: HTMLDivElement | null) => void) | null
+  >(null)
+  if (clearPendingNewTabMenuFocusOnUnmountRef.current === null) {
+    clearPendingNewTabMenuFocusOnUnmountRef.current = (node: HTMLDivElement | null): void => {
+      if (node !== null) {
+        return
+      }
+      // Why: the delayed focus handoff is scoped to this tab bar instance.
+      // A root ref cleanup cancels it at the DOM owner boundary without an
+      // otherwise cleanup-only React Effect.
       clearPendingNewTabMenuFocusAnimation()
       clearPendingNewTabMenuFocusRetry()
-    },
-    []
-  )
+    }
+  }
+  const clearPendingNewTabMenuFocusOnUnmount = clearPendingNewTabMenuFocusOnUnmountRef.current
+
   useEffect(() => {
     if (!newTabMenuOpen) {
       return
@@ -494,6 +528,7 @@ function TabBarInner({
 
   return (
     <div
+      ref={clearPendingNewTabMenuFocusOnUnmount}
       className="flex items-stretch h-full overflow-hidden flex-1 min-w-0"
       // Why: only drops aimed at the top tab/session strip should open files in
       // Orca's editor. Terminal-pane drops need to keep inserting file paths
@@ -530,15 +565,23 @@ function TabBarInner({
               unifiedTabId: item.unifiedTabId,
               visibleTabId: item.id,
               tabType: item.type,
-              label: getTabDragLabel(item),
+              label: getTabDragLabel(item, generatedTabTitlesEnabled),
               iconPath: item.type === 'editor' ? item.data.filePath : undefined,
               color: item.type === 'terminal' ? (item.data.color ?? null) : null
             }
             if (item.type === 'terminal') {
+              const terminalTab = {
+                ...item.data,
+                title: resolveTerminalTabTitle(
+                  item.data,
+                  generatedTabTitlesEnabled,
+                  item.data.title
+                )
+              }
               return (
                 <SortableTab
                   key={item.id}
-                  tab={item.data}
+                  tab={terminalTab}
                   tabCount={orderedItems.length}
                   hasTabsToRight={index < orderedItems.length - 1}
                   isActive={activeTabType === 'terminal' && item.id === activeTabId}
@@ -652,17 +695,20 @@ function TabBarInner({
             // shells as flat items — default pinned to the top with the
             // Ctrl+T hint — matches the "no popouts, show all options at
             // once" rec. Each entry uses a shell-specific icon (ShellIcon)
-            // so PowerShell / CMD / WSL are distinguishable at a glance.
+            // so PowerShell / CMD / Git Bash / WSL are distinguishable at a glance.
             // Labels use "CMD Prompt" instead of "Command Prompt" to keep
             // each row narrow enough that the shortcut hint fits without
             // wrapping.
             (() => {
               const allShells: {
                 label: string
-                shell: 'powershell.exe' | 'cmd.exe' | 'wsl.exe'
+                shell: BuiltInWindowsTerminalShell
               }[] = [
                 { label: 'PowerShell', shell: 'powershell.exe' },
                 { label: 'CMD Prompt', shell: 'cmd.exe' },
+                ...(windowsTerminalCapabilities.gitBashAvailable
+                  ? ([{ label: 'Git Bash', shell: WINDOWS_GIT_BASH_SHELL }] as const)
+                  : []),
                 ...(windowsTerminalCapabilities.wslAvailable
                   ? ([{ label: 'WSL', shell: 'wsl.exe' }] as const)
                   : [])

@@ -359,6 +359,7 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
             sortRelevantChange || migrationUnsupported.changed ? s.sortEpoch + 1 : s.sortEpoch
         }
       })
+      get().setGeneratedTabTitleFromAgentPrompt(paneKey, payload.prompt)
       // Why: schedule after set completes so the timer reads the updated map.
       // queueMicrotask avoids re-entry into the zustand store during set.
       queueMicrotask(() => freshness.schedule())

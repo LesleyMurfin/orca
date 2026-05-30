@@ -13,7 +13,7 @@ vi.mock('node:child_process', () => ({
   spawn: spawnMock
 }))
 
-import { commandExecFileAsync } from './runner'
+import { commandExecFileAsync, gitExecFileAsync } from './runner'
 
 type MockChildProcess = EventEmitter & {
   stdout: EventEmitter
@@ -166,5 +166,48 @@ describe('commandExecFileAsync Windows command shims', () => {
       expect(command.listenerCount('error')).toBe(0)
       expect(command.listenerCount('close')).toBe(0)
     })
+  })
+})
+
+describe('runner execFile timeout handling', () => {
+  beforeEach(() => {
+    execFileMock.mockReset()
+    execFileSyncMock.mockReset()
+    spawnMock.mockReset()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('rejects command executions when execFile never calls back after timeout', async () => {
+    const child = createMockChildProcess(1234)
+    execFileMock.mockReturnValue(child)
+
+    const promise = commandExecFileAsync('git', ['status'], {
+      cwd: '/repo',
+      timeout: 1000
+    })
+    const rejection = expect(promise).rejects.toThrow('git timed out.')
+    await vi.advanceTimersByTimeAsync(1000)
+
+    await rejection
+    expect(child.kill).toHaveBeenCalled()
+  })
+
+  it('rejects git executions when execFile never calls back after timeout', async () => {
+    const child = createMockChildProcess(1234)
+    execFileMock.mockReturnValue(child)
+
+    const promise = gitExecFileAsync(['status'], {
+      cwd: '/repo',
+      timeout: 1000
+    })
+    const rejection = expect(promise).rejects.toThrow('git timed out.')
+    await vi.advanceTimersByTimeAsync(1000)
+
+    await rejection
+    expect(child.kill).toHaveBeenCalled()
   })
 })

@@ -115,6 +115,9 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
   // Why: server path adds share the same dialog but run against a runtime
   // server; resetState cancels their stale scan/add/fetch continuations.
   const serverAddGenRef = useRef(0)
+  // Why: nested group import can create many repos; resetState must prevent
+  // stale import completions from reopening setup UI after Back/close.
+  const nestedImportGenRef = useRef(0)
   // Why: setup actions can await settings/worktree refreshes; resetState
   // cancels stale continuations when the setup step is dismissed.
   const setupActionGenRef = useRef(0)
@@ -251,6 +254,7 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
     cloneGenRef.current++
     localAddGenRef.current++
     serverAddGenRef.current++
+    nestedImportGenRef.current++
     setupActionGenRef.current++
     // Why: kill the git clone process if one is running, so backing out
     // or closing the dialog doesn't leave a clone running on disk.
@@ -394,6 +398,7 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
       const foundCount = nestedScan.repos.length
       const selectedCount = nestedSelectedPaths.size
       const runtimeKind = nestedRuntimeKind ?? getNestedRepoRuntimeKind(nestedConnectionId)
+      const gen = ++nestedImportGenRef.current
       setIsAdding(true)
       track(
         'add_repo_nested_import_action',
@@ -437,13 +442,18 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
         const firstRepoId = importedRepoIds[0]
         if (!firstRepoId) {
           const firstFailure = result.projects.find((entry) => entry.status === 'failed')?.error
-          toast.error('No repositories imported', {
-            description: firstFailure ?? undefined
-          })
+          if (gen === nestedImportGenRef.current) {
+            toast.error('No repositories imported', {
+              description: firstFailure ?? undefined
+            })
+          }
           return
         }
         for (const projectId of importedRepoIds) {
           await fetchWorktrees(projectId)
+        }
+        if (gen !== nestedImportGenRef.current) {
+          return
         }
         const repo = useAppStore.getState().repos.find((entry) => entry.id === firstRepoId)
         if (repo) {
@@ -458,9 +468,11 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
           setStep('setup')
         }
         if (result.failedCount > 0) {
-          toast.warning('Some repositories could not be imported', {
-            description: `${result.failedCount} failed`
-          })
+          if (gen === nestedImportGenRef.current) {
+            toast.warning('Some repositories could not be imported', {
+              description: `${result.failedCount} failed`
+            })
+          }
         }
       } finally {
         if (!resultTracked) {
@@ -477,7 +489,9 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
             })
           )
         }
-        setIsAdding(false)
+        if (gen === nestedImportGenRef.current) {
+          setIsAdding(false)
+        }
       }
     },
     [

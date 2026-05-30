@@ -58,6 +58,7 @@ import type {
   GitLabWorkItem,
   LinearIssue
 } from '../../../../shared/types'
+import { resolveSmartWorkspaceCommandValue } from './smart-workspace-command-value'
 
 // Why: GitLab MR list filter — Open / Merged / Closed / All — replaces
 // GitHub's search-DSL on the GitLab tab per the agreed scope.
@@ -773,36 +774,12 @@ export default function SmartWorkspaceNameField({
     return null
   }, [linearAvailable, value])
 
-  useEffect(() => {
-    if (rows.length === 0) {
-      return
-    }
-    if (isQueryStale) {
-      const typedTextRow = rows.find(
-        (row) => row.kind === 'use-name' || row.kind === 'create-branch'
-      )
-      // No typed-text fallback in this mode (GitHub/Linear): clear the
-      // highlight so cmdk doesn't auto-select a stale source on Enter.
-      setCommandValue(typedTextRow ? typedTextRow.value : '')
-      return
-    }
-    if (sourceIntent === 'github') {
-      const githubRow = rows.find((row) => row.kind === 'github')
-      if (githubRow) {
-        setCommandValue(githubRow.value)
-        return
-      }
-    } else if (sourceIntent === 'linear') {
-      const linearRow = rows.find((row) => row.kind === 'linear')
-      if (linearRow) {
-        setCommandValue(linearRow.value)
-        return
-      }
-    }
-    setCommandValue((current) =>
-      rows.some((row) => row.value === current) ? current : rows[0].value
-    )
-  }, [isQueryStale, rows, sourceIntent])
+  const resolvedCommandValue = resolveSmartWorkspaceCommandValue({
+    currentValue: commandValue,
+    rows,
+    isQueryStale,
+    sourceIntent
+  })
 
   const loading = githubLoading || gitlabLoading || branchesLoading || linearLoading
   const ActiveInputIcon = mode === 'text' ? CaseSensitive : loading ? LoaderCircle : Search
@@ -963,7 +940,7 @@ export default function SmartWorkspaceNameField({
         onOpenChange={(next) => setOpen(disabled || selectedSource ? false : next)}
       >
         <Command
-          value={commandValue}
+          value={resolvedCommandValue}
           onValueChange={setCommandValue}
           shouldFilter={false}
           className="overflow-visible bg-transparent"
@@ -1075,7 +1052,7 @@ export default function SmartWorkspaceNameField({
                         !event.shiftKey
                       ) {
                         if (open && rows.length > 0) {
-                          const row = rows.find((entry) => entry.value === commandValue)
+                          const row = rows.find((entry) => entry.value === resolvedCommandValue)
                           if (row) {
                             event.preventDefault()
                             handleSelect(row)

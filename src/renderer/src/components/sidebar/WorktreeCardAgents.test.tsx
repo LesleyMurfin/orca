@@ -58,7 +58,12 @@ vi.mock('@/store', () => ({
       acknowledgedAgentsByPaneKey: {},
       dropAgentStatus: vi.fn(),
       dismissRetainedAgent: vi.fn(),
-      acknowledgeAgents: vi.fn()
+      acknowledgeAgents: vi.fn(),
+      agentSendPopoverTargetMode: null,
+      agentStatusByPaneKey: {},
+      tabsByWorktree: {},
+      terminalLayoutsByTabId: {},
+      sendPromptToSidebarAgentTarget: vi.fn()
     })
 }))
 
@@ -74,12 +79,18 @@ vi.mock('@/components/dashboard/DashboardAgentRow', () => ({
   default: ({
     agent,
     isFocusedPane,
+    sendTargetStatus,
+    sendTargetDisabledReason,
+    onSendTargetClick,
     childAgentCount,
     childAgentsExpanded,
     onToggleChildAgents
   }: {
     agent: { paneKey: string }
     isFocusedPane?: boolean
+    sendTargetStatus?: 'eligible' | 'disabled' | 'sending'
+    sendTargetDisabledReason?: string
+    onSendTargetClick?: (paneKey: string) => void
     childAgentCount?: number
     childAgentsExpanded?: boolean
     onToggleChildAgents?: () => void
@@ -87,6 +98,9 @@ vi.mock('@/components/dashboard/DashboardAgentRow', () => ({
     <div
       data-testid="agent-row"
       data-focused={isFocusedPane ? 'true' : 'false'}
+      data-agent-send-target={sendTargetStatus}
+      data-disabled-reason={sendTargetDisabledReason}
+      data-has-send-handler={typeof onSendTargetClick === 'function' ? 'true' : 'false'}
       data-pane-key={agent.paneKey}
     >
       {agent.paneKey}
@@ -157,8 +171,10 @@ describe('WorktreeCardAgents', () => {
 
     const markup = renderToStaticMarkup(<WorktreeCardAgents worktreeId="wt-1" />)
 
-    expect(markup).toContain('data-focused="false" data-pane-key="tab-1:1"')
-    expect(markup).toContain('data-focused="true" data-pane-key="tab-1:2"')
+    expect(markup).toContain('data-focused="false"')
+    expect(markup).toContain('data-pane-key="tab-1:1"')
+    expect(markup).toContain('data-focused="true"')
+    expect(markup).toContain('data-pane-key="tab-1:2"')
   })
 
   it('collapses orchestration child agent rows behind a parent disclosure by default', async () => {
@@ -278,6 +294,7 @@ describe('WorktreeCardAgents', () => {
     expect(markup).toContain('Expand 3 agents: 1 waiting, 1 working, 1 done')
     expect(markup).not.toContain('data-testid="agent-row"')
   })
+
   it('prioritizes agent varieties in compact summary icons', async () => {
     mockAgentActivityDisplayMode = 'compact'
     mockAgents = [

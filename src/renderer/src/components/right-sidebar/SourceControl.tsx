@@ -180,6 +180,10 @@ import { getCommitMessageModelDiscoveryHostKeyForScope } from '../../../../share
 import { getRuntimeGitScope } from '@/runtime/runtime-git-client'
 import { getRepositorySourceControlAiSectionId } from '@/components/settings/repository-settings-targets'
 import { hasExpandedCommitFailureDetails, summarizeCommitFailure } from './commit-failure-summary'
+import {
+  resolveCommitFailureDialogState,
+  type CommitFailureDialogState
+} from './commit-failure-dialog-state'
 
 export type SourceControlScope = 'all' | 'uncommitted'
 type AbortConflictOperation = Extract<GitConflictOperation, 'merge' | 'rebase'>
@@ -955,25 +959,25 @@ function hostedReviewLabel(review: HostedReviewInfo): string {
 
 export function HostedReviewHeaderLink({
   review,
-  onOpenGitHubPRInChecks
+  onOpenHostedReviewInChecks
 }: {
   review: HostedReviewInfo
-  onOpenGitHubPRInChecks: () => void
+  onOpenHostedReviewInChecks: () => void
 }): React.JSX.Element {
   const label = hostedReviewLabel(review)
   const className =
     'shrink-0 border-0 bg-transparent p-0 text-left font-medium leading-none text-foreground opacity-80 hover:text-foreground hover:underline'
 
-  if (review.provider === 'github') {
+  if (review.provider === 'github' || review.provider === 'gitlab') {
     return (
       <button
         type="button"
         className={className}
         onClick={(e) => {
           e.stopPropagation()
-          // Why: GitHub PR details already live in Orca's Checks tab; keep
+          // Why: GitHub PR and GitLab MR details live in Orca's Checks tab; keep
           // the sidebar workflow in-app instead of opening the browser.
-          onOpenGitHubPRInChecks()
+          onOpenHostedReviewInChecks()
         }}
       >
         {label}
@@ -2369,7 +2373,7 @@ function SourceControlInner(): React.JSX.Element {
     ]
   )
 
-  const openHostedGitHubPRInChecks = useCallback(() => {
+  const openHostedReviewInChecks = useCallback(() => {
     setRightSidebarOpen(true)
     setRightSidebarTab('checks')
   }, [setRightSidebarOpen, setRightSidebarTab])
@@ -2918,14 +2922,6 @@ function SourceControlInner(): React.JSX.Element {
         case 'publish':
         case 'rebase_base':
           void runRemoteAction(kind === 'rebase_base' ? 'rebase' : kind)
-          return
-        default: {
-          // Why: exhaustiveness check — if a new DropdownActionKind is added
-          // to the union, TypeScript will flag this assignment so we can't
-          // silently drop a case.
-          const _exhaustive: never = kind
-          void _exhaustive
-        }
       }
     },
     [
@@ -3259,11 +3255,6 @@ function SourceControlInner(): React.JSX.Element {
       case 'publish':
       case 'create_pr':
         handleActionInvoke(primaryAction.kind)
-        return
-      default: {
-        const _exhaustive: never = primaryAction.kind
-        void _exhaustive
-      }
     }
   }, [handleActionInvoke, handleStageAllPrimary, primaryAction.kind])
 
@@ -4019,7 +4010,7 @@ function SourceControlInner(): React.JSX.Element {
               <HostedReviewIcon review={hostedReview} className="size-3 shrink-0" />
               <HostedReviewHeaderLink
                 review={hostedReview}
-                onOpenGitHubPRInChecks={openHostedGitHubPRInChecks}
+                onOpenHostedReviewInChecks={openHostedReviewInChecks}
               />
             </div>
           )}
@@ -5459,12 +5450,18 @@ export function CommitArea({
     [commitError, commitFailureSummary]
   )
   const commitFailureIdentity = `${worktreeId ?? 'no-worktree'}:${commitError ?? ''}`
-  const [commitFailureDialogState, setCommitFailureDialogState] = useState<{
-    identity: string
-    open: boolean
-  }>({ identity: commitFailureIdentity, open: false })
+  const [commitFailureDialogState, setCommitFailureDialogState] =
+    useState<CommitFailureDialogState>({ identity: commitFailureIdentity, open: false })
+  const resolvedCommitFailureDialogState = resolveCommitFailureDialogState(
+    commitFailureDialogState,
+    commitFailureIdentity
+  )
+  if (resolvedCommitFailureDialogState !== commitFailureDialogState) {
+    setCommitFailureDialogState(resolvedCommitFailureDialogState)
+  }
   const isCommitFailureDialogOpen =
-    commitFailureDialogState.open && commitFailureDialogState.identity === commitFailureIdentity
+    resolvedCommitFailureDialogState.open &&
+    resolvedCommitFailureDialogState.identity === commitFailureIdentity
   const setCommitFailureDialogOpen = useCallback(
     (open: boolean) => {
       setCommitFailureDialogState({ identity: commitFailureIdentity, open })
@@ -5484,14 +5481,6 @@ export function CommitArea({
   const handleCommitFailureAgentPromptDelivered = useCallback(() => {
     setCommitFailureDialogOpen(false)
   }, [setCommitFailureDialogOpen])
-
-  useEffect(() => {
-    setCommitFailureDialogState((current) =>
-      current.identity === commitFailureIdentity
-        ? current
-        : { identity: commitFailureIdentity, open: false }
-    )
-  }, [commitFailureIdentity])
 
   // Why: most primary-kind labels are anchored by a directional icon so
   // the affirmative Commit (✓) reads distinctly from the remote-state
@@ -6060,14 +6049,17 @@ function DiffCommentsInlineList({
 
   const [copiedId, showCopiedId] = useCopyFeedbackState<string | null>(null)
 
-  const handleCopyOne = useCallback(async (c: DiffComment): Promise<void> => {
-    try {
-      await window.api.ui.writeClipboardText(formatDiffComment(c))
-      showCopiedId(c.id)
-    } catch {
-      // Why: swallow — clipboard write can fail when the window isn't focused.
-    }
-  }, [showCopiedId])
+  const handleCopyOne = useCallback(
+    async (c: DiffComment): Promise<void> => {
+      try {
+        await window.api.ui.writeClipboardText(formatDiffComment(c))
+        showCopiedId(c.id)
+      } catch {
+        // Why: swallow — clipboard write can fail when the window isn't focused.
+      }
+    },
+    [showCopiedId]
+  )
 
   if (comments.length === 0) {
     return (

@@ -6,11 +6,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getDefaultSettings } from '../../../../shared/constants'
 import type { GlobalSettings, TuiAgent } from '../../../../shared/types'
 import { useAppStore } from '../../store'
+import { AGENT_GENERATED_TAB_TITLES_TITLE } from './agent-generated-tab-title-copy'
 import { AGENT_STATUS_HOOKS_TITLE } from './agent-status-hooks-copy'
 import { getAgentAwakeDescription } from './agent-awake-copy'
 import { AgentAwakeSetting } from './AgentAwakeSetting'
 import {
   AgentAvailabilityControl,
+  AgentGeneratedTabTitlesSetting,
   AgentStatusHooksSetting,
   AgentsPane,
   AGENTS_PANE_SEARCH_ENTRIES,
@@ -201,6 +203,27 @@ describe('AgentsPane', () => {
     })
   })
 
+  it('toggles generated tab titles with the next value', () => {
+    const updateSettings = vi.fn()
+    const element = AgentGeneratedTabTitlesSetting({
+      settings: {
+        ...getDefaultSettings('/tmp'),
+        tabAutoGenerateTitle: false
+      },
+      updateSettings
+    })
+
+    const generatedTitleSwitch = findSwitchRow(element, AGENT_GENERATED_TAB_TITLES_TITLE)
+    expect(generatedTitleSwitch.props.checked).toBe(false)
+
+    const onChange = generatedTitleSwitch.props.onChange as () => void
+    onChange()
+
+    expect(updateSettings).toHaveBeenCalledWith({
+      tabAutoGenerateTitle: true
+    })
+  })
+
   it('includes awake and sleep search metadata for the setting', () => {
     expect(matchesSettingsSearch('awake', AGENTS_PANE_SEARCH_ENTRIES)).toBe(true)
     expect(matchesSettingsSearch('sleep', AGENTS_PANE_SEARCH_ENTRIES)).toBe(true)
@@ -211,6 +234,11 @@ describe('AgentsPane', () => {
     expect(matchesSettingsSearch('hooks', AGENTS_PANE_SEARCH_ENTRIES)).toBe(true)
     expect(matchesSettingsSearch('waiting', AGENTS_PANE_SEARCH_ENTRIES)).toBe(true)
     expect(matchesSettingsSearch('codex', AGENTS_PANE_SEARCH_ENTRIES)).toBe(true)
+  })
+
+  it('includes generated title search metadata', () => {
+    expect(matchesSettingsSearch('generated title', AGENTS_PANE_SEARCH_ENTRIES)).toBe(true)
+    expect(matchesSettingsSearch('stable session', AGENTS_PANE_SEARCH_ENTRIES)).toBe(true)
   })
 
   it('includes enable and hide search metadata for agent visibility', () => {

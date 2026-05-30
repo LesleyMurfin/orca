@@ -55,25 +55,24 @@ import { MarkdownTableOfContentsPanel } from './MarkdownTableOfContentsPanel'
 import { getRelativePathInsideRoot, normalizeRelativePath } from '@/lib/path'
 import { DiffCommentPopover } from '../diff-comments/DiffCommentPopover'
 import { DiffCommentCard } from '../diff-comments/DiffCommentCard'
+import { NotesSendMenu, type NotesSendMenuScope } from './NotesSendMenu'
 import { isMarkdownComment } from '@/lib/diff-comment-compat'
-import { MessageSquare, Plus, Send } from 'lucide-react'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuTrigger
-} from '@/components/ui/dropdown-menu'
+import { MessageSquare, Plus } from 'lucide-react'
 import {
   formatMarkdownReviewNotes,
   getMarkdownReviewCardQuote,
   sortMarkdownReviewNotes,
   type MarkdownReviewNote
 } from '@/lib/markdown-review-notes'
-import { QuickLaunchAgentMenuItems } from '@/components/tab-bar/QuickLaunchButton'
-import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import {
   richMarkdownAnnotationHighlightPluginKey,
   type RichMarkdownAnnotationHighlightRange
 } from './rich-markdown-annotation-highlight'
+import {
+  getRichMarkdownLineRangeFromBlocks,
+  getRichMarkdownRangeBounds,
+  getRichMarkdownRangeStart
+} from './rich-markdown-range-bounds'
 import {
   shouldExpandRichMarkdownReviewRail,
   stackRichMarkdownReviewNotePositions,
@@ -460,10 +459,7 @@ function getRichMarkdownCommentAnchorTop(
     // Why: range notes should sort by the start of the selected text. Anchoring
     // to the end puts overlapping ranges with the same final line in creation
     // order, so a 43-45 card can render above a 41-45 card.
-    const anchorPos =
-      ranges.length > 0
-        ? Math.min(...ranges.map((range) => Math.min(range.from, range.to)))
-        : block.from
+    const anchorPos = getRichMarkdownRangeStart(ranges) ?? block.from
     const coords = editor.view.coordsAtPos(
       Math.max(1, Math.min(anchorPos, editor.state.doc.content.size))
     )
@@ -479,13 +475,8 @@ function getRichMarkdownSelectionRange(editor: Editor): RichMarkdownComposerStat
   const selectedBlocks = empty
     ? blocks.filter((block) => block.from <= from && from <= block.to)
     : blocks.filter((block) => from <= block.to && to >= block.from)
-  const targetBlocks = selectedBlocks.length > 0 ? selectedBlocks : [blocks[0]]
-  const startLine = Math.min(...targetBlocks.map((block) => block.startLine))
-  const lineNumber = Math.max(...targetBlocks.map((block) => block.endLine))
-  return {
-    lineNumber,
-    startLine: startLine === lineNumber ? undefined : startLine
-  }
+  const targetBlocks = selectedBlocks.length > 0 ? selectedBlocks : [blocks[0]!]
+  return getRichMarkdownLineRangeFromBlocks(targetBlocks) ?? { lineNumber: 1 }
 }
 
 function hasRichMarkdownCommentForRange(
@@ -684,6 +675,17 @@ export default function RichMarkdownEditor({
   const unsentMarkdownReviewPrompt = useMemo(
     () => formatMarkdownReviewNotes(unsentMarkdownReviewNotes, markdownReviewContent),
     [markdownReviewContent, unsentMarkdownReviewNotes]
+  )
+  const unsentMarkdownReviewScope = useMemo<NotesSendMenuScope<MarkdownReviewNote>[]>(
+    () => [
+      {
+        id: 'all',
+        label: 'All unsent notes',
+        notes: unsentMarkdownReviewNotes,
+        prompt: unsentMarkdownReviewPrompt
+      }
+    ],
+    [unsentMarkdownReviewNotes, unsentMarkdownReviewPrompt]
   )
   const hasMarkdownComments = markdownComments.length > 0
   const reviewRailVisible = hasMarkdownComments && reviewRailOpen
@@ -950,8 +952,11 @@ export default function RichMarkdownEditor({
       if (ranges.length === 0) {
         return
       }
-      const from = Math.min(...ranges.map((range) => Math.min(range.from, range.to)))
-      const to = Math.max(...ranges.map((range) => Math.max(range.from, range.to)))
+      const bounds = getRichMarkdownRangeBounds(ranges)
+      if (!bounds) {
+        return
+      }
+      const { from, to } = bounds
       const maxPos = ed.state.doc.content.size
       const startCoords = ed.view.coordsAtPos(Math.max(1, Math.min(from, maxPos)))
       const endCoords = ed.view.coordsAtPos(Math.max(1, Math.min(to, maxPos)))
@@ -1761,41 +1766,28 @@ export default function RichMarkdownEditor({
                       onSubmitEdit={(body) => updateDiffComment(worktreeId, comment.id, body)}
                       onContentResize={syncNotePositions}
                       headerActions={
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <button
-                              type="button"
-                              className="rich-markdown-review-note-send"
-                              disabled={Boolean(comment.sentAt)}
-                              title={
-                                comment.sentAt ? 'Note already sent' : 'Send note to a new agent'
-                              }
-                              aria-label="Send note to a new agent"
-                              onMouseDown={(event) => event.stopPropagation()}
-                              onClick={(event) => event.stopPropagation()}
-                            >
-                              <Send className="size-3.5" />
-                            </button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="min-w-[180px]">
-                            <QuickLaunchAgentMenuItems
-                              worktreeId={worktreeId}
-                              groupId={worktreeId}
-                              onFocusTerminal={focusTerminalTabSurface}
-                              prompt={formatMarkdownReviewNotes(
+                        <NotesSendMenu
+                          worktreeId={worktreeId}
+                          groupId={worktreeId}
+                          modeIdParts={['markdown-notes', worktreeId, filePath, 'note', comment.id]}
+                          scopes={[
+                            {
+                              id: 'note',
+                              label: 'This note',
+                              notes: comment.sentAt ? [] : [comment as MarkdownReviewNote],
+                              prompt: formatMarkdownReviewNotes(
                                 [comment as MarkdownReviewNote],
                                 markdownReviewContent
-                              )}
-                              promptDelivery="submit-after-ready"
-                              launchSource="notes_send"
-                              onPromptDelivered={() =>
-                                void clearDeliveredDiffComments(worktreeId, [
-                                  comment as MarkdownReviewNote
-                                ])
-                              }
-                            />
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                              )
+                            }
+                          ]}
+                          targetModeLabel="This note"
+                          triggerClassName="rich-markdown-review-note-send"
+                          disabledTooltip="Note already sent"
+                          onDelivered={(notes) =>
+                            void clearDeliveredDiffComments(worktreeId, notes)
+                          }
+                        />
                       }
                     />
                   </div>
@@ -1907,36 +1899,14 @@ export default function RichMarkdownEditor({
               <MessageSquare className="size-3.5" />
               <span>{markdownComments.length}</span>
             </button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className="rich-markdown-review-rail-send"
-                  disabled={unsentMarkdownReviewNotes.length === 0}
-                  title={
-                    unsentMarkdownReviewNotes.length === 0
-                      ? 'All notes sent'
-                      : 'Send notes to a new agent'
-                  }
-                  aria-label="Send notes to a new agent"
-                >
-                  <Send className="size-3.5" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-[180px]">
-                <QuickLaunchAgentMenuItems
-                  worktreeId={worktreeId}
-                  groupId={worktreeId}
-                  onFocusTerminal={focusTerminalTabSurface}
-                  prompt={unsentMarkdownReviewPrompt}
-                  promptDelivery="submit-after-ready"
-                  launchSource="notes_send"
-                  onPromptDelivered={() =>
-                    void clearDeliveredDiffComments(worktreeId, unsentMarkdownReviewNotes)
-                  }
-                />
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <NotesSendMenu
+              worktreeId={worktreeId}
+              groupId={worktreeId}
+              modeIdParts={['markdown-notes', worktreeId, filePath, 'rail']}
+              scopes={unsentMarkdownReviewScope}
+              triggerClassName="rich-markdown-review-rail-send"
+              onDelivered={(notes) => void clearDeliveredDiffComments(worktreeId, notes)}
+            />
           </div>
         ) : null}
       </div>

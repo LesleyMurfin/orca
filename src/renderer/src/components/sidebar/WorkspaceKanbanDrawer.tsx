@@ -440,12 +440,6 @@ export default function WorkspaceKanbanDrawer({
   useWorkspaceKanbanOutsideDismiss({ open, boardRef, preserveOpenForMenu, onOpenChange })
 
   useEffect(() => {
-    if (open) {
-      useAppStore.getState().recordFeatureInteraction('workspace-board')
-    }
-  }, [open])
-
-  useEffect(() => {
     if (!open || selectedWorktreeIds.size === 0) {
       return
     }

@@ -154,9 +154,15 @@ export function getDefaultOnboardingState(): OnboardingState {
   }
 }
 
+function getDefaultWorkspaceDir(homeDir: string): string {
+  const separator = homeDir.includes('\\') ? '\\' : '/'
+  const trimmedHomeDir = homeDir.replace(/[\\/]+$/, '')
+  return [trimmedHomeDir, 'orca', 'workspaces'].join(separator)
+}
+
 export function getDefaultSettings(homedir: string): GlobalSettings {
   return {
-    workspaceDir: `${homedir}/orca/workspaces`,
+    workspaceDir: getDefaultWorkspaceDir(homedir),
     nestWorkspaces: true,
     workspaceDirHistory: [],
     refreshLocalBaseRefOnWorktreeCreate: false,
@@ -264,6 +270,7 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     geminiCliOAuthEnabled: false,
     agentCmdOverrides: {},
     agentStatusHooksEnabled: true,
+    tabAutoGenerateTitle: false,
     keepComputerAwakeWhileAgentsRun: false,
     // Why: 'auto' runs a layout-aware probe at boot (see
     // src/renderer/src/lib/keyboard-layout/*) that picks 'true' for US and

@@ -427,6 +427,7 @@ export type Tab = {
   worktreeId: string
   contentType: TabContentType
   label: string // display title (auto-derived from PTY or filename)
+  generatedLabel?: string | null
   customLabel: string | null
   color: string | null
   sortOrder: number
@@ -459,6 +460,8 @@ export type TerminalTab = {
    *  Why: agent CLIs overwrite the live title via OSC updates, but Orca still
    *  needs the original terminal label for numbering and reset behavior. */
   defaultTitle?: string
+  /** Stable opt-in label derived from the first known agent prompt. */
+  generatedTitle?: string | null
   customTitle: string | null
   color: string | null
   sortOrder: number
@@ -1057,6 +1060,7 @@ export type LinearWorkspace = LinearViewer & {
   id: string
   organizationId: string
   isLegacy?: true
+  credentialRevision?: number
 }
 
 export type LinearWorkspaceSelection = string | 'all'
@@ -1397,6 +1401,19 @@ export type CreateWorktreeResult = {
   warning?: string
   initialBaseStatus?: WorktreeBaseStatusEvent
   localBaseRefRefresh?: LocalBaseRefRefreshResult
+}
+
+export type PreservedWorktreeBranch = {
+  branchName: string
+  head?: string
+}
+
+export type RemoveWorktreeResult = {
+  preservedBranch?: PreservedWorktreeBranch
+}
+
+export type ForceDeleteWorktreeBranchResult = {
+  deleted: true
 }
 
 export type LocalBaseRefRefreshResult = {
@@ -1924,6 +1941,9 @@ export type GlobalSettings = {
   /** Why: disabling must persist so startup does not reinstall global agent
    *  hook entries right after the user removes them from Settings or CLI. */
   agentStatusHooksEnabled: boolean
+  /** Why: generated tab titles are semantic but subjective, so they stay opt-in
+   *  and manual renames remain the stronger user intent. */
+  tabAutoGenerateTitle: boolean
   /** When true, Orca requests local awake assertions while hook-reported agents are working. */
   keepComputerAwakeWhileAgentsRun: boolean
   /** Why: macOS terminals must choose between letting Option compose layout

@@ -7,9 +7,11 @@ import type {
   TerminalPaneLayoutNode,
   LocalBaseRefRefreshResult,
   Repo,
+  ForceDeleteWorktreeBranchResult,
   Worktree,
   WorkspaceVisibleTabType,
   GitPushTarget,
+  RemoveWorktreeResult,
   WorktreeLineage,
   WorktreeMeta
 } from '../../../../shared/types'
@@ -83,6 +85,28 @@ function showLocalBaseRefRefreshToast(result: LocalBaseRefRefreshResult | undefi
 
   toast.warning(`Local ${result.localBranch} was not refreshed`, {
     description: `Workspace created from ${result.baseRef}, but Orca could not fast-forward local ${result.localBranch} because ${reason}`
+  })
+}
+
+function showPreservedBranchToast(
+  result: RemoveWorktreeResult | undefined,
+  onForceDelete: (branchName: string, expectedHead: string) => void
+): void {
+  const preservedBranch = result?.preservedBranch
+  const branch = preservedBranch?.branchName
+  if (!branch) {
+    return
+  }
+  const expectedHead = preservedBranch.head
+  const action = expectedHead
+    ? {
+        label: 'Force Delete Branch',
+        onClick: () => onForceDelete(branch, expectedHead)
+      }
+    : undefined
+  toast.warning('Workspace deleted, branch kept', {
+    description: `Git could not safely delete "${branch}", so Orca kept it to avoid losing local commits.`,
+    ...(action ? { action } : {})
   })
 }
 
@@ -731,10 +755,13 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
     }
   },
 
-  fetchWorktrees: async (repoId) => {
+  fetchWorktrees: async (repoId, options) => {
     try {
       const settings = get().settings
       const detected = await listDetectedWorktreesForRepo(settings, repoId)
+      if (options?.requireAuthoritative && !detected.authoritative) {
+        return false
+      }
       const worktrees = toVisibleWorktrees(detected)
       const current = get().worktreesByRepo[repoId]
       if (areWorktreesEqual(current, worktrees)) {
@@ -752,7 +779,7 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
           }
         })
         await refreshRemoteWorktreeLineageBestEffort(settings, set)
-        return
+        return detected.authoritative
       }
 
       // Why: `git worktree list` can fail transiently (e.g. concurrent git
@@ -766,7 +793,7 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
         set((s) => ({
           detectedWorktreesByRepo: { ...s.detectedWorktreesByRepo, [repoId]: detected }
         }))
-        return
+        return false
       }
 
       set((s) => {
@@ -786,8 +813,10 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
         }
       })
       await refreshRemoteWorktreeLineageBestEffort(settings, set)
+      return detected.authoritative
     } catch (err) {
       console.error(`Failed to fetch worktrees for repo ${repoId}:`, err)
+      return false
     }
   },
 
@@ -990,7 +1019,8 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
     branchNameOverride,
     workspaceStatus,
     linkedGitLabMR,
-    linkedGitLabIssue
+    linkedGitLabIssue,
+    startup
   ) => {
     const retryableConflictPatterns = [
       /already exists locally/i,
@@ -1051,6 +1081,7 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
                     setupDecision,
                     sparseCheckout,
                     ...(displayName ? { displayName } : {}),
+                    ...(telemetrySource ? { telemetrySource } : {}),
                     ...(linkedIssue !== undefined ? { linkedIssue } : {}),
                     ...(linkedPR !== undefined ? { linkedPR } : {}),
                     ...(pushTarget ? { pushTarget } : {}),
@@ -1059,7 +1090,14 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
                     ...(manualOrder !== undefined ? { manualOrder } : {}),
                     ...(workspaceStatus !== undefined ? { workspaceStatus } : {}),
                     ...(linkedGitLabMR !== undefined ? { linkedGitLabMR } : {}),
-                    ...(linkedGitLabIssue !== undefined ? { linkedGitLabIssue } : {})
+                    ...(linkedGitLabIssue !== undefined ? { linkedGitLabIssue } : {}),
+                    ...(startup
+                      ? {
+                          startupCommand: startup.command,
+                          ...(startup.env ? { startupEnv: startup.env } : {}),
+                          activate: true
+                        }
+                      : {})
                   },
                   { timeoutMs: 10 * 60_000 }
                 )
@@ -1124,9 +1162,9 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
       const skipArchive = trustDecision === 'skip'
 
       const target = getActiveRuntimeTarget(get().settings)
-      await (target.kind === 'local'
+      const removalResult = await (target.kind === 'local'
         ? window.api.worktrees.remove({ worktreeId, force, skipArchive })
-        : callRuntimeRpc(
+        : callRuntimeRpc<RemoveWorktreeResult>(
             target,
             'worktree.rm',
             { worktree: worktreeId, force, runHooks: !skipArchive },
@@ -1350,7 +1388,12 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
         }
       })
       get().removeWorkspaceSpaceWorktrees?.([worktreeId])
-      return { ok: true as const }
+      showPreservedBranchToast(removalResult, (branch, expectedHead) => {
+        void get().forceDeletePreservedBranch(worktreeId, branch, expectedHead)
+      })
+      return removalResult?.preservedBranch
+        ? { ok: true as const, preservedBranch: removalResult.preservedBranch }
+        : { ok: true as const }
     } catch (err) {
       // Why: git refusing a non-force delete for dirty/untracked files is a
       // handled user decision point surfaced by the delete toast, not an app error.
@@ -1366,6 +1409,34 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
           }
         }
       }))
+      return { ok: false as const, error }
+    }
+  },
+
+  forceDeletePreservedBranch: async (worktreeId, branchName, expectedHead) => {
+    try {
+      const target = getActiveRuntimeTarget(get().settings)
+      const result = await (target.kind === 'local'
+        ? window.api.worktrees.forceDeletePreservedBranch({
+            worktreeId,
+            branchName,
+            expectedHead
+          })
+        : callRuntimeRpc<ForceDeleteWorktreeBranchResult>(
+            target,
+            'worktree.forceDeleteBranch',
+            { worktree: worktreeId, branchName, expectedHead },
+            { timeoutMs: 15_000 }
+          ))
+      toast.success('Local branch deleted', {
+        description: `Deleted "${branchName}".`
+      })
+      return { ok: true as const, ...result }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err)
+      toast.error('Failed to delete branch', {
+        description: error
+      })
       return { ok: false as const, error }
     }
   },

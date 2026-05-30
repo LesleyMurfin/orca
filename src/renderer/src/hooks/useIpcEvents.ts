@@ -4,6 +4,7 @@ import { useAppStore } from '../store'
 import { getWorktreeMapFromState, getRepoMapFromState } from '@/store/selectors'
 import { applyUIZoom } from '@/lib/ui-zoom'
 import { activateAndRevealWorktree } from '@/lib/worktree-activation'
+import { runWorktreeDelete } from '@/components/sidebar/delete-worktree-flow'
 import { runSleepWorktree } from '@/components/sidebar/sleep-worktree-flow'
 import {
   BACKGROUND_MOUNT_TERMINAL_WORKTREE_EVENT,
@@ -12,6 +13,7 @@ import {
 } from '@/constants/terminal'
 import type { SplitTerminalPaneDetail, CloseTerminalPaneDetail } from '@/constants/terminal'
 import { getVisibleWorktreeIds } from '@/components/sidebar/visible-worktrees'
+import { activateTabNumberShortcut } from '@/lib/tab-number-shortcuts'
 import { nextEditorFontZoomLevel, computeEditorFontSize } from '@/lib/editor-font-zoom'
 import type {
   TerminalLayoutSnapshot,
@@ -780,6 +782,22 @@ export function useIpcEvents(): void {
       })
     )
 
+    if (window.api.ui.onDeleteCurrentWorkspace) {
+      unsubs.push(
+        window.api.ui.onDeleteCurrentWorkspace(() => {
+          const store = useAppStore.getState()
+          if (
+            store.activeModal !== 'none' ||
+            store.activeView !== 'terminal' ||
+            !store.activeWorktreeId
+          ) {
+            return
+          }
+          runWorktreeDelete(store.activeWorktreeId)
+        })
+      )
+    }
+
     unsubs.push(
       window.api.ui.onOpenTasks(() => {
         const store = useAppStore.getState()
@@ -800,6 +818,12 @@ export function useIpcEvents(): void {
         if (index < visibleIds.length) {
           activateAndRevealWorktree(visibleIds[index])
         }
+      })
+    )
+
+    unsubs.push(
+      window.api.ui.onJumpToTabIndex((index) => {
+        activateTabNumberShortcut(index)
       })
     )
 
