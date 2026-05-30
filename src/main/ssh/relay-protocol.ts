@@ -148,9 +148,12 @@ export class FrameDecoder {
       if (incoming.length === 0) {
         return
       }
+      // Why: the retained suffix may be a tiny partial frame after a hostile
+      // oversized payload; copy it so the discarded prefix is not kept alive.
+      incoming = Buffer.from(incoming)
     }
 
-    this.buffer = this.buffer.length === 0 ? incoming : Buffer.concat([this.buffer, incoming])
+    this.buffer = Buffer.concat([this.buffer, incoming])
 
     while (this.buffer.length >= HEADER_LENGTH) {
       const length = this.buffer.readUInt32BE(9)
@@ -163,7 +166,8 @@ export class FrameDecoder {
       if (length > MAX_MESSAGE_SIZE) {
         const bufferedPayloadBytes = this.buffer.length - HEADER_LENGTH
         const bytesToDiscard = Math.min(bufferedPayloadBytes, length)
-        this.buffer = this.buffer.subarray(HEADER_LENGTH + bytesToDiscard)
+        const remaining = this.buffer.subarray(HEADER_LENGTH + bytesToDiscard)
+        this.buffer = remaining.length === 0 ? Buffer.alloc(0) : Buffer.from(remaining)
         this.discardBytesRemaining = length - bytesToDiscard
         this.reportOversizedFrame(length)
         continue
