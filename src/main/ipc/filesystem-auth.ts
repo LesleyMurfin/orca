@@ -1,4 +1,4 @@
-import { resolve, relative, dirname, basename, isAbsolute } from 'path'
+import { resolve, relative, dirname, basename, isAbsolute, sep } from 'path'
 import { realpathSync } from 'fs'
 import { realpath } from 'fs/promises'
 import type { Store } from '../persistence'
@@ -47,12 +47,13 @@ export function isDescendantOrEqual(resolvedTarget: string, resolvedBase: string
     return true
   }
   const rel = relative(resolvedBase, resolvedTarget)
-  // rel must not start with ".." and must not be an absolute path (e.g. different drive on Windows)
+  // rel must not be ".."/"../..." or an absolute path (e.g. different drive on Windows)
   // [Security Fix]: Added !isAbsolute(rel) to prevent drive traversal bypasses on Windows
   // where relative('D:\\repo', 'C:\\etc\\passwd') returns absolute path 'C:\\etc\\passwd'
   return (
     rel !== '' &&
-    !rel.startsWith('..') &&
+    rel !== '..' &&
+    !rel.startsWith(`..${sep}`) &&
     !isAbsolute(rel) &&
     resolve(resolvedBase, rel) === resolvedTarget
   )
