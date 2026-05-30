@@ -1,13 +1,18 @@
 import { Image as ImageIcon, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react'
-import { type JSX, useEffect, useMemo, useState } from 'react'
+import { type JSX, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import PdfViewer from './PdfViewer'
+import {
+  IMAGE_VIEWER_ZOOM_STEP,
+  MAX_IMAGE_VIEWER_ZOOM,
+  MIN_IMAGE_VIEWER_ZOOM,
+  clampImageViewerZoom,
+  getNextWheelImageViewerZoom,
+  shouldHandleImageZoomWheel
+} from './image-viewer-zoom'
 
 const FALLBACK_IMAGE_MIME_TYPE = 'image/png'
-const MIN_ZOOM = 0.25
-const MAX_ZOOM = 8
-const ZOOM_STEP = 1.25
 
 type ImageViewerProps = {
   content: string
@@ -25,6 +30,8 @@ export default function ImageViewer({
   const [imageError, setImageError] = useState(false)
   const [isPopupOpen, setIsPopupOpen] = useState(false)
   const [zoom, setZoom] = useState(1)
+  const inlineSurfaceRef = useRef<HTMLDivElement | null>(null)
+  const popupSurfaceRef = useRef<HTMLDivElement | null>(null)
   const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(
     null
   )
@@ -45,6 +52,53 @@ export default function ImageViewer({
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   }, [cleanedContent])
   const zoomPercent = Math.round(zoom * 100)
+  const applyZoomChange = useCallback((getNextZoom: (currentZoom: number) => number) => {
+    setZoom((currentZoom) => clampImageViewerZoom(getNextZoom(currentZoom)))
+  }, [])
+  const handleImageSurfaceWheel = useCallback(
+    (event: WheelEvent) => {
+      if (!shouldHandleImageZoomWheel(event)) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      applyZoomChange((currentZoom) =>
+        getNextWheelImageViewerZoom(currentZoom, event.deltaY, event.deltaMode)
+      )
+    },
+    [applyZoomChange]
+  )
+  const setInlineSurfaceRef = useCallback(
+    (surface: HTMLDivElement | null) => {
+      if (inlineSurfaceRef.current) {
+        inlineSurfaceRef.current.removeEventListener('wheel', handleImageSurfaceWheel)
+      }
+      inlineSurfaceRef.current = surface
+      if (surface) {
+        // Why: Chromium exposes trackpad pinch as ctrl-wheel and requires a
+        // native non-passive listener to stop browser/app zoom.
+        surface.addEventListener('wheel', handleImageSurfaceWheel, { passive: false })
+      }
+    },
+    [handleImageSurfaceWheel]
+  )
+  const setPopupSurfaceRef = useCallback(
+    (surface: HTMLDivElement | null) => {
+      if (popupSurfaceRef.current) {
+        popupSurfaceRef.current.removeEventListener('wheel', handleImageSurfaceWheel)
+      }
+      popupSurfaceRef.current = surface
+      if (surface) {
+        surface.addEventListener('wheel', handleImageSurfaceWheel, { passive: false })
+      }
+    },
+    [handleImageSurfaceWheel]
+  )
+
+  useEffect(() => {
+    setZoom(1)
+  }, [filePath, mimeType, cleanedContent])
 
   useEffect(() => {
     setImageError(false)
@@ -104,6 +158,7 @@ export default function ImageViewer({
     <>
       <div className={cn('flex min-h-0 flex-col', isIntrinsicLayout ? 'h-auto' : 'h-full')}>
         <div
+          ref={setInlineSurfaceRef}
           className={cn(
             'flex justify-center bg-muted/20 p-4 cursor-pointer',
             isIntrinsicLayout
@@ -140,8 +195,8 @@ export default function ImageViewer({
             <button
               type="button"
               className="rounded p-1 hover:bg-accent hover:text-foreground disabled:opacity-50"
-              onClick={() => setZoom((prev) => Math.max(MIN_ZOOM, prev / ZOOM_STEP))}
-              disabled={zoom <= MIN_ZOOM}
+              onClick={() => applyZoomChange((currentZoom) => currentZoom / IMAGE_VIEWER_ZOOM_STEP)}
+              disabled={zoom <= MIN_IMAGE_VIEWER_ZOOM}
               title="Zoom out"
             >
               <ZoomOut size={14} />
@@ -149,7 +204,7 @@ export default function ImageViewer({
             <button
               type="button"
               className="rounded p-1 hover:bg-accent hover:text-foreground disabled:opacity-50"
-              onClick={() => setZoom(1)}
+              onClick={() => applyZoomChange(() => 1)}
               disabled={zoom === 1}
               title="Reset zoom"
             >
@@ -158,8 +213,8 @@ export default function ImageViewer({
             <button
               type="button"
               className="rounded p-1 hover:bg-accent hover:text-foreground disabled:opacity-50"
-              onClick={() => setZoom((prev) => Math.min(MAX_ZOOM, prev * ZOOM_STEP))}
-              disabled={zoom >= MAX_ZOOM}
+              onClick={() => applyZoomChange((currentZoom) => currentZoom * IMAGE_VIEWER_ZOOM_STEP)}
+              disabled={zoom >= MAX_IMAGE_VIEWER_ZOOM}
               title="Zoom in"
             >
               <ZoomIn size={14} />
@@ -195,7 +250,10 @@ export default function ImageViewer({
               <span>Close</span>
             </button>
           </div>
-          <div className="flex h-[calc(100%-4.5rem)] w-full min-h-0 items-center justify-center overflow-auto bg-muted/20 p-4 scrollbar-editor">
+          <div
+            ref={setPopupSurfaceRef}
+            className="flex h-[calc(100%-4.5rem)] w-full min-h-0 items-center justify-center overflow-auto bg-muted/20 p-4 scrollbar-editor"
+          >
             <div
               className="flex items-center justify-center"
               style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}
