@@ -1,4 +1,4 @@
-import { Image as ImageIcon, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { Image as ImageIcon, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
 import {
   type CSSProperties,
   type JSX,
@@ -8,8 +8,8 @@ import {
   useRef,
   useState
 } from 'react'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
+import ImageViewerPopup from './ImageViewerPopup'
 import PdfViewer from './PdfViewer'
 import {
   IMAGE_VIEWER_ZOOM_STEP,
@@ -50,6 +50,21 @@ function getImageLayoutStyle(size: ImageViewerImageDimensions | null): CSSProper
   }
 }
 
+function applyImageSurfaceWheel(
+  event: WheelEvent,
+  applyZoomChange: (getNextZoom: (currentZoom: number) => number) => void
+): void {
+  if (!shouldHandleImageZoomWheel(event)) {
+    return
+  }
+
+  event.preventDefault()
+  event.stopPropagation()
+  applyZoomChange((currentZoom) =>
+    getNextWheelImageViewerZoom(currentZoom, event.deltaY, event.deltaMode)
+  )
+}
+
 export default function ImageViewer({
   content,
   filePath,
@@ -58,7 +73,8 @@ export default function ImageViewer({
 }: ImageViewerProps): JSX.Element {
   const [imageError, setImageError] = useState(false)
   const [isPopupOpen, setIsPopupOpen] = useState(false)
-  const [zoom, setZoom] = useState(1)
+  const [inlineZoom, setInlineZoom] = useState(1)
+  const [popupZoom, setPopupZoom] = useState(1)
   const inlineSurfaceRef = useRef<HTMLDivElement | null>(null)
   const popupSurfaceRef = useRef<HTMLDivElement | null>(null)
   const [inlineSurfaceSize, setInlineSurfaceSize] = useState<ImageViewerSurfaceSize | null>(null)
@@ -80,7 +96,7 @@ export default function ImageViewer({
     }
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   }, [cleanedContent])
-  const zoomPercent = Math.round(zoom * 100)
+  const inlineZoomPercent = Math.round(inlineZoom * 100)
   const inlineImageLayoutSize = useMemo(
     () =>
       isIntrinsicLayout
@@ -88,18 +104,18 @@ export default function ImageViewer({
         : getZoomedImageLayoutSize({
             imageDimensions,
             surfaceSize: inlineSurfaceSize,
-            zoom
+            zoom: inlineZoom
           }),
-    [imageDimensions, inlineSurfaceSize, isIntrinsicLayout, zoom]
+    [imageDimensions, inlineSurfaceSize, inlineZoom, isIntrinsicLayout]
   )
   const popupImageLayoutSize = useMemo(
     () =>
       getZoomedImageLayoutSize({
         imageDimensions,
         surfaceSize: popupSurfaceSize,
-        zoom
+        zoom: popupZoom
       }),
-    [imageDimensions, popupSurfaceSize, zoom]
+    [imageDimensions, popupSurfaceSize, popupZoom]
   )
   const inlineImageLayoutStyle = useMemo(
     () => getImageLayoutStyle(inlineImageLayoutSize),
@@ -109,54 +125,68 @@ export default function ImageViewer({
     () => getImageLayoutStyle(popupImageLayoutSize),
     [popupImageLayoutSize]
   )
-  const applyZoomChange = useCallback((getNextZoom: (currentZoom: number) => number) => {
-    setZoom((currentZoom) => clampImageViewerZoom(getNextZoom(currentZoom)))
+  const applyInlineZoomChange = useCallback((getNextZoom: (currentZoom: number) => number) => {
+    setInlineZoom((currentZoom) => clampImageViewerZoom(getNextZoom(currentZoom)))
   }, [])
-  const handleImageSurfaceWheel = useCallback(
-    (event: WheelEvent) => {
-      if (!shouldHandleImageZoomWheel(event)) {
-        return
+  const applyPopupZoomChange = useCallback((getNextZoom: (currentZoom: number) => number) => {
+    setPopupZoom((currentZoom) => clampImageViewerZoom(getNextZoom(currentZoom)))
+  }, [])
+  const openPopup = useCallback(() => {
+    setPopupZoom(inlineZoom)
+    setIsPopupOpen(true)
+  }, [inlineZoom])
+  const handlePopupOpenChange = useCallback(
+    (open: boolean) => {
+      if (open) {
+        setPopupZoom(inlineZoom)
       }
-
-      event.preventDefault()
-      event.stopPropagation()
-      applyZoomChange((currentZoom) =>
-        getNextWheelImageViewerZoom(currentZoom, event.deltaY, event.deltaMode)
-      )
+      setIsPopupOpen(open)
     },
-    [applyZoomChange]
+    [inlineZoom]
+  )
+  const handleInlineImageSurfaceWheel = useCallback(
+    (event: WheelEvent) => {
+      applyImageSurfaceWheel(event, applyInlineZoomChange)
+    },
+    [applyInlineZoomChange]
+  )
+  const handlePopupImageSurfaceWheel = useCallback(
+    (event: WheelEvent) => {
+      applyImageSurfaceWheel(event, applyPopupZoomChange)
+    },
+    [applyPopupZoomChange]
   )
   const setInlineSurfaceRef = useCallback(
     (surface: HTMLDivElement | null) => {
       if (inlineSurfaceRef.current) {
-        inlineSurfaceRef.current.removeEventListener('wheel', handleImageSurfaceWheel)
+        inlineSurfaceRef.current.removeEventListener('wheel', handleInlineImageSurfaceWheel)
       }
       inlineSurfaceRef.current = surface
       if (surface) {
         setInlineSurfaceSize(getElementSurfaceSize(surface))
         // Why: Chromium exposes trackpad pinch as ctrl-wheel and requires a
         // native non-passive listener to stop browser/app zoom.
-        surface.addEventListener('wheel', handleImageSurfaceWheel, { passive: false })
+        surface.addEventListener('wheel', handleInlineImageSurfaceWheel, { passive: false })
       } else {
         setInlineSurfaceSize(null)
       }
     },
-    [handleImageSurfaceWheel]
+    [handleInlineImageSurfaceWheel]
   )
   const setPopupSurfaceRef = useCallback(
     (surface: HTMLDivElement | null) => {
       if (popupSurfaceRef.current) {
-        popupSurfaceRef.current.removeEventListener('wheel', handleImageSurfaceWheel)
+        popupSurfaceRef.current.removeEventListener('wheel', handlePopupImageSurfaceWheel)
       }
       popupSurfaceRef.current = surface
       if (surface) {
         setPopupSurfaceSize(getElementSurfaceSize(surface))
-        surface.addEventListener('wheel', handleImageSurfaceWheel, { passive: false })
+        surface.addEventListener('wheel', handlePopupImageSurfaceWheel, { passive: false })
       } else {
         setPopupSurfaceSize(null)
       }
     },
-    [handleImageSurfaceWheel]
+    [handlePopupImageSurfaceWheel]
   )
 
   useEffect(() => {
@@ -200,7 +230,8 @@ export default function ImageViewer({
   }, [isPopupOpen])
 
   useEffect(() => {
-    setZoom(1)
+    setInlineZoom(1)
+    setPopupZoom(1)
   }, [filePath, mimeType, cleanedContent])
 
   useEffect(() => {
@@ -269,7 +300,7 @@ export default function ImageViewer({
               ? 'flex justify-center overflow-visible p-4'
               : 'flex-1 overflow-auto scrollbar-editor'
           )}
-          onClick={() => setIsPopupOpen(true)}
+          onClick={openPopup}
           title="Open image in popup"
         >
           <div
@@ -284,7 +315,7 @@ export default function ImageViewer({
               className="flex items-center justify-center"
               style={
                 isIntrinsicLayout
-                  ? { transform: `scale(${zoom})`, transformOrigin: 'center center' }
+                  ? { transform: `scale(${inlineZoom})`, transformOrigin: 'center center' }
                   : inlineImageLayoutStyle
               }
             >
@@ -313,8 +344,10 @@ export default function ImageViewer({
             <button
               type="button"
               className="rounded p-1 hover:bg-accent hover:text-foreground disabled:opacity-50"
-              onClick={() => applyZoomChange((currentZoom) => currentZoom / IMAGE_VIEWER_ZOOM_STEP)}
-              disabled={zoom <= MIN_IMAGE_VIEWER_ZOOM}
+              onClick={() =>
+                applyInlineZoomChange((currentZoom) => currentZoom / IMAGE_VIEWER_ZOOM_STEP)
+              }
+              disabled={inlineZoom <= MIN_IMAGE_VIEWER_ZOOM}
               title="Zoom out"
             >
               <ZoomOut size={14} />
@@ -322,8 +355,8 @@ export default function ImageViewer({
             <button
               type="button"
               className="rounded p-1 hover:bg-accent hover:text-foreground disabled:opacity-50"
-              onClick={() => applyZoomChange(() => 1)}
-              disabled={zoom === 1}
+              onClick={() => applyInlineZoomChange(() => 1)}
+              disabled={inlineZoom === 1}
               title="Reset zoom"
             >
               <RotateCcw size={14} />
@@ -331,13 +364,15 @@ export default function ImageViewer({
             <button
               type="button"
               className="rounded p-1 hover:bg-accent hover:text-foreground disabled:opacity-50"
-              onClick={() => applyZoomChange((currentZoom) => currentZoom * IMAGE_VIEWER_ZOOM_STEP)}
-              disabled={zoom >= MAX_IMAGE_VIEWER_ZOOM}
+              onClick={() =>
+                applyInlineZoomChange((currentZoom) => currentZoom * IMAGE_VIEWER_ZOOM_STEP)
+              }
+              disabled={inlineZoom >= MAX_IMAGE_VIEWER_ZOOM}
               title="Zoom in"
             >
               <ZoomIn size={14} />
             </button>
-            <span className="ml-1 tabular-nums">{zoomPercent}%</span>
+            <span className="ml-1 tabular-nums">{inlineZoomPercent}%</span>
           </div>
           <span className="min-w-0 truncate" title={filename}>
             {filename}
@@ -350,47 +385,16 @@ export default function ImageViewer({
           <span>{estimatedSize}</span>
         </div>
       </div>
-      <Dialog open={isPopupOpen} onOpenChange={setIsPopupOpen}>
-        <DialogContent
-          showCloseButton={false}
-          className="top-1/2 left-1/2 flex h-[80vh] w-[70vw] max-w-[70vw] -translate-x-1/2 -translate-y-1/2 flex-col gap-0 overflow-hidden border border-border/60 bg-background p-0 shadow-2xl sm:max-w-[70vw]"
-        >
-          <DialogTitle className="sr-only">{filename}</DialogTitle>
-          <DialogDescription className="sr-only">Full-size image preview</DialogDescription>
-          <div className="flex shrink-0 items-center justify-between border-b border-border/60 bg-background/95 px-3 py-2">
-            <div className="min-w-0 truncate text-sm font-medium text-foreground">{filename}</div>
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-              onClick={() => setIsPopupOpen(false)}
-            >
-              <X size={14} />
-              <span>Close</span>
-            </button>
-          </div>
-          <div
-            ref={setPopupSurfaceRef}
-            className="min-h-0 flex-1 overflow-auto bg-muted/20 scrollbar-editor"
-          >
-            <div className="flex h-max min-h-full w-max min-w-full items-center justify-center p-4">
-              <div className="flex items-center justify-center" style={popupImageLayoutStyle}>
-                <img
-                  src={previewUrl}
-                  alt={filename}
-                  className={cn(
-                    'object-contain',
-                    popupImageLayoutSize ? 'block h-full w-full' : 'block max-h-full max-w-full'
-                  )}
-                />
-              </div>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center justify-between border-t border-border/60 bg-background/95 px-3 py-2 text-xs text-muted-foreground">
-            <div>Press Esc to close</div>
-            <div className="tabular-nums">{zoomPercent}%</div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <ImageViewerPopup
+        filename={filename}
+        imageLayoutSize={popupImageLayoutSize}
+        imageLayoutStyle={popupImageLayoutStyle}
+        isOpen={isPopupOpen}
+        onOpenChange={handlePopupOpenChange}
+        previewUrl={previewUrl}
+        setSurfaceRef={setPopupSurfaceRef}
+        zoomPercent={Math.round(popupZoom * 100)}
+      />
     </>
   )
 }
