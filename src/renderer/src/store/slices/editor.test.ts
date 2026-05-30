@@ -623,6 +623,54 @@ describe('createEditorSlice untitled cleanup routing', () => {
     })
     expect(localDeletePathMock).not.toHaveBeenCalled()
   })
+
+  it('closeFile keeps untouched templated untitled files on disk', async () => {
+    const store = createEditorStore()
+    seedRemoteWorktree(store)
+    store.getState().openFile({
+      filePath: '/remote/wt/untitled.md',
+      relativePath: 'untitled.md',
+      worktreeId: 'wt-1',
+      language: 'markdown',
+      isUntitled: true,
+      deleteUntouchedOnClose: false,
+      mode: 'edit'
+    })
+
+    store.getState().closeFile('/remote/wt/untitled.md')
+    await flushAsyncRemoteRefresh()
+
+    expect(runtimeEnvironmentCallMock).not.toHaveBeenCalled()
+    expect(localDeletePathMock).not.toHaveBeenCalled()
+    expect(store.getState().recentlyClosedEditorTabsByWorktree['wt-1']?.[0]).toMatchObject({
+      filePath: '/remote/wt/untitled.md',
+      deleteUntouchedOnClose: false
+    })
+  })
+
+  it('closeAllFiles keeps untouched templated untitled files on disk', async () => {
+    const store = createEditorStore()
+    seedRemoteWorktree(store)
+    store.getState().openFile({
+      filePath: '/remote/wt/untitled.md',
+      relativePath: 'untitled.md',
+      worktreeId: 'wt-1',
+      language: 'markdown',
+      isUntitled: true,
+      deleteUntouchedOnClose: false,
+      mode: 'edit'
+    })
+
+    store.getState().closeAllFiles()
+    await flushAsyncRemoteRefresh()
+
+    expect(runtimeEnvironmentCallMock).not.toHaveBeenCalled()
+    expect(localDeletePathMock).not.toHaveBeenCalled()
+    expect(store.getState().recentlyClosedEditorTabsByWorktree['wt-1']?.[0]).toMatchObject({
+      filePath: '/remote/wt/untitled.md',
+      deleteUntouchedOnClose: false
+    })
+  })
 })
 
 describe('createEditorSlice markdown view state', () => {

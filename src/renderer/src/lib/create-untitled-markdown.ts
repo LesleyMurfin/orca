@@ -22,6 +22,7 @@ export type UntitledMarkdownFileInfo = {
   worktreeId: string
   language: string
   isUntitled: true
+  deleteUntouchedOnClose?: boolean
   mode: 'edit'
 }
 
@@ -93,6 +94,7 @@ export async function createUntitledMarkdownFile(
         worktreeId,
         language: detectLanguage(fileName),
         isUntitled: true,
+        deleteUntouchedOnClose: templateContent === null ? undefined : false,
         mode: 'edit'
       }
     } catch (err) {

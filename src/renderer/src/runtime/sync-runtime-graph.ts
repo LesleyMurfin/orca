@@ -370,6 +370,7 @@ function buildRuntimeMobileOpenFilesProjection(openFiles: AppState['openFiles'])
       diffSource: file.diffSource,
       isDirty: file.isDirty,
       isUntitled: file.isUntitled,
+      deleteUntouchedOnClose: file.deleteUntouchedOnClose,
       markdownPreviewSourceFileId: file.markdownPreviewSourceFileId
     }))
   )

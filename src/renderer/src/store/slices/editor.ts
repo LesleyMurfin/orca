@@ -172,6 +172,9 @@ export type OpenFile = {
   conflictReview?: ConflictReviewState
   isPreview?: boolean // preview tabs are replaced when another file is single-clicked
   isUntitled?: boolean // true for files created via "New Markdown" that haven't been renamed yet
+  // Why: templated New Markdown files contain real user-visible content at
+  // creation time, unlike blank placeholder files that can be discarded.
+  deleteUntouchedOnClose?: boolean
   // Why: when an external process (e.g. `git mv`, `rm`) removes the file on
   // disk while it's open, we keep the tab around so the user can still see
   // (and potentially save) their in-memory content. The tab surfaces this as
@@ -993,6 +996,12 @@ function deleteUntouchedUntitledFile(state: AppState, file: OpenFile): void {
     .catch(() => {})
 }
 
+function shouldDeleteUntouchedUntitledFile(file: OpenFile | undefined, hasDraft: boolean): boolean {
+  return (
+    file?.isUntitled === true && !file.isDirty && !hasDraft && file.deleteUntouchedOnClose !== false
+  )
+}
+
 function getWorktreeConnectionId(state: AppState, worktreeId: string): string | undefined {
   const worktree = findWorktreeById(state.worktreesByRepo ?? {}, worktreeId)
   const repoId = worktree?.repoId ?? getRepoIdFromWorktreeId(worktreeId)
@@ -1523,7 +1532,7 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
     // content exists but isDirty hasn't flushed yet. A draft means the user
     // typed something, so the file should be kept.
     const hasDraft = !!get().editorDrafts[fileId]
-    const shouldDeleteFromDisk = preClose?.isUntitled === true && !preClose.isDirty && !hasDraft
+    const shouldDeleteFromDisk = shouldDeleteUntouchedUntitledFile(preClose, hasDraft)
 
     set((s) => {
       const closedFile = s.openFiles.find((f) => f.id === fileId)
@@ -1720,9 +1729,7 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
     // are empty placeholders that should not survive a "close all" operation.
     const untitledToDelete = state.openFiles.filter(
       (f) =>
-        f.isUntitled === true &&
-        !f.isDirty &&
-        !state.editorDrafts[f.id] &&
+        shouldDeleteUntouchedUntitledFile(f, !!state.editorDrafts[f.id]) &&
         (!activeWorktreeId || f.worktreeId === activeWorktreeId)
     )
 
@@ -1795,7 +1802,10 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
         // Why: untitled non-dirty files are deleted from disk after close —
         // skip them so the reopen stack doesn't reference vanished paths.
         // Preview tabs are ephemeral views that shouldn't pollute the stack.
-        if ((f.isUntitled && !f.isDirty) || f.mode === 'markdown-preview') {
+        if (
+          shouldDeleteUntouchedUntitledFile(f, !!s.editorDrafts[f.id]) ||
+          f.mode === 'markdown-preview'
+        ) {
           continue
         }
         const { id: _id, isDirty: _dirty, ...snap } = f

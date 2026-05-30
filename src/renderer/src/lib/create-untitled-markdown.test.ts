@@ -128,7 +128,8 @@ describe('createUntitledMarkdownFile', () => {
       })
     ).resolves.toMatchObject({
       filePath: '/repo/untitled.md',
-      relativePath: 'untitled.md'
+      relativePath: 'untitled.md',
+      deleteUntouchedOnClose: false
     })
 
     expect(readFile).toHaveBeenCalledWith(
@@ -177,7 +178,8 @@ describe('createUntitledMarkdownFile', () => {
         createUntitledMarkdownFileWithTemplateSelection('/repo', 'wt-1')
       ).resolves.toMatchObject({
         filePath: '/repo/untitled.md',
-        relativePath: 'untitled.md'
+        relativePath: 'untitled.md',
+        deleteUntouchedOnClose: false
       })
     } finally {
       unsubscribe()
