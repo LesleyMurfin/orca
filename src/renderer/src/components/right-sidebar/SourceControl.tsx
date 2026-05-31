@@ -109,6 +109,12 @@ import { formatDiffComment, formatDiffComments } from '@/lib/diff-comments-forma
 import { getDiffCommentLineLabel, getDiffCommentSource } from '@/lib/diff-comment-compat'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import { DiffNotesSendMenu } from '@/components/editor/DiffNotesSendMenu'
+import {
+  countPendingDiffCommentsClear,
+  formatPendingDiffCommentsClearDescription,
+  resolvePendingDiffCommentsClear,
+  type PendingDiffCommentsClear
+} from './diff-comments-clear-dialog-state'
 import { QuickLaunchAgentMenuItems } from '@/components/tab-bar/QuickLaunchButton'
 import { AGENT_CATALOG } from '@/lib/agent-catalog'
 import { filterEnabledTuiAgents } from '../../../../shared/tui-agent-selection'
@@ -447,10 +453,6 @@ function getSourceControlDirectoryActionPaths(
         : []
   }
 }
-
-type PendingDiffCommentsClear =
-  | { kind: 'all'; worktreeId: string }
-  | { kind: 'file'; worktreeId: string; filePath: string }
 
 type HostedReviewCreationState = {
   repoId: string
@@ -1180,41 +1182,32 @@ function SourceControlInner(): React.JSX.Element {
   }, [diffCommentsForActive, diffCommentsPrompt, showDiffCommentsCopied])
 
   const pendingDiffCommentsClearCount = useMemo(() => {
-    if (!pendingDiffCommentsClear || pendingDiffCommentsClear.worktreeId !== activeWorktreeId) {
-      return 0
-    }
-    if (pendingDiffCommentsClear.kind === 'all') {
-      return diffCommentsForActive.length
-    }
-    return diffCommentsForActive.filter((c) => c.filePath === pendingDiffCommentsClear.filePath)
-      .length
+    return countPendingDiffCommentsClear(
+      pendingDiffCommentsClear,
+      activeWorktreeId,
+      diffCommentsForActive
+    )
   }, [activeWorktreeId, diffCommentsForActive, pendingDiffCommentsClear])
 
-  const pendingDiffCommentsClearDescription = pendingDiffCommentsClear
-    ? pendingDiffCommentsClear.kind === 'all'
-      ? `Clear ${pendingDiffCommentsClearCount} ${pendingDiffCommentsClearCount === 1 ? 'note' : 'notes'} from this workspace?`
-      : `Clear ${pendingDiffCommentsClearCount} ${pendingDiffCommentsClearCount === 1 ? 'note' : 'notes'} from ${pendingDiffCommentsClear.filePath}?`
-    : ''
-
-  useEffect(() => {
-    if (!pendingDiffCommentsClear || isClearingDiffComments) {
-      return
-    }
-    if (
-      pendingDiffCommentsClear.worktreeId !== activeWorktreeId ||
-      pendingDiffCommentsClearCount === 0
-    ) {
-      setPendingDiffCommentsClear(null)
-    }
-  }, [
+  const resolvedPendingDiffCommentsClear = resolvePendingDiffCommentsClear({
     activeWorktreeId,
-    isClearingDiffComments,
-    pendingDiffCommentsClear,
+    isClearing: isClearingDiffComments,
+    pending: pendingDiffCommentsClear,
+    pendingCount: pendingDiffCommentsClearCount
+  })
+  if (resolvedPendingDiffCommentsClear !== pendingDiffCommentsClear) {
+    // Why: the confirmation is purely local UI state; clear impossible
+    // confirmations before children observe a stale open dialog.
+    setPendingDiffCommentsClear(resolvedPendingDiffCommentsClear)
+  }
+
+  const pendingDiffCommentsClearDescription = formatPendingDiffCommentsClearDescription(
+    resolvedPendingDiffCommentsClear,
     pendingDiffCommentsClearCount
-  ])
+  )
 
   const handleConfirmDiffCommentsClear = useCallback(async (): Promise<void> => {
-    const pending = pendingDiffCommentsClear
+    const pending = resolvedPendingDiffCommentsClear
     if (!pending || isClearingDiffComments || pending.worktreeId !== activeWorktreeId) {
       return
     }
@@ -1241,7 +1234,7 @@ function SourceControlInner(): React.JSX.Element {
     clearDiffComments,
     clearDiffCommentsForFile,
     isClearingDiffComments,
-    pendingDiffCommentsClear,
+    resolvedPendingDiffCommentsClear,
     pendingDiffCommentsClearCount
   ])
 
@@ -4711,7 +4704,7 @@ function SourceControlInner(): React.JSX.Element {
       </div>
 
       <Dialog
-        open={pendingDiffCommentsClear !== null}
+        open={resolvedPendingDiffCommentsClear !== null}
         onOpenChange={(open) => {
           if (!open && !isClearingDiffComments) {
             setPendingDiffCommentsClear(null)
