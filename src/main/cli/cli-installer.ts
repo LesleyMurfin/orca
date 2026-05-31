@@ -26,6 +26,8 @@ type CliInstallerOptions = {
   localAppDataPath?: string
   processPathEnv?: string | null
   commandPathOverride?: string | null
+  /** Feeds into the /usr/local/bin existence check at construction time; used in tests to simulate absent /usr/local/bin on arm64 without relying on real filesystem state. */
+  defaultMacCommandPath?: string
   privilegedRunner?: (command: string) => Promise<void>
   userPathReader?: () => Promise<string | null>
   userPathWriter?: (value: string) => Promise<void>
@@ -47,6 +49,7 @@ export class CliInstaller {
   private readonly localAppDataPath: string
   private readonly processPathEnv: string | null
   private readonly commandPathOverride: string | null
+  private readonly macCommandPath: string
   private readonly privilegedRunner: (command: string) => Promise<void>
   private readonly userPathReader: () => Promise<string | null>
   private readonly userPathWriter: (value: string) => Promise<void>
@@ -71,6 +74,17 @@ export class CliInstaller {
     this.processPathEnv = options.processPathEnv ?? process.env.PATH ?? process.env.Path ?? null
     this.commandPathOverride =
       options.commandPathOverride ?? process.env.ORCA_CLI_INSTALL_PATH ?? null
+    // Why: resolved once at construction — existsSync must not run on every
+    // getStatus() call (hot path). /usr/local/bin is absent by default on Apple
+    // Silicon Macs (Homebrew moved to /opt/homebrew); fall back to ~/.local/bin
+    // which is user-writable, requires no elevated permissions, and is the
+    // XDG-standard user bin dir already on PATH via shell init on arm64.
+    // defaultMacCommandPath is a test seam: it feeds into the existence check
+    // so tests can simulate arm64 without relying on the real /usr/local/bin.
+    const candidateMacPath = options.defaultMacCommandPath ?? DEFAULT_MAC_COMMAND_PATH
+    this.macCommandPath = existsSync(dirname(candidateMacPath))
+      ? candidateMacPath
+      : join(this.homePath, '.local', 'bin', 'orca')
     this.privilegedRunner = options.privilegedRunner ?? runMacPrivilegedCommand
     this.userPathReader = options.userPathReader ?? (() => readWindowsUserPath())
     this.userPathWriter = options.userPathWriter ?? ((value) => writeWindowsUserPath(value))
@@ -133,13 +147,16 @@ export class CliInstaller {
       throw new Error(`Refusing to replace non-Orca command at ${status.commandPath}.`)
     }
 
-    await mkdir(dirname(status.commandPath), { recursive: true })
-
     // eslint-disable-next-line unicorn/prefer-ternary -- Why: the install path performs async side effects and is easier to audit as an explicit branch than as an awaited ternary.
     if (status.installMethod === 'symlink') {
       await this.installSymlink(status)
       await this.removeLegacyLinuxCommandIfManaged(status.launcherPath)
     } else {
+      // Why: mkdir stays here for the Windows wrapper path — the target dir is
+      // user-writable (%LOCALAPPDATA%) so EACCES cannot occur. The symlink path
+      // handles its own mkdir inside installSymlink so EACCES triggers the
+      // privileged-runner instead of propagating as an unhandled rejection.
+      await mkdir(dirname(status.commandPath), { recursive: true })
       await this.installWindowsWrapper(status.commandPath, status.launcherPath)
     }
 
@@ -213,7 +230,7 @@ export class CliInstaller {
     }
 
     if (this.platform === 'darwin') {
-      return DEFAULT_MAC_COMMAND_PATH
+      return this.macCommandPath
     }
 
     if (this.platform === 'linux') {
@@ -259,6 +276,11 @@ export class CliInstaller {
       if (status.state === 'stale') {
         await unlink(status.commandPath as string)
       }
+      // Why: mkdir is placed here (not in install()) so that an EACCES/EPERM
+      // failure — e.g. /usr/local/bin absent on Intel Mac — falls into the
+      // privileged-runner catch below instead of surfacing as an unhandled
+      // rejection that leaves Settings silently showing "not installed".
+      await mkdir(dirname(status.commandPath as string), { recursive: true })
       await symlink(status.launcherPath as string, status.commandPath as string)
     } catch (error) {
       if (this.platform !== 'darwin' || !isPermissionError(error)) {
