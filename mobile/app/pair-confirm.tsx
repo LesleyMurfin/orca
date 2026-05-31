@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, BackHandler } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
@@ -60,12 +60,16 @@ export default function PairConfirmScreen() {
     }, [cancel])
   )
 
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false
-      activePairingAttemptRef.current?.dispose()
-      activePairingAttemptRef.current = null
+  const setPairConfirmRootRef = useCallback((node: View | null): void => {
+    if (node !== null) {
+      mountedRef.current = true
+      return
     }
+    // Why: pairing attempts can outlive the visible route; dispose them when
+    // the confirm screen detaches without a passive cleanup-only Effect.
+    mountedRef.current = false
+    activePairingAttemptRef.current?.dispose()
+    activePairingAttemptRef.current = null
   }, [])
 
   async function confirm() {
@@ -155,7 +159,7 @@ export default function PairConfirmScreen() {
   const containerPadding = { paddingTop: insets.top + spacing.sm }
 
   return (
-    <View style={[styles.container, containerPadding]}>
+    <View ref={setPairConfirmRootRef} style={[styles.container, containerPadding]}>
       <Pressable style={styles.backButton} onPress={cancel}>
         <ChevronLeft size={22} color={colors.textSecondary} />
       </Pressable>
