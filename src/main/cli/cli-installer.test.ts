@@ -1,5 +1,14 @@
 /* eslint-disable max-lines -- Why: cli-installer covers darwin/linux/win32 install, remove, fallback, and privileged-runner paths; each platform combination requires its own fixture and assertions to catch regressions. */
-import { lstat, mkdtemp, mkdir, readFile, readlink, symlink, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readlink,
+  symlink,
+  writeFile
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -305,8 +314,6 @@ describe('CliInstaller', () => {
       const usrLocalBin = join(fixture.root, 'usr', 'local', 'bin')
       await mkdir(usrLocalBin, { recursive: true })
 
-      // Patch DEFAULT_MAC_COMMAND_PATH by injecting commandPathOverride pointing
-      // into our fixture's /usr/local/bin equivalent
       const installPath = join(usrLocalBin, 'orca')
       const installer = new CliInstaller({
         platform: 'darwin',
@@ -314,7 +321,7 @@ describe('CliInstaller', () => {
         userDataPath: fixture.userDataPath,
         execPath: '/Applications/Orca.app/Contents/MacOS/Orca',
         appPath: fixture.appPath,
-        commandPathOverride: installPath,
+        defaultMacCommandPath: installPath,
         processPathEnv: usrLocalBin
       })
 
@@ -351,11 +358,15 @@ describe('CliInstaller', () => {
 
   // Why: the privilegedRunner is injectable so the EACCES→osascript path can be
   // exercised in integration without spawning osascript in unit tests.
-  it.skipIf(process.platform === 'win32')(
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     'invokes the injected privilegedRunner when install falls back to elevated permissions',
     async () => {
       const fixture = await makeFixture()
-      const installPath = join(fixture.root, 'bin', 'orca')
+      const protectedDir = join(fixture.root, 'protected')
+      await mkdir(protectedDir)
+      await chmod(protectedDir, 0o500)
+
+      const installPath = join(protectedDir, 'bin', 'orca')
       const privilegedCommands: string[] = []
       const installer = new CliInstaller({
         platform: 'darwin',
@@ -366,17 +377,26 @@ describe('CliInstaller', () => {
         commandPathOverride: installPath,
         privilegedRunner: async (command: string) => {
           privilegedCommands.push(command)
+          await chmod(protectedDir, 0o700)
           const launcherPath = (await installer.getStatus()).launcherPath as string
           await mkdir(dirname(installPath), { recursive: true })
           await symlink(launcherPath, installPath)
-        }
+        },
+        processPathEnv: dirname(installPath)
       })
 
-      // installPath dir does not exist — mkdir inside installSymlink fails, runner is called
-      await mkdir(join(fixture.root, 'resources', 'bin'), { recursive: true })
-      const status = await installer.getStatus()
-      expect(status.supported).toBe(true)
-      expect(status.state).toBe('not_installed')
+      try {
+        const installed = await installer.install()
+
+        expect(installed.state).toBe('installed')
+        expect(installed.pathConfigured).toBe(true)
+        expect(privilegedCommands).toHaveLength(1)
+        expect(privilegedCommands[0]).toContain('mkdir -p')
+        expect(privilegedCommands[0]).toContain('ln -sfn')
+        await expect(readlink(installPath)).resolves.toBe(installed.launcherPath)
+      } finally {
+        await chmod(protectedDir, 0o700).catch(() => undefined)
+      }
     }
   )
 
@@ -399,8 +419,8 @@ describe('CliInstaller', () => {
         processPathEnv: join(homePath, '.local', 'bin')
       })
 
-      // After construction, commandPath must be deterministic across calls
       const s1 = await installer.getStatus()
+      await mkdir(dirname(absentUsrLocalBin), { recursive: true })
       const s2 = await installer.getStatus()
       const s3 = await installer.getStatus()
 
