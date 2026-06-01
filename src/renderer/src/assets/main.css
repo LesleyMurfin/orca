@@ -856,6 +856,16 @@
   background: color-mix(in srgb, var(--sidebar-foreground) 12%, var(--sidebar));
 }
 
+/* Why: the detected command is editable, but a pure app-background fill reads
+   like a black box in dark mode and overpowers the prompt card. */
+.setup-script-prompt-command {
+  background: color-mix(in srgb, var(--sidebar-foreground) 2%, var(--sidebar));
+}
+
+.dark .setup-script-prompt-command {
+  background: color-mix(in srgb, var(--sidebar-foreground) 8%, var(--sidebar));
+}
+
 .worktree-agent-send-target-button {
   /* Why: the row remains an ordinary agent row during send-target mode; the
      action itself carries the AI target outline so the clickable affordance

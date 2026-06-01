@@ -55,7 +55,7 @@ export function DetectedSetupPreview({
         onChange={(event) => onSetupChange(event.target.value)}
         spellCheck={false}
         rows={Math.min(Math.max(setup.split('\n').length, 2), 6)}
-        className="max-h-28 w-full resize-y overflow-auto scrollbar-sleek rounded-md border border-sidebar-border bg-background px-2 py-1.5 font-mono text-[11px] leading-5 text-foreground shadow-xs outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="setup-script-prompt-command max-h-28 w-full resize-y overflow-auto scrollbar-sleek rounded-md border border-sidebar-border px-2 py-1.5 font-mono text-[11px] leading-5 text-foreground shadow-xs outline-none focus-visible:ring-1 focus-visible:ring-ring"
       />
       {provenance ? (
         <p className="mt-1.5 text-[11px] text-muted-foreground">
