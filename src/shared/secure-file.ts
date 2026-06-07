@@ -5,6 +5,20 @@ import { dirname, win32 as pathWin32 } from 'path'
 
 let cachedWindowsUserSid: string | null | undefined
 
+// Why: hardening shells out to PowerShell on Windows (~1-1.5s each). Re-hardening a path
+// whose ACLs we already applied in this process is wasted work that stalls the main thread,
+// so cache idempotent calls. The post-rename target write is NOT routed through this — it
+// always re-hardens (new inode) and then refreshes the cache entry.
+const hardenedPathsThisProcess = new Set<string>()
+
+function hardenSecurePathOnce(targetPath: string, isDirectory: boolean): void {
+  if (hardenedPathsThisProcess.has(targetPath)) {
+    return
+  }
+  hardenSecurePath(targetPath, { isDirectory, platform: process.platform })
+  hardenedPathsThisProcess.add(targetPath)
+}
+
 export function writeSecureJsonFile(targetPath: string, value: unknown): void {
   writeSecureFile(targetPath, JSON.stringify(value, null, 2))
 }
@@ -14,7 +28,7 @@ export function writeSecureFile(targetPath: string, contents: string): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 })
   }
-  hardenSecurePath(dir, { isDirectory: true, platform: process.platform })
+  hardenSecurePathOnce(dir, true)
 
   const tmpFile = `${targetPath}.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`
   try {
@@ -27,6 +41,7 @@ export function writeSecureFile(targetPath: string, contents: string): void {
     // Why: these files carry runtime auth/device credentials; the published
     // path must remain current-user only after the atomic rename.
     hardenSecurePath(targetPath, { isDirectory: false, platform: process.platform })
+    hardenedPathsThisProcess.add(targetPath)
   } catch (error) {
     rmSync(tmpFile, { force: true })
     throw error
@@ -36,10 +51,10 @@ export function writeSecureFile(targetPath: string, contents: string): void {
 export function hardenExistingSecureFile(targetPath: string): void {
   const dir = dirname(targetPath)
   if (existsSync(dir)) {
-    hardenSecurePath(dir, { isDirectory: true, platform: process.platform })
+    hardenSecurePathOnce(dir, true)
   }
   if (existsSync(targetPath)) {
-    hardenSecurePath(targetPath, { isDirectory: false, platform: process.platform })
+    hardenSecurePathOnce(targetPath, false)
   }
 }
 
@@ -172,4 +187,8 @@ function parseCsvLine(line: string): string[] {
 
 export function __resetSecureFileWindowsUserSidForTests(): void {
   cachedWindowsUserSid = undefined
+}
+
+export function __resetSecureFileHardenedPathsForTests(): void {
+  hardenedPathsThisProcess.clear()
 }
