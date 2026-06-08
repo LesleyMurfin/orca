@@ -257,6 +257,28 @@ describe('SshConnectionStore', () => {
       expect(result[0].source).toBe('ssh-config')
     })
 
+    it('does not overwrite a legacy unsourced manual target with the same alias', () => {
+      mockStore.addSshTarget({
+        id: 'ssh-legacy-manual',
+        label: 'cluster',
+        configHost: 'cluster',
+        host: 'cluster',
+        port: 2200,
+        username: 'me'
+        // no source — predates the field, but does not look like a config import
+      })
+      loadUserSshConfigMock.mockReturnValue([{ host: 'cluster' }])
+      sshConfigHostsToTargetsMock.mockReturnValue([
+        candidate({ configHost: 'cluster', host: '10.0.0.5', port: 2222, username: 'dev' })
+      ])
+
+      const result = sshStore.importFromSshConfig()
+
+      expect(mockStore.updateSshTarget).not.toHaveBeenCalled()
+      expect(mockStore.addSshTarget).toHaveBeenCalledTimes(1)
+      expect(result).toEqual([])
+    })
+
     it('does not rewrite an unchanged config-sourced target', () => {
       mockStore.addSshTarget({
         id: 'ssh-1',

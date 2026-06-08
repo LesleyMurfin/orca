@@ -42,14 +42,18 @@ export class SshConnectionStore {
   importFromSshConfig(): SshTarget[] {
     const configHosts = loadUserSshConfig()
     const existingTargets = this.store.getSshTargets()
-    // Map config-managed targets (and legacy unsourced ones) by their config
-    // alias so a repeat import reconciles instead of duplicating. Manual targets
-    // are excluded — their alias stays reserved and untouched.
+    // Map config-managed targets (and legacy targets that strongly look like
+    // prior imports) by their config alias so a repeat import reconciles instead
+    // of duplicating. Manual targets are excluded — their alias stays reserved
+    // and untouched.
     const syncableByAlias = new Map<string, SshTarget>()
     const manualAliases = new Set<string>()
     for (const existing of existingTargets) {
       const alias = existing.configHost ?? existing.label
-      if (existing.source === 'manual') {
+      if (
+        existing.source === 'manual' ||
+        (existing.source === undefined && !isLegacyConfigImportTarget(existing))
+      ) {
         manualAliases.add(alias)
         continue
       }
@@ -118,4 +122,14 @@ export class SshConnectionStore {
 
     return changed
   }
+}
+
+function isLegacyConfigImportTarget(target: SshTarget): boolean {
+  const alias = target.configHost ?? target.label
+  // Why: legacy manual and imported targets both lack `source`. Only adopt the
+  // old import shape, where the SSH alias was kept as label/configHost while
+  // host stored the resolved HostName; otherwise preserve the user's target.
+  return Boolean(
+    alias && target.label === alias && target.configHost === alias && target.host !== alias
+  )
 }
