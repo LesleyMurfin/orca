@@ -8,6 +8,7 @@ const requireFromProject = createRequire(join(projectDir, 'package.json'))
 const PACKAGED_RUNTIME_PACKAGE_ROOTS = [
   '@electron-toolkit/utils',
   '@linear/sdk',
+  '@parcel/watcher',
   'electron-updater',
   'node-pty',
   'posthog-node',
@@ -23,6 +24,11 @@ const NODE_PTY_PREBUILD_PREFIX_BY_PLATFORM = {
   darwin: 'darwin-',
   linux: 'linux-',
   win32: 'win32-'
+}
+const PARCEL_WATCHER_PLATFORM_PREFIX_BY_PLATFORM = {
+  darwin: 'watcher-darwin',
+  linux: 'watcher-linux',
+  win32: 'watcher-win32'
 }
 const TYPE_DECLARATION_ARTIFACT_RE = /\.d\.(?:c|m)?ts(?:\.map)?$/
 const VERSIONED_ONNXRUNTIME_DYLIB_RE = /^libonnxruntime\.\d[\d.]*\.dylib$/
@@ -97,6 +103,26 @@ function collectPackagedRuntimePackages() {
 
   for (const packageName of PACKAGED_RUNTIME_PACKAGE_ROOTS) {
     visit(packageName)
+  }
+
+  // Why: @parcel/watcher loads its native .node addon from a platform-specific
+  // optionalDependency (e.g. @parcel/watcher-linux-x64-glibc) that the
+  // dependencies graph above never reaches. Include the ones installed for the
+  // build's supported architectures; afterPack pruning trims non-target
+  // platforms. Without this the packaged main bundle's import of
+  // '@parcel/watcher' resolves at runtime but throws loading its binary.
+  const parcelWatcherDir = packages.get('@parcel/watcher')
+  if (parcelWatcherDir) {
+    const parcelWatcherPackage = JSON.parse(
+      readFileSync(join(parcelWatcherDir, 'package.json'), 'utf8')
+    )
+    for (const optionalName of Object.keys(parcelWatcherPackage.optionalDependencies ?? {})) {
+      try {
+        visit(optionalName)
+      } catch {
+        // Optional platform subpackage is not installed for this build; skip it.
+      }
+    }
   }
 
   return [...packages.entries()].sort(([left], [right]) => left.localeCompare(right))
@@ -184,6 +210,28 @@ function prunePackagedNodePty(resourcesDir, electronPlatformName) {
   }
 }
 
+function prunePackagedParcelWatcher(resourcesDir, electronPlatformName) {
+  const parcelDir = join(resourcesDir, 'node_modules', '@parcel')
+  if (!existsSync(parcelDir)) {
+    return
+  }
+
+  // Why: we package every installed @parcel/watcher-<platform> optional
+  // subpackage (supportedArchitectures fetches all), but each build only needs
+  // its own platform's binary. Keep the core package and the matching platform
+  // subpackages; drop the rest so a Linux serve doesn't ship macOS/Windows .node.
+  const keepPrefix = PARCEL_WATCHER_PLATFORM_PREFIX_BY_PLATFORM[electronPlatformName]
+  for (const entry of readdirSync(parcelDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === 'watcher') {
+      continue
+    }
+    if (keepPrefix && entry.name.startsWith(keepPrefix)) {
+      continue
+    }
+    rmSync(join(parcelDir, entry.name), { recursive: true, force: true })
+  }
+}
+
 function prunePackagedRuntimeTypeDeclarations(resourcesDir) {
   const nodeModulesDir = join(resourcesDir, 'node_modules')
   if (!existsSync(nodeModulesDir)) {
@@ -225,6 +273,7 @@ function prunePackagedZodSources(resourcesDir) {
 
 function prunePackagedRuntimeNodeModules(resourcesDir, electronPlatformName) {
   prunePackagedNodePty(resourcesDir, electronPlatformName)
+  prunePackagedParcelWatcher(resourcesDir, electronPlatformName)
   prunePackagedRuntimeTypeDeclarations(resourcesDir)
   prunePackagedSherpaOnnx(resourcesDir, electronPlatformName)
   prunePackagedZodSources(resourcesDir)
@@ -248,6 +297,7 @@ module.exports = {
   isPackagedExternalSpecifier,
   packageNameFromSpecifier,
   prunePackagedNodePty,
+  prunePackagedParcelWatcher,
   prunePackagedRuntimeNodeModules,
   prunePackagedSherpaOnnx,
   prunePackagedRuntimeTypeDeclarations,
