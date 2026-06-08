@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { encodePairingOffer } from './pairing'
 import {
   RuntimeEnvironmentStoreError,
@@ -21,8 +21,17 @@ function pairingCode(endpoint = 'ws://127.0.0.1:6768'): string {
 
 describe('runtime environment store', () => {
   const tempDirs: string[] = []
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+
+  beforeEach(() => {
+    // Why: this suite tests store timestamps, while secure-file tests cover Windows ACLs.
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' })
+  })
 
   afterEach(() => {
+    if (originalPlatform) {
+      Object.defineProperty(process, 'platform', originalPlatform)
+    }
     for (const dir of tempDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true })
     }

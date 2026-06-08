@@ -1,22 +1,40 @@
 import { execFileSync } from 'child_process'
 import { randomBytes } from 'crypto'
-import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { dirname, win32 as pathWin32 } from 'path'
 
 let cachedWindowsUserSid: string | null | undefined
+
+type HardenedPathCacheEntry = {
+  isDirectory: boolean
+  dev: number
+  ino: number
+  size: number
+  ctimeMs: number
+  mtimeMs: number
+  birthtimeMs: number
+}
 
 // Why: hardening shells out to PowerShell on Windows (~1-1.5s each). Re-hardening a path
 // whose ACLs we already applied in this process is wasted work that stalls the main thread,
 // so cache idempotent calls. The post-rename target write is NOT routed through this — it
 // always re-hardens (new inode) and then refreshes the cache entry.
-const hardenedPathsThisProcess = new Set<string>()
+const hardenedPathsThisProcess = new Map<string, HardenedPathCacheEntry>()
 
-function hardenSecurePathOnce(targetPath: string, isDirectory: boolean): void {
-  if (hardenedPathsThisProcess.has(targetPath)) {
-    return
+function hardenSecurePathOnce(targetPath: string, isDirectory: boolean): boolean {
+  const currentEntry = getHardenedPathCacheEntry(targetPath, isDirectory)
+  if (!currentEntry) {
+    hardenedPathsThisProcess.delete(targetPath)
   }
-  hardenSecurePath(targetPath, { isDirectory, platform: process.platform })
-  hardenedPathsThisProcess.add(targetPath)
+  const cachedEntry = hardenedPathsThisProcess.get(targetPath)
+  if (currentEntry && cachedEntry && hardenedPathCacheEntriesMatch(currentEntry, cachedEntry)) {
+    return true
+  }
+  if (applySecurePathRestriction(targetPath, isDirectory, process.platform)) {
+    rememberHardenedPath(targetPath, isDirectory)
+    return true
+  }
+  return false
 }
 
 export function writeSecureJsonFile(targetPath: string, value: unknown): void {
@@ -28,7 +46,7 @@ export function writeSecureFile(targetPath: string, contents: string): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 })
   }
-  hardenSecurePathOnce(dir, true)
+  const directoryWasHardened = hardenSecurePathOnce(dir, true)
 
   const tmpFile = `${targetPath}.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`
   try {
@@ -40,8 +58,12 @@ export function writeSecureFile(targetPath: string, contents: string): void {
     renameSync(tmpFile, targetPath)
     // Why: these files carry runtime auth/device credentials; the published
     // path must remain current-user only after the atomic rename.
-    hardenSecurePath(targetPath, { isDirectory: false, platform: process.platform })
-    hardenedPathsThisProcess.add(targetPath)
+    if (applySecurePathRestriction(targetPath, false, process.platform)) {
+      rememberHardenedPath(targetPath, false)
+    }
+    if (directoryWasHardened) {
+      rememberHardenedPath(dir, true)
+    }
   } catch (error) {
     rmSync(tmpFile, { force: true })
     throw error
@@ -65,11 +87,99 @@ export function hardenSecurePath(
     platform: NodeJS.Platform
   }
 ): void {
-  if (options.platform === 'win32') {
-    bestEffortRestrictWindowsPath(targetPath, options.isDirectory)
-    return
+  applySecurePathRestriction(targetPath, options.isDirectory, options.platform)
+}
+
+function applySecurePathRestriction(
+  targetPath: string,
+  isDirectory: boolean,
+  platform: NodeJS.Platform
+): boolean {
+  if (platform === 'win32') {
+    return bestEffortRestrictWindowsPath(targetPath, isDirectory)
   }
-  chmodSync(targetPath, options.isDirectory ? 0o700 : 0o600)
+  chmodSync(targetPath, isDirectory ? 0o700 : 0o600)
+  return true
+}
+
+function rememberHardenedPath(targetPath: string, isDirectory: boolean): void {
+  const entry = getHardenedPathCacheEntry(targetPath, isDirectory)
+  if (entry) {
+    hardenedPathsThisProcess.set(targetPath, entry)
+  } else {
+    hardenedPathsThisProcess.delete(targetPath)
+  }
+}
+
+function getHardenedPathCacheEntry(
+  targetPath: string,
+  isDirectory: boolean
+): HardenedPathCacheEntry | null {
+  try {
+    const stats = statSync(targetPath)
+    if (stats.isDirectory() !== isDirectory) {
+      return null
+    }
+    return {
+      isDirectory,
+      dev: stats.dev,
+      ino: stats.ino,
+      size: stats.size,
+      ctimeMs: stats.ctimeMs,
+      mtimeMs: stats.mtimeMs,
+      birthtimeMs: stats.birthtimeMs
+    }
+  } catch {
+    return null
+  }
+}
+
+function hardenedPathCacheEntriesMatch(
+  a: HardenedPathCacheEntry,
+  b: HardenedPathCacheEntry
+): boolean {
+  return (
+    a.isDirectory === b.isDirectory &&
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.ctimeMs === b.ctimeMs &&
+    a.mtimeMs === b.mtimeMs &&
+    a.birthtimeMs === b.birthtimeMs
+  )
+}
+
+function bestEffortRestrictWindowsPath(targetPath: string, isDirectory: boolean): boolean {
+  const currentUserSid = getCurrentWindowsUserSid()
+  if (!currentUserSid) {
+    return false
+  }
+  try {
+    execFileSync(
+      getWindowsSystemToolPath('WindowsPowerShell\\v1.0\\powershell.exe'),
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        WINDOWS_RESTRICT_ACL_SCRIPT,
+        targetPath,
+        currentUserSid,
+        isDirectory ? '1' : '0'
+      ],
+      {
+        stdio: 'ignore',
+        windowsHide: true,
+        timeout: 5000
+      }
+    )
+    return true
+  } catch {
+    // Why: credential-file hardening should not prevent Orca from starting on
+    // Windows machines where PowerShell ACL APIs are unavailable or locked down.
+    return false
+  }
 }
 
 const WINDOWS_RESTRICT_ACL_SCRIPT = `
@@ -121,37 +231,6 @@ foreach ($rule in @($verifiedAcl.Access)) {
   }
 }
 `.trim()
-
-function bestEffortRestrictWindowsPath(targetPath: string, isDirectory: boolean): void {
-  const currentUserSid = getCurrentWindowsUserSid()
-  if (!currentUserSid) {
-    return
-  }
-  try {
-    execFileSync(
-      getWindowsSystemToolPath('WindowsPowerShell\\v1.0\\powershell.exe'),
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-Command',
-        WINDOWS_RESTRICT_ACL_SCRIPT,
-        targetPath,
-        currentUserSid,
-        isDirectory ? '1' : '0'
-      ],
-      {
-        stdio: 'ignore',
-        windowsHide: true,
-        timeout: 5000
-      }
-    )
-  } catch {
-    // Why: credential-file hardening should not prevent Orca from starting on
-    // Windows machines where PowerShell ACL APIs are unavailable or locked down.
-  }
-}
 
 function getCurrentWindowsUserSid(): string | null {
   if (cachedWindowsUserSid !== undefined) {
