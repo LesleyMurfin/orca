@@ -110,7 +110,7 @@ describe('filesystem-watcher real @parcel/watcher integration', () => {
       expect(event).toBeDefined()
       expect(['create', 'update']).toContain(event!.kind)
 
-      handlers['fs:unwatchWorktree']({ sender: { id: 1 } }, { worktreePath: tempDir })
+      await handlers['fs:unwatchWorktree']({ sender: { id: 1 } }, { worktreePath: tempDir })
     },
     15_000
   )

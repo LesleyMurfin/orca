@@ -180,6 +180,28 @@ describe('electron-builder config', () => {
     }
   })
 
+  it('leaves unrelated @parcel/* runtime deps untouched when pruning the watcher', async () => {
+    const resourcesDir = await mkdtemp(join(tmpdir(), 'orca-parcel-watcher-prune-unrelated-'))
+    try {
+      const parcelDir = join(resourcesDir, 'node_modules', '@parcel')
+      await mkdir(join(parcelDir, 'watcher'), { recursive: true })
+      await mkdir(join(parcelDir, 'watcher-darwin-arm64'), { recursive: true })
+      await mkdir(join(parcelDir, 'watcher-linux-x64-glibc'), { recursive: true })
+      // A hypothetical future @parcel/* runtime dep that is NOT a watcher subpackage.
+      await mkdir(join(parcelDir, 'transformer-js'), { recursive: true })
+
+      prunePackagedParcelWatcher(resourcesDir, 'linux')
+
+      await expect(readdir(parcelDir).then((entries) => entries.sort())).resolves.toEqual([
+        'transformer-js',
+        'watcher',
+        'watcher-linux-x64-glibc'
+      ])
+    } finally {
+      await rm(resourcesDir, { recursive: true, force: true })
+    }
+  })
+
   it('prunes type declaration artifacts from packaged runtime node_modules', async () => {
     const resourcesDir = await mkdtemp(join(tmpdir(), 'orca-runtime-type-prune-'))
     try {

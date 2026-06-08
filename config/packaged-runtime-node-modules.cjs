@@ -225,6 +225,11 @@ function prunePackagedParcelWatcher(resourcesDir, electronPlatformName) {
     if (!entry.isDirectory() || entry.name === 'watcher') {
       continue
     }
+    // Why: only ever prune the watcher's own platform subpackages. Guards against
+    // nuking an unrelated @parcel/* runtime dep if one is added to the roots later.
+    if (!entry.name.startsWith('watcher-')) {
+      continue
+    }
     if (keepPrefix && entry.name.startsWith(keepPrefix)) {
       continue
     }
