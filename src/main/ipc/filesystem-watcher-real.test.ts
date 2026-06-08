@@ -13,7 +13,7 @@
  * On a Linux host isWslPath() is always false, so a native /tmp path routes to
  * createWatcher() -> real @parcel/watcher (not the inotifywait WSL fallback).
  */
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -80,7 +80,9 @@ describe('filesystem-watcher real @parcel/watcher integration', () => {
   it.runIf(process.platform !== 'win32')(
     'emits fs:changed for a file created in a watched directory',
     async () => {
-      tempDir = await mkdtemp(join(tmpdir(), 'orca-fswatch-real-'))
+      // Why: macOS reports temp watcher events under /private/var while
+      // tmpdir() returns /var, so compare canonical paths instead of aliases.
+      tempDir = await realpath(await mkdtemp(join(tmpdir(), 'orca-fswatch-real-')))
       const sendMock = vi.fn()
       const sender = {
         isDestroyed: () => false,
