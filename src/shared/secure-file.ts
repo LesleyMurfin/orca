@@ -49,7 +49,7 @@ function hardenSecureDirectoryOnce(dirPath: string): void {
 }
 
 function hardenSecurePathOnce(targetPath: string, isDirectory: boolean): boolean {
-  if (isDirectory) {
+  if (isDirectory && process.platform === 'win32') {
     hardenSecureDirectoryOnce(targetPath)
     return true
   }
@@ -82,10 +82,9 @@ export function writeSecureFile(targetPath: string, contents: string): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 })
   }
-  // Directory hardening stays async + path-cached: it is what stormed the main thread (#4901)
-  // and the credential files inside are hardened synchronously below, so a pending dir ACL is
-  // safe.
-  hardenSecureDirectoryOnce(dir)
+  // Windows directory hardening stays async + path-cached: it is what stormed the main thread
+  // (#4901). POSIX keeps the metadata cache so chmod/ctime changes are corrected.
+  hardenSecurePathOnce(dir, true)
 
   const tmpFile = `${targetPath}.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`
   try {

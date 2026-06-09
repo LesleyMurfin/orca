@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from 'child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -332,6 +332,22 @@ describe('hardenSecurePath', () => {
     expect(getPowerShellCalls()).toHaveLength(0)
     expect(getSyncPowerShellCalls()).toHaveLength(0)
   })
+
+  it('re-hardens a POSIX directory when its metadata changes after caching', () => {
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' })
+    const userDataPath = mkdtempSync(join(tmpdir(), 'orca-secure-file-'))
+    tempDirs.push(userDataPath)
+    const targetPath = join(userDataPath, 'secret.json')
+    writeFileSync(targetPath, '{}')
+
+    hardenExistingSecureFile(targetPath)
+    expect(statMode(userDataPath)).toBe(0o700)
+
+    chmodSync(userDataPath, 0o755)
+    hardenExistingSecureFile(targetPath)
+
+    expect(statMode(userDataPath)).toBe(0o700)
+  })
 })
 
 const POWERSHELL_SUFFIX = 'WindowsPowerShell\\v1.0\\powershell.exe'
@@ -354,4 +370,8 @@ function getPowerShellTarget(call: unknown[]): string {
 
 async function waitForFileTimestampTick(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 20))
+}
+
+function statMode(path: string): number {
+  return statSync(path).mode & 0o777
 }
