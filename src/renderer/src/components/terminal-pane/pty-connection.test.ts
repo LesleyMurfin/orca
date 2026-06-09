@@ -306,7 +306,8 @@ function createManager(paneCount = 1) {
       }))
     ),
     closePane: vi.fn(),
-    getActivePane: vi.fn<() => { id: number } | null>(() => null)
+    getActivePane: vi.fn<() => { id: number } | null>(() => null),
+    rebuildPaneWebgl: vi.fn()
   }
 }
 
