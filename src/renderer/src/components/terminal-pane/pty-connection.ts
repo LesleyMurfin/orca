@@ -598,6 +598,10 @@ export function connectPanePty(
 ): PanePtyBinding {
   exposeE2eTerminalPtyOutputDebug()
   let disposed = false
+  // Why: one-shot guard so the remote-runtime WebGL rebuild (which fixes the
+  // black GPU canvas left by the async snapshot, upstream #4941) fires only on
+  // the first remote frame for this pane connection, not on every data chunk.
+  let remoteSnapshotWebglRebuilt = false
   let connectFrame: number | null = null
   let unregisterBacklogRecovery: (() => void) | null = null
   let unregisterDocumentVisibilityRecovery: (() => void) | null = null
@@ -2533,6 +2537,21 @@ export function connectPanePty(
         }
       } else {
         writePtyOutputToXterm(data, foreground)
+      }
+
+      // Why: remote-runtime panes attach WebGL synchronously against an empty
+      // buffer (attachWebgl + one immediate refresh in pane-lifecycle), but the
+      // server delivers the buffered snapshot / first frame asynchronously via
+      // the multiplexer's onSnapshot/onData — after that initial refresh already
+      // fired. The GPU canvas never gets a valid post-content repaint and shows
+      // black (upstream #4941). Rebuild WebGL once, on the first remote frame
+      // for this pane, so the canvas repaints against the populated buffer. The
+      // one-shot guard keeps this from thrashing on every chunk, and
+      // rebuildPaneWebgl no-ops for DOM/GPU-disabled panes, so local panes and
+      // non-WebGL remote panes are unaffected.
+      if (!remoteSnapshotWebglRebuilt && isRemoteRuntimePtyId(transport.getPtyId())) {
+        remoteSnapshotWebglRebuilt = true
+        manager.rebuildPaneWebgl(pane.id)
       }
 
       if (pendingStartupCommand) {

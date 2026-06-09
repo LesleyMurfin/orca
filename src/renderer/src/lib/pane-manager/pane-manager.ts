@@ -29,6 +29,7 @@ import { toPublicPane } from './pane-public-view'
 import { applyTerminalGpuAcceleration } from './pane-terminal-gpu-acceleration'
 import {
   markPaneComplexScriptOutput,
+  rebuildPaneWebglState,
   resumePaneRendering,
   setPaneGpuRenderingState,
   suspendPaneRendering
@@ -249,6 +250,14 @@ export class PaneManager {
 
   setPaneGpuRendering(paneId: number, enabled: boolean): void {
     setPaneGpuRenderingState(this.panes, paneId, enabled)
+  }
+
+  /** Rebuild a pane's WebGL renderer (dispose + reattach) so its GPU canvas
+   *  repaints against the current buffer. Used after a remote-runtime pane's
+   *  buffered snapshot lands asynchronously, which would otherwise leave the
+   *  canvas black. No-op for DOM panes / GPU-disabled panes. */
+  rebuildPaneWebgl(paneId: number): void {
+    rebuildPaneWebglState(this.panes, paneId)
   }
 
   setTerminalGpuAcceleration(mode: PaneManagerOptions['terminalGpuAcceleration']): void {
