@@ -27,15 +27,30 @@ const hardenedPathsThisProcess = new Map<string, HardenedPathCacheEntry>()
 // directory hardening by PATH for the entire process lifetime: once a directory's ACL has
 // been applied in this process we trust it stays correct. Files keep the metadata-keyed cache
 // so that post-rename inode changes are detected correctly. See #4901 regression report.
+//
+// Known limitation: because this is a process-lifetime path cache, a directory that is deleted
+// and recreated during the same process will NOT be re-hardened. The secure dirs we own
+// (.orca runtime/auth/device stores) are not deleted at runtime, so this is acceptable; the
+// next process restart re-hardens. Do not rely on this cache if a path's lifecycle changes.
 const hardenedDirectoryPathsThisProcess = new Set<string>()
+
+function hardenSecureDirectoryOnce(dirPath: string): void {
+  // Why: directory hardening is async + path-cached. The directory ACL is broad-but-bounded
+  // (current user + SYSTEM + Administrators) and re-applying it is what stormed the main
+  // thread (#4901), so we never block on it. A pending dir ACL on first run is acceptable
+  // because the credential FILES inside it are hardened synchronously on the write path.
+  if (hardenedDirectoryPathsThisProcess.has(dirPath)) {
+    return
+  }
+  applySecurePathRestriction(dirPath, true, process.platform, false)
+  // Optimistic: cache even though the async ACL may still be in flight. The dir restriction
+  // is best-effort and re-running it does not improve security, so we accept no-retry here.
+  hardenedDirectoryPathsThisProcess.add(dirPath)
+}
 
 function hardenSecurePathOnce(targetPath: string, isDirectory: boolean): boolean {
   if (isDirectory) {
-    if (hardenedDirectoryPathsThisProcess.has(targetPath)) {
-      return true
-    }
-    applySecurePathRestriction(targetPath, true, process.platform)
-    hardenedDirectoryPathsThisProcess.add(targetPath)
+    hardenSecureDirectoryOnce(targetPath)
     return true
   }
 
@@ -47,7 +62,11 @@ function hardenSecurePathOnce(targetPath: string, isDirectory: boolean): boolean
   if (currentEntry && cachedEntry && hardenedPathCacheEntriesMatch(currentEntry, cachedEntry)) {
     return true
   }
-  if (applySecurePathRestriction(targetPath, isDirectory, process.platform)) {
+  // Why: the read path re-hardens an existing file at most once per process (metadata-cached
+  // above), so async file hardening here does not storm. The async restriction only re-asserts
+  // an ACL on a file that already exists; new credential files are hardened synchronously on
+  // the write path (see writeSecureFile), so there is no async window on creation.
+  if (applySecurePathRestriction(targetPath, isDirectory, process.platform, false)) {
     rememberHardenedPath(targetPath, isDirectory)
     return true
   }
@@ -63,7 +82,10 @@ export function writeSecureFile(targetPath: string, contents: string): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 })
   }
-  const directoryWasHardened = hardenSecurePathOnce(dir, true)
+  // Directory hardening stays async + path-cached: it is what stormed the main thread (#4901)
+  // and the credential files inside are hardened synchronously below, so a pending dir ACL is
+  // safe.
+  hardenSecureDirectoryOnce(dir)
 
   const tmpFile = `${targetPath}.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`
   try {
@@ -71,15 +93,19 @@ export function writeSecureFile(targetPath: string, contents: string): void {
       encoding: 'utf-8',
       mode: 0o600
     })
-    hardenSecurePath(tmpFile, { isDirectory: false, platform: process.platform })
+    // Why: on Windows writeFileSync({mode:0o600}) is a no-op, so the file is created carrying
+    // the parent directory's inherited (broader) ACL. We must restrict the credential file's
+    // ACL SYNCHRONOUSLY before the atomic rename publishes it — otherwise writeSecureFile
+    // would return with the credential readable under inherited ACLs for the ~1-1.5s PowerShell
+    // cold-start window. The write path is infrequent, so the synchronous cost is acceptable;
+    // it is the READ path that stormed (#4901), and that stays async + cached.
+    applySecurePathRestriction(tmpFile, false, process.platform, true)
     renameSync(tmpFile, targetPath)
     // Why: these files carry runtime auth/device credentials; the published
-    // path must remain current-user only after the atomic rename.
-    if (applySecurePathRestriction(targetPath, false, process.platform)) {
+    // path must remain current-user only after the atomic rename. Apply synchronously and only
+    // cache on confirmed success so a failed ACL apply is retried on the next read/write.
+    if (applySecurePathRestriction(targetPath, false, process.platform, true)) {
       rememberHardenedPath(targetPath, false)
-    }
-    if (directoryWasHardened) {
-      rememberHardenedPath(dir, true)
     }
   } catch (error) {
     rmSync(tmpFile, { force: true })
@@ -102,20 +128,34 @@ export function hardenSecurePath(
   options: {
     isDirectory: boolean
     platform: NodeJS.Platform
+    sync?: boolean
   }
 ): void {
-  applySecurePathRestriction(targetPath, options.isDirectory, options.platform)
+  applySecurePathRestriction(
+    targetPath,
+    options.isDirectory,
+    options.platform,
+    options.sync ?? false
+  )
 }
 
 function applySecurePathRestriction(
   targetPath: string,
   isDirectory: boolean,
-  platform: NodeJS.Platform
+  platform: NodeJS.Platform,
+  sync: boolean
 ): boolean {
   if (platform === 'win32') {
-    // Why: bestEffortRestrictWindowsPath is async (fire-and-forget) to avoid blocking the
-    // main thread. We optimistically return true here because the restriction is best-effort;
-    // the cache entry is written immediately so we do not re-spawn on the next call.
+    if (sync) {
+      // Why: the write path must apply the credential FILE's ACL before returning, otherwise
+      // the file is briefly readable under inherited (broader) ACLs (writeFileSync mode is a
+      // no-op on Windows). Run PowerShell synchronously and report real success so callers only
+      // cache the path as hardened when the ACL actually applied. The write path is infrequent.
+      return restrictWindowsPathSync(targetPath, isDirectory)
+    }
+    // Why: the directory and read-path re-harden are async (fire-and-forget) to avoid blocking
+    // the main thread (#4901). We optimistically return true because the restriction is
+    // best-effort; the cache entry is written immediately so we do not re-spawn on the next call.
     bestEffortRestrictWindowsPath(targetPath, isDirectory)
     return true
   }
@@ -170,6 +210,24 @@ function hardenedPathCacheEntriesMatch(
   )
 }
 
+function buildWindowsRestrictAclArgs(
+  targetPath: string,
+  currentUserSid: string,
+  isDirectory: boolean
+): string[] {
+  return [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-Command',
+    WINDOWS_RESTRICT_ACL_SCRIPT,
+    targetPath,
+    currentUserSid,
+    isDirectory ? '1' : '0'
+  ]
+}
+
 function bestEffortRestrictWindowsPath(targetPath: string, isDirectory: boolean): void {
   const currentUserSid = getCurrentWindowsUserSid()
   if (!currentUserSid) {
@@ -182,17 +240,7 @@ function bestEffortRestrictWindowsPath(targetPath: string, isDirectory: boolean)
   // (see function name), so it is safe to apply it in the background.
   execFile(
     getWindowsSystemToolPath('WindowsPowerShell\\v1.0\\powershell.exe'),
-    [
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-Command',
-      WINDOWS_RESTRICT_ACL_SCRIPT,
-      targetPath,
-      currentUserSid,
-      isDirectory ? '1' : '0'
-    ],
+    buildWindowsRestrictAclArgs(targetPath, currentUserSid, isDirectory),
     {
       windowsHide: true,
       timeout: 5000
@@ -203,6 +251,33 @@ function bestEffortRestrictWindowsPath(targetPath: string, isDirectory: boolean)
       // unavailable or locked down.
     }
   )
+}
+
+function restrictWindowsPathSync(targetPath: string, isDirectory: boolean): boolean {
+  const currentUserSid = getCurrentWindowsUserSid()
+  if (!currentUserSid) {
+    return false
+  }
+  // Why: synchronous variant for the credential-FILE write path only. The file must not be
+  // published (renamed into place / returned to the caller) until its ACL has actually been
+  // restricted, so we block here and report real success. This is the rare path; the frequent
+  // read path stays async (bestEffortRestrictWindowsPath) to avoid the #4901 main-thread storm.
+  try {
+    execFileSync(
+      getWindowsSystemToolPath('WindowsPowerShell\\v1.0\\powershell.exe'),
+      buildWindowsRestrictAclArgs(targetPath, currentUserSid, isDirectory),
+      {
+        stdio: ['ignore', 'ignore', 'ignore'],
+        windowsHide: true,
+        timeout: 5000
+      }
+    )
+    return true
+  } catch {
+    // Why: best-effort — a failed ACL apply (locked-down PowerShell, etc.) must not crash the
+    // write. Returning false leaves the path uncached so a later read/write retries it.
+    return false
+  }
 }
 
 const WINDOWS_RESTRICT_ACL_SCRIPT = `
