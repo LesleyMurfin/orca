@@ -1,4 +1,4 @@
-import { execFileSync } from 'child_process'
+import { execFile, execFileSync } from 'child_process'
 import { randomBytes } from 'crypto'
 import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { dirname, win32 as pathWin32 } from 'path'
@@ -21,7 +21,24 @@ type HardenedPathCacheEntry = {
 // always re-hardens (new inode) and then refreshes the cache entry.
 const hardenedPathsThisProcess = new Map<string, HardenedPathCacheEntry>()
 
+// Why: a directory's required ACL does not change because its mtime changed (child writes
+// update the directory's mtime constantly). Keying the directory cache on mtime/ctime causes
+// a cache miss — and a blocking PowerShell spawn — on every read-path call. We instead cache
+// directory hardening by PATH for the entire process lifetime: once a directory's ACL has
+// been applied in this process we trust it stays correct. Files keep the metadata-keyed cache
+// so that post-rename inode changes are detected correctly. See #4901 regression report.
+const hardenedDirectoryPathsThisProcess = new Set<string>()
+
 function hardenSecurePathOnce(targetPath: string, isDirectory: boolean): boolean {
+  if (isDirectory) {
+    if (hardenedDirectoryPathsThisProcess.has(targetPath)) {
+      return true
+    }
+    applySecurePathRestriction(targetPath, true, process.platform)
+    hardenedDirectoryPathsThisProcess.add(targetPath)
+    return true
+  }
+
   const currentEntry = getHardenedPathCacheEntry(targetPath, isDirectory)
   if (!currentEntry) {
     hardenedPathsThisProcess.delete(targetPath)
@@ -96,7 +113,11 @@ function applySecurePathRestriction(
   platform: NodeJS.Platform
 ): boolean {
   if (platform === 'win32') {
-    return bestEffortRestrictWindowsPath(targetPath, isDirectory)
+    // Why: bestEffortRestrictWindowsPath is async (fire-and-forget) to avoid blocking the
+    // main thread. We optimistically return true here because the restriction is best-effort;
+    // the cache entry is written immediately so we do not re-spawn on the next call.
+    bestEffortRestrictWindowsPath(targetPath, isDirectory)
+    return true
   }
   chmodSync(targetPath, isDirectory ? 0o700 : 0o600)
   return true
@@ -149,37 +170,39 @@ function hardenedPathCacheEntriesMatch(
   )
 }
 
-function bestEffortRestrictWindowsPath(targetPath: string, isDirectory: boolean): boolean {
+function bestEffortRestrictWindowsPath(targetPath: string, isDirectory: boolean): void {
   const currentUserSid = getCurrentWindowsUserSid()
   if (!currentUserSid) {
-    return false
+    return
   }
-  try {
-    execFileSync(
-      getWindowsSystemToolPath('WindowsPowerShell\\v1.0\\powershell.exe'),
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-Command',
-        WINDOWS_RESTRICT_ACL_SCRIPT,
-        targetPath,
-        currentUserSid,
-        isDirectory ? '1' : '0'
-      ],
-      {
-        stdio: 'ignore',
-        windowsHide: true,
-        timeout: 5000
-      }
-    )
-    return true
-  } catch {
-    // Why: credential-file hardening should not prevent Orca from starting on
-    // Windows machines where PowerShell ACL APIs are unavailable or locked down.
-    return false
-  }
+  // Why: execFile (async) is used instead of execFileSync to avoid blocking the Electron main
+  // thread. PowerShell cold-start is ~1–1.5 s; spawning it synchronously on every read-path
+  // call saturated the main thread in v1.4.52+ where the env-store is read ~2×/s by the
+  // remote-runtime tab-sync loop (#4901 regression). The restriction is best-effort
+  // (see function name), so it is safe to apply it in the background.
+  execFile(
+    getWindowsSystemToolPath('WindowsPowerShell\\v1.0\\powershell.exe'),
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      WINDOWS_RESTRICT_ACL_SCRIPT,
+      targetPath,
+      currentUserSid,
+      isDirectory ? '1' : '0'
+    ],
+    {
+      windowsHide: true,
+      timeout: 5000
+    },
+    () => {
+      // Why: errors are intentionally ignored — credential-file hardening should not
+      // prevent Orca from starting on Windows machines where PowerShell ACL APIs are
+      // unavailable or locked down.
+    }
+  )
 }
 
 const WINDOWS_RESTRICT_ACL_SCRIPT = `
@@ -270,4 +293,5 @@ export function __resetSecureFileWindowsUserSidForTests(): void {
 
 export function __resetSecureFileHardenedPathsForTests(): void {
   hardenedPathsThisProcess.clear()
+  hardenedDirectoryPathsThisProcess.clear()
 }
