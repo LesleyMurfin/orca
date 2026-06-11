@@ -2763,11 +2763,15 @@ export class OrcaRuntimeService {
     // to that stale tab. Persisting the activation here keeps subsequent republishes
     // carrying the client's chosen tab. When an authoritative renderer window is
     // attached it remains the source of truth and re-syncs the snapshot on focus, so
-    // we skip the persist and act only for genuinely headless/serve snapshots (this
-    // also avoids touching renderer-owned tabs in `:headless-merge:` snapshots).
+    // we skip the persist and act only for genuinely headless/serve snapshots. We also
+    // exclude `:headless-merge:` epochs explicitly: after a renderer detaches there is no
+    // authoritative window (the guard above passes), but a merged snapshot still carries
+    // renderer-owned tabs/groups that must not be collapsed by a server-side active-tab
+    // rewrite. Only pure `headless:` / `headless-hydrated:` publications are persisted here.
     if (
       !this.getAvailableAuthoritativeWindow() &&
-      this.isHeadlessMobileSessionPublication(snapshot!.publicationEpoch)
+      this.isHeadlessMobileSessionPublication(snapshot!.publicationEpoch) &&
+      !snapshot!.publicationEpoch.includes(':headless-merge:')
     ) {
       this.persistHeadlessMobileSessionActiveTab(worktreeId, snapshot!, activatedTab)
     }

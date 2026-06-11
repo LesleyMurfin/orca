@@ -8261,6 +8261,47 @@ describe('OrcaRuntimeService', () => {
     expect(events).toHaveLength(0)
   })
 
+  it('does not persist active server-side for a `:headless-merge:` snapshot after renderer detach', async () => {
+    // Why: after a renderer detaches there is no authoritative window, so the
+    // `!getAvailableAuthoritativeWindow()` guard alone would let a merged
+    // (`:headless-merge:`) snapshot through. But a merged snapshot still carries
+    // renderer-owned tabs/groups; rewriting active server-side could collapse that
+    // mixed group state. Merged epochs must be excluded from the headless persist.
+    // (CodeRabbit review on stablyai/orca#5131.)
+    let nextPty = 0
+    const spawn = vi.fn().mockImplementation(async () => ({ id: `merge-pty-${++nextPty}` }))
+    const runtime = new OrcaRuntimeService(store)
+    runtime.setPtyController({
+      spawn,
+      write: () => true,
+      kill: () => true,
+      getForegroundProcess: async () => null
+    })
+
+    const LEAF_A = '77777777-7777-4777-8777-777777777777'
+    const LEAF_B = '88888888-8888-4888-8888-888888888888'
+    // tab-a (first-created) is the snapshot's active tab.
+    await runtime.createTerminal(`id:${TEST_WORKTREE_ID}`, { tabId: 'tab-a', leafId: LEAF_A })
+    await runtime.createTerminal(`id:${TEST_WORKTREE_ID}`, { tabId: 'tab-b', leafId: LEAF_B })
+
+    // Simulate a post-detach MERGED snapshot: no authoritative window, but the epoch
+    // now carries the `:headless-merge:` marker.
+    const current = runtime['mobileSessionTabsByWorktree'].get(TEST_WORKTREE_ID)!
+    runtime['mobileSessionTabsByWorktree'].set(TEST_WORKTREE_ID, {
+      ...current,
+      publicationEpoch: `renderer:headless-merge:${current.publicationEpoch}`
+    })
+
+    const events: RuntimeMobileSessionTabsResult[] = []
+    runtime.onMobileSessionTabsChanged((snapshot) => events.push(snapshot))
+
+    // Switch to the non-active tab. Without the merge exclusion this would persist
+    // (no window) and emit; the exclusion must suppress it for merged snapshots.
+    await runtime.activateMobileSessionTab(`id:${TEST_WORKTREE_ID}`, 'tab-b')
+
+    expect(events).toHaveLength(0)
+  })
+
   it('spawns fresh SSH terminals when hydrated persistence has no relay identity', async () => {
     const { runtimeStore } = makeRuntimeStoreWithWorkspaceSession(
       makeWorkspaceSessionWithHeadlessTerminal({
