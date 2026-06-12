@@ -2757,21 +2757,11 @@ export class OrcaRuntimeService {
       this.notifier?.focusEditorTab?.(tab.id, worktreeId)
     }
 
-    // Why: serve/headless snapshots have no renderer to re-publish the active tab
-    // after a focus change, so the host's in-memory active stays pinned to the
-    // last-created tab. Every onPtyData republish then snaps the remote client back
-    // to that stale tab. Persisting the activation here keeps subsequent republishes
-    // carrying the client's chosen tab. When an authoritative renderer window is
-    // attached it remains the source of truth and re-syncs the snapshot on focus, so
-    // we skip the persist and act only for genuinely headless/serve snapshots. We also
-    // exclude `:headless-merge:` epochs explicitly: after a renderer detaches there is no
-    // authoritative window (the guard above passes), but a merged snapshot still carries
-    // renderer-owned tabs/groups that must not be collapsed by a server-side active-tab
-    // rewrite. Only pure `headless:` / `headless-hydrated:` publications are persisted here.
+    // Why: serve/headless snapshots have no renderer to re-publish focus, but
+    // merged epochs can still contain renderer-owned group state.
     if (
       !this.getAvailableAuthoritativeWindow() &&
-      this.isHeadlessMobileSessionPublication(snapshot!.publicationEpoch) &&
-      !snapshot!.publicationEpoch.includes(':headless-merge:')
+      this.isPureHeadlessMobileSessionPublication(snapshot!.publicationEpoch)
     ) {
       this.persistHeadlessMobileSessionActiveTab(worktreeId, snapshot!, activatedTab)
     }
@@ -13024,10 +13014,15 @@ export class OrcaRuntimeService {
     )
   }
 
+  private isPureHeadlessMobileSessionPublication(publicationEpoch: string): boolean {
+    return (
+      publicationEpoch.startsWith('headless:') || publicationEpoch.startsWith('headless-hydrated:')
+    )
+  }
+
   private isHeadlessMobileSessionPublication(publicationEpoch: string): boolean {
     return (
-      publicationEpoch.startsWith('headless:') ||
-      publicationEpoch.startsWith('headless-hydrated:') ||
+      this.isPureHeadlessMobileSessionPublication(publicationEpoch) ||
       publicationEpoch.includes(':headless-merge:')
     )
   }

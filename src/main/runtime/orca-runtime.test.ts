@@ -8147,11 +8147,8 @@ describe('OrcaRuntimeService', () => {
   })
 
   it('keeps the activated headless tab active across PTY republishes (serve focus-jump regression)', async () => {
-    // Why: in `orca serve` (no renderer), activating a tab used to only call
-    // focusTerminal — a no-op for serve tabs — and never persisted the choice.
-    // The host's in-memory active stayed pinned to the last-created tab, so every
-    // onPtyData republish snapped the remote client back to that tab. This is the
-    // "pressing Enter jumps focus to the last terminal" bug.
+    // Why: in `orca serve`, focusTerminal has no renderer to persist the remote
+    // client's tab choice before PTY republishes.
     let nextPty = 0
     const spawn = vi.fn().mockImplementation(async () => ({ id: `headless-pty-${++nextPty}` }))
     const runtime = new OrcaRuntimeService(store)
@@ -8191,10 +8188,8 @@ describe('OrcaRuntimeService', () => {
       false
     )
 
-    // Running a command in the now-active tab emits an OSC title update, which
-    // republishes the session snapshot. Before the fix this re-emitted the stale
-    // active (tab-first) and snapped the client back; the client's chosen tab must
-    // survive every republish.
+    // PTY title updates republish snapshots, so the client's chosen tab must
+    // survive after activation.
     events.length = 0
     runtime.onPtyData('headless-pty-2', '\x1b]0;tab-other running\x07', 200)
 
@@ -8262,12 +8257,8 @@ describe('OrcaRuntimeService', () => {
   })
 
   it('does not persist active server-side for a `:headless-merge:` snapshot after renderer detach', async () => {
-    // Why: after a renderer detaches there is no authoritative window, so the
-    // `!getAvailableAuthoritativeWindow()` guard alone would let a merged
-    // (`:headless-merge:`) snapshot through. But a merged snapshot still carries
-    // renderer-owned tabs/groups; rewriting active server-side could collapse that
-    // mixed group state. Merged epochs must be excluded from the headless persist.
-    // (CodeRabbit review on stablyai/orca#5131.)
+    // Why: after renderer detach, merged snapshots have no authoritative window
+    // but still carry renderer-owned group state.
     let nextPty = 0
     const spawn = vi.fn().mockImplementation(async () => ({ id: `merge-pty-${++nextPty}` }))
     const runtime = new OrcaRuntimeService(store)
@@ -8284,8 +8275,7 @@ describe('OrcaRuntimeService', () => {
     await runtime.createTerminal(`id:${TEST_WORKTREE_ID}`, { tabId: 'tab-a', leafId: LEAF_A })
     await runtime.createTerminal(`id:${TEST_WORKTREE_ID}`, { tabId: 'tab-b', leafId: LEAF_B })
 
-    // Simulate a post-detach MERGED snapshot: no authoritative window, but the epoch
-    // now carries the `:headless-merge:` marker.
+    // Simulate a post-detach merged snapshot with no authoritative window.
     const current = runtime['mobileSessionTabsByWorktree'].get(TEST_WORKTREE_ID)!
     runtime['mobileSessionTabsByWorktree'].set(TEST_WORKTREE_ID, {
       ...current,
@@ -8295,8 +8285,7 @@ describe('OrcaRuntimeService', () => {
     const events: RuntimeMobileSessionTabsResult[] = []
     runtime.onMobileSessionTabsChanged((snapshot) => events.push(snapshot))
 
-    // Switch to the non-active tab. Without the merge exclusion this would persist
-    // (no window) and emit; the exclusion must suppress it for merged snapshots.
+    // The merge exclusion must suppress server-side active rewrites.
     await runtime.activateMobileSessionTab(`id:${TEST_WORKTREE_ID}`, 'tab-b')
 
     expect(events).toHaveLength(0)
