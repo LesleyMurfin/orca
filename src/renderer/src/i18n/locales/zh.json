@@ -8703,6 +8703,7 @@
           "AiVaultPanel": {
             "resumeCommandCopied": "Resume command copied",
             "valueCopied": "{{value0}} copied",
+            "valueCopyFailed": "无法复制 {{value0}}",
             "openWorkspaceBeforeResuming": "Open a workspace before resuming a session.",
             "localWorkspacesOnly": "Resume from history is only available in local workspaces.",
             "agentSessionQueued": "{{value0}} session queued",
@@ -8716,8 +8717,10 @@
             "transcriptsSkipped": "{{count}} transcript skipped",
             "noAgentSessionsFound": "No agent sessions found",
             "noSessionsMatchFilters": "No sessions match the current filters",
-            "sessionId": "Session ID",
-            "logPath": "Log path"
+            "sessionId": "会话 ID",
+            "logPath": "日志路径",
+            "agents": "智能体",
+            "sessionsShownCompact": "已显示 {{value0}} 个"
           },
           "AiVaultPanelControls": {
             "scanningSessions": "Scanning sessions",
@@ -8780,7 +8783,8 @@
             "hoursAgo": "{{value0}}h ago",
             "daysAgo": "{{value0}}d ago",
             "monthsAgo": "{{value0}}mo ago",
-            "yearsAgo": "{{value0}}y ago"
+            "yearsAgo": "{{value0}}y ago",
+            "sessionId": "会话 ID"
           },
           "AiVaultSessionRow": {
             "resumeAgentSession": "Resume {{value0}} session",
@@ -8792,7 +8796,12 @@
             "copySessionId": "Copy Session ID",
             "copyLogPath": "Copy Log Path",
             "messageCount": "{{value0}} msgs",
-            "tokenCount": "{{value0}} tok"
+            "tokenCount": "{{value0}} tok",
+            "toggleSessionDetails": "{{value0}} 会话详情",
+            "hideDetails": "隐藏详情",
+            "showDetails": "显示详情",
+            "moreSessionActions": "更多会话操作",
+            "moreActions": "更多操作"
           },
           "FileExplorerNameFilter": {
             "26fb73c6e3": "查找文件",

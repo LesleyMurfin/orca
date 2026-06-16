@@ -8703,11 +8703,14 @@
           "AiVaultPanel": {
             "resumeCommandCopied": "Resume command copied",
             "valueCopied": "{{value0}} copied",
+            "valueCopyFailed": "Unable to copy {{value0}}",
             "openWorkspaceBeforeResuming": "Open a workspace before resuming a session.",
             "localWorkspacesOnly": "Resume from history is only available in local workspaces.",
             "agentSessionQueued": "{{value0}} session queued",
             "sessionHistory": "Agent Session History",
+            "agents": "Agents",
             "shownRecent": "{{value0}} shown · {{value1}} recent",
+            "sessionsShownCompact": "{{value0}} shown",
             "resumePastSessions": "Resume past sessions",
             "refreshSessionHistory": "Refresh Session History",
             "searchSessions": "Search sessions",
@@ -8756,6 +8759,7 @@
             "usageValue": "{{value0}} msgs{{value1}}",
             "tokenSuffix": " · {{value0}} tok",
             "session": "Session",
+            "sessionId": "Session ID",
             "copyDetailValue": "Copy {{value0}}",
             "latestLog": "Latest log",
             "noReadablePreview": "No readable message preview in this transcript.",
@@ -8785,6 +8789,7 @@
           "AiVaultSessionRow": {
             "resumeAgentSession": "Resume {{value0}} session",
             "resumeInNewTab": "Resume in New Tab",
+            "toggleSessionDetails": "{{value0}} session details",
             "copyResumeCommand": "Copy Resume Command",
             "openLog": "Open Log",
             "revealLog": "Reveal Log",
@@ -8792,7 +8797,11 @@
             "copySessionId": "Copy Session ID",
             "copyLogPath": "Copy Log Path",
             "messageCount": "{{value0}} msgs",
-            "tokenCount": "{{value0}} tok"
+            "tokenCount": "{{value0}} tok",
+            "hideDetails": "Hide Details",
+            "showDetails": "Show Details",
+            "moreSessionActions": "More Session Actions",
+            "moreActions": "More Actions"
           },
           "FileExplorerNameFilter": {
             "26fb73c6e3": "Find files",
