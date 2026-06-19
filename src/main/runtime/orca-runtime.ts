@@ -6181,6 +6181,14 @@ export class OrcaRuntimeService {
     this.agentStatusOscProcessorsByPtyId.delete(ptyId)
     this.oscTitleScanTailByPtyId.delete(ptyId)
     this.clearAgentRowSnapshotsForPty(ptyId)
+    // Why: a Claude agent-team leader whose PTY exits naturally (agent finished,
+    // process died, renderer reload) must release its team + nested panes map.
+    // Previously only explicit closeTerminal evicted it, so natural exits leaked
+    // one team per never-reused teamId for the runtime's lifetime.
+    const exitedTeamLeaderHandle = this.handleByPtyId.get(ptyId)
+    if (exitedTeamLeaderHandle) {
+      this.claudeAgentTeams.removeTeamForLeaderHandle(exitedTeamLeaderHandle)
+    }
     // Layout state machine: clear `layouts` and `layoutQueues`. Any
     // already-queued applyLayout work for this ptyId will run, but every
     // applyLayout re-checks `layouts.has(ptyId)` (or fresh-subscribe) and
@@ -15925,6 +15933,9 @@ export class OrcaRuntimeService {
     this.clearAgentRowSnapshotsForPty(ptyId)
     const handle = this.handleByPtyId.get(ptyId)
     if (handle) {
+      // Why: pruning can remove a PTY without onPtyExit firing; release any agent
+      // team owned by this leader handle so it does not leak.
+      this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
       this.handleByPtyId.delete(ptyId)
       const record = this.handles.get(handle)
       if (record?.tabId.startsWith('pty:')) {
