@@ -20,6 +20,7 @@ import {
   hasCachedWindowsTerminalCapabilities
 } from '@/lib/windows-terminal-capabilities'
 import { shouldSeedCacheTimerOnInitialTitle } from './cache-timer-seeding'
+import { shouldProtectSplitCursorBursts } from './split-cursor-burst-protection'
 import type { PtyConnectionDeps } from './pty-connection-types'
 import { safeFit } from '@/lib/pane-manager/pane-tree-ops'
 import { getFitOverrideForPty, bindPanePtyId } from '@/lib/pane-manager/mobile-fit-overrides'
@@ -791,6 +792,19 @@ function containsCursorRestore(data: string): boolean {
   return hideIndex !== -1 && showIndex > hideIndex && containsCursorPositionSequence(data)
 }
 
+// Why: TUIs like claude/vim/htop hide the cursor with a bare `?25l` and a split
+// transport can end a chunk on the unmatched hide, painting a cursor-hidden gap
+// until the later `?25h`. Known limitation: a chunk that splits inside the 6-byte
+// `?25l` itself is not caught (xterm reassembles for display; rare write-ordering).
+function endsWithDanglingCursorHide(data: string): boolean {
+  const hideIndex = data.lastIndexOf(CURSOR_HIDE_SEQUENCE)
+  if (hideIndex === -1) {
+    return false
+  }
+  const showIndex = data.lastIndexOf(CURSOR_SHOW_SEQUENCE)
+  return hideIndex > showIndex
+}
+
 export function connectPanePty(
   pane: ManagedPane,
   manager: PaneManager,
@@ -817,6 +831,9 @@ export function connectPanePty(
   let reattachIdleAgentCursorResetTimer: ReturnType<typeof setTimeout> | null = null
   let synchronizedForegroundOutputActive = false
   let suppressSnapshotReplayPtyResize = false
+  // Why: true once a foreground chunk ended on an unmatched bare `?25l`, so the
+  // next chunk holds (or releases on its `?25h`) the cursor.
+  let bareCursorHideForegroundActive = false
   // Why: idle callbacks are registered before the deferred PTY output plumbing
   // exists. Start with the shared scheduler, then switch to the PTY writer
   // below so hidden-tab resets keep backlog-recovery callbacks and byte order.
@@ -1760,7 +1777,6 @@ export function connectPanePty(
     executionHostId
   })
   const shouldApplyNativeWindowsRewriteRefresh = isNativeWindowsConpty
-  const shouldProtectNativeWindowsSynchronizedOutput = isNativeWindowsConpty
 
   const restoredPtyIdForTransport =
     deps.restoredLeafId && deps.restoredPtyIdByLeafId
@@ -1772,6 +1788,12 @@ export function connectPanePty(
       : null) ?? (tab?.ptyId ? getRemoteRuntimePtyEnvironmentId(tab.ptyId) : null)
   const runtimeEnvironmentId =
     remoteRuntimeOwnerForTransport ?? getRuntimeEnvironmentIdForWorktree(state, deps.worktreeId)
+  // Why: defined after runtimeEnvironmentId so the remote signal is in scope.
+  // Genuinely Windows-only behavior stays keyed to isNativeWindowsConpty.
+  const protectSplitCursorBursts = shouldProtectSplitCursorBursts({
+    isNativeWindowsConpty,
+    runtimeEnvironmentId
+  })
   const localWindowsTerminalCapabilities = hasCachedWindowsTerminalCapabilities()
     ? getCachedWindowsTerminalCapabilities()
     : null
@@ -2755,26 +2777,37 @@ export function connectPanePty(
         shouldSnapshotHiddenCodexOutput &&
         (opts?.hiddenStartupRendererQuery === true || containsHiddenStartupRendererQuery(data))
       const synchronizedOutputStarted =
-        shouldProtectNativeWindowsSynchronizedOutput &&
-        foreground &&
-        containsSynchronizedOutputStart(data)
+        protectSplitCursorBursts && foreground && containsSynchronizedOutputStart(data)
       const synchronizedOutputEnded =
-        shouldProtectNativeWindowsSynchronizedOutput &&
-        foreground &&
-        containsSynchronizedOutputEnd(data)
+        protectSplitCursorBursts && foreground && containsSynchronizedOutputEnd(data)
       const synchronizedForegroundOutput =
-        shouldProtectNativeWindowsSynchronizedOutput &&
+        protectSplitCursorBursts &&
         foreground &&
         (synchronizedForegroundOutputActive || synchronizedOutputStarted || synchronizedOutputEnded)
       const nextSynchronizedForegroundOutputActive =
-        shouldProtectNativeWindowsSynchronizedOutput &&
+        protectSplitCursorBursts &&
         foreground &&
         shouldSynchronizedOutputRemainActive(data, synchronizedForegroundOutputActive)
-      // Why: xterm's DOM renderer draws the cursor as row content; Windows
-      // cursor-only restores need row invalidation even outside DEC 2026.
-      const nativeWindowsCursorRestore =
-        shouldProtectNativeWindowsSynchronizedOutput && foreground && containsCursorRestore(data)
+      // Why: xterm's DOM renderer draws the cursor as row content, so a
+      // cursor-only restore needs row invalidation even outside DEC 2026 — on
+      // both native-Windows ConPTY and remote-runtime split transports.
+      const cursorRestoreNeedsRowInvalidation =
+        protectSplitCursorBursts && foreground && containsCursorRestore(data)
       synchronizedForegroundOutputActive = nextSynchronizedForegroundOutputActive
+      // Why: hold a foreground chunk that ends on an unmatched bare `?25l`;
+      // release once the matching `?25h` arrives. Skipped while the DEC-2026 hold
+      // is already engaged so the two paths don't contend.
+      const bareCursorSplitProtection = protectSplitCursorBursts && foreground
+      const bareCursorHideEnding =
+        bareCursorSplitProtection &&
+        !synchronizedForegroundOutput &&
+        endsWithDanglingCursorHide(data)
+      const bareCursorHideShow =
+        bareCursorSplitProtection &&
+        bareCursorHideForegroundActive &&
+        !bareCursorHideEnding &&
+        data.includes(CURSOR_SHOW_SEQUENCE)
+      bareCursorHideForegroundActive = bareCursorHideEnding
       if (hiddenMode2031ScanTail) {
         respondToSkippedMode2031Subscribe(data)
       }
@@ -2787,12 +2820,16 @@ export function connectPanePty(
         forceForegroundRefresh:
           (foreground || parseHiddenStartupOutput) &&
           (synchronizedForegroundOutput ||
-            nativeWindowsCursorRestore ||
+            cursorRestoreNeedsRowInvalidation ||
             shouldForceForegroundRenderRefresh(data)),
-        followupForegroundRefresh: nativeWindowsCursorRestore,
-        stripTransientCursorShows: shouldProtectNativeWindowsSynchronizedOutput && foreground,
-        coalesceForeground: synchronizedForegroundOutput && synchronizedOutputEnded,
-        holdForeground: synchronizedForegroundOutput && nextSynchronizedForegroundOutputActive
+        followupForegroundRefresh: cursorRestoreNeedsRowInvalidation,
+        stripTransientCursorShows: protectSplitCursorBursts && foreground,
+        coalesceForeground:
+          (synchronizedForegroundOutput && synchronizedOutputEnded) || bareCursorHideShow,
+        holdForeground:
+          (synchronizedForegroundOutput && nextSynchronizedForegroundOutputActive) ||
+          bareCursorHideEnding,
+        holdForegroundUntilCursorShow: bareCursorHideEnding
       })
     }
 
