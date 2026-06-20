@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
 import { lstat, mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
-import { tmpdir } from 'os'
+import { homedir, tmpdir } from 'os'
 import { join } from 'path'
 import { ipcMain } from 'electron'
 import type {
@@ -57,7 +57,11 @@ import {
   unregisterSshFilesystemProvider
 } from '../providers/ssh-filesystem-dispatch'
 import { registerSshGitProvider, unregisterSshGitProvider } from '../providers/ssh-git-dispatch'
-import { DEFAULT_REPO_BADGE_COLOR, getDefaultWorkspaceSession } from '../../shared/constants'
+import {
+  DEFAULT_REPO_BADGE_COLOR,
+  FLOATING_TERMINAL_WORKTREE_ID,
+  getDefaultWorkspaceSession
+} from '../../shared/constants'
 import { advertisedUrlWatcher } from '../ports/advertised-url-watcher'
 import { makePaneKey } from '../../shared/stable-pane-id'
 import { FOLDER_WORKSPACE_INSTANCE_SEPARATOR } from '../../shared/worktree-id'
@@ -1825,6 +1829,32 @@ describe('OrcaRuntimeService', () => {
     const runtime = new OrcaRuntimeService(store)
 
     await expect(runtime.showManagedWorktree('active')).rejects.toThrow('selector_not_found')
+  })
+
+  it('resolves the floating-terminal sentinel to a virtual repo-less session at home', async () => {
+    const runtime = new OrcaRuntimeService(store)
+
+    const bare = await runtime.showManagedWorktree(FLOATING_TERMINAL_WORKTREE_ID)
+    expect(bare).toMatchObject({
+      id: FLOATING_TERMINAL_WORKTREE_ID,
+      repoId: '',
+      path: homedir()
+    })
+    expect(bare.git.path).toBe(homedir())
+
+    const prefixed = await runtime.showManagedWorktree(`id:${FLOATING_TERMINAL_WORKTREE_ID}`)
+    expect(prefixed).toMatchObject({
+      id: FLOATING_TERMINAL_WORKTREE_ID,
+      path: homedir()
+    })
+  })
+
+  it('still throws selector_not_found for an unknown id selector', async () => {
+    const runtime = new OrcaRuntimeService(store)
+
+    await expect(runtime.showManagedWorktree('id:does-not-exist')).rejects.toThrow(
+      'selector_not_found'
+    )
   })
 
   it('does not reuse stale in-flight worktree scans after creating a worktree', async () => {
