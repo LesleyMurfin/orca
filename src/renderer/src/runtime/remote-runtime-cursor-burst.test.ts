@@ -37,14 +37,14 @@
  *    onData once per frame, NO cross-frame buffering — multiplexer
  *    handleBinary, lines 330-336) so the no-buffering behavior under test is the
  *    real one.
- *  - The gate flag-decision from `writePtyOutputToXterm` (pty-connection.ts,
- *    lines ~2473-2511) is an un-exported closure inside `connectPanePty`, which
- *    needs the full pane/manager/store graph to build. We replicate that exact
- *    flag expression in `computeRemoteProtectionFlags`, parameterized by whether
- *    the bare-`?25l` cross-frame hold is wired. The DEC-2026 branches are kept
- *    identical to the source; the captured claude/vim/htop byte streams contain
- *    ZERO DEC-2026 markers (only bare `?25l`/`?25h`), so the bare path is the one
- *    that decides the bug — see CAPTURE-FINDINGS.md.
+ * REAL (was replicated, now wired to production):
+ *  - The gate flag-decision from `writePtyOutputToXterm`. It is now the exported
+ *    pure `computeSplitCursorBurstFlags` (split-cursor-burst-flags.ts), so this
+ *    test drives the SAME logic the renderer runs. `protectSplitCursorBursts`
+ *    selects the repo state under test (false = pre-fix, remote-runtime PTYs
+ *    outside the gate; true = the fix that adds them). The captured claude/vim/htop
+ *    byte streams contain ZERO DEC-2026 markers (only bare `?25l`/`?25h`), so the
+ *    bare path is the one that decides the bug — see CAPTURE-FINDINGS.md.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -52,6 +52,7 @@ import {
   decodeTerminalStreamFrame,
   decodeTerminalStreamText
 } from '../../../shared/terminal-stream-protocol'
+import { computeSplitCursorBurstFlags } from '../components/terminal-pane/split-cursor-burst-flags'
 import { RpcDispatcher } from '../../../main/runtime/rpc/dispatcher'
 import { TERMINAL_METHODS } from '../../../main/runtime/rpc/methods/terminal'
 import type { OrcaRuntimeService } from '../../../main/runtime/orca-runtime'
@@ -171,19 +172,17 @@ function deliverFramesAsMultiplexerWould(
 }
 
 /**
- * Replicates the protection flag-decision from pty-connection.ts
- * `writePtyOutputToXterm` for a REMOTE-RUNTIME foreground chunk
- * (`shouldProtectSplitCursorBursts === true`). It mirrors the real source's two
- * protection paths:
- *  - The DEC-2026 synchronized-output hold (unchanged from the native-Windows
- *    path). The captured TUIs emit NO DEC-2026, so it stays inert here.
- *  - The bare-cursor split protection — hold a chunk that ends on an unmatched
- *    `\e[?25l` (`bareCursorHideEnding` -> holdForeground) and release it when the
- *    matching `\e[?25h` arrives (`bareCursorHideShow` -> coalesceForeground).
- * `bareCursorSplitFixWired` selects the repo state under test:
- *  - false = pre-fix v1.4.88 (protection absent): a bare dangling hide never
- *            holds -> frame A is shown cursor-hidden (the bug).
- *  - true  = with the bare-cursor split fix wired: the hide holds until the show.
+ * Drives the REAL production flag-decision (`computeSplitCursorBurstFlags`) for a
+ * REMOTE-RUNTIME foreground chunk and maps its outputs onto the scheduler write
+ * opts exactly as `writePtyOutputToXterm` (pty-connection.ts) does. This is the
+ * same logic the renderer runs — no replica.
+ * `bareCursorSplitFixWired` selects the repo state under test via the production
+ * `protectSplitCursorBursts` gate:
+ *  - false = pre-fix v1.4.88: remote-runtime PTYs sit OUTSIDE the protect gate,
+ *            so a bare dangling hide never holds -> frame A is shown cursor-hidden.
+ *  - true  = the fix that adds remote-runtime PTYs to the gate: the hide holds
+ *            until the matching show.
+ * Advances the caller-owned `state` the same way the production caller does.
  */
 function computeRemoteProtectionFlags(
   data: string,
@@ -195,44 +194,34 @@ function computeRemoteProtectionFlags(
   stripTransientCursorShows: boolean
   coalesceForeground: boolean
   holdForeground: boolean
+  holdForegroundUntilCursorShow: boolean
 } {
-  // DEC-2026 synchronized output (unchanged from the source).
-  const synchronizedOutputStarted = data.includes('\x1b[?2026h')
-  const synchronizedOutputEnded = data.includes('\x1b[?2026l')
-  const synchronizedForegroundOutput =
-    state.synchronizedForegroundOutputActive || synchronizedOutputStarted || synchronizedOutputEnded
-  const lastStart = data.lastIndexOf('\x1b[?2026h')
-  const lastEnd = data.lastIndexOf('\x1b[?2026l')
-  const nextSynchronizedForegroundOutputActive =
-    lastStart === -1 && lastEnd === -1
-      ? state.synchronizedForegroundOutputActive
-      : lastStart > lastEnd
+  const flags = computeSplitCursorBurstFlags(data, {
+    protectSplitCursorBursts: bareCursorSplitFixWired,
+    foreground: true,
+    state: {
+      synchronizedForegroundOutputActive: state.synchronizedForegroundOutputActive,
+      bareCursorHideForegroundActive: state.bareCursorHideForegroundActive
+    }
+  })
 
-  const hideIndex = data.indexOf(CURSOR_HIDE)
-  const lastShowIndex = data.lastIndexOf(CURSOR_SHOW)
-  const containsCursorRestore = hideIndex !== -1 && lastShowIndex > hideIndex
+  // Advance the caller-owned state exactly as writePtyOutputToXterm does.
+  state.synchronizedForegroundOutputActive = flags.nextSynchronizedForegroundOutputActive
+  state.bareCursorHideForegroundActive = flags.bareCursorHideEnding
 
-  // Bare cursor split (mirrors pty-connection.ts bareCursorHide* flags).
-  const endsWithDanglingCursorHide = data.lastIndexOf(CURSOR_HIDE) > data.lastIndexOf(CURSOR_SHOW)
-  const bareCursorHideEnding =
-    bareCursorSplitFixWired && !synchronizedForegroundOutput && endsWithDanglingCursorHide
-  const bareCursorHideShow =
-    bareCursorSplitFixWired &&
-    state.bareCursorHideForegroundActive &&
-    !bareCursorHideEnding &&
-    data.includes(CURSOR_SHOW)
-
-  state.synchronizedForegroundOutputActive = nextSynchronizedForegroundOutputActive
-  state.bareCursorHideForegroundActive = bareCursorHideEnding
-
+  // Map the pure flags onto scheduler opts, mirroring the production caller.
   return {
-    forceForegroundRefresh: synchronizedForegroundOutput || containsCursorRestore,
-    followupForegroundRefresh: containsCursorRestore,
-    stripTransientCursorShows: true,
+    forceForegroundRefresh:
+      flags.synchronizedForegroundOutput || flags.cursorRestoreNeedsRowInvalidation,
+    followupForegroundRefresh: flags.cursorRestoreNeedsRowInvalidation,
+    stripTransientCursorShows: bareCursorSplitFixWired,
     coalesceForeground:
-      (synchronizedForegroundOutput && synchronizedOutputEnded) || bareCursorHideShow,
+      (flags.synchronizedForegroundOutput && flags.synchronizedOutputEnded) ||
+      flags.bareCursorHideShow,
     holdForeground:
-      (synchronizedForegroundOutput && nextSynchronizedForegroundOutputActive) || bareCursorHideEnding
+      (flags.synchronizedForegroundOutput && flags.nextSynchronizedForegroundOutputActive) ||
+      flags.bareCursorHideEnding,
+    holdForegroundUntilCursorShow: flags.bareCursorHideEnding
   }
 }
 

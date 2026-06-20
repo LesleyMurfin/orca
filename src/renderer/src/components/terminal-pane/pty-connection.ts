@@ -21,6 +21,7 @@ import {
 } from '@/lib/windows-terminal-capabilities'
 import { shouldSeedCacheTimerOnInitialTitle } from './cache-timer-seeding'
 import { shouldProtectSplitCursorBursts } from './split-cursor-burst-protection'
+import { computeSplitCursorBurstFlags } from './split-cursor-burst-flags'
 import type { PtyConnectionDeps } from './pty-connection-types'
 import { safeFit } from '@/lib/pane-manager/pane-tree-ops'
 import { getFitOverrideForPty, bindPanePtyId } from '@/lib/pane-manager/mobile-fit-overrides'
@@ -136,8 +137,6 @@ const HIDDEN_OUTPUT_RESTORE_PENDING_CHARS = 512 * 1024
 const HIDDEN_OUTPUT_RESTORE_DEFERRED_RETRY_MS = 50
 const HIDDEN_OUTPUT_RESTORE_DEFERRED_RETRY_MAX = 3
 const TERMINAL_RENDERER_RISK_SCAN_TAIL_CHARS = 256
-const CURSOR_SHOW_SEQUENCE = '\x1b[?25h'
-const CURSOR_HIDE_SEQUENCE = '\x1b[?25l'
 const REATTACH_IDLE_AGENT_CURSOR_RESET_DELAY_MS = 250
 const FOREGROUND_THROUGHPUT_IMMEDIATE_CHARS = 2048
 const FOREGROUND_INTERACTIVE_REDRAW_CHARS = 128 * 1024
@@ -748,61 +747,6 @@ function shouldWritePtyOutputForeground(isPaneVisible: boolean): boolean {
   // backgrounded. Treat hidden documents like background tabs so Chromium
   // timer throttling cannot pin terminal writes on the renderer foreground path.
   return document.visibilityState === 'visible'
-}
-
-function containsSynchronizedOutputStart(data: string): boolean {
-  return data.includes('\x1b[?2026h')
-}
-
-function containsSynchronizedOutputEnd(data: string): boolean {
-  return data.includes('\x1b[?2026l')
-}
-
-function shouldSynchronizedOutputRemainActive(data: string, wasActive: boolean): boolean {
-  const lastStartIndex = data.lastIndexOf('\x1b[?2026h')
-  const lastEndIndex = data.lastIndexOf('\x1b[?2026l')
-  if (lastStartIndex === -1 && lastEndIndex === -1) {
-    return wasActive
-  }
-  return lastStartIndex > lastEndIndex
-}
-
-function containsCursorPositionSequence(data: string): boolean {
-  let offset = data.indexOf('\x1b[')
-  while (offset !== -1) {
-    let index = offset + 2
-    while (index < data.length) {
-      const char = data[index]
-      if (char === 'G' || char === 'H' || char === 'f') {
-        return true
-      }
-      if ((char < '0' || char > '9') && char !== ';') {
-        break
-      }
-      index += 1
-    }
-    offset = data.indexOf('\x1b[', offset + 2)
-  }
-  return false
-}
-
-function containsCursorRestore(data: string): boolean {
-  const hideIndex = data.indexOf(CURSOR_HIDE_SEQUENCE)
-  const showIndex = data.lastIndexOf(CURSOR_SHOW_SEQUENCE)
-  return hideIndex !== -1 && showIndex > hideIndex && containsCursorPositionSequence(data)
-}
-
-// Why: TUIs like claude/vim/htop hide the cursor with a bare `?25l` and a split
-// transport can end a chunk on the unmatched hide, painting a cursor-hidden gap
-// until the later `?25h`. Known limitation: a chunk that splits inside the 6-byte
-// `?25l` itself is not caught (xterm reassembles for display; rare write-ordering).
-function endsWithDanglingCursorHide(data: string): boolean {
-  const hideIndex = data.lastIndexOf(CURSOR_HIDE_SEQUENCE)
-  if (hideIndex === -1) {
-    return false
-  }
-  const showIndex = data.lastIndexOf(CURSOR_SHOW_SEQUENCE)
-  return hideIndex > showIndex
 }
 
 export function connectPanePty(
@@ -2776,37 +2720,19 @@ export function connectPanePty(
         canUseHiddenOutputSnapshot(transport.getPtyId()) &&
         shouldSnapshotHiddenCodexOutput &&
         (opts?.hiddenStartupRendererQuery === true || containsHiddenStartupRendererQuery(data))
-      const synchronizedOutputStarted =
-        protectSplitCursorBursts && foreground && containsSynchronizedOutputStart(data)
-      const synchronizedOutputEnded =
-        protectSplitCursorBursts && foreground && containsSynchronizedOutputEnd(data)
-      const synchronizedForegroundOutput =
-        protectSplitCursorBursts &&
-        foreground &&
-        (synchronizedForegroundOutputActive || synchronizedOutputStarted || synchronizedOutputEnded)
-      const nextSynchronizedForegroundOutputActive =
-        protectSplitCursorBursts &&
-        foreground &&
-        shouldSynchronizedOutputRemainActive(data, synchronizedForegroundOutputActive)
-      // Why: xterm's DOM renderer draws the cursor as row content, so a
-      // cursor-only restore needs row invalidation even outside DEC 2026 — on
-      // both native-Windows ConPTY and remote-runtime split transports.
-      const cursorRestoreNeedsRowInvalidation =
-        protectSplitCursorBursts && foreground && containsCursorRestore(data)
+      const {
+        synchronizedForegroundOutput,
+        cursorRestoreNeedsRowInvalidation,
+        synchronizedOutputEnded,
+        bareCursorHideShow,
+        bareCursorHideEnding,
+        nextSynchronizedForegroundOutputActive
+      } = computeSplitCursorBurstFlags(data, {
+        protectSplitCursorBursts,
+        foreground,
+        state: { synchronizedForegroundOutputActive, bareCursorHideForegroundActive }
+      })
       synchronizedForegroundOutputActive = nextSynchronizedForegroundOutputActive
-      // Why: hold a foreground chunk that ends on an unmatched bare `?25l`;
-      // release once the matching `?25h` arrives. Skipped while the DEC-2026 hold
-      // is already engaged so the two paths don't contend.
-      const bareCursorSplitProtection = protectSplitCursorBursts && foreground
-      const bareCursorHideEnding =
-        bareCursorSplitProtection &&
-        !synchronizedForegroundOutput &&
-        endsWithDanglingCursorHide(data)
-      const bareCursorHideShow =
-        bareCursorSplitProtection &&
-        bareCursorHideForegroundActive &&
-        !bareCursorHideEnding &&
-        data.includes(CURSOR_SHOW_SEQUENCE)
       bareCursorHideForegroundActive = bareCursorHideEnding
       if (hiddenMode2031ScanTail) {
         respondToSkippedMode2031Subscribe(data)
