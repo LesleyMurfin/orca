@@ -442,6 +442,145 @@ describe('pane terminal output scheduler', () => {
     ])
   })
 
+  it('holds a bare ?25l split across frames so a remote terminal never paints the hidden cursor', async () => {
+    // Bare-cursor-split regression: claude/vim/htop emit bare `?25l`/`?25h` with NO
+    // DEC-2026 wrapper (byte capture 2026-06-20). When a remote-runtime chunk
+    // ends on an unmatched `?25l`, pty-connection sets holdForeground so the
+    // cursor-hidden frame is not painted alone; the matching `?25h` releases it
+    // via coalesceForeground. This proves the hidden frame never paints first.
+    vi.useFakeTimers()
+    const { writeTerminalOutput } = await loadScheduler()
+    const terminal = createTerminal()
+
+    // Frame 1: repaint that ends with the cursor hidden (dangling `?25l`).
+    writeTerminalOutput(terminal, '\x1b[?25h\x1b[?25l\x1b[5;1Hrepaint', {
+      foreground: true,
+      latencySensitive: true,
+      holdForeground: true
+    })
+
+    // The hidden-cursor frame must not paint on its own.
+    vi.advanceTimersByTime(0)
+    expect(terminal.write).not.toHaveBeenCalled()
+
+    // Frame 2: the matching `?25h` arrives; release the hold.
+    writeTerminalOutput(terminal, '\x1b[?25h', {
+      foreground: true,
+      latencySensitive: true,
+      coalesceForeground: true
+    })
+
+    vi.advanceTimersByTime(16)
+    vi.runOnlyPendingTimers()
+
+    expect(terminal.write).toHaveBeenCalledTimes(1)
+    expect(terminal.write).toHaveBeenCalledWith(
+      '\x1b[?25h\x1b[?25l\x1b[5;1Hrepaint\x1b[?25h',
+      expect.any(Function)
+    )
+  })
+
+  it('preserves the real cursor show when a held bare ?25l split is stripped (remote prod path)', async () => {
+    // Remote-runtime terminals also pass stripTransientCursorShows: true. The
+    // leading transient `?25h` (immediately cancelled by `?25l`) is stripped,
+    // but the final `?25h` that actually restores the cursor must survive so the
+    // joined frame ends with the cursor visible, never hidden.
+    vi.useFakeTimers()
+    const { writeTerminalOutput } = await loadScheduler()
+    const terminal = createTerminal()
+
+    writeTerminalOutput(terminal, '\x1b[?25h\x1b[?25l\x1b[5;1Hrepaint', {
+      foreground: true,
+      latencySensitive: true,
+      stripTransientCursorShows: true,
+      holdForeground: true
+    })
+    writeTerminalOutput(terminal, '\x1b[?25h', {
+      foreground: true,
+      latencySensitive: true,
+      stripTransientCursorShows: true,
+      coalesceForeground: true
+    })
+
+    vi.advanceTimersByTime(16)
+    vi.runOnlyPendingTimers()
+
+    expect(terminal.write).toHaveBeenCalledTimes(1)
+    expect(terminal.write).toHaveBeenCalledWith(
+      '\x1b[?25l\x1b[5;1Hrepaint\x1b[?25h',
+      expect.any(Function)
+    )
+  })
+
+  it('releases a held bare ?25l on the safety timer so a hide-only TUI cannot stall', async () => {
+    // The matching `?25h` may never come (cursor legitimately stays hidden); the
+    // bounded hold-safety timer must still paint so input is never stranded.
+    vi.useFakeTimers()
+    const { writeTerminalOutput } = await loadScheduler()
+    const terminal = createTerminal()
+
+    writeTerminalOutput(terminal, '\x1b[?25l\x1b[5;1Hredraw', {
+      foreground: true,
+      latencySensitive: true,
+      holdForeground: true
+    })
+
+    vi.advanceTimersByTime(0)
+    expect(terminal.write).not.toHaveBeenCalled()
+
+    // Latency-sensitive hold-safety fallback (32ms) fires with no `?25h`.
+    vi.advanceTimersByTime(32)
+    vi.runOnlyPendingTimers()
+
+    expect(terminal.write).toHaveBeenCalledWith('\x1b[?25l\x1b[5;1Hredraw', expect.any(Function))
+  })
+
+  it('extends a held bare ?25l across an intermediate cursor-free redraw frame (3-frame split)', async () => {
+    // A >=2-frame gap re-opens the bug: frame 1 ends on a dangling `?25l`, frame
+    // 2 is a pure redraw with NO cursor codes, frame 3 carries the matching
+    // `?25h`. holdForegroundUntilCursorShow must keep the hold across frame 2 so
+    // the held data never drains cursor-hidden before the show arrives.
+    vi.useFakeTimers()
+    const { writeTerminalOutput } = await loadScheduler()
+    const terminal = createTerminal()
+
+    writeTerminalOutput(terminal, '\x1b[?25l\x1b[5;1Hrepaint', {
+      foreground: true,
+      latencySensitive: true,
+      holdForeground: true,
+      holdForegroundUntilCursorShow: true
+    })
+
+    vi.advanceTimersByTime(0)
+    expect(terminal.write).not.toHaveBeenCalled()
+
+    // Frame 2: an intermediate redraw with neither `?25l` nor `?25h`. Pre-fix
+    // this released the hold and drained cursor-hidden; it must now extend it.
+    writeTerminalOutput(terminal, '\x1b[6;1Hmore output', {
+      foreground: true,
+      latencySensitive: true
+    })
+
+    vi.advanceTimersByTime(0)
+    expect(terminal.write).not.toHaveBeenCalled()
+
+    // Frame 3: the matching `?25h` finally arrives and releases the hold.
+    writeTerminalOutput(terminal, '\x1b[?25h', {
+      foreground: true,
+      latencySensitive: true,
+      coalesceForeground: true
+    })
+
+    vi.advanceTimersByTime(16)
+    vi.runOnlyPendingTimers()
+
+    expect(terminal.write).toHaveBeenCalledTimes(1)
+    expect(terminal.write).toHaveBeenCalledWith(
+      '\x1b[?25l\x1b[5;1Hrepaint\x1b[6;1Hmore output\x1b[?25h',
+      expect.any(Function)
+    )
+  })
+
   it('keeps transient cursor shows unless the caller opts into stripping', async () => {
     vi.useFakeTimers()
     const { writeTerminalOutput } = await loadScheduler()

@@ -23,6 +23,7 @@ type WriteTerminalOutputOptions = {
   stripTransientCursorShows?: boolean
   coalesceForeground?: boolean
   holdForeground?: boolean
+  holdForegroundUntilCursorShow?: boolean
 }
 
 type QueueChunk = {
@@ -51,6 +52,7 @@ type QueueEntry = {
   backgroundBacklogDropped: boolean
   highPriority: boolean
   foregroundHold: boolean
+  bareCursorHideHeldUntilShow: boolean
   foregroundHoldSafetyDelayMs: number
   foregroundCoalesce: boolean
   foregroundCoalesceDelayMs: number
@@ -242,6 +244,7 @@ function createQueueEntry(
     backgroundBacklogDropped: false,
     highPriority: true,
     foregroundHold: false,
+    bareCursorHideHeldUntilShow: false,
     foregroundHoldSafetyDelayMs: FOREGROUND_HOLD_SAFETY_DELAY_MS,
     foregroundCoalesce: false,
     foregroundCoalesceDelayMs: FOREGROUND_COALESCE_DELAY_MS,
@@ -273,6 +276,7 @@ function scheduleForegroundHoldSafety(entry: QueueEntry): void {
   entry.foregroundHoldSafetyTimer = setTimeout(() => {
     entry.foregroundHoldSafetyTimer = null
     entry.foregroundHold = false
+    entry.bareCursorHideHeldUntilShow = false
     clearForegroundCoalesce(entry)
     if (queuedByTerminal.has(entry.terminal)) {
       scheduleDrain(0)
@@ -565,6 +569,7 @@ function replaceBacklogWithWarning(entry: QueueEntry): void {
   entry.backgroundBacklogDropped = true
   entry.highPriority = true
   entry.foregroundHold = false
+  entry.bareCursorHideHeldUntilShow = false
   if (debugEnabled && shouldNotify) {
     debugState.droppedBacklogCount++
   }
@@ -676,6 +681,7 @@ function drainQueuedOutput(): void {
       queuedByTerminal.set(entry.terminal, entry)
     } else {
       entry.highPriority = false
+      entry.bareCursorHideHeldUntilShow = false
       clearForegroundCoalesce(entry)
       clearForegroundHoldSafety(entry)
     }
@@ -735,12 +741,19 @@ export function writeTerminalOutput(
           queued.foregroundHoldSafetyDelayMs = FOREGROUND_HOLD_SAFETY_DELAY_MS
         }
         queued.foregroundHold = true
+        // Why: a bare `?25l` can be split from its `?25h` by intermediate redraw
+        // frames; persist the intent so those cursor-free frames extend the hold
+        // instead of draining the entry cursor-hidden.
+        if (options.holdForegroundUntilCursorShow === true) {
+          queued.bareCursorHideHeldUntilShow = true
+        }
         clearForegroundCoalesce(queued)
         scheduleForegroundHoldSafety(queued)
         return
       }
       if (options.coalesceForeground || queued.foregroundCoalesce) {
         queued.foregroundHold = false
+        queued.bareCursorHideHeldUntilShow = false
         clearForegroundHoldSafety(queued)
         const shouldShortenCoalesceForLatencySensitiveForeground = options.latencySensitive === true
         if (shouldShortenCoalesceForLatencySensitiveForeground) {
@@ -765,6 +778,15 @@ export function writeTerminalOutput(
         scheduleForegroundCoalesceRelease(queued, {
           rescheduleEarlier: shouldShortenCoalesceForLatencySensitiveForeground
         })
+        return
+      }
+      if (queued.bareCursorHideHeldUntilShow) {
+        // Why: a cursor-free redraw between the dangling `?25l` and its `?25h`
+        // must keep the hold so the entry never drains cursor-hidden; the matching
+        // `?25h` (coalesceForeground) or the safety timer releases it.
+        queued.foregroundHold = true
+        clearForegroundCoalesce(queued)
+        scheduleForegroundHoldSafety(queued)
         return
       }
       queued.foregroundHold = false
@@ -929,6 +951,7 @@ export function flushTerminalOutput(
     scheduleDrain(0)
   } else {
     entry.highPriority = false
+    entry.bareCursorHideHeldUntilShow = false
     clearForegroundCoalesce(entry)
     clearForegroundHoldSafety(entry)
   }
