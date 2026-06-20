@@ -785,13 +785,74 @@ describe('TabBar PowerShell launch wiring', () => {
       onTogglePaneExpand: () => {}
     })
 
-    expect(
-      findDropdownMenuItemByText(expandNode(element), 'New Terminal: PowerShell')
-    ).toBeNull()
-    expect(
-      findDropdownMenuItemByText(expandNode(element), 'New Terminal: CMD Prompt')
-    ).toBeNull()
+    expect(findDropdownMenuItemByText(expandNode(element), 'New Terminal: PowerShell')).toBeNull()
+    expect(findDropdownMenuItemByText(expandNode(element), 'New Terminal: CMD Prompt')).toBeNull()
     expect(findDropdownMenuItemByText(expandNode(element), 'New Terminal: WSL')).toBeNull()
     expect(findDropdownMenuItemByText(expandNode(element), 'New Terminal')).not.toBeNull()
+  })
+
+  it('keeps local Windows shell rows for a win32 host runtime with an active environment (#5519)', async () => {
+    // Bug A regression guard: the runtimeHostIsNonWindows suppression (added for the
+    // Linux serve case) must NOT fire when the active runtime reports hostPlatform
+    // 'win32'. PR #5519 introduced LOCAL Windows-WSL project runtimes, which set
+    // activeRuntimeEnvironmentId while still running PTYs on the Windows host, so the
+    // PowerShell/CMD/WSL rows must survive. Without the win32 carve-out this test
+    // fails because the rows would be suppressed exactly like the serve-runtime case.
+    vi.stubGlobal('navigator', { userAgent: 'Windows' })
+    vi.stubGlobal('__ORCA_WEB_CLIENT__', false)
+    vi.stubGlobal('window', {
+      api: {
+        wsl: {
+          isAvailable: vi.fn().mockResolvedValue(true),
+          listDistros: vi.fn().mockResolvedValue(['Ubuntu'])
+        },
+        pwsh: { isAvailable: vi.fn().mockResolvedValue(false) },
+        gitBash: { isAvailable: vi.fn().mockResolvedValue(false) },
+        runtime: {
+          getStatus: vi.fn().mockResolvedValue({ hostPlatform: 'win32', wslAvailable: true })
+        }
+      }
+    })
+    appStoreSnapshot.activeRuntimeEnvironmentId = 'local-win-wsl-env-1'
+    const capabilities = await import('@/lib/windows-terminal-capabilities')
+    await capabilities.loadWindowsTerminalCapabilities({
+      force: true,
+      ownerKey: 'runtime:local-win-wsl-env-1'
+    })
+
+    const tabBarModule = await import('./TabBar')
+    const candidate = tabBarModule.default ?? tabBarModule
+    const TabBar =
+      typeof candidate === 'function'
+        ? candidate
+        : typeof (candidate as { type?: unknown }).type === 'function'
+          ? (candidate as { type: (props: Record<string, unknown>) => unknown }).type
+          : null
+    expect(TabBar).not.toBeNull()
+
+    const element = TabBar!({
+      tabs: [],
+      activeTabId: null,
+      worktreeId: 'wt-1',
+      expandedPaneByTabId: {},
+      onActivate: () => {},
+      onClose: () => {},
+      onCloseOthers: () => {},
+      onCloseToRight: () => {},
+      onNewTerminalTab: () => {},
+      onNewTerminalWithShell: vi.fn(),
+      onNewBrowserTab: () => {},
+      onSetCustomTitle: () => {},
+      onSetTabColor: () => {},
+      onTogglePaneExpand: () => {}
+    })
+
+    expect(
+      findDropdownMenuItemByText(expandNode(element), 'New Terminal: PowerShell')
+    ).not.toBeNull()
+    expect(
+      findDropdownMenuItemByText(expandNode(element), 'New Terminal: CMD Prompt')
+    ).not.toBeNull()
+    expect(findDropdownMenuItemByText(expandNode(element), 'New Terminal: WSL')).not.toBeNull()
   })
 })
