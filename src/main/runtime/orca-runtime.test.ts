@@ -11317,6 +11317,150 @@ describe('OrcaRuntimeService', () => {
     expect(closeSessionTab).toHaveBeenCalledWith('browser-unified-1', TEST_WORKTREE_ID)
   })
 
+  // Bug B (peer-review gap): the floating-terminal sentinel
+  // (global-floating-terminal) must be handled CONSISTENTLY by the tab
+  // activate/close paths and the create/store path, so a paired remote client
+  // never sees selector_not_found / tab_not_found tearing down floating tabs.
+  //
+  // activateMobileSessionTab / closeMobileSessionTab resolve the worktree via
+  //   getExplicitWorktreeIdSelector(selector) ?? (await resolveWorktreeSelector(selector)).id
+  // For `id:global-floating-terminal` the fast-path returns the bare sentinel and
+  // short-circuits the `??` BEFORE resolveWorktreeSelector, so the snapshot is
+  // looked up in mobileSessionTabsByWorktree under exactly the key the create path
+  // stores it under (mobileSessionTabs[].worktree === sentinel). The two tests
+  // below exercise those real public paths end-to-end; they fail if either the
+  // fast-path key or the resolveWorktreeSelector sentinel branch (added by the
+  // Bug-B fix) stops yielding the sentinel id, because the lookup key would
+  // diverge from the storage key and the tab would not be found.
+  it('activates a floating-terminal mobile session tab without throwing selector_not_found', async () => {
+    const focusTerminal = vi.fn()
+    const runtime = new OrcaRuntimeService(store)
+    runtime.setNotifier({
+      worktreesChanged: vi.fn(),
+      reposChanged: vi.fn(),
+      activateWorktree: vi.fn(),
+      createTerminal: vi.fn(),
+      revealTerminalSession: vi.fn(),
+      splitTerminal: vi.fn(),
+      renameTerminal: vi.fn(),
+      focusTerminal,
+      closeTerminal: vi.fn(),
+      sleepWorktree: vi.fn(),
+      terminalFitOverrideChanged: vi.fn(),
+      terminalDriverChanged: vi.fn()
+    })
+    runtime.attachWindow(1)
+    // Store the snapshot under the floating sentinel key, exactly as the create
+    // path does (mobileSessionTabs[].worktree === sentinel).
+    runtime.syncWindowGraph(1, {
+      tabs: [],
+      leaves: [],
+      mobileSessionTabs: [
+        {
+          worktree: FLOATING_TERMINAL_WORKTREE_ID,
+          publicationEpoch: 'epoch-1',
+          snapshotVersion: 1,
+          activeGroupId: 'group-1',
+          activeTabId: 'tab-1::pane:1',
+          activeTabType: 'terminal',
+          tabs: [
+            {
+              type: 'terminal',
+              id: 'tab-1::pane:1',
+              parentTabId: 'tab-1',
+              leafId: 'pane:1',
+              title: 'Floating',
+              isActive: true
+            }
+          ]
+        }
+      ]
+    })
+
+    // The activate path takes the explicit-id fast-path, looks up the snapshot
+    // under the sentinel key, and focuses the tab -- it must NOT throw.
+    await expect(runtime.activateMobileSessionTab(`id:${FLOATING_TERMINAL_WORKTREE_ID}`, 'tab-1'))
+      .resolves.not.toThrow
+
+    expect(focusTerminal).toHaveBeenCalledWith('tab-1', FLOATING_TERMINAL_WORKTREE_ID, 'pane:1')
+  })
+
+  it('closes a floating-terminal mobile session tab without throwing selector_not_found', async () => {
+    const closeTerminal = vi.fn()
+    const kill = vi.fn()
+    const runtime = new OrcaRuntimeService(store)
+    runtime.setPtyController({
+      spawn: vi.fn(),
+      write: () => true,
+      kill,
+      getForegroundProcess: async () => null
+    })
+    runtime.setNotifier({
+      worktreesChanged: vi.fn(),
+      reposChanged: vi.fn(),
+      activateWorktree: vi.fn(),
+      createTerminal: vi.fn(),
+      revealTerminalSession: vi.fn(),
+      splitTerminal: vi.fn(),
+      renameTerminal: vi.fn(),
+      focusTerminal: vi.fn(),
+      closeTerminal,
+      sleepWorktree: vi.fn(),
+      terminalFitOverrideChanged: vi.fn(),
+      terminalDriverChanged: vi.fn()
+    })
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, {
+      tabs: [
+        {
+          tabId: 'tab-1',
+          worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
+          title: 'Floating',
+          activeLeafId: 'pane:1',
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId: 'tab-1',
+          worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
+          leafId: 'pane:1',
+          paneRuntimeId: 1,
+          ptyId: 'pty-1',
+          paneTitle: 'Floating'
+        }
+      ],
+      mobileSessionTabs: [
+        {
+          worktree: FLOATING_TERMINAL_WORKTREE_ID,
+          publicationEpoch: 'epoch-1',
+          snapshotVersion: 1,
+          activeGroupId: 'group-1',
+          activeTabId: 'tab-1::pane:1',
+          activeTabType: 'terminal',
+          tabs: [
+            {
+              type: 'terminal',
+              id: 'tab-1::pane:1',
+              parentTabId: 'tab-1',
+              leafId: 'pane:1',
+              title: 'Floating',
+              isActive: true
+            }
+          ]
+        }
+      ]
+    })
+
+    // The close path also takes the explicit-id fast-path and finds the tab under
+    // the sentinel key -- it must NOT throw selector_not_found / tab_not_found.
+    await expect(
+      runtime.closeMobileSessionTab(`id:${FLOATING_TERMINAL_WORKTREE_ID}`, 'tab-1')
+    ).resolves.toEqual({ closed: true })
+
+    expect(closeTerminal).toHaveBeenCalledWith('tab-1')
+  })
+
   it('creates mobile session terminals in a headless runtime server', async () => {
     const spawn = vi.fn().mockResolvedValue({ id: 'pty-headless' })
     const runtime = new OrcaRuntimeService(store)

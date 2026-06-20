@@ -15491,8 +15491,14 @@ export class OrcaRuntimeService {
     // floating sentinel id and the normal id: lookup would throw selector_not_found.
     // Synthesize a virtual ResolvedWorktree rooted at the serve user's home so the
     // PTY spawns in a real, existing dir instead of failing with a black pane.
+    // The client always reaches the resolver via toRuntimeWorktreeSelector()
+    // (runtime-worktree-selector.ts), which prepends the `id:` prefix, so the `id:`
+    // form is what arrives over the wire; the bare form is matched defensively. No
+    // `floating:`/`global:` selector prefix is emitted anywhere, so matching the
+    // sentinel directly mirrors this resolver's existing bare `'active'` special-case.
     const floatingId =
-      selector === FLOATING_TERMINAL_WORKTREE_ID || selector === `id:${FLOATING_TERMINAL_WORKTREE_ID}`
+      selector === FLOATING_TERMINAL_WORKTREE_ID ||
+      selector === `id:${FLOATING_TERMINAL_WORKTREE_ID}`
     if (floatingId) {
       const cwd = homedir()
       const git = {
