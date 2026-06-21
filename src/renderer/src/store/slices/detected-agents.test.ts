@@ -451,6 +451,23 @@ describe('createDetectedAgentsSlice remote detection', () => {
     expect(detectRemoteAgents).toHaveBeenCalledTimes(1)
   })
 
+  it('re-runs remote detection after an empty result instead of pinning it', async () => {
+    const store = createTestStore()
+    // An empty [] is truthy, so a prior "no agents found" must not be cached:
+    // a later install / PATH fix has to be picked up without a reconnect.
+    detectRemoteAgents.mockResolvedValueOnce([])
+
+    await expect(store.getState().ensureRemoteDetectedAgents('ssh-1')).resolves.toEqual([])
+    expect(store.getState().remoteDetectedAgentIds['ssh-1']).toEqual([])
+    expect(detectRemoteAgents).toHaveBeenCalledTimes(1)
+
+    detectRemoteAgents.mockResolvedValueOnce(['kilo'])
+
+    await expect(store.getState().ensureRemoteDetectedAgents('ssh-1')).resolves.toEqual(['kilo'])
+    expect(detectRemoteAgents).toHaveBeenCalledTimes(2)
+    expect(store.getState().remoteDetectedAgentIds['ssh-1']).toEqual(['kilo'])
+  })
+
   it('detects runtime environment agents through the owning runtime', async () => {
     const store = createTestStore()
 
