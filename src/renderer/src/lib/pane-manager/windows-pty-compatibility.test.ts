@@ -118,6 +118,12 @@ describe('isLocalNativeWindowsConpty', () => {
     cwd: 'C:\\repo',
     shellOverride: 'powershell.exe'
   } as const
+  const remoteServePaneOnWindowsClientContext = {
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    connectionId: null,
+    cwd: '/home/me/repo',
+    shellOverride: null
+  } as const
 
   it('treats a local-execution-host Windows pane as a native ConPTY', () => {
     expect(
@@ -127,13 +133,13 @@ describe('isLocalNativeWindowsConpty', () => {
 
   it('does NOT treat a remote-runtime (serve) pane as a native ConPTY even when the raw Windows heuristic matches', () => {
     // Regression: a serve-hosted pane on a Windows client has no SSH connectionId
-    // and (after path mapping) a Windows-looking cwd, so isLocalNativeWindowsPty
-    // returns true. Without the execution-host gate, ConPTY transient cursor-show
-    // (?25h) stripping is wrongly applied and the agent cursor disappears.
-    expect(isLocalNativeWindowsPty(localNativeWindowsContext)).toBe(true)
+    // and a Linux cwd, so isLocalNativeWindowsPty returns true. Without the
+    // execution-host gate, ConPTY transient cursor-show (?25h) stripping is
+    // wrongly applied and the agent cursor disappears.
+    expect(isLocalNativeWindowsPty(remoteServePaneOnWindowsClientContext)).toBe(true)
     expect(
       isLocalNativeWindowsConpty({
-        ...localNativeWindowsContext,
+        ...remoteServePaneOnWindowsClientContext,
         executionHostId: 'runtime:my-serve'
       })
     ).toBe(false)

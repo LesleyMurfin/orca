@@ -66,7 +66,7 @@ export function isLocalNativeWindowsPty(context: WindowsPtyCompatibilityContext)
  * Why this is gated on the execution host: a serve/remote-runtime pane on a
  * Windows client has no SSH `connectionId` and a Linux `cwd`, so
  * `isLocalNativeWindowsPty` misfires and classifies it as local. The execution
- * host is the authoritative signal — only a `'local'` host is a real local
+ * host is the authoritative signal: only a `'local'` host is a real local
  * native PTY. Remote panes resolve to `runtime:<env>` (or `ssh:<target>`) and
  * must be excluded, otherwise ConPTY transient cursor-show (`?25h`) stripping is
  * wrongly applied to them and a repainting agent's cursor disappears.

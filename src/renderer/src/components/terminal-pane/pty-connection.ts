@@ -1611,7 +1611,7 @@ export function connectPanePty(
   const shellOverride = tab?.shellOverride
   // Why: a serve/remote-runtime pane has no SSH connectionId and a Linux cwd, so
   // the native-Windows ConPTY heuristic misfires on a Windows client and wrongly
-  // enables ConPTY synchronized-output protection — which strips an agent's
+  // enables ConPTY synchronized-output protection, which strips an agent's
   // transient cursor-show (?25h) and leaves the cursor invisible. The execution
   // host is the authoritative signal: only a 'local' host is a local native PTY.
   const executionHostId = getExecutionHostIdForWorktree(state, deps.worktreeId)
