@@ -582,7 +582,11 @@ import {
   shouldRunSetupForCreate,
   writeIssueCommand
 } from '../hooks'
-import { DEFAULT_REPO_BADGE_COLOR, getDefaultVoiceSettings } from '../../shared/constants'
+import {
+  DEFAULT_REPO_BADGE_COLOR,
+  FLOATING_TERMINAL_WORKTREE_ID,
+  getDefaultVoiceSettings
+} from '../../shared/constants'
 import { listRepoWorktrees } from '../repo-worktrees'
 import { createWorktreeLinkedPaths, removeWorktreeLinkedPaths } from '../ipc/worktree-symlinks'
 import { deleteWorktreeHistoryDir } from '../terminal-history'
@@ -15667,6 +15671,34 @@ export class OrcaRuntimeService {
   }
 
   private async resolveWorktreeSelector(selector: string): Promise<ResolvedWorktree> {
+    // Why: the floating workspace is a repo-less synthetic session (no entry in
+    // the worktree catalog), so a remote client pairing to this serve sends the
+    // floating sentinel id and the normal id: lookup would throw selector_not_found.
+    // Synthesize a virtual ResolvedWorktree rooted at the serve user's home so the
+    // PTY spawns in a real, existing dir instead of failing with a black pane.
+    const floatingId =
+      selector === FLOATING_TERMINAL_WORKTREE_ID || selector === `id:${FLOATING_TERMINAL_WORKTREE_ID}`
+    if (floatingId) {
+      const cwd = homedir()
+      const git = {
+        path: cwd,
+        head: '',
+        branch: '',
+        isBare: false,
+        isMainWorktree: false
+      }
+      const merged = mergeWorktree('', git, undefined, 'Floating Terminal')
+      return {
+        ...merged,
+        id: FLOATING_TERMINAL_WORKTREE_ID,
+        repoId: '',
+        parentWorktreeId: null,
+        childWorktreeIds: [],
+        lineage: null,
+        git
+      }
+    }
+
     const worktrees = await this.listResolvedWorktrees()
     let candidates: ResolvedWorktree[]
 
