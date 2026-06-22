@@ -42,9 +42,6 @@ function parseWindowsBuildNumber(osRelease: string | null | undefined): number |
 export function buildWindowsPtyCompatibilityOptions(
   context: WindowsPtyCompatibilityContext & { executionHostId: ExecutionHostId }
 ): Partial<ITerminalOptions> {
-  // Why: a serve/remote-runtime pane on a Windows client has no SSH connectionId
-  // and a Linux cwd, so isLocalNativeWindowsPty alone misfires and would hand a
-  // remote PTY xterm's native-Windows ConPTY backend. Gate on the execution host.
   if (!isLocalNativeWindowsConpty(context)) {
     return {}
   }
