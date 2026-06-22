@@ -376,9 +376,19 @@ function TabBarInner({
   )
   // Why: SSH-backed PTYs ignore local Windows shell overrides; showing these
   // entries there promises PowerShell/CMD/Git Bash but opens the remote shell.
+  // A serve/remote runtime whose host is not Windows (e.g. a Linux `orca serve`) is
+  // the same situation: the local Windows shell choices are meaningless on that host,
+  // and the plain "New Terminal" already opens the runtime's default shell. Keyed on
+  // the probed runtime host platform so a LOCAL Windows-WSL project runtime
+  // (hostPlatform === 'win32') keeps its shell menu.
+  const runtimeHostIsNonWindows =
+    Boolean(activeRuntimeEnvironmentId?.trim()) &&
+    !windowsTerminalCapabilities.isLoading &&
+    windowsTerminalCapabilities.hostPlatform !== 'win32'
   const shouldShowWindowsShellMenu =
     (isWindows || windowsTerminalCapabilities.hostPlatform === 'win32') &&
-    !worktreeHasRemoteConnection
+    !worktreeHasRemoteConnection &&
+    !runtimeHostIsNonWindows
   const localProjectRuntime = useMemo(() => {
     if (!shouldShowWindowsShellMenu || activeRuntimeEnvironmentId?.trim()) {
       return undefined
