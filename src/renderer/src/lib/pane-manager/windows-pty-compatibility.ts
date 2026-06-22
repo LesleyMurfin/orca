@@ -31,10 +31,21 @@ function parseWindowsBuildNumber(osRelease: string | null | undefined): number |
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
 }
 
+/**
+ * xterm options that select the native-Windows ConPTY backend, returned only for
+ * a genuine local Windows pane and `{}` otherwise.
+ *
+ * Why it requires `executionHostId`: a serve/remote-runtime pane on a Windows
+ * client looks local to the raw heuristic (no SSH `connectionId`, Linux `cwd`),
+ * so gating on the execution host keeps the ConPTY backend off remote PTYs.
+ */
 export function buildWindowsPtyCompatibilityOptions(
-  context: WindowsPtyCompatibilityContext
+  context: WindowsPtyCompatibilityContext & { executionHostId: ExecutionHostId }
 ): Partial<ITerminalOptions> {
-  if (!isLocalNativeWindowsPty(context)) {
+  // Why: a serve/remote-runtime pane on a Windows client has no SSH connectionId
+  // and a Linux cwd, so isLocalNativeWindowsPty alone misfires and would hand a
+  // remote PTY xterm's native-Windows ConPTY backend. Gate on the execution host.
+  if (!isLocalNativeWindowsConpty(context)) {
     return {}
   }
   const buildNumber = parseWindowsBuildNumber(context.osRelease)
@@ -46,6 +57,11 @@ export function buildWindowsPtyCompatibilityOptions(
   }
 }
 
+/**
+ * Raw client-side heuristic for a native-Windows ConPTY pane (Windows UA, no SSH
+ * connection, non-WSL cwd/shell). Necessary but not sufficient: it cannot tell a
+ * local pane from a serve pane, so callers gate it with `isLocalNativeWindowsConpty`.
+ */
 export function isLocalNativeWindowsPty(context: WindowsPtyCompatibilityContext): boolean {
   if (!isWindowsUserAgent(context.userAgent)) {
     return false

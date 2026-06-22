@@ -63,6 +63,7 @@ import { connectPanePty } from './pty-connection'
 import type { PtyTransport } from './pty-transport'
 import { getRemoteRuntimePtyEnvironmentId } from '@/runtime/runtime-terminal-stream'
 import { getConnectionId } from '@/lib/connection-context'
+import { getExecutionHostIdForWorktree } from '@/lib/worktree-runtime-owner'
 import { isPaneReplaying, type ReplayingPanesRef } from './replay-guard'
 import { fitAndFocusPanes, fitPanes } from './pane-helpers'
 import { registerRuntimeTerminalTab, scheduleRuntimeGraphSync } from '@/runtime/sync-runtime-graph'
@@ -345,6 +346,15 @@ export function shouldDetachPaneTransportOnUnmount(args: {
   )
 }
 
+/**
+ * React hook that owns a terminal pane's create/attach/teardown lifecycle and
+ * keeps its xterm options in sync with the pane's state.
+ *
+ * Why it resolves the execution host for the Windows-PTY options: the ConPTY
+ * compatibility backend must be selected only for genuinely local Windows panes,
+ * so the host gates a serve/remote-runtime pane out even when the raw heuristic
+ * would classify it as local.
+ */
 export function useTerminalPaneLifecycle({
   tabId,
   worktreeId,
@@ -1049,7 +1059,8 @@ export function useTerminalPaneLifecycle({
           osRelease: platformInfo?.osRelease,
           connectionId: getConnectionId(worktreeId),
           cwd: startupCwd,
-          shellOverride: currentTab?.shellOverride
+          shellOverride: currentTab?.shellOverride,
+          executionHostId: getExecutionHostIdForWorktree(storeState, worktreeId)
         })
         return {
           ...windowsPtyCompatibilityOptions,

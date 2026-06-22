@@ -788,6 +788,15 @@ function containsCursorRestore(data: string): boolean {
   return hideIndex !== -1 && showIndex > hideIndex && containsCursorPositionSequence(data)
 }
 
+/**
+ * Wires a pane's xterm instance to its PTY data/lifecycle stream and returns a
+ * disposable binding.
+ *
+ * Why it resolves the execution host: the native-Windows ConPTY cursor and
+ * synchronized-output workarounds must apply only to genuinely local Windows
+ * panes, never to serve/remote-runtime panes that merely look local to the raw
+ * heuristic, so the host gates `isLocalNativeWindowsConpty`.
+ */
 export function connectPanePty(
   pane: ManagedPane,
   manager: PaneManager,
