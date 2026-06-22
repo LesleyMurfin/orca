@@ -10,24 +10,32 @@ const WINDOWS_RELAY_PATH_FALLBACKS = [
 ]
 
 // Why: the login-shell probe (`/bin/sh -lc`) sources ~/.profile but not the
-// interactive ~/.bashrc, so per-user package-manager bins (npm global prefix,
-// cargo, bun, go, deno, pnpm) — frequently only added to PATH in the interactive
-// rc — are invisible to detection even though the user can run those agents.
-// Resolve them from $HOME so the relay sees what PTY sessions do; honor
-// npm_config_prefix for users who relocated npm's global prefix.
+// interactive ~/.bashrc, so per-user package-manager bins are invisible to
+// detection even though the user can run those agents. Add them to PATH so the
+// relay sees what interactive PTY sessions do — and, like the remote-node probe
+// in ssh-remote-node-resolution.ts honoring NVM_DIR, prefer each tool's
+// documented relocation env var over the $HOME default so relocated installs
+// stay covered.
 function getPosixUserInstallBinFallbacks(baseEnv: NodeJS.ProcessEnv): string[] {
   const home = baseEnv.HOME || homedir()
   if (!home) {
     return []
   }
+  // GOBIN is the bin dir itself; otherwise go installs into $GOPATH/bin (default ~/go/bin).
+  const goBin = baseEnv.GOBIN || posix.join(baseEnv.GOPATH || posix.join(home, 'go'), 'bin')
+  // pnpm/PNPM_HOME point at the global-bin dir directly; the default lives under
+  // XDG_DATA_HOME (default ~/.local/share).
+  const pnpmHome =
+    baseEnv.PNPM_HOME ||
+    posix.join(baseEnv.XDG_DATA_HOME || posix.join(home, '.local', 'share'), 'pnpm')
   const bins = [
     posix.join(home, '.local', 'bin'),
     posix.join(home, '.npm-global', 'bin'),
-    posix.join(home, '.cargo', 'bin'),
-    posix.join(home, '.bun', 'bin'),
-    posix.join(home, 'go', 'bin'),
-    posix.join(home, '.deno', 'bin'),
-    posix.join(home, '.local', 'share', 'pnpm')
+    posix.join(baseEnv.CARGO_HOME || posix.join(home, '.cargo'), 'bin'),
+    posix.join(baseEnv.BUN_INSTALL || posix.join(home, '.bun'), 'bin'),
+    posix.join(baseEnv.DENO_INSTALL || posix.join(home, '.deno'), 'bin'),
+    goBin,
+    pnpmHome
   ]
   const npmPrefix = baseEnv.npm_config_prefix
   if (npmPrefix) {

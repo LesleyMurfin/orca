@@ -50,6 +50,83 @@ describe('buildRelayCommandEnv', () => {
     expect(env.PATH?.split(':')).toContain('/opt/npm/bin')
   })
 
+  it('honors a relocated cargo home via CARGO_HOME', () => {
+    const env = buildRelayCommandEnv(
+      { HOME: '/home/me', PATH: '', CARGO_HOME: '/opt/cargo' },
+      'linux'
+    )
+    const segments = env.PATH?.split(':') ?? []
+
+    expect(segments).toContain('/opt/cargo/bin')
+    expect(segments).not.toContain('/home/me/.cargo/bin')
+  })
+
+  it('honors a relocated bun install via BUN_INSTALL', () => {
+    const env = buildRelayCommandEnv(
+      { HOME: '/home/me', PATH: '', BUN_INSTALL: '/opt/bun' },
+      'linux'
+    )
+    const segments = env.PATH?.split(':') ?? []
+
+    expect(segments).toContain('/opt/bun/bin')
+    expect(segments).not.toContain('/home/me/.bun/bin')
+  })
+
+  it('honors a relocated deno install via DENO_INSTALL', () => {
+    const env = buildRelayCommandEnv(
+      { HOME: '/home/me', PATH: '', DENO_INSTALL: '/opt/deno' },
+      'linux'
+    )
+    const segments = env.PATH?.split(':') ?? []
+
+    expect(segments).toContain('/opt/deno/bin')
+    expect(segments).not.toContain('/home/me/.deno/bin')
+  })
+
+  it('uses GOBIN directly for the go bin directory', () => {
+    const env = buildRelayCommandEnv(
+      { HOME: '/home/me', PATH: '', GOBIN: '/opt/go/bin' },
+      'linux'
+    )
+    const segments = env.PATH?.split(':') ?? []
+
+    expect(segments).toContain('/opt/go/bin')
+    expect(segments).not.toContain('/home/me/go/bin')
+  })
+
+  it('honors GOPATH for the go bin directory when GOBIN is unset', () => {
+    const env = buildRelayCommandEnv(
+      { HOME: '/home/me', PATH: '', GOPATH: '/opt/gopath' },
+      'linux'
+    )
+    const segments = env.PATH?.split(':') ?? []
+
+    expect(segments).toContain('/opt/gopath/bin')
+    expect(segments).not.toContain('/home/me/go/bin')
+  })
+
+  it('honors PNPM_HOME for the pnpm global bin directory', () => {
+    const env = buildRelayCommandEnv(
+      { HOME: '/home/me', PATH: '', PNPM_HOME: '/opt/pnpm' },
+      'linux'
+    )
+    const segments = env.PATH?.split(':') ?? []
+
+    expect(segments).toContain('/opt/pnpm')
+    expect(segments).not.toContain('/home/me/.local/share/pnpm')
+  })
+
+  it('honors XDG_DATA_HOME for pnpm when PNPM_HOME is unset', () => {
+    const env = buildRelayCommandEnv(
+      { HOME: '/home/me', PATH: '', XDG_DATA_HOME: '/opt/xdg' },
+      'linux'
+    )
+    const segments = env.PATH?.split(':') ?? []
+
+    expect(segments).toContain('/opt/xdg/pnpm')
+    expect(segments).not.toContain('/home/me/.local/share/pnpm')
+  })
+
   it('does not leak POSIX user bins into a Windows relay env', () => {
     const env = buildRelayCommandEnv({ Path: 'C:\\Tools', HOME: '/home/me' }, 'win32')
 
