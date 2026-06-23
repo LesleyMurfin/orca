@@ -50,11 +50,52 @@ describe('buildRelayCommandEnv', () => {
     expect(env.PATH?.split(':')).toContain('/opt/npm/bin')
   })
 
+  it('honors PNPM_HOME on POSIX', () => {
+    const env = buildRelayCommandEnv(
+      { HOME: '/home/me', PATH: '', PNPM_HOME: '/custom/pnpm' },
+      'linux'
+    )
+
+    expect(env.PATH?.split(':')).toContain('/custom/pnpm')
+  })
+
+  it('adds the macOS pnpm home for Darwin relay envs', () => {
+    const env = buildRelayCommandEnv({ HOME: '/Users/me', PATH: '' }, 'darwin')
+
+    expect(env.PATH?.split(':')).toContain('/Users/me/Library/pnpm')
+  })
+
   it('does not leak POSIX user bins into a Windows relay env', () => {
     const env = buildRelayCommandEnv({ Path: 'C:\\Tools', HOME: '/home/me' }, 'win32')
 
     expect(env.Path).not.toContain('/home/me/.local/bin')
     expect(env.Path).not.toContain('.npm-global')
+  })
+
+  it('adds Windows user package-manager bins to a Windows relay env', () => {
+    const env = buildRelayCommandEnv(
+      {
+        Path: 'C:\\Tools',
+        APPDATA: 'C:\\Users\\me\\AppData\\Roaming',
+        LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local',
+        USERPROFILE: 'C:\\Users\\me',
+        PNPM_HOME: 'C:\\Users\\me\\AppData\\Local\\pnpm-home'
+      },
+      'win32'
+    )
+    const segments = env.Path?.split(';') ?? []
+
+    expect(segments).toEqual(
+      expect.arrayContaining([
+        'C:\\Users\\me\\AppData\\Roaming\\npm',
+        'C:\\Users\\me\\AppData\\Local\\pnpm',
+        'C:\\Users\\me\\.cargo\\bin',
+        'C:\\Users\\me\\.bun\\bin',
+        'C:\\Users\\me\\go\\bin',
+        'C:\\Users\\me\\.deno\\bin',
+        'C:\\Users\\me\\AppData\\Local\\pnpm-home'
+      ])
+    )
   })
 
   it('deduplicates a user bin already present in the inherited PATH', () => {

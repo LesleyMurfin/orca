@@ -1,5 +1,5 @@
 import { homedir } from 'os'
-import { posix } from 'path'
+import { posix, win32 } from 'path'
 
 const POSIX_RELAY_PATH_FALLBACKS = ['/usr/local/bin', '/opt/homebrew/bin', '/usr/bin', '/bin']
 const WINDOWS_RELAY_PATH_FALLBACKS = [
@@ -15,23 +15,48 @@ const WINDOWS_RELAY_PATH_FALLBACKS = [
 // rc — are invisible to detection even though the user can run those agents.
 // Resolve them from $HOME so the relay sees what PTY sessions do; honor
 // npm_config_prefix for users who relocated npm's global prefix.
-function getPosixUserInstallBinFallbacks(baseEnv: NodeJS.ProcessEnv): string[] {
+function getPosixUserInstallBinFallbacks(
+  baseEnv: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform
+): string[] {
   const home = baseEnv.HOME || homedir()
-  if (!home) {
-    return []
+  const bins = baseEnv.PNPM_HOME ? [baseEnv.PNPM_HOME] : []
+  if (home) {
+    bins.push(
+      posix.join(home, '.local', 'bin'),
+      posix.join(home, '.npm-global', 'bin'),
+      posix.join(home, '.cargo', 'bin'),
+      posix.join(home, '.bun', 'bin'),
+      posix.join(home, 'go', 'bin'),
+      posix.join(home, '.deno', 'bin'),
+      posix.join(home, '.local', 'share', 'pnpm')
+    )
+    if (platform === 'darwin') {
+      bins.push(posix.join(home, 'Library', 'pnpm'))
+    }
   }
-  const bins = [
-    posix.join(home, '.local', 'bin'),
-    posix.join(home, '.npm-global', 'bin'),
-    posix.join(home, '.cargo', 'bin'),
-    posix.join(home, '.bun', 'bin'),
-    posix.join(home, 'go', 'bin'),
-    posix.join(home, '.deno', 'bin'),
-    posix.join(home, '.local', 'share', 'pnpm')
-  ]
   const npmPrefix = baseEnv.npm_config_prefix
   if (npmPrefix) {
     bins.push(posix.join(npmPrefix, 'bin'))
+  }
+  return bins
+}
+
+function getWindowsUserInstallBinFallbacks(baseEnv: NodeJS.ProcessEnv): string[] {
+  const bins = baseEnv.PNPM_HOME ? [baseEnv.PNPM_HOME] : []
+  if (baseEnv.APPDATA) {
+    bins.push(win32.join(baseEnv.APPDATA, 'npm'))
+  }
+  if (baseEnv.LOCALAPPDATA) {
+    bins.push(win32.join(baseEnv.LOCALAPPDATA, 'pnpm'))
+  }
+  if (baseEnv.USERPROFILE) {
+    bins.push(
+      win32.join(baseEnv.USERPROFILE, '.cargo', 'bin'),
+      win32.join(baseEnv.USERPROFILE, '.bun', 'bin'),
+      win32.join(baseEnv.USERPROFILE, 'go', 'bin'),
+      win32.join(baseEnv.USERPROFILE, '.deno', 'bin')
+    )
   }
   return bins
 }
@@ -46,9 +71,9 @@ function getPathDelimiter(platform: NodeJS.Platform): string {
 
 function getFallbackSegments(platform: NodeJS.Platform, baseEnv: NodeJS.ProcessEnv): string[] {
   if (platform === 'win32') {
-    return WINDOWS_RELAY_PATH_FALLBACKS
+    return [...WINDOWS_RELAY_PATH_FALLBACKS, ...getWindowsUserInstallBinFallbacks(baseEnv)]
   }
-  return [...POSIX_RELAY_PATH_FALLBACKS, ...getPosixUserInstallBinFallbacks(baseEnv)]
+  return [...POSIX_RELAY_PATH_FALLBACKS, ...getPosixUserInstallBinFallbacks(baseEnv, platform)]
 }
 
 export function buildRelayCommandEnv(
