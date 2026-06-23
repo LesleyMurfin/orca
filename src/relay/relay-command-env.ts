@@ -10,30 +10,71 @@ const WINDOWS_RELAY_PATH_FALLBACKS = [
 ]
 
 // Why: the login-shell probe (`/bin/sh -lc`) sources ~/.profile but not the
-// interactive ~/.bashrc, so per-user package-manager bins (npm global prefix,
-// cargo, bun, go, deno, pnpm) — frequently only added to PATH in the interactive
-// rc — are invisible to detection even though the user can run those agents.
-// Resolve them from $HOME so the relay sees what PTY sessions do; honor
-// npm_config_prefix for users who relocated npm's global prefix.
+// interactive ~/.bashrc, so per-user package-manager bins are invisible to
+// detection even though the user can run those agents. Add them to PATH so the
+// relay sees what interactive PTY sessions do; prefer each tool's documented
+// relocation env var over the $HOME default so relocated installs stay covered.
 function getPosixUserInstallBinFallbacks(
   baseEnv: NodeJS.ProcessEnv,
   platform: NodeJS.Platform
 ): string[] {
   const home = baseEnv.HOME || homedir()
-  const bins = baseEnv.PNPM_HOME ? [baseEnv.PNPM_HOME] : []
+  const bins: string[] = []
+  if (baseEnv.PNPM_HOME) {
+    bins.push(baseEnv.PNPM_HOME)
+  }
   if (home) {
-    bins.push(
-      posix.join(home, '.local', 'bin'),
-      posix.join(home, '.npm-global', 'bin'),
-      posix.join(home, '.cargo', 'bin'),
-      posix.join(home, '.bun', 'bin'),
-      posix.join(home, 'go', 'bin'),
-      posix.join(home, '.deno', 'bin'),
-      posix.join(home, '.local', 'share', 'pnpm')
-    )
+    bins.push(posix.join(home, '.local', 'bin'), posix.join(home, '.npm-global', 'bin'))
     if (platform === 'darwin') {
       bins.push(posix.join(home, 'Library', 'pnpm'))
     }
+  }
+  const cargoBin = baseEnv.CARGO_HOME
+    ? posix.join(baseEnv.CARGO_HOME, 'bin')
+    : home
+      ? posix.join(home, '.cargo', 'bin')
+      : null
+  if (cargoBin) {
+    bins.push(cargoBin)
+  }
+  const bunBin = baseEnv.BUN_INSTALL
+    ? posix.join(baseEnv.BUN_INSTALL, 'bin')
+    : home
+      ? posix.join(home, '.bun', 'bin')
+      : null
+  if (bunBin) {
+    bins.push(bunBin)
+  }
+  const denoBin = baseEnv.DENO_INSTALL
+    ? posix.join(baseEnv.DENO_INSTALL, 'bin')
+    : home
+      ? posix.join(home, '.deno', 'bin')
+      : null
+  if (denoBin) {
+    bins.push(denoBin)
+  }
+  // GOBIN is the bin dir itself; otherwise go installs into $GOPATH/bin (default ~/go/bin).
+  const goBin = baseEnv.GOBIN
+    ? baseEnv.GOBIN
+    : baseEnv.GOPATH
+      ? posix.join(baseEnv.GOPATH, 'bin')
+      : home
+        ? posix.join(home, 'go', 'bin')
+        : null
+  if (goBin) {
+    bins.push(goBin)
+  }
+  // pnpm/PNPM_HOME point at the global-bin dir directly; the default lives under
+  // XDG_DATA_HOME (default ~/.local/share).
+  const pnpmHome = baseEnv.PNPM_HOME
+    ? null
+    : baseEnv.XDG_DATA_HOME
+      ? posix.join(baseEnv.XDG_DATA_HOME, 'pnpm')
+      : home
+        ? posix.join(home, '.local', 'share', 'pnpm')
+        : null
+  if (pnpmHome) {
+    bins.push(pnpmHome)
   }
   const npmPrefix = baseEnv.npm_config_prefix
   if (npmPrefix) {
@@ -50,13 +91,33 @@ function getWindowsUserInstallBinFallbacks(baseEnv: NodeJS.ProcessEnv): string[]
   if (baseEnv.LOCALAPPDATA) {
     bins.push(win32.join(baseEnv.LOCALAPPDATA, 'pnpm'))
   }
+  if (baseEnv.CARGO_HOME) {
+    bins.push(win32.join(baseEnv.CARGO_HOME, 'bin'))
+  }
+  if (baseEnv.BUN_INSTALL) {
+    bins.push(win32.join(baseEnv.BUN_INSTALL, 'bin'))
+  }
+  if (baseEnv.DENO_INSTALL) {
+    bins.push(win32.join(baseEnv.DENO_INSTALL, 'bin'))
+  }
+  if (baseEnv.GOBIN) {
+    bins.push(baseEnv.GOBIN)
+  } else if (baseEnv.GOPATH) {
+    bins.push(win32.join(baseEnv.GOPATH, 'bin'))
+  }
   if (baseEnv.USERPROFILE) {
-    bins.push(
-      win32.join(baseEnv.USERPROFILE, '.cargo', 'bin'),
-      win32.join(baseEnv.USERPROFILE, '.bun', 'bin'),
-      win32.join(baseEnv.USERPROFILE, 'go', 'bin'),
-      win32.join(baseEnv.USERPROFILE, '.deno', 'bin')
-    )
+    if (!baseEnv.CARGO_HOME) {
+      bins.push(win32.join(baseEnv.USERPROFILE, '.cargo', 'bin'))
+    }
+    if (!baseEnv.BUN_INSTALL) {
+      bins.push(win32.join(baseEnv.USERPROFILE, '.bun', 'bin'))
+    }
+    if (!baseEnv.GOBIN && !baseEnv.GOPATH) {
+      bins.push(win32.join(baseEnv.USERPROFILE, 'go', 'bin'))
+    }
+    if (!baseEnv.DENO_INSTALL) {
+      bins.push(win32.join(baseEnv.USERPROFILE, '.deno', 'bin'))
+    }
   }
   return bins
 }
