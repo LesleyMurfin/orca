@@ -1049,6 +1049,7 @@
       "NewWorkspaceComposerCard": {
         "reuseExistingBranch": "Reuse branch",
         "reuseExistingBranchHint": "Check out the existing branch instead of creating a new one from it.",
+        "createMultiple": "Create more",
         "cbb47ee0dc": "Only available for local Git projects.",
         "d861de981b": "Sparse checkout",
         "090cfedeb4": "Write a note",

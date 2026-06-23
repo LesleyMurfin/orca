@@ -258,6 +258,13 @@ export type ComposerCardProps = {
    *  rather than used as the base for a new branch. */
   reuseSelectedBranch: boolean
   onReuseSelectedBranchChange: (next: boolean) => void
+  /** Whether the "create multiple" toggle is shown — worktree (git) targets
+   *  only; folder-workspace targets create-and-close as before. */
+  showCreateMultiple: boolean
+  /** When on, the modal stays open after each create and resets identity fields
+   *  so the user can create several worktrees in a row. */
+  createMultiple: boolean
+  onCreateMultipleChange: (next: boolean) => void
   agentPrompt: string
   onAgentPromptChange: (value: string) => void
   /** Rendered issueCommand template to preview inside the empty prompt
@@ -896,6 +903,11 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
   const [setupDecision, setSetupDecision] = useState<'run' | 'skip' | null>(null)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<WorkspaceCreateErrorDisplay | null>(null)
+  // Why: when checked, a successful worktree create keeps the modal open and
+  // resets identity fields so the user can queue another worktree without
+  // reopening. Defaults off; the modal unmounts on close, so reopening always
+  // starts unchecked.
+  const [createMultiple, setCreateMultiple] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(
     persistDraft ? Boolean((newWorkspaceDraft?.note ?? '').trim()) : false
   )
@@ -3229,6 +3241,37 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
     submitFolderTarget
   ])
 
+  const resetForNextCreate = useCallback(() => {
+    // Why: with "create multiple" on, clear identity fields after each create so
+    // the next worktree starts clean. Context (repo, base branch, agent, project
+    // group) is intentionally retained for fast sequential creation. The
+    // PR-pick-derived refs (compare base, push target, branch override) are
+    // identity, not durable context, so they reset too — leaving them while the
+    // linked item is cleared would carry a half-set Start-from state (e.g. a
+    // silent fork push target) into the next worktree.
+    setName('')
+    lastAutoNameRef.current = ''
+    setAgentPrompt('')
+    setNote('')
+    setAttachmentPaths([])
+    setLinkedWorkItem(null)
+    setLinkedIssue('')
+    setLinkedPR(null)
+    setLinkedGitLabIssue(null)
+    setLinkedGitLabMR(null)
+    setBranchNameOverride(undefined)
+    setBranchNameOverridePreservesNameEdits(false)
+    setCompareBaseRef(undefined)
+    setPushTarget(undefined)
+    setReuseSelectedBranch(false)
+    setStartFromResetHint(null)
+    setForkPushWarning(null)
+    setCreateError(null)
+    // Refocus the name field on the next frame (after the reset re-render) so the
+    // user can immediately type the next worktree name.
+    requestAnimationFrame(() => nameInputRef.current?.focus())
+  }, [])
+
   const submitQuick = useCallback(
     async (requestedAgent: TuiAgent | null): Promise<void> => {
       if (isProjectGroupTarget) {
@@ -3525,7 +3568,8 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
           note: trimmedNote,
           startupPlan,
           quickPrompt,
-          quickTelemetry
+          quickTelemetry,
+          ...(createMultiple ? { suppressTerminalFocusOnCompletion: true } : {})
         }
 
         // Why: git fetch + `git worktree add` can take 10–15s; holding the modal
@@ -3534,8 +3578,14 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
         if (persistDraft) {
           clearNewWorkspaceDraft()
         }
-        onCreated?.()
         runBackgroundWorktreeCreation(request)
+        if (createMultiple) {
+          // Why: keep the modal open and reset identity so the user can queue
+          // another worktree right away; the creation above runs in the background.
+          resetForNextCreate()
+        } else {
+          onCreated?.()
+        }
       } catch (error) {
         const formattedError = formatWorkspaceCreateError(error)
         setCreateError(formattedError)
@@ -3593,7 +3643,9 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
       setupConfig,
       setupPolicy,
       isProjectGroupTarget,
-      submitFolderTarget
+      submitFolderTarget,
+      createMultiple,
+      resetForNextCreate
     ]
   )
 
@@ -3643,6 +3695,11 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
       smartNameSelection?.kind === 'branch',
     reuseSelectedBranch,
     onReuseSelectedBranchChange: handleReuseSelectedBranchChange,
+    // Why: the "create multiple" toggle only applies to worktree (git) targets;
+    // folder-workspace targets keep the create-and-close behavior.
+    showCreateMultiple: !isProjectGroupTarget,
+    createMultiple,
+    onCreateMultipleChange: setCreateMultiple,
     agentPrompt,
     onAgentPromptChange: setAgentPrompt,
     linkedOnlyTemplatePreview: shouldApplyLinkedOnlyTemplate ? linkedOnlyTemplatePrompt : null,

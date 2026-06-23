@@ -1102,7 +1102,8 @@
         "importHostSetup": "가져오기",
         "notePasteTooLarge": "메모 필드에 붙여넣을 내용이 너무 큽니다.",
         "reuseExistingBranch": "Reuse branch",
-        "reuseExistingBranchHint": "Check out the existing branch instead of creating a new one from it."
+        "reuseExistingBranchHint": "Check out the existing branch instead of creating a new one from it.",
+        "createMultiple": "Create more"
       },
       "NewWorkspaceComposerModal": {
         "fa90f739a5": "워크스페이스를 만들기 전에 프로젝트, 워크스페이스 이름, agent를 선택하세요."
