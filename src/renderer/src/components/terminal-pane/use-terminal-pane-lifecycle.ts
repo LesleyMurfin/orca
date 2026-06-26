@@ -55,6 +55,8 @@ import { showOsc52ClipboardBlockedToast } from './osc52-clipboard-blocked-toast'
 import { parseOsc7 } from './parse-osc7'
 import { resolveTerminalJisYenInput } from './terminal-jis-yen-input'
 import { installTerminalImeCompositionTracker } from './terminal-ime-composition-tracker'
+import { getMacCjkInputSourceTracker } from './terminal-ime-input-source'
+import { installTerminalImePunctuationForwarder } from './terminal-ime-punctuation-forwarder'
 import {
   shouldBypassXtermKeyboardEvent,
   shouldHandleTerminalInterruptKeyboardEvent,
@@ -432,6 +434,7 @@ export function useTerminalPaneLifecycle({
   const osc7DisposablesRef = useRef(new Map<number, IDisposable>())
   const mouseHideDisposablesRef = useRef(new Map<number, IDisposable>())
   const imeCompositionDisposablesRef = useRef(new Map<number, IDisposable>())
+  const imePunctuationForwarderDisposablesRef = useRef(new Map<number, IDisposable>())
 
   const applyAppearance = (manager: PaneManager): void => {
     const currentSettings = settingsRef.current
@@ -498,6 +501,7 @@ export function useTerminalPaneLifecycle({
     const selectionCaptureTimers = selectionCaptureTimersRef.current
     const mouseHideDisposables = mouseHideDisposablesRef.current
     const imeCompositionDisposables = imeCompositionDisposablesRef.current
+    const imePunctuationForwarderDisposables = imePunctuationForwarderDisposablesRef.current
     const worktreePath =
       useAppStore
         .getState()
@@ -688,10 +692,22 @@ export function useTerminalPaneLifecycle({
         // encoder runs, letting the browser and Electron paths fire normally.
         // See xterm-bypass-policy.ts for the rule derivation.
         let pendingTerminalInterruptKeyup = false
+        const isMac = navigator.userAgent.includes('Mac')
+        const macCjkInputSourceTracker = isMac ? getMacCjkInputSourceTracker() : null
         const imeCompositionTracker = installTerminalImeCompositionTracker(pane.terminal.element)
         imeCompositionDisposablesRef.current.set(pane.id, imeCompositionTracker)
+        // Why: this workaround is for macOS IMEs; elsewhere it can bypass
+        // xterm's kitty CSI-u encoding for ordinary punctuation. Gate it to CJK
+        // input sources so direct Japanese/Chinese punctuation works without
+        // changing plain US/European terminal key handling.
+        const imePunctuationForwarder = installTerminalImePunctuationForwarder({
+          terminalElement: pane.terminal.element,
+          isComposing: () => imeCompositionTracker.isActive(),
+          sendInput: (data) => pane.terminal.input(data),
+          isEnabled: () => macCjkInputSourceTracker?.isActive() === true
+        })
+        imePunctuationForwarderDisposablesRef.current.set(pane.id, imePunctuationForwarder)
         pane.terminal.attachCustomKeyEventHandler((e) => {
-          const isMac = navigator.userAgent.includes('Mac')
           if (
             shouldSuppressTerminalImeKeyboardEvent(e, {
               compositionActive: imeCompositionTracker.isActive()
@@ -748,6 +764,12 @@ export function useTerminalPaneLifecycle({
             } else if (e.key === 'PageDown' || e.key === 'End') {
               syncTerminalScrollIntentSoon(pane.terminal)
             }
+          }
+
+          if (imePunctuationForwarder.claimKeyEvent(e)) {
+            // Why: bypass xterm's kitty encoder for IME punctuation keydowns so
+            // the committed full-width glyph survives via the input event.
+            return false
           }
 
           return !shouldBypassXtermKeyboardEvent(e, {
@@ -935,6 +957,12 @@ export function useTerminalPaneLifecycle({
         if (imeCompositionDisposable) {
           imeCompositionDisposable.dispose()
           imeCompositionDisposablesRef.current.delete(paneId)
+        }
+        const imePunctuationForwarderDisposable =
+          imePunctuationForwarderDisposablesRef.current.get(paneId)
+        if (imePunctuationForwarderDisposable) {
+          imePunctuationForwarderDisposable.dispose()
+          imePunctuationForwarderDisposablesRef.current.delete(paneId)
         }
         const selectionCaptureTimer = selectionCaptureTimersRef.current.get(paneId)
         if (selectionCaptureTimer !== undefined) {
@@ -1420,6 +1448,10 @@ export function useTerminalPaneLifecycle({
         disposable.dispose()
       }
       imeCompositionDisposables.clear()
+      for (const disposable of imePunctuationForwarderDisposables.values()) {
+        disposable.dispose()
+      }
+      imePunctuationForwarderDisposables.clear()
       for (const transport of paneTransports.values()) {
         const ptyId = transport.getPtyId()
         if (
