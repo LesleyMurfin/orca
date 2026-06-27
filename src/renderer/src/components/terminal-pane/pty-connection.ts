@@ -26,6 +26,7 @@ import { getFitOverrideForPty, bindPanePtyId } from '@/lib/pane-manager/mobile-f
 import { isPtyLocked } from '@/lib/pane-manager/mobile-driver-state'
 import { isPaneReplaying, replayIntoTerminal, replayIntoTerminalAsync } from './replay-guard'
 import {
+  terminalOutputContainsEastAsianRendererRisk,
   terminalOutputPrefersRenderRefresh,
   terminalRewriteOutputRenderRefreshDecision,
   terminalRewriteOutputPrefersRenderRefresh
@@ -1769,6 +1770,7 @@ export function connectPanePty(
     executionHostId
   })
   const shouldApplyNativeWindowsRewriteRefresh = isNativeWindowsConpty
+  const shouldApplyWindowsRendererUnicodeRefresh = CLIENT_PLATFORM === 'win32'
   const shouldProtectNativeWindowsSynchronizedOutput = isNativeWindowsConpty
 
   const restoredPtyIdForTransport =
@@ -2731,6 +2733,8 @@ export function connectPanePty(
 
     function shouldForceForegroundRenderRefresh(data: string): boolean {
       const rewriteOutputPrefersRenderRefresh = foregroundRewriteOutputPrefersRenderRefresh(data)
+      const recentInput =
+        performance.now() - lastTerminalInputAt <= FOREGROUND_INTERACTIVE_REDRAW_WINDOW_MS
       if (foregroundAnsiOutputPrefersRenderRefresh(data)) {
         // Why: Codex-style background SGR panels can paint cell fills while
         // glyphs lag behind; refresh only renderer-risk ANSI chunks, not all output.
@@ -2739,6 +2743,18 @@ export function connectPanePty(
       if (rewriteOutputPrefersRenderRefresh) {
         // Why: resize fixes these panes because xterm's buffer is right but
         // in-place redraw cells can remain stale in the renderer until repaint.
+        return true
+      }
+      if (
+        shouldApplyWindowsRendererUnicodeRefresh &&
+        recentInput &&
+        data.length <= FOREGROUND_INTERACTIVE_REDRAW_CHARS &&
+        terminalOutputContainsEastAsianRendererRisk(data)
+      ) {
+        // Why: Microsoft Pinyin commits can surface as plain CJK foreground
+        // bytes; the prompt model is correct, but the local Windows renderer
+        // can leave individual glyph cells blank until repaint. Keep this
+        // scoped to recent East Asian text input, not all Unicode output.
         return true
       }
       return (

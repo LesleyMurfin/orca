@@ -470,6 +470,35 @@ function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void
   return { promise, resolve: resolveDeferred }
 }
 
+function temporarilySetNavigatorUserAgent(userAgent: string): () => void {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  const platform = userAgent.includes('Windows')
+    ? 'Win32'
+    : userAgent.includes('Macintosh')
+      ? 'MacIntel'
+      : 'Linux x86_64'
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { platform, userAgent }
+  })
+  return () => {
+    if (originalDescriptor) {
+      Object.defineProperty(globalThis, 'navigator', originalDescriptor)
+    } else {
+      delete (globalThis as { navigator?: Navigator }).navigator
+    }
+  }
+}
+
+function sendTerminalInputThroughPane(pane: ReturnType<typeof createPane>, data: string): void {
+  const onDataMock = pane.terminal.onData as unknown as {
+    mock: { calls: [[(data: string) => void] | []] }
+  }
+  const terminalInputHandler = onDataMock.mock.calls[0]?.[0]
+  expect(terminalInputHandler).toBeTypeOf('function')
+  terminalInputHandler?.(data)
+}
+
 describe('connectPanePty', () => {
   const originalRequestAnimationFrame = globalThis.requestAnimationFrame
   const originalCancelAnimationFrame = globalThis.cancelAnimationFrame
@@ -6223,7 +6252,9 @@ describe('connectPanePty', () => {
 
       expect(getMainBufferSnapshot).toHaveBeenCalledTimes(4)
       expect(pane.terminal.write).toHaveBeenCalledWith(
-        expect.stringContaining('Orca skipped hidden terminal output because main recovery was unavailable.'),
+        expect.stringContaining(
+          'Orca skipped hidden terminal output because main recovery was unavailable.'
+        ),
         expect.any(Function)
       )
       expect(pane.terminal.write).toHaveBeenCalledWith(
@@ -7082,6 +7113,198 @@ describe('connectPanePty', () => {
     capturedDataCallback.current?.('plain follow-up output\r\n')
 
     expect(refresh).not.toHaveBeenCalled()
+  })
+
+  it('forces a viewport refresh for native Windows CJK foreground output after terminal input', async () => {
+    const restoreNavigator = temporarilySetNavigatorUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    )
+    try {
+      const { connectPanePty } = await import('./pty-connection')
+      const transport = createMockTransport()
+      const capturedDataCallback: { current: ((data: string) => void) | null } = { current: null }
+      transport.connect.mockImplementation(
+        async ({ callbacks }: { callbacks: ConnectCallbacks }) => {
+          capturedDataCallback.current = callbacks.onData ?? null
+          return 'pty-id'
+        }
+      )
+      transportFactoryQueue.push(transport)
+
+      const pane = createPane(1)
+      const refresh = vi.fn()
+      const terminal = pane.terminal as typeof pane.terminal & {
+        _core?: { refresh: typeof refresh }
+      }
+      terminal._core = { refresh }
+      terminal.write = vi.fn((_data: string, callback?: () => void) => {
+        callback?.()
+      })
+
+      connectPanePty(pane as never, createManager(1) as never, createDeps() as never)
+      await flushAsyncTicks(6)
+      sendTerminalInputThroughPane(pane, '已经安装完成，软件已更新后重启。')
+
+      capturedDataCallback.current?.('已经安装完成，软件已更新后重启。')
+
+      expect(refresh).toHaveBeenCalledWith(0, 39, true)
+    } finally {
+      restoreNavigator()
+    }
+  })
+
+  it('does not force the Windows CJK repaint path without recent terminal input', async () => {
+    const restoreNavigator = temporarilySetNavigatorUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    )
+    try {
+      const { connectPanePty } = await import('./pty-connection')
+      const transport = createMockTransport()
+      const capturedDataCallback: { current: ((data: string) => void) | null } = { current: null }
+      transport.connect.mockImplementation(
+        async ({ callbacks }: { callbacks: ConnectCallbacks }) => {
+          capturedDataCallback.current = callbacks.onData ?? null
+          return 'pty-id'
+        }
+      )
+      transportFactoryQueue.push(transport)
+
+      const pane = createPane(1)
+      const refresh = vi.fn()
+      const terminal = pane.terminal as typeof pane.terminal & {
+        _core?: { refresh: typeof refresh }
+      }
+      terminal._core = { refresh }
+      terminal.write = vi.fn((_data: string, callback?: () => void) => {
+        callback?.()
+      })
+
+      connectPanePty(pane as never, createManager(1) as never, createDeps() as never)
+      await flushAsyncTicks(6)
+
+      capturedDataCallback.current?.('已经安装完成，软件已更新后重启。')
+
+      expect(refresh).not.toHaveBeenCalled()
+    } finally {
+      restoreNavigator()
+    }
+  })
+
+  it('does not force the Windows CJK repaint path for non-East-Asian Unicode input', async () => {
+    const restoreNavigator = temporarilySetNavigatorUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    )
+    try {
+      const { connectPanePty } = await import('./pty-connection')
+      const transport = createMockTransport()
+      const capturedDataCallback: { current: ((data: string) => void) | null } = { current: null }
+      transport.connect.mockImplementation(
+        async ({ callbacks }: { callbacks: ConnectCallbacks }) => {
+          capturedDataCallback.current = callbacks.onData ?? null
+          return 'pty-id'
+        }
+      )
+      transportFactoryQueue.push(transport)
+
+      const pane = createPane(1)
+      const refresh = vi.fn()
+      const terminal = pane.terminal as typeof pane.terminal & {
+        _core?: { refresh: typeof refresh }
+      }
+      terminal._core = { refresh }
+      terminal.write = vi.fn((_data: string, callback?: () => void) => {
+        callback?.()
+      })
+
+      connectPanePty(pane as never, createManager(1) as never, createDeps() as never)
+      await flushAsyncTicks(6)
+      sendTerminalInputThroughPane(pane, 'status 🚀')
+
+      capturedDataCallback.current?.('status 🚀')
+
+      expect(refresh).not.toHaveBeenCalled()
+    } finally {
+      restoreNavigator()
+    }
+  })
+
+  it('applies the Windows CJK repaint path to SSH panes on Windows clients after terminal input', async () => {
+    const restoreNavigator = temporarilySetNavigatorUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    )
+    try {
+      const { connectPanePty } = await import('./pty-connection')
+      const transport = createMockTransport()
+      const capturedDataCallback: { current: ((data: string) => void) | null } = { current: null }
+      transport.connect.mockImplementation(
+        async ({ callbacks }: { callbacks: ConnectCallbacks }) => {
+          capturedDataCallback.current = callbacks.onData ?? null
+          return 'pty-id'
+        }
+      )
+      transportFactoryQueue.push(transport)
+      // Why: the missing-glyph workaround is renderer-scoped, not PTY-scoped.
+      // SSH changes where bytes originate, but Windows still paints them locally.
+      mockStoreState = {
+        ...mockStoreState,
+        repos: [{ id: 'repo1', connectionId: 'conn-1', displayName: 'orca' }]
+      }
+
+      const pane = createPane(1)
+      const refresh = vi.fn()
+      const terminal = pane.terminal as typeof pane.terminal & {
+        _core?: { refresh: typeof refresh }
+      }
+      terminal._core = { refresh }
+      terminal.write = vi.fn((_data: string, callback?: () => void) => {
+        callback?.()
+      })
+
+      connectPanePty(pane as never, createManager(1) as never, createDeps() as never)
+      await flushAsyncTicks(6)
+      sendTerminalInputThroughPane(pane, '已经安装完成，软件已更新后重启。')
+
+      capturedDataCallback.current?.('已经安装完成，软件已更新后重启。')
+
+      expect(refresh).toHaveBeenCalledWith(0, 39, true)
+    } finally {
+      restoreNavigator()
+    }
+  })
+
+  it('does not apply the Windows CJK repaint path on non-Windows clients', async () => {
+    const restoreNavigator = temporarilySetNavigatorUserAgent('Mozilla/5.0 (Macintosh)')
+    try {
+      const { connectPanePty } = await import('./pty-connection')
+      const transport = createMockTransport()
+      const capturedDataCallback: { current: ((data: string) => void) | null } = { current: null }
+      transport.connect.mockImplementation(
+        async ({ callbacks }: { callbacks: ConnectCallbacks }) => {
+          capturedDataCallback.current = callbacks.onData ?? null
+          return 'pty-id'
+        }
+      )
+      transportFactoryQueue.push(transport)
+
+      const pane = createPane(1)
+      const refresh = vi.fn()
+      const terminal = pane.terminal as typeof pane.terminal & {
+        _core?: { refresh: typeof refresh }
+      }
+      terminal._core = { refresh }
+      terminal.write = vi.fn((_data: string, callback?: () => void) => {
+        callback?.()
+      })
+
+      connectPanePty(pane as never, createManager(1) as never, createDeps() as never)
+      await flushAsyncTicks(6)
+
+      capturedDataCallback.current?.('已经安装完成，软件已更新后重启。')
+
+      expect(refresh).not.toHaveBeenCalled()
+    } finally {
+      restoreNavigator()
+    }
   })
 
   it('keeps terminal UI drawing glyphs on the active renderer', async () => {

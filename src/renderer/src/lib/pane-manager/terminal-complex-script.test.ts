@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  terminalOutputContainsEastAsianRendererRisk,
   terminalOutputPrefersRenderRefresh,
   terminalRewriteOutputRenderRefreshDecision,
   terminalRewriteOutputPrefersRenderRefresh
@@ -71,6 +72,22 @@ describe('terminalOutputPrefersRenderRefresh', () => {
     expect(terminalOutputPrefersRenderRefresh('\x1b[38:2::48:34:56m foreground only\x1b[0m')).toBe(
       false
     )
+  })
+})
+
+describe('terminalOutputContainsEastAsianRendererRisk', () => {
+  it('detects CJK, fullwidth, and Korean output', () => {
+    expect(terminalOutputContainsEastAsianRendererRisk('已经安装完成，软件已更新后重启。')).toBe(
+      true
+    )
+    expect(terminalOutputContainsEastAsianRendererRisk('Fullwidth: ＡＢＣ１２３')).toBe(true)
+    expect(terminalOutputContainsEastAsianRendererRisk('Korean: 터미널')).toBe(true)
+  })
+
+  it('does not match non-East-Asian renderer-risk Unicode', () => {
+    expect(terminalOutputContainsEastAsianRendererRisk('Arabic: السلام عليكم')).toBe(false)
+    expect(terminalOutputContainsEastAsianRendererRisk('status 🚀')).toBe(false)
+    expect(terminalOutputContainsEastAsianRendererRisk('developer 👩‍💻')).toBe(false)
   })
 })
 

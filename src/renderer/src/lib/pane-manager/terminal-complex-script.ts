@@ -51,6 +51,21 @@ function isRendererRiskCodePoint(value: number): boolean {
   )
 }
 
+function isEastAsianRendererRiskCodePoint(value: number): boolean {
+  return (
+    isInRange(value, 0x1100, 0x11ff) ||
+    isInRange(value, 0x2e80, 0x9fff) ||
+    isInRange(value, 0xa960, 0xa97f) ||
+    isInRange(value, 0xac00, 0xd7ff) ||
+    isInRange(value, 0xf900, 0xfaff) ||
+    isInRange(value, 0xfe10, 0xfe1f) ||
+    isInRange(value, 0xfe30, 0xfe4f) ||
+    isInRange(value, 0xff00, 0xffef) ||
+    isInRange(value, 0x20000, 0x2fa1f) ||
+    isInRange(value, 0x30000, 0x3134f)
+  )
+}
+
 function sgrParamCode(param: string | undefined): number | null {
   if (!param) {
     return null
@@ -221,6 +236,22 @@ export function terminalOutputPrefersRenderRefresh(data: string): boolean {
       continue
     }
     if (isRendererRiskCodePoint(codePoint)) {
+      return true
+    }
+    if (codePoint > 0xffff) {
+      i += 1
+    }
+  }
+  return false
+}
+
+export function terminalOutputContainsEastAsianRendererRisk(data: string): boolean {
+  for (let i = 0; i < data.length; i += 1) {
+    const codePoint = data.codePointAt(i)
+    if (codePoint === undefined) {
+      continue
+    }
+    if (isEastAsianRendererRiskCodePoint(codePoint)) {
       return true
     }
     if (codePoint > 0xffff) {
