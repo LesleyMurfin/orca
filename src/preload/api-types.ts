@@ -2515,6 +2515,7 @@ export type PreloadApi = {
       callback: (data: { actionId: KeybindingActionId }) => void
     ) => () => void
     onOpenQuickOpen: (callback: () => void) => () => void
+    onToggleQuickCommandsMenu: (callback: () => void) => () => void
     onOpenNewWorkspace: (callback: () => void) => () => void
     onDeleteCurrentWorkspace: (callback: () => void) => () => void
     onOpenWorkspaceBoard: (callback: () => void) => () => void

@@ -63,6 +63,7 @@ import {
 } from '../../../shared/agent-status-identity'
 import { isGitRepoKind } from '../../../shared/repo-kind'
 import { TOGGLE_FLOATING_TERMINAL_EVENT } from '@/lib/floating-terminal'
+import { TOGGLE_QUICK_COMMANDS_MENU_EVENT } from '@/lib/quick-commands-menu-events'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import { activateTabAndFocusPane } from '@/lib/activate-tab-and-focus-pane'
 import { focusRuntimeTerminalSurface } from '@/runtime/sync-runtime-graph'
@@ -1227,6 +1228,12 @@ export function useIpcEvents(): void {
         if (store.activeView === 'terminal' && store.activeWorktreeId !== null) {
           store.openModal('quick-open')
         }
+      })
+    )
+
+    unsubs.push(
+      window.api.ui.onToggleQuickCommandsMenu(() => {
+        window.dispatchEvent(new CustomEvent(TOGGLE_QUICK_COMMANDS_MENU_EVENT))
       })
     )
 

@@ -2951,6 +2951,11 @@ const api = {
       ipcRenderer.on('ui:openQuickOpen', listener)
       return () => ipcRenderer.removeListener('ui:openQuickOpen', listener)
     },
+    onToggleQuickCommandsMenu: (callback: () => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent) => callback()
+      ipcRenderer.on('ui:toggleQuickCommandsMenu', listener)
+      return () => ipcRenderer.removeListener('ui:toggleQuickCommandsMenu', listener)
+    },
     onOpenNewWorkspace: (callback: () => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent) => callback()
       ipcRenderer.on('ui:openNewWorkspace', listener)
