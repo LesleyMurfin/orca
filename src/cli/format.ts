@@ -19,6 +19,7 @@ import type {
   CliStatusResult,
   RuntimeRepoList,
   RuntimeRepoSearchRefs,
+  RuntimeServeStatsResult,
   RuntimeTerminalClose,
   RuntimeTerminalCreate,
   RuntimeTerminalFocus,
@@ -115,6 +116,18 @@ export function formatCliStatus(status: CliStatusResult): string {
 
 export function formatStatus(status: CliStatusResult): string {
   return formatCliStatus(status)
+}
+
+export function formatServeStats(stats: RuntimeServeStatsResult): string {
+  return [
+    `version: ${stats.version}`,
+    `uptimeSeconds: ${stats.uptimeSeconds}`,
+    `port: ${stats.port}`,
+    `agents: ${stats.counts.agents}`,
+    `tasks: ${stats.counts.tasks}`,
+    `terminals: ${stats.counts.terminals}`,
+    `worktrees: ${stats.counts.worktrees}`
+  ].join('\n')
 }
 
 export function formatMemorySnapshot(snapshot: MemorySnapshot): string {

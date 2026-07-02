@@ -380,6 +380,9 @@ export class OrcaRuntimeRpcServer {
     this.platform = platform
     this.enableWebSocket = enableWebSocket
     this.wsPort = wsPort
+    // Why: hand the runtime the bound WS port so `serve stats` can report it
+    // without the runtime reaching into the transport layer.
+    this.runtime.setServePort(wsPort)
     this.webClientRoot = webClientRoot
     this.keepaliveIntervalMs = keepaliveIntervalMs
     this.longPollCap = longPollCap

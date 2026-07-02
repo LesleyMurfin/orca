@@ -36,6 +36,13 @@ export const CORE_COMMAND_SPECS: CommandSpec[] = [
     examples: ['orca status', 'orca status --json']
   },
   {
+    path: ['serve', 'stats'],
+    summary: 'Show live runtime counts (agents, tasks, terminals, worktrees)',
+    usage: 'orca serve stats [--json]',
+    allowedFlags: [...GLOBAL_FLAGS],
+    examples: ['orca serve stats', 'orca serve stats --json']
+  },
+  {
     path: ['repo', 'list'],
     summary: 'List repos registered in Orca',
     usage: 'orca repo list [--json]',

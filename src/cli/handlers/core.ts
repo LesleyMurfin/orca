@@ -1,5 +1,6 @@
+import type { RuntimeServeStatsResult } from '../../shared/runtime-types'
 import type { CommandHandler } from '../dispatch'
-import { formatCliStatus, formatStatus, printResult } from '../format'
+import { formatCliStatus, formatServeStats, formatStatus, printResult } from '../format'
 import { RuntimeClientError, serveOrcaApp } from '../runtime-client'
 
 function getOptionalServePort(flags: Map<string, string | boolean>): string | null {
@@ -48,5 +49,9 @@ export const CORE_HANDLERS: Record<string, CommandHandler> = {
       process.exitCode = 1
     }
     printResult(result, json, formatStatus)
+  },
+  'serve stats': async ({ client, json }) => {
+    const result = await client.call<RuntimeServeStatsResult>('serve.stats')
+    printResult(result, json, formatServeStats)
   }
 }
