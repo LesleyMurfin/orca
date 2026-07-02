@@ -1610,7 +1610,7 @@ export class OrcaRuntimeService {
     return this.stats?.getSummary() ?? null
   }
 
-  setServePort(port: number): void {
+  setServePort(port: number | null): void {
     this.servePort = port
   }
 
@@ -1625,10 +1625,11 @@ export class OrcaRuntimeService {
     return {
       version: app.getVersion(),
       uptimeSeconds: Math.floor((Date.now() - this.startedAt) / 1000),
-      // Why: 6768 mirrors DEFAULT_WS_PORT (runtime-rpc.ts); the runtime cannot
-      // import that value without a value-level cycle, so it falls back to the
-      // literal only when no server has set the bound port.
-      port: this.servePort ?? 6768,
+      // Why: the RPC server sets this to the actual bound WS port after the
+      // transport binds (post-listen resolvedPort), or null when no WS listener
+      // is active. Reporting the real bound port matters most in the port-
+      // conflict / restart cases this diagnostic exists to surface.
+      port: this.servePort,
       counts: {
         agents: this.stats?.getLiveAgentCount() ?? 0,
         tasks: tasks.length,

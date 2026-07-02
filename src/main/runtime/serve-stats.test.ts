@@ -63,7 +63,7 @@ describe('getServeStats', () => {
     expect(result.uptimeSeconds).toBeGreaterThanOrEqual(0)
   })
 
-  it('defaults the port to 6768 when no server has bound one', async () => {
+  it('reports a null port when no server has bound one', async () => {
     const runtime = new OrcaRuntimeService(null)
     db = new OrchestrationDb(':memory:')
     runtime.setOrchestrationDb(db)
@@ -75,7 +75,7 @@ describe('getServeStats', () => {
 
     const result = await runtime.getServeStats()
 
-    expect(result.port).toBe(6768)
+    expect(result.port).toBeNull()
     expect(result.counts).toEqual({ agents: 0, tasks: 0, terminals: 0, worktrees: 0 })
   })
 })

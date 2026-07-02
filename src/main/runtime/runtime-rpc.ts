@@ -380,9 +380,6 @@ export class OrcaRuntimeRpcServer {
     this.platform = platform
     this.enableWebSocket = enableWebSocket
     this.wsPort = wsPort
-    // Why: hand the runtime the bound WS port so `serve stats` can report it
-    // without the runtime reaching into the transport layer.
-    this.runtime.setServePort(wsPort)
     this.webClientRoot = webClientRoot
     this.keepaliveIntervalMs = keepaliveIntervalMs
     this.longPollCap = longPollCap
@@ -728,12 +725,20 @@ export class OrcaRuntimeRpcServer {
           kind: 'websocket',
           endpoint: `ws://0.0.0.0:${wsTransport.resolvedPort}`
         })
+        // Why: hand the runtime the ACTUAL bound port (resolvedPort), not the
+        // pre-bind request — wsPort may be 0 (OS-assigned) or fall back to an
+        // OS-assigned port on EADDRINUSE. `serve stats` reports this value, so
+        // it must be the post-listen truth, not the requested port.
+        this.runtime.setServePort(wsTransport.resolvedPort)
       } catch (error) {
         // Why: WebSocket transport is supplementary — the runtime must still
         // function if it fails to start (e.g., port in use). Log and continue
         // with Unix socket only.
         console.error('[runtime] Failed to start WebSocket transport:', error)
         this.wsTransport = null
+        // Why: no WS listener bound, so `serve stats` must report no port
+        // (null) rather than a phantom/stale value.
+        this.runtime.setServePort(null)
       }
     }
 

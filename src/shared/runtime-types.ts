@@ -84,7 +84,9 @@ export type CliStatusResult = {
 export type RuntimeServeStatsResult = {
   version: string
   uptimeSeconds: number
-  port: number
+  // Why: the bound WebSocket serve port, or null when no WS listener is active
+  // (WS disabled, or it failed to bind — e.g. a Unix-socket-only serve).
+  port: number | null
   counts: {
     agents: number
     tasks: number
