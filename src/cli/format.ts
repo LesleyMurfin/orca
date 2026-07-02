@@ -122,7 +122,7 @@ export function formatServeStats(stats: RuntimeServeStatsResult): string {
   return [
     `version: ${stats.version}`,
     `uptimeSeconds: ${stats.uptimeSeconds}`,
-    `port: ${stats.port}`,
+    `port: ${stats.port ?? 'none'}`,
     `agents: ${stats.counts.agents}`,
     `tasks: ${stats.counts.tasks}`,
     `terminals: ${stats.counts.terminals}`,
