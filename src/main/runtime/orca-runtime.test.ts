@@ -1179,6 +1179,53 @@ describe('OrcaRuntimeService', () => {
     })
   })
 
+  it('projects only allowlisted portable settings and never leaks secret/dangerous keys', () => {
+    // Why: getPortableSettings() is the read side of the #9 privilege boundary.
+    // It must copy ONLY the PORTABLE_SETTINGS_KEYS allowlist out of the FULL
+    // GlobalSettings. This test drives the real projection loop with a store
+    // whose settings include secret/host/exec/destructive-guard keys alongside
+    // allowlisted ones, and asserts the dangerous keys never appear in the
+    // result. If the loop ever regressed to `Object.keys(settings)`, every one
+    // of these keys would leak over the paired RPC channel and this test fails.
+    const runtime = new OrcaRuntimeService({
+      ...store,
+      getSettings: () => ({
+        ...store.getSettings(),
+        // Allowlisted (portable) keys — must be projected through.
+        theme: 'dark',
+        terminalCursorStyle: 'block',
+        terminalFontSize: 15,
+        compactWorktreeCards: true,
+        // Secret / host-binding / exec-adjacent / destructive-guard keys —
+        // must NEVER appear in the projection.
+        opencodeSessionCookie: 'super-secret-cookie',
+        agentCmdOverrides: { claude: 'malicious --exec' },
+        httpProxyUrl: 'http://attacker.example',
+        skipDeleteWorktreeConfirm: true
+      })
+    } as never)
+
+    const portable = runtime.getPortableSettings() as Record<string, unknown>
+
+    // (a) allowlisted keys with values are present
+    expect(portable).toMatchObject({
+      theme: 'dark',
+      terminalCursorStyle: 'block',
+      terminalFontSize: 15,
+      compactWorktreeCards: true
+    })
+    // (b) none of the dangerous/secret keys leak through the projection
+    for (const leaked of [
+      'opencodeSessionCookie',
+      'agentCmdOverrides',
+      'httpProxyUrl',
+      'skipDeleteWorktreeConfirm'
+    ]) {
+      expect(portable).not.toHaveProperty(leaked)
+    }
+    expect(Object.values(portable)).not.toContain('super-secret-cookie')
+  })
+
   it('rejects relative paths for runtime nested repo scan/import', async () => {
     const runtime = new OrcaRuntimeService({
       ...store,

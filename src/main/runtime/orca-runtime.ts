@@ -181,6 +181,11 @@ import {
 import { markRemoteAgentWorkspaceTrusted } from '../remote-agent-trust-presets'
 import { applyAgentStatusHooksEnabled } from '../agent-hooks/managed-agent-hook-controls'
 import {
+  PORTABLE_SETTINGS_KEYS,
+  type PortableSettings,
+  type PortableSettingsPatch
+} from './rpc/methods/environment-config'
+import {
   isWindowsAbsolutePathLike,
   isPathInsideOrEqual,
   normalizeRuntimePathForComparison
@@ -2247,6 +2252,34 @@ export class OrcaRuntimeService {
       applyAgentStatusHooksEnabled(updates.agentStatusHooksEnabled)
     }
     return this.getClientSettings()
+  }
+
+  // Why: Feature #9 remote server-settings editor. Mirrors getClientSettings/
+  // updateClientSettings but over the portable-behavior allowlist defined beside
+  // the RPC methods (rpc/methods/environment-config.ts). The read-projection only
+  // ever returns allowlisted keys; the write side is validated by the zod
+  // `.strict()` allow-schema at the RPC boundary before reaching here.
+  getPortableSettings(): PortableSettings {
+    if (!this.store?.getSettings) {
+      throw new Error('runtime_unavailable')
+    }
+    const settings = this.store.getSettings()
+    const portable: PortableSettings = {}
+    for (const key of PORTABLE_SETTINGS_KEYS) {
+      const value = settings[key]
+      if (value !== undefined) {
+        ;(portable as Record<string, unknown>)[key] = value
+      }
+    }
+    return portable
+  }
+
+  updatePortableSettings(patch: PortableSettingsPatch): PortableSettings {
+    if (!this.store?.getSettings || !this.store.updateSettings) {
+      throw new Error('runtime_unavailable')
+    }
+    this.store.updateSettings(patch, { notifyListeners: true })
+    return this.getPortableSettings()
   }
 
   listAutomations(): Automation[] {

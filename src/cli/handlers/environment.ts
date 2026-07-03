@@ -52,7 +52,52 @@ export const ENVIRONMENT_HANDLERS: Record<string, CommandHandler> = {
       (result: EnvironmentRemoveResult) =>
         `Removed environment ${result.removed.name} (${result.removed.id}).`
     )
+  },
+  'environment config list': async ({ client, json }) => {
+    const result = await client.call<PortableSettingsResult>('environment.config.getAll')
+    printResult(result, json, ({ settings }) => formatPortableSettings(settings))
+  },
+  'environment config get': async ({ flags, client, json }) => {
+    const key = getRequiredStringFlag(flags, 'key')
+    const result = await client.call<PortableSettingsResult>('environment.config.getAll')
+    printResult(result, json, ({ settings }) =>
+      key in settings ? `${key} = ${formatConfigValue(settings[key])}` : `${key} is not set`
+    )
+  },
+  'environment config set': async ({ flags, client, json }) => {
+    const key = getRequiredStringFlag(flags, 'key')
+    const value = coerceConfigValue(getRequiredStringFlag(flags, 'value'))
+    const result = await client.call<PortableSettingsResult>('environment.config.setMany', {
+      [key]: value
+    })
+    printResult(result, json, ({ settings }) => `${key} = ${formatConfigValue(settings[key])}`)
   }
+}
+
+type PortableSettingsResult = { settings: Record<string, unknown> }
+
+// Why: CLI values arrive as strings. JSON.parse coerces numbers/booleans/null so
+// the server-side zod allow-schema receives the right runtime type; anything that
+// is not valid JSON (e.g. an enum literal like `block`) is passed through as a
+// string. The server allow-schema still has the final say on both key and type.
+function coerceConfigValue(raw: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown
+  } catch {
+    return raw
+  }
+}
+
+function formatConfigValue(value: unknown): string {
+  return typeof value === 'string' ? value : JSON.stringify(value)
+}
+
+function formatPortableSettings(settings: Record<string, unknown>): string {
+  const keys = Object.keys(settings).sort()
+  if (keys.length === 0) {
+    return 'No portable settings are set.'
+  }
+  return keys.map((key) => `${key} = ${formatConfigValue(settings[key])}`).join('\n')
 }
 
 function getRequiredStringFlag(flags: Map<string, string | boolean>, name: string): string {
