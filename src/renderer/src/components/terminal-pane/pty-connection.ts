@@ -2550,6 +2550,14 @@ export function connectPanePty(
     forwardPtyResize(cols, rows)
   })
 
+  // Why: a rewrite chunk can enter AND exit the alternate screen in one parse
+  // (fast-quitting TUI), netting buffer.active.type back to 'normal'; counting
+  // switches keeps those redraws visible to the atlas-recovery check.
+  let alternateScreenBufferSwitches = 0
+  const onBufferChangeDisposable = pane.terminal.buffer.onBufferChange?.(() => {
+    alternateScreenBufferSwitches += 1
+  })
+
   // Why: renderer resize forwarding is fire-and-forget. A visible pane can
   // finish with xterm at the right grid while the PTY silently kept an older
   // grid, so Codex keeps composing against stale columns. Fit first so xterm's
@@ -3777,6 +3785,25 @@ export function connectPanePty(
       return decision.prefersRenderRefresh
     }
 
+    // Why: Vim-style TUI redraws are plain-ASCII in-place rewrites whose erased
+    // cells can keep stale WebGL glyphs until the shared atlas rebuilds. Whether
+    // a rewrite touched the alternate screen is only authoritative once xterm
+    // parses the chunk (enter/exit sequences can split across PTY chunks), so
+    // capture the pre-parse state and decide the rest at parse completion.
+    function alternateScreenRewriteAtlasRecoveryOnParsed(): () => void {
+      const wasAlternateScreenBuffer = pane.terminal.buffer.active.type === 'alternate'
+      const switchesBeforeParse = alternateScreenBufferSwitches
+      return () => {
+        if (
+          wasAlternateScreenBuffer ||
+          alternateScreenBufferSwitches !== switchesBeforeParse ||
+          pane.terminal.buffer.active.type === 'alternate'
+        ) {
+          scheduleTerminalWebglAtlasRecovery()
+        }
+      }
+    }
+
     function shouldForceForegroundRenderRefresh(data: string): {
       refresh: boolean
       inPlaceRewrite: boolean
@@ -3864,6 +3891,13 @@ export function connectPanePty(
         !foregroundOutput && hiddenOutputNeedsAtlasRecoveryAfterParse(data)
       const recoverWebglAtlasAfterParse =
         renderRefreshDecision.recoverWebglAtlasAfterParse || recoverHiddenWebglAtlasAfterParse
+      // Why: atlas recovery must repaint from the parsed xterm buffer, not a
+      // pre-write snapshot that a late TUI redraw can immediately stale.
+      const onParsedAtlasRecovery = recoverWebglAtlasAfterParse
+        ? scheduleTerminalWebglAtlasRecovery
+        : renderRefreshDecision.inPlaceRewrite
+          ? alternateScreenRewriteAtlasRecoveryOnParsed()
+          : undefined
       const foregroundRenderRefreshNeeded = renderRefreshDecision.refresh
       // Why: see nativeWindowsRewriteNeedsFollowupRenderRefresh — Claude Code's
       // in-place prompt redraws on Windows ConPTY can paint one frame late, so a
@@ -3910,9 +3944,7 @@ export function connectPanePty(
             foregroundRenderRefreshNeeded),
         followupForegroundRefresh:
           nativeWindowsCursorRestore || nativeWindowsInPlaceRewriteFollowup,
-        // Why: atlas recovery must repaint from the parsed xterm buffer, not
-        // a pre-write snapshot that a late TUI redraw can immediately stale.
-        onParsed: recoverWebglAtlasAfterParse ? scheduleTerminalWebglAtlasRecovery : undefined,
+        onParsed: onParsedAtlasRecovery,
         stripTransientCursorShows: shouldProtectNativeWindowsSynchronizedOutput && foreground,
         coalesceForeground: synchronizedForegroundOutput && synchronizedOutputEnded,
         holdForeground: synchronizedForegroundOutput && nextSynchronizedForegroundOutputActive
@@ -5639,6 +5671,7 @@ export function connectPanePty(
       onDataDisposable.dispose()
       terminalCapabilityRepliesDisposable.dispose()
       onResizeDisposable.dispose()
+      onBufferChangeDisposable?.dispose()
       pane.container.removeEventListener(PANE_PTY_RESIZE_HOLD_FLUSH_EVENT, onHeldPtyResizeFlush)
       geometryReportObserver?.disconnect()
       if (pendingGeometryReportRaf !== null) {
