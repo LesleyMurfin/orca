@@ -424,6 +424,70 @@ describe('mobile presence lock — multi-mobile semantics', () => {
     expect(ptySizes.get('pty-1')).toEqual({ cols: 132, rows: 44 })
   })
 
+  // ─── seedDesktopSubscribeViewport (first-connect reclaim) ──────────
+  //
+  // Repro: a phone fits the PTY, leaves under the default indefinite hold,
+  // then a fresh desktop client connects with a DIFFERENT viewport. The seed
+  // (called only on initial multiplex subscribe) must drive the source PTY to
+  // the connecting client's dims instead of serving the last actor's phone
+  // snapshot — the automatic equivalent of the desktop "Restore" button.
+
+  it('seedDesktopSubscribeViewport reclaims to the connecting client after a stale indefinite hold', async () => {
+    const { runtime, ptySizes, driverEvents } = createRuntime(null)
+    // Phone takes the floor and fits the PTY to its viewport.
+    await runtime.handleMobileSubscribe('pty-1', 'phone-A', { cols: 49, rows: 20 })
+    expect(ptySizes.get('pty-1')).toEqual({ cols: 49, rows: 20 })
+
+    // Phone leaves; under indefinite hold the fit-override persists and the
+    // driver only releases to idle after the soft-leave grace (250ms).
+    runtime.handleMobileUnsubscribe('pty-1', 'phone-A')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(runtime.getDriver('pty-1')).toEqual({ kind: 'idle' })
+    expect(runtime.isMobileSubscriberActive('pty-1')).toBe(false)
+    expect(runtime.getTerminalFitOverride('pty-1')).not.toBeNull()
+
+    // Desktop client connects with its own viewport → seed reclaims to it.
+    expect(
+      await runtime.seedDesktopSubscribeViewport('pty-1', { cols: 150, rows: 40 })
+    ).toBe(true)
+
+    expect(ptySizes.get('pty-1')).toEqual({ cols: 150, rows: 40 })
+    expect(runtime.getTerminalFitOverride('pty-1')).toBeNull()
+    expect(runtime.getDriver('pty-1')).toEqual({ kind: 'desktop' })
+    expect(driverEvents.at(-1)?.driver).toEqual({ kind: 'desktop' })
+  })
+
+  it('seedDesktopSubscribeViewport stays measurement-only while a phone is genuinely on the line', async () => {
+    const { runtime, ptySizes, resizes } = createRuntime()
+    await runtime.handleMobileSubscribe('pty-1', 'phone-A', { cols: 49, rows: 20 })
+    resizes.length = 0
+
+    // Active phone keeps the floor: the seed must NOT resize the PTY, only
+    // record the desktop restore geometry (mirrors the updateDesktopViewport
+    // measurement-only contract).
+    expect(
+      await runtime.seedDesktopSubscribeViewport('pty-1', { cols: 132, rows: 44 })
+    ).toBe(true)
+
+    expect(ptySizes.get('pty-1')).toEqual({ cols: 49, rows: 20 })
+    expect(resizes).toEqual([])
+    expect(runtime.getLastRendererSize('pty-1')).toEqual({ cols: 132, rows: 44 })
+    expect(runtime.getDriver('pty-1')).toEqual({ kind: 'mobile', clientId: 'phone-A' })
+  })
+
+  it('seedDesktopSubscribeViewport resizes the PTY on a first connect with no phone interference', async () => {
+    const { runtime, ptySizes, resizes } = createRuntime()
+
+    // No override, no mobile driver → behaves like a normal desktop resize.
+    expect(
+      await runtime.seedDesktopSubscribeViewport('pty-1', { cols: 132, rows: 44 })
+    ).toBe(true)
+
+    expect(ptySizes.get('pty-1')).toEqual({ cols: 132, rows: 44 })
+    expect(resizes.at(-1)).toEqual({ ptyId: 'pty-1', cols: 132, rows: 44 })
+    expect(runtime.getLastRendererSize('pty-1')).toEqual({ cols: 132, rows: 44 })
+  })
+
   it('updateMobileViewport then disconnect restores PTY to original baseline', async () => {
     const { runtime, ptySizes } = createRuntime()
     await runtime.handleMobileSubscribe('pty-1', 'phone-A', { cols: 49, rows: 38 })

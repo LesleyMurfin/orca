@@ -7417,6 +7417,67 @@ export class OrcaRuntimeService {
     return true
   }
 
+  // Why: seeds a freshly connecting desktop client's own viewport onto the
+  // source PTY at INITIAL multiplex subscribe. When a phone took the floor
+  // and left under the default indefinite hold (mobileAutoRestoreFitMs=null),
+  // the fit-override persists for weeks (see handleMobileUnsubscribe) and the
+  // PTY stays stuck at phone dims — so a new desktop connect would otherwise
+  // inherit the last actor's snapshot instead of its own measured geometry.
+  //
+  // Scoping matters: this is called ONLY on first subscribe, never from the
+  // per-resize updateDesktopViewport path, so it does not defeat the desktop
+  // "Restore" banner for an ALREADY-connected pane whose container geometry
+  // changes while an indefinite hold is in place.
+  //
+  //   - Active phone on the line (isMobileSubscriberActive): keep today's
+  //     passive measurement-only behavior — the phone keeps the floor.
+  //   - No stale hold at all: fall through to the normal desktop resize path.
+  //   - Stale hold, no active mobile subscriber: the connecting desktop client
+  //     is authoritative for its own dims — reclaim to its explicit viewport,
+  //     mirroring reclaimTerminalForDesktop's held-override branch (the
+  //     automatic equivalent of the "Restore" button, scoped to first connect).
+  async seedDesktopSubscribeViewport(
+    ptyId: string,
+    viewport: { cols: number; rows: number }
+  ): Promise<boolean> {
+    if (this.isMobileSubscriberActive(ptyId)) {
+      // A phone is genuinely subscribed right now — keep the passive
+      // measurement-only behavior unchanged (records restore geometry only).
+      return this.updateDesktopViewport(ptyId, viewport)
+    }
+    const { cols, rows } = clampTerminalViewport(viewport.cols, viewport.rows)
+    const hasStaleHold =
+      this.terminalFitOverrides.has(ptyId) || this.getDriver(ptyId).kind === 'mobile'
+    if (!hasStaleHold) {
+      // No phone interference — a normal desktop resize is correct.
+      return this.updateDesktopViewport(ptyId, viewport)
+    }
+    if (this.isResizeSuppressed()) {
+      return false
+    }
+    // Stale hold with no active mobile subscriber: record the connecting
+    // client's geometry as the restore baseline, then drive the PTY to it.
+    // freshSubscribeGuard lets enqueueLayout's "no layouts entry" short-circuit
+    // pass on the no-prior-layout edge (mirrors resizeForClient).
+    this.recordRendererGeometry(ptyId, cols, rows)
+    this.freshSubscribeGuard.add(ptyId)
+    let result: ApplyLayoutResult
+    try {
+      result = await this.enqueueLayout(ptyId, { kind: 'desktop', cols, rows })
+    } finally {
+      this.freshSubscribeGuard.delete(ptyId)
+    }
+    if (!result.ok) {
+      return false
+    }
+    this.setDriver(ptyId, { kind: 'desktop' })
+    // Why: like a desktop-initiated reclaim, this is "I'm taking over now",
+    // not a sticky preference — reset to auto so the next mobile subscribe
+    // re-enters phone-fit.
+    this.setMobileDisplayMode(ptyId, 'auto')
+    return true
+  }
+
   // Why: invoked from `runtime:restoreTerminalFit` IPC (the desktop "Take
   // back" / "Restore" button). Forces the PTY back to desktop dims and
   // flips the driver to `desktop`, suppressing further mobile-driven dim

@@ -1522,13 +1522,14 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
           if (isMobile && request.client?.id) {
             await runtime.handleMobileSubscribe(ptyId, request.client.id, request.viewport)
           } else if (request.viewport && request.client) {
-            await updateViewportForClient(
-              runtime,
-              ptyId,
-              request.client,
-              request.viewport,
-              'desktop'
-            )
+            // Why: on INITIAL desktop subscribe, seed the connecting client's
+            // own viewport authoritatively. If a phone left a stale indefinite
+            // fit-hold, the PTY is stuck at phone dims; seeding here (before
+            // getTerminalSize/serialize below) makes the subscribed/snapshot
+            // frames carry the desktop dims. Ongoing per-resize frames still go
+            // through updateViewportForClient('desktop') so the indefinite-hold
+            // banner keeps holding for an already-connected pane.
+            await runtime.seedDesktopSubscribeViewport(ptyId, request.viewport)
           }
           if (closed || streams.get(request.streamId) !== stream) {
             return
