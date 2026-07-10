@@ -137,4 +137,33 @@ describe('RemoteRuntimeRequestConnection stale socket callbacks', () => {
       vi.useRealTimers()
     }
   })
+
+  it('closes a socket whose handshake never completes after the connect timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const { RemoteRuntimeRequestConnection } =
+        await import('./remote-runtime-request-connection.js')
+      const connection = new RemoteRuntimeRequestConnection({
+        v: 2,
+        endpoint: 'ws://127.0.0.1:6768',
+        deviceToken: 'device-token',
+        publicKeyB64: Buffer.from(new Uint8Array(32).fill(9)).toString('base64')
+      })
+
+      // The request timeout is deliberately far longer than the connect timeout,
+      // so a rejection can only come from the stalled-handshake guard — the
+      // socket opens but no e2ee_ready/e2ee_authenticated frame ever arrives.
+      const request = connection.request('status.get', undefined, 300_000)
+      const socket = opens[0]!
+
+      const rejected = expect(request).rejects.toThrow('Timed out')
+      await vi.advanceTimersByTimeAsync(15_000)
+      await rejected
+
+      expect(socket.cleanup).toHaveBeenCalledTimes(1)
+      expect(socket.ws.close).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

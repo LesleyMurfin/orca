@@ -8,26 +8,41 @@ type SubscribeRecord = {
   environmentId: string
   resolveWith: () => void
   unsubscribe: ReturnType<typeof vi.fn>
+  onError: (error: unknown) => void
 }
 
-function makeHarness(initialDesired: string[]) {
+function makeHarness(
+  initialDesired: string[],
+  opts: { retryDelayMs?: number; random?: () => number } = {}
+) {
   let desired = initialDesired
   const records: SubscribeRecord[] = []
   const subscribe = vi.fn(
-    (environmentId: string): Promise<RuntimeClientEventSubscriptionHandle> => {
+    (
+      environmentId: string,
+      _onEvent: (event: unknown) => void,
+      onError: (error: unknown) => void
+    ): Promise<RuntimeClientEventSubscriptionHandle> => {
       const unsubscribe = vi.fn()
       let resolveFn!: (handle: RuntimeClientEventSubscriptionHandle) => void
       const promise = new Promise<RuntimeClientEventSubscriptionHandle>((resolve) => {
         resolveFn = resolve
       })
-      records.push({ environmentId, resolveWith: () => resolveFn({ unsubscribe }), unsubscribe })
+      records.push({
+        environmentId,
+        resolveWith: () => resolveFn({ unsubscribe }),
+        unsubscribe,
+        onError
+      })
       return promise
     }
   )
   const sync = createRuntimeClientEventsSync({
     getDesiredEnvironmentIds: () => desired,
     subscribe,
-    onEvent: vi.fn()
+    onEvent: vi.fn(),
+    retryDelayMs: opts.retryDelayMs,
+    random: opts.random
   })
   return {
     sync,
@@ -361,6 +376,72 @@ describe('createRuntimeClientEventsSync', () => {
       await vi.advanceTimersByTimeAsync(1)
       await Promise.resolve()
       expect(aAttempts).toBe(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('re-subscribes after a mid-stream drop on an established subscription', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = makeHarness(['A'], { retryDelayMs: 10, random: () => 1 })
+      h.sync.sync()
+      h.recordsFor('A')[0].resolveWith()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(h.recordsFor('A')).toHaveLength(1)
+
+      // A mid-stream transport drop on the already-established subscription.
+      h.recordsFor('A')[0].onError(new Error('drop'))
+      expect(h.recordsFor('A')[0].unsubscribe).toHaveBeenCalledTimes(1)
+      // Nothing re-subscribes synchronously — recovery goes through the backoff.
+      expect(h.recordsFor('A')).toHaveLength(1)
+
+      // The supervisor re-subscribes after the base backoff delay.
+      await vi.advanceTimersByTimeAsync(10)
+      expect(h.recordsFor('A')).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not re-subscribe after a drop for an env no longer desired', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = makeHarness(['A'], { retryDelayMs: 10, random: () => 1 })
+      h.sync.sync()
+      h.recordsFor('A')[0].resolveWith()
+      await vi.advanceTimersByTimeAsync(0)
+
+      // The env leaves the desired set, then its established subscription drops.
+      h.setDesired([])
+      h.recordsFor('A')[0].onError(new Error('drop'))
+      expect(h.recordsFor('A')[0].unsubscribe).toHaveBeenCalledTimes(1)
+
+      // No retry timer is armed, so no second subscribe ever happens.
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(h.recordsFor('A')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores a mid-stream drop that arrives after stop() (generation guard)', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = makeHarness(['A'], { retryDelayMs: 10, random: () => 1 })
+      h.sync.sync()
+      h.recordsFor('A')[0].resolveWith()
+      await vi.advanceTimersByTimeAsync(0)
+
+      h.sync.stop()
+      expect(h.recordsFor('A')[0].unsubscribe).toHaveBeenCalledTimes(1)
+
+      // A late drop from the torn-down subscription must not re-subscribe nor
+      // double-unsubscribe.
+      h.recordsFor('A')[0].onError(new Error('late drop'))
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(h.recordsFor('A')).toHaveLength(1)
+      expect(h.recordsFor('A')[0].unsubscribe).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }
