@@ -3028,7 +3028,8 @@
             "f077f586db": "No volver a preguntar",
             "c0e972d726": "Cancelar",
             "06741a2f3d": "Abrir detalles de uso de MiniMax",
-            "3bbf140864": "Uso de MiniMax"
+            "3bbf140864": "Uso de MiniMax",
+            "remoteServerLabel": "Servidor remoto"
           },
           "StatusBarUsageEmptyCta": {
             "828c764a79": "Conectar una cuenta",
@@ -4789,7 +4790,13 @@
           "435df0ee51": "En Encabezados de solicitud, copia el valor del encabezado Cookie.",
           "7492fb3bba": "Pégalo aquí y haz clic en Guardar.",
           "9fec52de4b": "Cómo copiar la cookie",
-          "4e32e030b2": "Se almacena localmente. Orca solo la envía a platform.minimax.io para actualizar el uso."
+          "4e32e030b2": "Se almacena localmente. Orca solo la envía a platform.minimax.io para actualizar el uso.",
+          "remoteServerFallback": "el servidor remoto",
+          "loadAccountsFailed": "No se pudieron cargar las cuentas de proveedor.",
+          "remoteScopeAccounts": "Mostrando las cuentas administradas por {{value0}}. Agrega o vuelve a autenticar cuentas en ese servidor.",
+          "remoteScopeAuthContext": "Cada cuenta mantiene su propio contexto de inicio de sesión en {{value0}}.",
+          "remoteEmptyClaudeAccounts": "No hay cuentas de Claude administradas en {{value0}}. Usa su inicio de sesión de Claude predeterminado del sistema; agrega cuentas en ese servidor.",
+          "remoteEmptyCodexAccounts": "No hay cuentas de Codex administradas en {{value0}}. Usa su inicio de sesión de Codex predeterminado del sistema; agrega cuentas en ese servidor."
         },
         "AdvancedPane": {
           "40b29e0bf3": "Reiniciar",
