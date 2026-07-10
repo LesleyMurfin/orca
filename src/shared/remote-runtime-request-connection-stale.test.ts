@@ -166,4 +166,49 @@ describe('RemoteRuntimeRequestConnection stale socket callbacks', () => {
       vi.useRealTimers()
     }
   })
+
+  it('does not close a healthy connection once the handshake completes before the connect timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const { RemoteRuntimeRequestConnection } =
+        await import('./remote-runtime-request-connection.js')
+      const connection = new RemoteRuntimeRequestConnection({
+        v: 2,
+        endpoint: 'ws://127.0.0.1:6768',
+        deviceToken: 'device-token',
+        publicKeyB64: Buffer.from(new Uint8Array(32).fill(9)).toString('base64')
+      })
+
+      // A healthy handshake completes well before the 15s connect budget. The
+      // request stays outstanding so the idle-close timer is never armed either,
+      // isolating the connect-timer clear path: advancing past the connect
+      // timeout must NOT tear down a ready connection.
+      const request = connection.request('status.get', undefined, 300_000)
+      const socket = opens[0]!
+      authenticate(socket)
+      await vi.waitFor(() => expect(socket.sent.length).toBeGreaterThan(1))
+
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(socket.cleanup).not.toHaveBeenCalled()
+      expect(socket.ws.close).not.toHaveBeenCalled()
+
+      // The connection is still live: the pending request resolves normally.
+      const requestId = latestRequestId(socket)
+      socket.callbacks.onTextFrame(
+        socket.ws,
+        encrypt(
+          JSON.stringify({
+            id: requestId,
+            ok: true,
+            result: { state: 'ok' },
+            _meta: { runtimeId: 'runtime-1' }
+          }),
+          socket.sharedKey
+        )
+      )
+      await expect(request).resolves.toMatchObject({ ok: true, result: { state: 'ok' } })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
