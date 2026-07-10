@@ -612,14 +612,15 @@ async function readTranslatedWorktreeGraph(
   })
 }
 
-// Why (PRB-0003): a stale workspace registration can point at a directory that
-// no longer exists. Every resolved-worktree-cache invalidation re-enumerates it,
-// so `git worktree list` is re-spawned ~1/sec with a missing cwd — each spawn
-// fails `spawn git ENOENT` before exec and is swallowed, hot-looping ~20-30
-// failed spawns/min. Once a path is *confirmed* missing (stat -> ENOENT), back
-// off so we probe it at most once per window instead of every poll. Any
-// successful scan clears the mark, so a recreated path recovers within one
-// window. Keyed by repoPath+wslDistro (not signal), mirroring the in-flight key.
+// Why: a stale workspace registration can point at a directory that no longer
+// exists. Every resolved-worktree-cache invalidation re-enumerates it, so
+// `git worktree list` is re-spawned on each status poll with a missing cwd —
+// every spawn fails `spawn git ENOENT` before exec and is swallowed, so the
+// poller hot-loops failed spawns indefinitely. Once a path is *confirmed*
+// missing (stat -> ENOENT), back off and probe it at most once per window
+// instead of on every poll. Any successful scan — or any local worktree
+// mutation — clears the mark, so a recreated path recovers within one window.
+// Keyed by repoPath+wslDistro (not signal), mirroring the in-flight scan key.
 const MISSING_REPO_PATH_BACKOFF_MS = 30_000
 const missingRepoPathBackoffUntil = new Map<string, number>()
 
@@ -645,6 +646,21 @@ function markRepoPathMissing(key: string): void {
 
 function clearRepoPathMissing(key: string): void {
   missingRepoPathBackoffUntil.delete(key)
+}
+
+// Why: a completed local worktree mutation (create/move/remove) proves the repo
+// path exists again, so drop any stale missing-path mark for it — otherwise a
+// path recreated inside the backoff window (e.g. create-then-list) would still
+// short-circuit to [] and break callers that assert the new worktree is
+// present. Mutations don't thread wslDistro, so clear every distro variant of
+// the repo path; re-probing once after a rare failed mutation is cheap.
+function clearRepoPathMissingForRepo(repoPath: string): void {
+  const prefix = `${repoPath}\0`
+  for (const key of missingRepoPathBackoffUntil.keys()) {
+    if (key.startsWith(prefix)) {
+      missingRepoPathBackoffUntil.delete(key)
+    }
+  }
 }
 
 /** Test-only: clear the missing-repo-path backoff memo between cases so the
@@ -716,6 +732,7 @@ function bumpWorktreeScanGeneration(repoPath: string): void {
     return
   }
   worktreeScanGenerations.set(repoPath, (worktreeScanGenerations.get(repoPath) ?? 0) + 1)
+  clearRepoPathMissingForRepo(repoPath)
 }
 
 function pruneWorktreeScanGeneration(repoPath: string): void {
