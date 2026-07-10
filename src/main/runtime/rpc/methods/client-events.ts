@@ -14,11 +14,13 @@ export const CLIENT_EVENT_METHODS: readonly RpcAnyMethod[] = [
   defineStreamingMethod({
     name: 'runtime.clientEvents.subscribe',
     params: null,
-    handler: async (_params, { runtime, connectionId }, emit) => {
+    handler: async (_params, { runtime, connectionId, clientId }, emit) => {
       await new Promise<void>((resolve) => {
+        // Why: pass clientId so the runtime can self-exclude peers from an
+        // origin-gated activateWorktree event (client view decoupling).
         const unsubscribe = runtime.onClientEvent((event) => {
           emit(event)
-        })
+        }, clientId)
 
         const seq = ++clientEventSubscriptionSeq
         const subscriptionId = `runtime-client-events-${connectionId ?? 'inproc'}-${seq}`

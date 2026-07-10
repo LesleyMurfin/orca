@@ -26,6 +26,11 @@ export type RuntimeClientEvent =
       setup?: WorktreeSetupLaunch
       startup?: WorktreeStartupLaunch
       defaultTabs?: WorktreeDefaultTabsLaunch
+      // Why: the acting device's clientId. When present, the runtime delivers the
+      // event only to that self subscriber so paired peers are not force-followed
+      // onto the worktree (client view decoupling). Absent for CLI/creation
+      // activations, which still broadcast to all clients.
+      originClientId?: string
     }
 
 export type RuntimeClientEventStreamMessage =
@@ -46,7 +51,8 @@ export function toRuntimeActivateWorktreeEvent(
   worktreeId: string,
   setup?: CreateWorktreeResult['setup'],
   startup?: WorktreeStartupLaunch,
-  defaultTabs?: CreateWorktreeResult['defaultTabs']
+  defaultTabs?: CreateWorktreeResult['defaultTabs'],
+  originClientId?: string
 ): RuntimeActivateWorktreeEvent {
   return {
     type: 'activateWorktree',
@@ -54,6 +60,7 @@ export function toRuntimeActivateWorktreeEvent(
     worktreeId,
     ...(setup ? { setup } : {}),
     ...(startup ? { startup } : {}),
-    ...(defaultTabs ? { defaultTabs } : {})
+    ...(defaultTabs ? { defaultTabs } : {}),
+    ...(originClientId ? { originClientId } : {})
   }
 }

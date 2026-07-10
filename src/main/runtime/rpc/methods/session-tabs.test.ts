@@ -35,8 +35,88 @@ describe('session tab RPC methods', () => {
 
     expect(response.ok).toBe(true)
     expect(runtime.activateMobileSessionTab).toHaveBeenCalledWith('id:wt-1', 'tab-1', 'leaf-1', {
-      notifyClients: false
+      notifyClients: false,
+      clientId: undefined
     })
+  })
+
+  it('threads the device clientId into per-device tab activation', async () => {
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      activateMobileSessionTab: vi.fn().mockResolvedValue({
+        worktree: 'wt-1',
+        publicationEpoch: 'epoch-1',
+        snapshotVersion: 1,
+        activeGroupId: null,
+        activeTabId: 'tab-1',
+        activeTabType: 'terminal',
+        tabs: []
+      })
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: SESSION_TAB_METHODS })
+
+    // The mobile WebSocket path uses dispatchStreaming, which threads the
+    // authenticated device token as clientId even for non-streaming methods.
+    await dispatcher.dispatchStreaming(
+      makeRequest('session.tabs.activate', {
+        worktree: 'id:wt-1',
+        tabId: 'tab-1',
+        notifyClients: false
+      }),
+      vi.fn(),
+      { clientId: 'device-A' }
+    )
+
+    expect(runtime.activateMobileSessionTab).toHaveBeenCalledWith('id:wt-1', 'tab-1', undefined, {
+      notifyClients: false,
+      clientId: 'device-A'
+    })
+  })
+
+  it('threads the device clientId into the session tabs subscription and initial projection', async () => {
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      listMobileSessionTabs: vi.fn().mockResolvedValue({
+        worktree: 'wt-1',
+        publicationEpoch: 'epoch-1',
+        snapshotVersion: 1,
+        activeGroupId: null,
+        activeTabId: null,
+        activeTabType: null,
+        tabs: []
+      }),
+      onMobileSessionTabsChanged: vi.fn(() => vi.fn()),
+      registerSubscriptionCleanup: vi.fn()
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: SESSION_TAB_METHODS })
+
+    await dispatcher.dispatchStreaming(
+      makeRequest('session.tabs.subscribe', { worktree: 'id:wt-1' }),
+      vi.fn(),
+      { connectionId: 'conn-1', clientId: 'device-A' }
+    )
+
+    expect(runtime.listMobileSessionTabs).toHaveBeenCalledWith('id:wt-1', 'device-A')
+    expect(runtime.onMobileSessionTabsChanged).toHaveBeenCalledWith(expect.any(Function), 'device-A')
+  })
+
+  it('threads the device clientId into the all-session-tabs subscription', async () => {
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      listAllMobileSessionTabs: vi.fn(() => []),
+      onMobileSessionTabsChanged: vi.fn(() => vi.fn()),
+      registerSubscriptionCleanup: vi.fn()
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: SESSION_TAB_METHODS })
+
+    await dispatcher.dispatchStreaming(
+      makeRequest('session.tabs.subscribeAll'),
+      vi.fn(),
+      { connectionId: 'conn-1', clientId: 'device-A' }
+    )
+
+    expect(runtime.listAllMobileSessionTabs).toHaveBeenCalledWith('device-A')
+    expect(runtime.onMobileSessionTabsChanged).toHaveBeenCalledWith(expect.any(Function), 'device-A')
   })
 
   it('dispatches tab moves through the runtime', async () => {

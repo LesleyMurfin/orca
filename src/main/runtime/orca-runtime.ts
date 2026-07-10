@@ -2044,6 +2044,12 @@ export class OrcaRuntimeService {
   private authoritativeWindowId: number | null = null
   private tabs = new Map<string, RuntimeSyncedTab>()
   private mobileSessionTabsByWorktree = new Map<string, RuntimeMobileSessionTabsSnapshot>()
+  // Why: the active tab is a per-device projection, not shared state. Two paired
+  // clients on one worktree must not "swallow" each other's tab selection. Keyed
+  // worktreeId -> clientId (stable deviceToken) -> active tabId, this overlays the
+  // shared snapshot so each device's stream sees its own active tab while the
+  // shared snapshot.activeTabId still drives every internal reader/materialize.
+  private activeTabByDevice = new Map<string, Map<string, string>>()
   // Why: idempotency map for mobile terminal creation — a retried create with the
   // same clientMutationId returns the in-flight operation instead of duplicating.
   private mobileTerminalCreateByMutationId = new Map<
@@ -2059,7 +2065,13 @@ export class OrcaRuntimeService {
     string,
     { activate: boolean; selectIfNoActiveTab: boolean }
   >()
-  private mobileSessionTabListeners = new Set<(snapshot: RuntimeMobileSessionTabsResult) => void>()
+  // Why: each subscriber carries its clientId so per-device active-tab projection
+  // can hand every listener its own slot (falling back to the shared snapshot when
+  // the device has no slot yet, preserving reattach hydration).
+  private mobileSessionTabListeners = new Set<{
+    listener: (snapshot: RuntimeMobileSessionTabsResult) => void
+    clientId?: string
+  }>()
   private leaves = new Map<string, RuntimeLeafRecord>()
   // Why: PTY output is a per-keystroke hot path. Looking up affected leaves by
   // ptyId keeps active TUI redraws independent of the total open terminal count.
@@ -2072,7 +2084,10 @@ export class OrcaRuntimeService {
   private waitersByHandle = new Map<string, Set<TerminalWaiter>>()
   private ptyController: RuntimePtyController | null = null
   private notifier: RuntimeNotifier | null = null
-  private clientEventListeners = new Set<(event: RuntimeClientEvent) => void>()
+  private clientEventListeners = new Set<{
+    listener: (event: RuntimeClientEvent) => void
+    clientId?: string
+  }>()
   private forkBackfillStarted = false
   private agentBrowserBridge: AgentBrowserBridge | null = null
   private offscreenBrowserBackend: BrowserBackend | null = null
@@ -2800,16 +2815,26 @@ export class OrcaRuntimeService {
     }
   }
 
-  onClientEvent(listener: (event: RuntimeClientEvent) => void): () => void {
-    this.clientEventListeners.add(listener)
+  onClientEvent(listener: (event: RuntimeClientEvent) => void, clientId?: string): () => void {
+    const entry = { listener, ...(clientId ? { clientId } : {}) }
+    this.clientEventListeners.add(entry)
     return () => {
-      this.clientEventListeners.delete(listener)
+      this.clientEventListeners.delete(entry)
     }
   }
 
   private emitClientEvent(event: RuntimeClientEvent): void {
-    for (const listener of this.clientEventListeners) {
-      listener(event)
+    // Why: a worktree activation carrying an origin clientId is the acting
+    // device's own selection; delivering it to peers would force them to follow
+    // (the "swallow" bug). Route origin-gated activations only to the self
+    // subscriber. Every other event (and origin-less CLI/creation activations)
+    // still broadcasts to all subscribers.
+    const originClientId = event.type === 'activateWorktree' ? event.originClientId : undefined
+    for (const entry of this.clientEventListeners) {
+      if (originClientId !== undefined && entry.clientId !== originClientId) {
+        continue
+      }
+      entry.listener(event)
     }
   }
 
@@ -2834,11 +2859,12 @@ export class OrcaRuntimeService {
     worktreeId: string,
     setup?: CreateWorktreeResult['setup'],
     startup?: WorktreeStartupLaunch,
-    defaultTabs?: CreateWorktreeResult['defaultTabs']
+    defaultTabs?: CreateWorktreeResult['defaultTabs'],
+    originClientId?: string
   ): void {
     this.notifier?.activateWorktree(repoId, worktreeId, setup, startup, defaultTabs)
     this.emitClientEvent(
-      toRuntimeActivateWorktreeEvent(repoId, worktreeId, setup, startup, defaultTabs)
+      toRuntimeActivateWorktreeEvent(repoId, worktreeId, setup, startup, defaultTabs, originClientId)
     )
   }
 
@@ -2994,24 +3020,27 @@ export class OrcaRuntimeService {
     }
   }
 
-  async listMobileSessionTabs(worktreeSelector: string): Promise<RuntimeMobileSessionTabsResult> {
+  async listMobileSessionTabs(
+    worktreeSelector: string,
+    clientId?: string
+  ): Promise<RuntimeMobileSessionTabsResult> {
     const explicitWorktreeId = getExplicitWorktreeIdSelector(worktreeSelector)
     if (explicitWorktreeId) {
       this.hydrateHeadlessMobileSessionTabsFromWorkspaceSession(explicitWorktreeId)
       await this.refreshMobileSessionPtyRecords()
-      return this.getMobileSessionTabsForWorktree(explicitWorktreeId)
+      return this.getMobileSessionTabsForWorktree(explicitWorktreeId, clientId)
     }
     const worktree = await this.resolveWorktreeSelector(worktreeSelector)
     this.hydrateHeadlessMobileSessionTabsFromWorkspaceSession(worktree.id)
     await this.refreshMobileSessionPtyRecords()
-    return this.getMobileSessionTabsForWorktree(worktree.id)
+    return this.getMobileSessionTabsForWorktree(worktree.id, clientId)
   }
 
-  async listAllMobileSessionTabs(): Promise<RuntimeMobileSessionTabsResult[]> {
+  async listAllMobileSessionTabs(clientId?: string): Promise<RuntimeMobileSessionTabsResult[]> {
     this.hydrateHeadlessMobileSessionTabsFromWorkspaceSession()
     await this.refreshMobileSessionPtyRecords()
     return [...this.mobileSessionTabsByWorktree.values()].map((snapshot) =>
-      this.toMobileSessionTabsResult(snapshot)
+      this.toMobileSessionTabsResult(snapshot, this.activeTabOverrideForDevice(snapshot.worktree, clientId))
     )
   }
 
@@ -3944,13 +3973,64 @@ export class OrcaRuntimeService {
     })
   }
 
+  // Why: per-device active-tab projection. Each subscriber gets the snapshot with
+  // its own device's active-tab overlay; devices without a slot (fresh/reattaching)
+  // fall back to the shared result, preserving hydration.
   private emitMobileSessionTabsSnapshot(snapshot: RuntimeMobileSessionTabsSnapshot): void {
     if (this.mobileSessionTabListeners.size === 0) {
       return
     }
-    const result = this.toMobileSessionTabsResult(snapshot)
-    for (const listener of this.mobileSessionTabListeners) {
-      listener(result)
+    const sharedResult = this.toMobileSessionTabsResult(snapshot)
+    const deviceSlots = this.activeTabByDevice.get(snapshot.worktree)
+    for (const entry of this.mobileSessionTabListeners) {
+      const slotTabId =
+        entry.clientId && deviceSlots ? deviceSlots.get(entry.clientId) : undefined
+      entry.listener(
+        slotTabId !== undefined ? this.toMobileSessionTabsResult(snapshot, slotTabId) : sharedResult
+      )
+    }
+  }
+
+  private activeTabOverrideForDevice(worktreeId: string, clientId?: string): string | undefined {
+    if (!clientId) {
+      return undefined
+    }
+    return this.activeTabByDevice.get(worktreeId)?.get(clientId)
+  }
+
+  private setActiveTabForDevice(worktreeId: string, clientId: string, tabId: string): void {
+    let slots = this.activeTabByDevice.get(worktreeId)
+    if (!slots) {
+      slots = new Map<string, string>()
+      this.activeTabByDevice.set(worktreeId, slots)
+    }
+    slots.set(clientId, tabId)
+  }
+
+  // Why: a closed tab's device slots must be dropped so a reused tab id can't
+  // resurrect a stale projection; projection also falls back to shared when a
+  // slot points at a tab that no longer exists.
+  private clearDeviceSlotsForTab(worktreeId: string, tabId: string): void {
+    const slots = this.activeTabByDevice.get(worktreeId)
+    if (!slots) {
+      return
+    }
+    for (const [clientId, slotTabId] of slots) {
+      if (slotTabId === tabId) {
+        slots.delete(clientId)
+      }
+    }
+    if (slots.size === 0) {
+      this.activeTabByDevice.delete(worktreeId)
+    }
+  }
+
+  private clearActiveTabSlotsForClient(clientId: string): void {
+    for (const [worktreeId, slots] of this.activeTabByDevice) {
+      slots.delete(clientId)
+      if (slots.size === 0) {
+        this.activeTabByDevice.delete(worktreeId)
+      }
     }
   }
 
@@ -3966,7 +4046,7 @@ export class OrcaRuntimeService {
     worktreeSelector: string,
     tabId: string,
     leafId?: string,
-    opts: { notifyClients?: boolean } = {}
+    opts: { notifyClients?: boolean; clientId?: string } = {}
   ): Promise<RuntimeMobileSessionTabsResult> {
     const explicitWorktreeId = getExplicitWorktreeIdSelector(worktreeSelector)
     const worktreeId =
@@ -4068,8 +4148,8 @@ export class OrcaRuntimeService {
             )
       const targetTab = activeSibling ?? tab
       if (opts.notifyClients === false) {
-        this.activateMobileSessionTabForRemoteClient(worktreeId, snapshot!, targetTab)
-        return this.getMobileSessionTabsForWorktree(worktreeId)
+        this.activateMobileSessionTabForRemoteClient(worktreeId, snapshot!, targetTab, opts.clientId)
+        return this.getMobileSessionTabsForWorktree(worktreeId, opts.clientId)
       }
       if (!this.notifier?.focusTerminal) {
         if (
@@ -4078,34 +4158,41 @@ export class OrcaRuntimeService {
         ) {
           this.activateHeadlessMobileSessionTerminalTab(worktreeId, snapshot!, targetTab)
         }
-        return this.getMobileSessionTabsForWorktree(worktreeId)
+        return this.getMobileSessionTabsForWorktree(worktreeId, opts.clientId)
       }
       this.notifier?.focusTerminal(targetTab.parentTabId, worktreeId, targetTab.leafId)
     } else if (tab.type === 'browser') {
       if (opts.notifyClients === false) {
-        this.activateMobileSessionTabForRemoteClient(worktreeId, snapshot!, tab)
-        return this.getMobileSessionTabsForWorktree(worktreeId)
+        this.activateMobileSessionTabForRemoteClient(worktreeId, snapshot!, tab, opts.clientId)
+        return this.getMobileSessionTabsForWorktree(worktreeId, opts.clientId)
       }
       // Why: browser mobile tabs are renderer-owned unified tabs; focusing the
       // session tab keeps desktop tab order/group state authoritative.
       this.notifier?.focusEditorTab?.(tab.id, worktreeId)
     } else {
       if (opts.notifyClients === false) {
-        this.activateMobileSessionTabForRemoteClient(worktreeId, snapshot!, tab)
-        return this.getMobileSessionTabsForWorktree(worktreeId)
+        this.activateMobileSessionTabForRemoteClient(worktreeId, snapshot!, tab, opts.clientId)
+        return this.getMobileSessionTabsForWorktree(worktreeId, opts.clientId)
       }
       this.notifier?.focusEditorTab?.(tab.id, worktreeId)
     }
-    return this.getMobileSessionTabsForWorktree(worktreeId)
+    return this.getMobileSessionTabsForWorktree(worktreeId, opts.clientId)
   }
 
   private activateMobileSessionTabForRemoteClient(
     worktreeId: string,
     snapshot: RuntimeMobileSessionTabsSnapshot,
-    activeTab: RuntimeMobileSessionSnapshotTab
+    activeTab: RuntimeMobileSessionSnapshotTab,
+    clientId?: string
   ): void {
     // Why: phone tab selection should update the mobile snapshot without
     // asking desktop renderers to focus the phone's background worktree.
+    // Record the acting device's active-tab slot so its stream projects this
+    // choice while peers keep their own; the shared snapshot below still updates
+    // so every internal reader/materialize path is unchanged.
+    if (clientId) {
+      this.setActiveTabForDevice(worktreeId, clientId, activeTab.id)
+    }
     const activeTopLevelId = activeTab.type === 'terminal' ? activeTab.parentTabId : activeTab.id
     const tabs = snapshot.tabs.map((tab) => ({
       ...tab,
@@ -4261,6 +4348,9 @@ export class OrcaRuntimeService {
     if (!tab) {
       throw new Error('tab_not_found')
     }
+    // Why: drop any per-device active-tab slot pointing at the tab being closed so
+    // a device's projection falls back to the shared active instead of a dead tab.
+    this.clearDeviceSlotsForTab(worktreeId, tab.id)
     if (tab.type === 'terminal') {
       if (!this.notifier?.closeTerminal) {
         this.closeHeadlessMobileTerminalTab(worktreeId, snapshot!, tab)
@@ -5204,11 +5294,13 @@ export class OrcaRuntimeService {
   }
 
   onMobileSessionTabsChanged(
-    listener: (snapshot: RuntimeMobileSessionTabsResult) => void
+    listener: (snapshot: RuntimeMobileSessionTabsResult) => void,
+    clientId?: string
   ): () => void {
-    this.mobileSessionTabListeners.add(listener)
+    const entry = { listener, ...(clientId ? { clientId } : {}) }
+    this.mobileSessionTabListeners.add(entry)
     return () => {
-      this.mobileSessionTabListeners.delete(listener)
+      this.mobileSessionTabListeners.delete(entry)
     }
   }
 
@@ -7030,6 +7122,9 @@ export class OrcaRuntimeService {
   onClientDisconnected(clientId: string): void {
     this.revokeTerminalFileGrantsForClient(clientId)
     this.cancelMobileDictationForClient(clientId)
+    // Why: a dropped device must not leak its per-device active-tab slots, which
+    // would otherwise linger until the tab closed or the worktree was removed.
+    this.clearActiveTabSlotsForClient(clientId)
 
     // (1) Cancel pending restore-debounce timers owned by this client.
     for (const [ptyId, entry] of this.pendingRestoreTimers) {
@@ -12623,7 +12718,7 @@ export class OrcaRuntimeService {
 
   async activateManagedWorktree(
     worktreeSelector: string,
-    opts: { notifyClients?: boolean; clientKind?: 'mobile' | 'runtime' } = {}
+    opts: { notifyClients?: boolean; clientKind?: 'mobile' | 'runtime'; clientId?: string } = {}
   ): Promise<{
     repoId: string
     worktreeId: string
@@ -12652,7 +12747,10 @@ export class OrcaRuntimeService {
     if (opts.notifyClients !== false) {
       // Why: inactive worktree terminal panes are renderer-owned and may not have
       // live PTYs until the desktop activates the worktree and mounts them.
-      this.notifyActivateWorktree(repo.id, worktree.id)
+      // Thread the acting device as the event origin so paired peers are not
+      // force-followed onto this worktree (client view decoupling); origin-less
+      // callers (CLI, creation reveal) still broadcast to all clients.
+      this.notifyActivateWorktree(repo.id, worktree.id, undefined, undefined, undefined, opts.clientId)
     } else {
       // Why: mobile/web selection needs fresh session surfaces without forcing
       // every attached desktop renderer to navigate to the phone's workspace.
@@ -16812,9 +16910,7 @@ export class OrcaRuntimeService {
     }
     this.mobileSessionTabsByWorktree.set(worktreeId, next)
     const result = this.toMobileSessionTabsResult(next)
-    for (const listener of this.mobileSessionTabListeners) {
-      listener(result)
-    }
+    this.emitMobileSessionTabsSnapshot(next)
     const created = result.tabs.find((candidate) => candidate.id === tab.id)
     if (!created || created.type !== 'terminal') {
       throw new Error('terminal_handle_stale')
@@ -19048,8 +19144,11 @@ export class OrcaRuntimeService {
       activeTabType: null,
       tabs: []
     }
-    for (const listener of this.mobileSessionTabListeners) {
-      listener(removed)
+    // Why: the worktree's session is gone, so any per-device active-tab slots for
+    // it are stale and must be dropped to avoid leaking across a later reuse.
+    this.activeTabByDevice.delete(worktreeId)
+    for (const entry of this.mobileSessionTabListeners) {
+      entry.listener(removed)
     }
   }
 
@@ -19067,10 +19166,7 @@ export class OrcaRuntimeService {
     }
     // Why: browser bridge lifecycle events are already scoped by worktree; avoid
     // fanning out every active workspace snapshot during navigation/tab churn.
-    const result = this.toMobileSessionTabsResult(snapshot)
-    for (const listener of this.mobileSessionTabListeners) {
-      listener(result)
-    }
+    this.emitMobileSessionTabsSnapshot(snapshot)
   }
 
   private notifyMobileSessionTabSnapshots(): void {
@@ -19078,14 +19174,14 @@ export class OrcaRuntimeService {
       return
     }
     for (const snapshot of this.mobileSessionTabsByWorktree.values()) {
-      const result = this.toMobileSessionTabsResult(snapshot)
-      for (const listener of this.mobileSessionTabListeners) {
-        listener(result)
-      }
+      this.emitMobileSessionTabsSnapshot(snapshot)
     }
   }
 
-  private getMobileSessionTabsForWorktree(worktreeId: string): RuntimeMobileSessionTabsResult {
+  private getMobileSessionTabsForWorktree(
+    worktreeId: string,
+    clientId?: string
+  ): RuntimeMobileSessionTabsResult {
     const snapshot = this.mobileSessionTabsByWorktree.get(worktreeId)
     if (!snapshot) {
       return {
@@ -19098,7 +19194,10 @@ export class OrcaRuntimeService {
         tabs: []
       }
     }
-    return this.toMobileSessionTabsResult(snapshot)
+    return this.toMobileSessionTabsResult(
+      snapshot,
+      this.activeTabOverrideForDevice(worktreeId, clientId)
+    )
   }
 
   private async resolveMobileMarkdownWorktreeId(
@@ -19195,8 +19294,22 @@ export class OrcaRuntimeService {
    * resolving launch agent ownership and normalizing titles.
    */
   private toMobileSessionTabsResult(
-    snapshot: RuntimeMobileSessionTabsSnapshot
+    snapshot: RuntimeMobileSessionTabsSnapshot,
+    activeTabIdOverride?: string | null
   ): RuntimeMobileSessionTabsResult {
+    // Why: per-device active-tab projection. When a caller supplies its device's
+    // active tab, recompute each tab's `isActive` and the returned active id/type/
+    // group from that override. The override is honored only when it names a tab
+    // still present in the snapshot; otherwise (and when undefined) the shared
+    // snapshot.activeTabId drives everything, so the default path is byte-identical
+    // to the pre-projection behavior and reattaching devices hydrate correctly.
+    const overrideActiveId =
+      activeTabIdOverride != null && snapshot.tabs.some((tab) => tab.id === activeTabIdOverride)
+        ? activeTabIdOverride
+        : undefined
+    const effectiveActiveId = overrideActiveId ?? snapshot.activeTabId
+    const projectIsActive = (tabId: string, fallback: boolean): boolean =>
+      overrideActiveId !== undefined ? tabId === overrideActiveId : fallback
     const tabs: RuntimeMobileSessionClientTab[] = []
     const liveBrowserTabsByPageId = this.getLiveBrowserTabsByPageId(snapshot.worktree)
     for (const tab of snapshot.tabs) {
@@ -19216,12 +19329,16 @@ export class OrcaRuntimeService {
           url: liveTab.url || tab.url,
           // Why: bridge "active" means active BrowserView/webContents, not
           // active Orca tab. Preserve the renderer's app-level session focus.
-          isActive: tab.isActive
+          isActive: projectIsActive(tab.id, tab.isActive)
         })
         continue
       }
       if (tab.type === 'markdown' || tab.type === 'file') {
-        tabs.push(tab)
+        tabs.push(
+          overrideActiveId !== undefined
+            ? { ...tab, isActive: tab.id === overrideActiveId }
+            : tab
+        )
         continue
       }
       const syncedTab = this.tabs.get(tab.parentTabId)
@@ -19327,16 +19444,16 @@ export class OrcaRuntimeService {
         ...(tab.color != null ? { color: tab.color } : {}),
         ...(tab.isPinned ? { isPinned: true } : {}),
         ...(tab.viewMode ? { viewMode: tab.viewMode } : {}),
-        isActive: tab.isActive,
+        isActive: projectIsActive(tab.id, tab.isActive),
         ...(terminalHandle
           ? { status: 'ready' as const, terminal: terminalHandle }
           : { status: 'pending-handle' as const, terminal: null })
       })
     }
     const active =
-      tabs.find((tab) => tab.isActive && tab.id === snapshot.activeTabId) ??
+      tabs.find((tab) => tab.isActive && tab.id === effectiveActiveId) ??
       tabs.find((tab) => tab.isActive) ??
-      (snapshot.activeTabId ? (tabs[0] ?? null) : null)
+      (effectiveActiveId ? (tabs[0] ?? null) : null)
     const normalizedTabs =
       active && !tabs.some((tab) => tab.isActive)
         ? tabs.map((tab) => (tab.id === active.id ? { ...tab, isActive: true } : tab))
@@ -19348,7 +19465,9 @@ export class OrcaRuntimeService {
         ? undefined
         : this.pruneMobileSessionTabGroupLayout(snapshot.tabGroupLayout, validGroupIds)
     const activeGroupId =
-      snapshot.activeGroupId && validGroupIds.has(snapshot.activeGroupId)
+      overrideActiveId === undefined &&
+      snapshot.activeGroupId &&
+      validGroupIds.has(snapshot.activeGroupId)
         ? snapshot.activeGroupId
         : (tabGroups?.find((group) =>
             active

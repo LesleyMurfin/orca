@@ -39,7 +39,32 @@ describe('worktree RPC methods', () => {
     expect(response).toMatchObject({ ok: true })
     expect(runtime.activateManagedWorktree).toHaveBeenCalledWith('id:wt-1', {
       notifyClients: false,
-      clientKind: undefined
+      clientKind: undefined,
+      clientId: undefined
+    })
+  })
+
+  it('forwards the acting device clientId as the activation origin', async () => {
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      activateManagedWorktree: vi
+        .fn()
+        .mockResolvedValue({ repoId: 'repo-1', worktreeId: 'wt-1', activated: true })
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: WORKTREE_METHODS })
+
+    // The desktop/web WebSocket path threads the authenticated device token as
+    // clientId; the runtime uses it to self-exclude peers from the follow event.
+    await dispatcher.dispatchStreaming(
+      makeRequest('worktree.activate', { worktree: 'id:wt-1' }),
+      vi.fn(),
+      { clientId: 'device-A' }
+    )
+
+    expect(runtime.activateManagedWorktree).toHaveBeenCalledWith('id:wt-1', {
+      notifyClients: true,
+      clientKind: undefined,
+      clientId: 'device-A'
     })
   })
 
@@ -63,7 +88,8 @@ describe('worktree RPC methods', () => {
 
     expect(runtime.activateManagedWorktree).toHaveBeenCalledWith('id:wt-1', {
       notifyClients: false,
-      clientKind: 'mobile'
+      clientKind: 'mobile',
+      clientId: undefined
     })
   })
 
