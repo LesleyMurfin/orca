@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import type { RuntimeClientEvent } from '../../../shared/runtime-client-events'
 import {
   createRuntimeClientEventsSync,
   type RuntimeClientEventSubscriptionHandle
@@ -20,7 +21,7 @@ function makeHarness(
   const subscribe = vi.fn(
     (
       environmentId: string,
-      _onEvent: (event: unknown) => void,
+      _onEvent: (event: RuntimeClientEvent) => void,
       onError: (error: unknown) => void
     ): Promise<RuntimeClientEventSubscriptionHandle> => {
       const unsubscribe = vi.fn()
@@ -442,6 +443,169 @@ describe('createRuntimeClientEventsSync', () => {
       await vi.advanceTimersByTimeAsync(1000)
       expect(h.recordsFor('A')).toHaveLength(1)
       expect(h.recordsFor('A')[0].unsubscribe).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('generation guard: a late drop from a pre-stop subscription never tears down a fresh one', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = makeHarness(['A'], { retryDelayMs: 10, random: () => 1 })
+      h.sync.sync()
+      h.recordsFor('A')[0].resolveWith()
+      await vi.advanceTimersByTimeAsync(0)
+
+      // Tear everything down (bumping the generation), then establish a brand-new
+      // subscription for the same env under the new generation.
+      h.sync.stop()
+      h.setDesired(['A'])
+      h.sync.sync()
+      h.recordsFor('A')[1].resolveWith()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(h.recordsFor('A')).toHaveLength(2)
+
+      // The OLD (pre-stop) subscription drops late. Without the generation guard
+      // this would find the fresh live entry, unsubscribe it and schedule a
+      // spurious third subscribe. The guard must ignore the stale drop entirely.
+      h.recordsFor('A')[0].onError(new Error('stale drop from old generation'))
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(h.recordsFor('A')[1].unsubscribe).not.toHaveBeenCalled()
+      expect(h.recordsFor('A')).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('treats a drop during the pending window as a no-op owned by the subscribe rejection', async () => {
+    vi.useFakeTimers()
+    try {
+      let attempt = 0
+      let onErrorCb: ((error: unknown) => void) | undefined
+      let rejectFirst: ((error: Error) => void) | undefined
+      const unsubscribe = vi.fn()
+      const subscribe = vi.fn(
+        (
+          _environmentId: string,
+          _onEvent: (event: RuntimeClientEvent) => void,
+          onError: (error: unknown) => void
+        ): Promise<RuntimeClientEventSubscriptionHandle> => {
+          attempt += 1
+          if (attempt === 1) {
+            onErrorCb = onError
+            return new Promise((_resolve, reject) => {
+              rejectFirst = reject
+            })
+          }
+          return Promise.resolve({ unsubscribe })
+        }
+      )
+      const sync = createRuntimeClientEventsSync({
+        getDesiredEnvironmentIds: () => ['A'],
+        subscribe,
+        onEvent: vi.fn(),
+        retryDelayMs: 10,
+        random: () => 1
+      })
+
+      sync.sync()
+      await Promise.resolve()
+      expect(attempt).toBe(1)
+
+      // A transport error arrives while the subscribe promise is still pending.
+      // There is no live map entry yet, so handleSubscriptionDrop must return
+      // without unsubscribing (a guard against calling unsubscribe() on undefined)
+      // and without double-counting the failure — the then/catch owns this window.
+      onErrorCb!(new Error('pre-establishment drop'))
+      expect(unsubscribe).not.toHaveBeenCalled()
+
+      // The same failure surfaces as the promise rejection, which arms exactly one
+      // base-delay retry. The env is not left permanently stuck in `pending`.
+      rejectFirst!(new Error('pre-establishment drop'))
+      await vi.advanceTimersByTimeAsync(9)
+      expect(attempt).toBe(1)
+      await vi.advanceTimersByTimeAsync(1)
+      await Promise.resolve()
+      expect(attempt).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('feeds mid-stream drops into the failure counter so a failed re-subscribe escalates', async () => {
+    vi.useFakeTimers()
+    try {
+      let attempt = 0
+      let onErrorCb: ((error: unknown) => void) | undefined
+      const unsubscribe = vi.fn()
+      const subscribe = vi.fn(
+        (
+          _environmentId: string,
+          _onEvent: (event: RuntimeClientEvent) => void,
+          onError: (error: unknown) => void
+        ): Promise<RuntimeClientEventSubscriptionHandle> => {
+          attempt += 1
+          if (attempt === 1) {
+            onErrorCb = onError
+            return Promise.resolve({ unsubscribe })
+          }
+          return Promise.reject(new Error('unreachable'))
+        }
+      )
+      const sync = createRuntimeClientEventsSync({
+        getDesiredEnvironmentIds: () => ['A'],
+        subscribe,
+        onEvent: vi.fn(),
+        retryDelayMs: 10,
+        retryMaxDelayMs: 1_000,
+        random: () => 1
+      })
+
+      sync.sync()
+      await Promise.resolve()
+      expect(attempt).toBe(1)
+
+      // Mid-stream drop on the established subscription: counts as failure #1, so
+      // the first retry fires at the base delay.
+      onErrorCb!(new Error('drop'))
+      await vi.advanceTimersByTimeAsync(10)
+      expect(attempt).toBe(2)
+
+      // Because the drop already counted, the rejected retry is failure #2 and the
+      // next retry uses the DOUBLED delay (20ms). Were the drop not counted, this
+      // would fire at the base 10ms instead.
+      await vi.advanceTimersByTimeAsync(19)
+      expect(attempt).toBe(2)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(attempt).toBe(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('resets the drop backoff after each successful re-subscribe (flapping stays at base delay)', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = makeHarness(['A'], { retryDelayMs: 10, random: () => 1 })
+      h.sync.sync()
+      h.recordsFor('A')[0].resolveWith()
+      await vi.advanceTimersByTimeAsync(0)
+
+      // First drop → retry at the base delay → re-establish successfully.
+      h.recordsFor('A')[0].onError(new Error('drop 1'))
+      await vi.advanceTimersByTimeAsync(10)
+      expect(h.recordsFor('A')).toHaveLength(2)
+      h.recordsFor('A')[1].resolveWith()
+      await vi.advanceTimersByTimeAsync(0)
+
+      // Second drop on the re-established subscription retries AGAIN at the base
+      // delay: the successful re-subscribe reset the failure counter. Without the
+      // reset this would be delayed to the doubled 20ms.
+      h.recordsFor('A')[1].onError(new Error('drop 2'))
+      await vi.advanceTimersByTimeAsync(9)
+      expect(h.recordsFor('A')).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(h.recordsFor('A')).toHaveLength(3)
     } finally {
       vi.useRealTimers()
     }
