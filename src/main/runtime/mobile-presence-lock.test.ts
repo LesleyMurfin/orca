@@ -488,6 +488,79 @@ describe('mobile presence lock — multi-mobile semantics', () => {
     expect(runtime.getLastRendererSize('pty-1')).toEqual({ cols: 132, rows: 44 })
   })
 
+  it('seedDesktopSubscribeViewport clears a pending finite auto-restore timer so it cannot clobber the seeded dims', async () => {
+    // Finite auto-restore (not indefinite): the phone's unsubscribe arms a
+    // timer that, when it fires, resizes the PTY back to the DEPARTED phone's
+    // baseline (the prior machine's geometry). A fresh desktop connect mid-hold
+    // must cancel that timer, or it later reverts the seed — the exact
+    // "mobile/MacBook not my PC" regression under a finite hold.
+    const { runtime, ptySizes } = createRuntime(5_000)
+    await runtime.handleMobileSubscribe('pty-1', 'phone-A', { cols: 49, rows: 20 })
+    expect(ptySizes.get('pty-1')).toEqual({ cols: 49, rows: 20 })
+
+    // Phone leaves → soft-leave grace, then a 5s auto-restore timer armed with
+    // phone-A's pre-fit baseline (150x40). The override persists until it fires.
+    runtime.handleMobileUnsubscribe('pty-1', 'phone-A')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(runtime.getDriver('pty-1')).toEqual({ kind: 'idle' })
+    expect(runtime.isMobileSubscriberActive('pty-1')).toBe(false)
+    expect(runtime.getTerminalFitOverride('pty-1')).not.toBeNull()
+
+    // A DIFFERENT desktop client connects mid-hold and seeds its OWN dims.
+    expect(
+      await runtime.seedDesktopSubscribeViewport('pty-1', { cols: 132, rows: 44 })
+    ).toBe(true)
+    expect(ptySizes.get('pty-1')).toEqual({ cols: 132, rows: 44 })
+    expect(runtime.getTerminalFitOverride('pty-1')).toBeNull()
+    expect(runtime.getDriver('pty-1')).toEqual({ kind: 'desktop' })
+
+    // Advance well past the auto-restore window. The armed timer must have been
+    // cancelled by the seed — the PTY must still hold the connecting client's
+    // dims, NOT revert to phone-A's 150x40 baseline.
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(ptySizes.get('pty-1')).toEqual({ cols: 132, rows: 44 })
+    expect(runtime.getDriver('pty-1')).toEqual({ kind: 'desktop' })
+  })
+
+  it('seedDesktopSubscribeViewport surfaces the seeded dims through getTerminalSize (subscribed/snapshot frame source)', async () => {
+    const { runtime } = createRuntime(null)
+    await runtime.handleMobileSubscribe('pty-1', 'phone-A', { cols: 49, rows: 20 })
+    runtime.handleMobileUnsubscribe('pty-1', 'phone-A')
+    await vi.advanceTimersByTimeAsync(300)
+    // Held at phone dims: getTerminalSize would serve 49x20 to a fresh connect.
+    expect(runtime.getTerminalSize('pty-1')).toEqual({ cols: 49, rows: 20 })
+
+    expect(
+      await runtime.seedDesktopSubscribeViewport('pty-1', { cols: 150, rows: 40 })
+    ).toBe(true)
+
+    // The RPC subscribe handler reads getTerminalSize() AFTER the seed to build
+    // the subscribed/snapshot frames — it must now report the connecting
+    // client's own dims, not the leftover phone snapshot.
+    expect(runtime.getTerminalSize('pty-1')).toEqual({ cols: 150, rows: 40 })
+  })
+
+  it('seedDesktopSubscribeViewport reclaims when it lands during the soft-leave grace (driver still mobile)', async () => {
+    const { runtime, ptySizes } = createRuntime(null)
+    await runtime.handleMobileSubscribe('pty-1', 'phone-A', { cols: 49, rows: 20 })
+    expect(ptySizes.get('pty-1')).toEqual({ cols: 49, rows: 20 })
+
+    // Phone leaves; within the 250ms grace the driver is STILL mobile{phone-A}
+    // even though the subscriber map is already empty. A fresh desktop connect
+    // in this window must still reclaim to its own dims.
+    runtime.handleMobileUnsubscribe('pty-1', 'phone-A')
+    await vi.advanceTimersByTimeAsync(100)
+    expect(runtime.getDriver('pty-1')).toEqual({ kind: 'mobile', clientId: 'phone-A' })
+    expect(runtime.isMobileSubscriberActive('pty-1')).toBe(false)
+
+    expect(
+      await runtime.seedDesktopSubscribeViewport('pty-1', { cols: 150, rows: 40 })
+    ).toBe(true)
+    expect(ptySizes.get('pty-1')).toEqual({ cols: 150, rows: 40 })
+    expect(runtime.getTerminalFitOverride('pty-1')).toBeNull()
+    expect(runtime.getDriver('pty-1')).toEqual({ kind: 'desktop' })
+  })
+
   it('updateMobileViewport then disconnect restores PTY to original baseline', async () => {
     const { runtime, ptySizes } = createRuntime()
     await runtime.handleMobileSubscribe('pty-1', 'phone-A', { cols: 49, rows: 38 })

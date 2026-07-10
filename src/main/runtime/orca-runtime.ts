@@ -7455,6 +7455,19 @@ export class OrcaRuntimeService {
     if (this.isResizeSuppressed()) {
       return false
     }
+    // Why: a finite mobileAutoRestoreFitMs may have armed a pending
+    // auto-restore timer when the phone unsubscribed (handleMobileUnsubscribe
+    // schedules it with the DEPARTED subscriber's baseline — the prior
+    // machine's geometry). Since we are about to reclaim to the connecting
+    // client's OWN dims, cancel that timer first; otherwise it fires after the
+    // hold window and resizes the PTY back to the stale baseline, clobbering
+    // the seeded dims and reintroducing the "wrong size on connect" symptom.
+    // Mirrors reclaimTerminalForDesktop's held-override branch.
+    const pending = this.pendingRestoreTimers.get(ptyId)
+    if (pending) {
+      clearTimeout(pending.timer)
+      this.pendingRestoreTimers.delete(ptyId)
+    }
     // Stale hold with no active mobile subscriber: record the connecting
     // client's geometry as the restore baseline, then drive the PTY to it.
     // freshSubscribeGuard lets enqueueLayout's "no layouts entry" short-circuit
@@ -7468,6 +7481,19 @@ export class OrcaRuntimeService {
       this.freshSubscribeGuard.delete(ptyId)
     }
     if (!result.ok) {
+      // Why: mirror reclaimTerminalForDesktop's orphan cleanup — a held
+      // override whose layout entry vanished (pty exited) would otherwise
+      // strand the override and re-show the desktop "phone left" modal on the
+      // next hydrate. Run onPtyExit's sanctioned cleanup (delete override +
+      // paired desktop-fit 0×0) so the renderer converges; nothing to resize
+      // on a dead pty. Unreachable via public APIs today (onPtyExit deletes
+      // both in lockstep) but keeps the two held-branch code paths symmetric.
+      if (result.reason === 'pty-exited' && this.terminalFitOverrides.has(ptyId)) {
+        this.terminalFitOverrides.delete(ptyId)
+        this.notifier?.terminalFitOverrideChanged(ptyId, 'desktop-fit', 0, 0)
+        this.notifyFitOverrideListeners(ptyId, 'desktop-fit', 0, 0)
+        return true
+      }
       return false
     }
     this.setDriver(ptyId, { kind: 'desktop' })
