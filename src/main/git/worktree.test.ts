@@ -21,6 +21,7 @@ vi.mock('./runner', () => ({
 import { clearGitCapabilityStateForTests } from './git-capability-state'
 
 import {
+  _resetWorktreeMissingPathBackoffForTests,
   addSparseWorktree,
   addWorktree,
   _getWorktreeScanCacheSizesForTests,
@@ -228,6 +229,85 @@ describe('listWorktrees in-flight sharing', () => {
     ])
 
     expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('listWorktrees missing-repo-path backoff', () => {
+  // Why (PRB-0003): a stale workspace path re-enumerated every poll used to
+  // re-spawn `git worktree list` ~1/sec, each failing `spawn git ENOENT`. Once
+  // the directory is confirmed missing we must back off instead of hot-looping.
+  const enoent = () => Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' })
+
+  beforeEach(() => {
+    gitExecFileAsyncMock.mockReset()
+    _resetWorktreeMissingPathBackoffForTests()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    gitExecFileAsyncMock.mockReset()
+    _resetWorktreeMissingPathBackoffForTests()
+  })
+
+  it('spawns git at most once for a confirmed-missing repo path within the window', async () => {
+    const missingPath = `/does-not-exist-prb0003-${Date.now()}-${Math.random()}`
+    gitExecFileAsyncMock.mockRejectedValue(enoent())
+
+    const results = await Promise.all([
+      listWorktrees(missingPath),
+      listWorktrees(missingPath),
+      listWorktrees(missingPath)
+    ])
+
+    for (const result of results) {
+      expect(result).toEqual([])
+    }
+    // First call spawns and confirms the path is gone (stat ENOENT); the rest
+    // short-circuit on the backoff memo without spawning git.
+    expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('probes again only after the backoff window elapses', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    const missingPath = `/does-not-exist-prb0003-window-${Math.random()}`
+    gitExecFileAsyncMock.mockRejectedValue(enoent())
+
+    await expect(listWorktrees(missingPath)).resolves.toEqual([])
+    expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(1)
+
+    // Within the window: no fresh spawn.
+    await expect(listWorktrees(missingPath)).resolves.toEqual([])
+    expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(1)
+
+    // Past the window: the memo expires and a fresh probe is allowed.
+    vi.setSystemTime(30_000)
+    await expect(listWorktrees(missingPath)).resolves.toEqual([])
+    expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('clears the mark after a successful scan so later lists spawn normally', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    const missingPath = `/does-not-exist-prb0003-recover-${Math.random()}`
+    gitExecFileAsyncMock
+      .mockRejectedValueOnce(enoent())
+      .mockResolvedValue({ stdout: `worktree ${missingPath}\nHEAD abc123\nbranch refs/heads/main\n` })
+
+    // First: confirmed missing -> marked, spawn count 1.
+    await expect(listWorktrees(missingPath)).resolves.toEqual([])
+    expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(1)
+
+    // Window elapses; the path was recreated so the scan now succeeds and the
+    // mark is cleared.
+    vi.setSystemTime(30_000)
+    const recovered = await listWorktrees(missingPath)
+    expect(recovered[0]?.path).toBe(missingPath)
+    expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(2)
+
+    // With the mark cleared, a subsequent list spawns immediately (no backoff).
+    await listWorktrees(missingPath)
+    expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(3)
   })
 })
 
