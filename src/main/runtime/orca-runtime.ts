@@ -134,7 +134,10 @@ import {
   type ExecutionHostId
 } from '../../shared/execution-host'
 import type { SleepingAgentLaunchConfig } from '../../shared/agent-session-resume'
-import type { RuntimeClientEvent } from '../../shared/runtime-client-events'
+import type {
+  RuntimeActivateWorktreeEvent,
+  RuntimeClientEvent
+} from '../../shared/runtime-client-events'
 import { toRuntimeActivateWorktreeEvent } from '../../shared/runtime-client-events'
 import type { SshConnectionState } from '../../shared/ssh-types'
 import type {
@@ -2830,11 +2833,20 @@ export class OrcaRuntimeService {
     // subscriber. Every other event (and origin-less CLI/creation activations)
     // still broadcasts to all subscribers.
     const originClientId = event.type === 'activateWorktree' ? event.originClientId : undefined
+    // Why: originClientId is the acting device token; it is used only to gate
+    // delivery here and must never ship on the wire (fragile against future
+    // loggers/broadcasters even though it only reaches its own owner). Deliver a
+    // stripped copy to the self subscriber.
+    let delivered = event
+    if (originClientId !== undefined) {
+      const { originClientId: _origin, ...rest } = event as RuntimeActivateWorktreeEvent
+      delivered = rest
+    }
     for (const entry of this.clientEventListeners) {
       if (originClientId !== undefined && entry.clientId !== originClientId) {
         continue
       }
-      entry.listener(event)
+      entry.listener(delivered)
     }
   }
 
@@ -2864,7 +2876,14 @@ export class OrcaRuntimeService {
   ): void {
     this.notifier?.activateWorktree(repoId, worktreeId, setup, startup, defaultTabs)
     this.emitClientEvent(
-      toRuntimeActivateWorktreeEvent(repoId, worktreeId, setup, startup, defaultTabs, originClientId)
+      toRuntimeActivateWorktreeEvent(
+        repoId,
+        worktreeId,
+        setup,
+        startup,
+        defaultTabs,
+        originClientId
+      )
     )
   }
 
@@ -3040,7 +3059,10 @@ export class OrcaRuntimeService {
     this.hydrateHeadlessMobileSessionTabsFromWorkspaceSession()
     await this.refreshMobileSessionPtyRecords()
     return [...this.mobileSessionTabsByWorktree.values()].map((snapshot) =>
-      this.toMobileSessionTabsResult(snapshot, this.activeTabOverrideForDevice(snapshot.worktree, clientId))
+      this.toMobileSessionTabsResult(
+        snapshot,
+        this.activeTabOverrideForDevice(snapshot.worktree, clientId)
+      )
     )
   }
 
@@ -3983,8 +4005,7 @@ export class OrcaRuntimeService {
     const sharedResult = this.toMobileSessionTabsResult(snapshot)
     const deviceSlots = this.activeTabByDevice.get(snapshot.worktree)
     for (const entry of this.mobileSessionTabListeners) {
-      const slotTabId =
-        entry.clientId && deviceSlots ? deviceSlots.get(entry.clientId) : undefined
+      const slotTabId = entry.clientId && deviceSlots ? deviceSlots.get(entry.clientId) : undefined
       entry.listener(
         slotTabId !== undefined ? this.toMobileSessionTabsResult(snapshot, slotTabId) : sharedResult
       )
@@ -4005,6 +4026,32 @@ export class OrcaRuntimeService {
       this.activeTabByDevice.set(worktreeId, slots)
     }
     slots.set(clientId, tabId)
+  }
+
+  // Why: when one device switches its active tab, every OTHER device currently
+  // subscribed to this worktree must be pinned to the pre-switch shared active
+  // tab, otherwise a slotless peer falls back to the shared snapshot this switch
+  // is about to mutate and gets "swallowed" onto the acting device's tab. Peers
+  // that already have their own slot are independent and left untouched. Called
+  // with the shared activeTabId as it stood BEFORE the mutation.
+  private pinPeerDeviceSlots(
+    worktreeId: string,
+    sharedActiveTabId: string | null,
+    actingClientId: string
+  ): void {
+    if (!sharedActiveTabId) {
+      return
+    }
+    for (const entry of this.mobileSessionTabListeners) {
+      const peerId = entry.clientId
+      if (!peerId || peerId === actingClientId) {
+        continue
+      }
+      if (this.activeTabByDevice.get(worktreeId)?.has(peerId)) {
+        continue
+      }
+      this.setActiveTabForDevice(worktreeId, peerId, sharedActiveTabId)
+    }
   }
 
   // Why: a closed tab's device slots must be dropped so a reused tab id can't
@@ -4148,7 +4195,12 @@ export class OrcaRuntimeService {
             )
       const targetTab = activeSibling ?? tab
       if (opts.notifyClients === false) {
-        this.activateMobileSessionTabForRemoteClient(worktreeId, snapshot!, targetTab, opts.clientId)
+        this.activateMobileSessionTabForRemoteClient(
+          worktreeId,
+          snapshot!,
+          targetTab,
+          opts.clientId
+        )
         return this.getMobileSessionTabsForWorktree(worktreeId, opts.clientId)
       }
       if (!this.notifier?.focusTerminal) {
@@ -4187,10 +4239,12 @@ export class OrcaRuntimeService {
   ): void {
     // Why: phone tab selection should update the mobile snapshot without
     // asking desktop renderers to focus the phone's background worktree.
-    // Record the acting device's active-tab slot so its stream projects this
-    // choice while peers keep their own; the shared snapshot below still updates
-    // so every internal reader/materialize path is unchanged.
+    // Pin every subscribed peer to the pre-switch shared active tab, then record
+    // the acting device's own slot, so its stream projects this choice while
+    // peers keep theirs; the shared snapshot below still updates so every
+    // internal reader/materialize path is unchanged.
     if (clientId) {
+      this.pinPeerDeviceSlots(worktreeId, snapshot.activeTabId, clientId)
       this.setActiveTabForDevice(worktreeId, clientId, activeTab.id)
     }
     const activeTopLevelId = activeTab.type === 'terminal' ? activeTab.parentTabId : activeTab.id
@@ -12750,7 +12804,14 @@ export class OrcaRuntimeService {
       // Thread the acting device as the event origin so paired peers are not
       // force-followed onto this worktree (client view decoupling); origin-less
       // callers (CLI, creation reveal) still broadcast to all clients.
-      this.notifyActivateWorktree(repo.id, worktree.id, undefined, undefined, undefined, opts.clientId)
+      this.notifyActivateWorktree(
+        repo.id,
+        worktree.id,
+        undefined,
+        undefined,
+        undefined,
+        opts.clientId
+      )
     } else {
       // Why: mobile/web selection needs fresh session surfaces without forcing
       // every attached desktop renderer to navigate to the phone's workspace.
@@ -19335,9 +19396,7 @@ export class OrcaRuntimeService {
       }
       if (tab.type === 'markdown' || tab.type === 'file') {
         tabs.push(
-          overrideActiveId !== undefined
-            ? { ...tab, isActive: tab.id === overrideActiveId }
-            : tab
+          overrideActiveId !== undefined ? { ...tab, isActive: tab.id === overrideActiveId } : tab
         )
         continue
       }

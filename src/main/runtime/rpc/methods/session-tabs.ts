@@ -208,10 +208,12 @@ export const SESSION_TAB_METHODS: RpcAnyMethod[] = [
       if (closed) {
         return
       }
-      const snapshots = await Promise.resolve(runtime.listAllMobileSessionTabs(clientId)).catch((error) => {
-        runtime.cleanupSubscription(subscriptionId)
-        throw error
-      })
+      const snapshots = await Promise.resolve(runtime.listAllMobileSessionTabs(clientId)).catch(
+        (error) => {
+          runtime.cleanupSubscription(subscriptionId)
+          throw error
+        }
+      )
       if (closed) {
         return
       }

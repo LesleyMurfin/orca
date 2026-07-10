@@ -97,7 +97,10 @@ describe('session tab RPC methods', () => {
     )
 
     expect(runtime.listMobileSessionTabs).toHaveBeenCalledWith('id:wt-1', 'device-A')
-    expect(runtime.onMobileSessionTabsChanged).toHaveBeenCalledWith(expect.any(Function), 'device-A')
+    expect(runtime.onMobileSessionTabsChanged).toHaveBeenCalledWith(
+      expect.any(Function),
+      'device-A'
+    )
   })
 
   it('threads the device clientId into the all-session-tabs subscription', async () => {
@@ -109,14 +112,16 @@ describe('session tab RPC methods', () => {
     } as unknown as OrcaRuntimeService
     const dispatcher = new RpcDispatcher({ runtime, methods: SESSION_TAB_METHODS })
 
-    await dispatcher.dispatchStreaming(
-      makeRequest('session.tabs.subscribeAll'),
-      vi.fn(),
-      { connectionId: 'conn-1', clientId: 'device-A' }
-    )
+    await dispatcher.dispatchStreaming(makeRequest('session.tabs.subscribeAll'), vi.fn(), {
+      connectionId: 'conn-1',
+      clientId: 'device-A'
+    })
 
     expect(runtime.listAllMobileSessionTabs).toHaveBeenCalledWith('device-A')
-    expect(runtime.onMobileSessionTabsChanged).toHaveBeenCalledWith(expect.any(Function), 'device-A')
+    expect(runtime.onMobileSessionTabsChanged).toHaveBeenCalledWith(
+      expect.any(Function),
+      'device-A'
+    )
   })
 
   it('dispatches tab moves through the runtime', async () => {
