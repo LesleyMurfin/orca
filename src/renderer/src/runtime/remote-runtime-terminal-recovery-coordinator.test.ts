@@ -703,7 +703,7 @@ describe('module recovery adapter', () => {
     current.cancel()
   })
 
-  it('rejects malformed terminal tab discriminants before host resolution', async () => {
+  it('rejects malformed recovery tab records before host resolution', async () => {
     const callbacks: BridgeCallbacks[] = []
     const subscribe = vi.fn(async (_args: unknown, next: BridgeCallbacks) => {
       callbacks.push(next)
@@ -719,6 +719,8 @@ describe('module recovery adapter', () => {
       isActive: true
     }
     const malformedTabs = [
+      null,
+      { id: 'future-1', title: 'Future surface', isActive: true },
       { ...terminalBase, terminal: 'terminal-1' },
       { ...terminalBase, status: 'starting', terminal: null },
       { ...terminalBase, status: 'ready' },
@@ -761,5 +763,62 @@ describe('module recovery adapter', () => {
         .toHaveBeenCalledWith(expect.objectContaining({ code: 'invalid_runtime_response' }))
     }
     leases.forEach((lease) => lease.cancel())
+  })
+
+  it('ignores future non-terminal tab types while preserving valid terminal recovery', async () => {
+    const callbacks: BridgeCallbacks[] = []
+    const subscribe = vi.fn(async (_args: unknown, next: BridgeCallbacks) => {
+      callbacks.push(next)
+      return { unsubscribe: vi.fn(), sendBinary: vi.fn() }
+    })
+    vi.stubGlobal('window', { api: { runtimeEnvironments: { subscribe } } })
+    const recovering = participant('future-tab', 'wt-1', {
+      resolve: (value) => {
+        expect(value?.activeTabType).toBeNull()
+        expect(value?.tabs).toEqual([
+          expect.objectContaining({ type: 'terminal', terminal: 'terminal-1' })
+        ])
+        return resolveRemoteRuntimeHostTerminal(value!, {
+          hostTabId: 'tab-1',
+          leafId: 'pane:1'
+        })
+      }
+    })
+    const lease = beginRemoteRuntimeTerminalRecovery({
+      environmentId: 'adapter-future-tab',
+      participant: recovering
+    })
+    await flush()
+
+    callbacks[0]?.onResponse(
+      success({
+        type: 'snapshot',
+        ...snapshot(1),
+        activeTabType: 'canvas',
+        tabs: [
+          {
+            type: 'canvas',
+            futurePayload: { version: 1 }
+          },
+          {
+            type: 'terminal',
+            id: 'pane:1',
+            title: 'Terminal',
+            parentTabId: 'tab-1',
+            leafId: 'pane:1',
+            isActive: false,
+            status: 'ready',
+            terminal: 'terminal-1'
+          }
+        ]
+      })
+    )
+    await flush()
+
+    expect(recovering.onFatal).not.toHaveBeenCalled()
+    expect(recovering.rebind).toHaveBeenCalledWith(
+      expect.objectContaining({ handle: 'terminal-1' })
+    )
+    lease.cancel()
   })
 })
