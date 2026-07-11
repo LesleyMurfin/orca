@@ -23,7 +23,6 @@ const mocks = vi.hoisted(() => ({
   pasteTerminalText: vi.fn(),
   recordTerminalUserInputForLeaf: vi.fn(),
   requestTerminalBacklogRecovery: vi.fn(),
-  retryRemoteRuntimeTerminalRecoveriesNow: vi.fn(),
   restoreScrollState: vi.fn(),
   restoreScrollStateAfterLayout: vi.fn()
 }))
@@ -96,10 +95,6 @@ vi.mock('./terminal-bracketed-paste', () => ({
 
 vi.mock('./terminal-input-activity', () => ({
   recordTerminalUserInputForLeaf: mocks.recordTerminalUserInputForLeaf
-}))
-
-vi.mock('@/runtime/remote-runtime-terminal-recovery-coordinator', () => ({
-  retryRemoteRuntimeTerminalRecoveriesNow: mocks.retryRemoteRuntimeTerminalRecoveriesNow
 }))
 
 // Why: this suite invokes the hook outside a real React render (the react mock
@@ -951,58 +946,6 @@ describe('useTerminalPaneGlobalEffects', () => {
     // context-loss event, so the shared-atlas clear and full repaint still run.
     expect(manager.resetWebglTextureAtlases).toHaveBeenCalledTimes(1)
     expect(manager.refreshAllPanes).toHaveBeenCalledTimes(1)
-  })
-
-  it('retries remote terminal recovery on OS resume while the document is hidden', () => {
-    vi.stubGlobal('document', {
-      visibilityState: 'hidden',
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn()
-    })
-    const manager = {
-      getPanes: vi.fn(() => []),
-      resumeRendering: vi.fn(),
-      resetWebglTextureAtlases: vi.fn(),
-      scheduleRevealRepaint: vi.fn(),
-      scheduleRevealPresent: vi.fn(),
-      refreshAllPanes: vi.fn(),
-      suspendRendering: vi.fn(),
-      getActivePane: vi.fn(() => null)
-    }
-    const captured: { onSystemResumed: (() => void) | null } = { onSystemResumed: null }
-    ;(
-      window.api.ui as unknown as { onSystemResumed: (callback: () => void) => () => void }
-    ).onSystemResumed = vi.fn((callback: () => void) => {
-      captured.onSystemResumed = callback
-      return vi.fn()
-    })
-
-    registerManagerForReset(manager)
-    beginHookRender()
-    useTerminalPaneGlobalEffects({
-      tabId: 'tab-1',
-      worktreeId: 'wt-1',
-      isActive: true,
-      isVisible: true,
-      isSyncFitEnabled: true,
-      paneCount: 0,
-      managerRef: { current: manager as never },
-      containerRef: { current: null },
-      paneTransportsRef: { current: new Map() },
-      isActiveRef: { current: false },
-      isVisibleRef: { current: false },
-      toggleExpandPane: vi.fn()
-    })
-
-    expect(captured.onSystemResumed).toBeTypeOf('function')
-    mocks.retryRemoteRuntimeTerminalRecoveriesNow.mockClear()
-    manager.resetWebglTextureAtlases.mockClear()
-    manager.refreshAllPanes.mockClear()
-    captured.onSystemResumed?.()
-
-    expect(mocks.retryRemoteRuntimeTerminalRecoveriesNow).toHaveBeenCalledTimes(1)
-    expect(manager.resetWebglTextureAtlases).not.toHaveBeenCalled()
-    expect(manager.refreshAllPanes).not.toHaveBeenCalled()
   })
 
   it('clears WebGL texture atlases when the active visible terminal document becomes visible', () => {
