@@ -1,5 +1,8 @@
 import type { RuntimeRpcResponse } from '../../../shared/runtime-rpc-envelope'
-import type { RuntimeMobileSessionTabsResult } from '../../../shared/runtime-types'
+import type {
+  RuntimeMobileSessionTabsResult,
+  RuntimeMobileSessionTerminalClientTab
+} from '../../../shared/runtime-types'
 import type { RemoteRuntimeTerminalRecoveryDependencies } from './remote-runtime-terminal-recovery-types'
 import { toRuntimeWorktreeSelector } from './runtime-worktree-selector'
 
@@ -112,7 +115,9 @@ function releaseHandle(handle: { unsubscribe: () => void }): void {
   }
 }
 
-function isSessionTabsClientTab(value: unknown): boolean {
+function isSessionTabsTerminalClientTab(
+  value: unknown
+): value is RuntimeMobileSessionTerminalClientTab {
   if (typeof value !== 'object' || value === null) {
     return false
   }
@@ -124,10 +129,11 @@ function isSessionTabsClientTab(value: unknown): boolean {
   ) {
     return false
   }
-  if (tab.type !== 'terminal') {
-    return tab.type === 'markdown' || tab.type === 'file' || tab.type === 'browser'
-  }
-  if (typeof tab.parentTabId !== 'string' || typeof tab.leafId !== 'string') {
+  if (
+    tab.type !== 'terminal' ||
+    typeof tab.parentTabId !== 'string' ||
+    typeof tab.leafId !== 'string'
+  ) {
     return false
   }
   // Terminal status and handle form a wire union; partial pairs must not look pending.
@@ -137,26 +143,59 @@ function isSessionTabsClientTab(value: unknown): boolean {
   )
 }
 
-function isSessionTabsSnapshot(value: unknown): value is RuntimeMobileSessionTabsResult {
+function parseSessionTabsSnapshotForRecovery(
+  value: unknown
+): RuntimeMobileSessionTabsResult | null {
   if (typeof value !== 'object' || value === null) {
-    return false
+    return null
   }
   const snapshot = value as Record<string, unknown>
   const activeType = snapshot.activeTabType
-  return (
-    typeof snapshot.worktree === 'string' &&
-    typeof snapshot.publicationEpoch === 'string' &&
-    typeof snapshot.snapshotVersion === 'number' &&
-    (typeof snapshot.activeGroupId === 'string' || snapshot.activeGroupId === null) &&
-    (typeof snapshot.activeTabId === 'string' || snapshot.activeTabId === null) &&
-    (activeType === null ||
-      activeType === 'terminal' ||
-      activeType === 'markdown' ||
-      activeType === 'file' ||
-      activeType === 'browser') &&
-    Array.isArray(snapshot.tabs) &&
-    snapshot.tabs.every(isSessionTabsClientTab)
-  )
+  if (
+    typeof snapshot.worktree !== 'string' ||
+    typeof snapshot.publicationEpoch !== 'string' ||
+    typeof snapshot.snapshotVersion !== 'number' ||
+    (typeof snapshot.activeGroupId !== 'string' && snapshot.activeGroupId !== null) ||
+    (typeof snapshot.activeTabId !== 'string' && snapshot.activeTabId !== null) ||
+    (typeof activeType !== 'string' && activeType !== null) ||
+    !Array.isArray(snapshot.tabs)
+  ) {
+    return null
+  }
+  const terminalTabs: RuntimeMobileSessionTerminalClientTab[] = []
+  for (const value of snapshot.tabs) {
+    if (typeof value !== 'object' || value === null) {
+      return null
+    }
+    const tab = value as Record<string, unknown>
+    if (typeof tab.type !== 'string') {
+      return null
+    }
+    if (tab.type === 'terminal') {
+      if (!isSessionTabsTerminalClientTab(tab)) {
+        return null
+      }
+      terminalTabs.push(tab)
+    }
+  }
+  const normalizedActiveType =
+    activeType === 'terminal' ||
+    activeType === 'markdown' ||
+    activeType === 'file' ||
+    activeType === 'browser'
+      ? activeType
+      : null
+  // Why: recovery only resolves terminal handles. Dropping newer non-terminal
+  // surfaces keeps compatible runtime versions from blocking terminal repair.
+  return {
+    worktree: snapshot.worktree,
+    publicationEpoch: snapshot.publicationEpoch,
+    snapshotVersion: snapshot.snapshotVersion,
+    activeGroupId: snapshot.activeGroupId,
+    activeTabId: snapshot.activeTabId,
+    activeTabType: normalizedActiveType,
+    tabs: terminalTabs
+  }
 }
 
 function adaptSessionTabsResponse(
@@ -175,8 +214,9 @@ function adaptSessionTabsResponse(
     return
   }
   const { type, ...snapshot } = response.result as Record<string, unknown>
-  if ((type === 'snapshot' || type === 'updated') && isSessionTabsSnapshot(snapshot)) {
-    callbacks.onSnapshot(snapshot)
+  const parsedSnapshot = parseSessionTabsSnapshotForRecovery(snapshot)
+  if ((type === 'snapshot' || type === 'updated') && parsedSnapshot) {
+    callbacks.onSnapshot(parsedSnapshot)
   } else if (type === 'end') {
     callbacks.onClose()
   } else {
