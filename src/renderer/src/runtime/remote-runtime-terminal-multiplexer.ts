@@ -1,6 +1,11 @@
 /* eslint-disable max-lines -- Why: the remote terminal multiplexer owns one bridged subscription, stream lifecycle, binary frame parsing, and remote lock events as a single transport contract. */
 import type { RuntimeRpcResponse } from '../../../shared/runtime-rpc-envelope'
 import {
+  isRecoverableRemoteRuntimeConnectionError,
+  type RemoteRuntimeClientErrorLike
+} from '../../../shared/remote-runtime-client-error-classification'
+import { RemoteRuntimeClientError } from '../../../shared/remote-runtime-client-error'
+import {
   TerminalStreamOpcode,
   decodeTerminalStreamFrame,
   decodeTerminalStreamJson,
@@ -50,7 +55,7 @@ export type RemoteRuntimeMultiplexedTerminalCallbacks = {
   onDriverChanged?: (
     driver: { kind: 'idle' } | { kind: 'desktop' } | { kind: 'mobile'; clientId: string }
   ) => void
-  onTransportClose?: () => void
+  onTransportClose?: (error: { code: string; message: string }) => void
 }
 
 export type RemoteRuntimeMultiplexedTerminal = {
@@ -194,6 +199,41 @@ function exposeE2eRemoteTerminalMultiplexAckGate(): void {
   }
 }
 
+function normalizeRemoteRuntimeConnectionError(error: unknown): RemoteRuntimeClientError {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof error.code === 'string' &&
+    'message' in error &&
+    typeof error.message === 'string'
+  ) {
+    return new RemoteRuntimeClientError(error.code, error.message)
+  }
+  return new RemoteRuntimeClientError(
+    'runtime_error',
+    error instanceof Error ? error.message : String(error)
+  )
+}
+
+function releaseRuntimeEnvironmentSubscription(
+  subscription: RuntimeEnvironmentSubscriptionHandle | null
+): void {
+  try {
+    subscription?.unsubscribe()
+  } catch {
+    // Best-effort release; state is already closed and late callbacks are fenced.
+  }
+}
+
+function invokeRemoteRuntimeTerminalCallback(callback: () => void): void {
+  try {
+    callback()
+  } catch {
+    // One consumer callback must not block cleanup or sibling notification.
+  }
+}
+
 class RemoteRuntimeTerminalMultiplexer {
   private readonly streams = new Map<number, RemoteRuntimeMultiplexedTerminalState>()
   private subscription: RuntimeEnvironmentSubscriptionHandle | null = null
@@ -201,6 +241,8 @@ class RemoteRuntimeTerminalMultiplexer {
   private readyResolver: (() => void) | null = null
   private readyRejecter: ((error: Error) => void) | null = null
   private ready = false
+  private phase: 'connecting' | 'established' | 'closed' = 'connecting'
+  private pendingTransportError: { code: string; message: string } | null = null
   private nextStreamId = 1
   private nextSnapshotRequestId = 1
 
@@ -320,8 +362,16 @@ class RemoteRuntimeTerminalMultiplexer {
   }
 
   private ensureConnected(): Promise<void> {
-    if (this.ready && this.subscription) {
+    if (this.phase === 'established' && this.ready && this.subscription) {
       return Promise.resolve()
+    }
+    if (this.phase === 'closed') {
+      return Promise.reject(
+        new RemoteRuntimeClientError(
+          'remote_runtime_unavailable',
+          'Remote Orca runtime connection is closed.'
+        )
+      )
     }
     if (this.connectPromise) {
       return this.connectPromise
@@ -329,51 +379,57 @@ class RemoteRuntimeTerminalMultiplexer {
     const connectPromise = new Promise<void>((resolve, reject) => {
       this.readyResolver = resolve
       this.readyRejecter = reject
-      void window.api.runtimeEnvironments
-        .subscribe(
-          {
-            selector: this.environmentId,
-            method: 'terminal.multiplex',
-            params: {},
-            timeoutMs: 15_000
-          },
-          {
-            onResponse: (response) => this.handleResponse(response),
-            onBinary: (bytes) => this.handleBinary(bytes),
-            onError: (error) => this.failConnection(new Error(error.message)),
-            onClose: () => this.handleClose('Remote Orca runtime closed the connection.')
-          }
-        )
-        .then((subscription) => {
-          if (this.connectPromise !== connectPromise || (!this.ready && !this.readyRejecter)) {
-            // Why: close/error can arrive before subscribe() resolves because
-            // preload listens before ipcMain.handle() returns. The multiplexer
-            // may already be released; do not retain the late handle.
-            subscription.unsubscribe()
-            return
-          }
-          this.subscription = subscription
-          this.resolveReadyIfConnected()
-        })
-        .catch((error) => {
-          if (this.connectPromise === connectPromise) {
-            this.connectPromise = null
-            this.readyResolver = null
-            this.readyRejecter = null
-          }
-          reject(error instanceof Error ? error : new Error(String(error)))
-        })
     })
     this.connectPromise = connectPromise
-    return this.connectPromise
+    let subscriptionPromise: Promise<RuntimeEnvironmentSubscriptionHandle>
+    try {
+      subscriptionPromise = window.api.runtimeEnvironments.subscribe(
+        {
+          selector: this.environmentId,
+          method: 'terminal.multiplex',
+          params: {},
+          timeoutMs: 15_000
+        },
+        {
+          onResponse: (response) => this.handleResponse(response),
+          onBinary: (bytes) => this.handleBinary(bytes),
+          onError: (error) => this.handleTransportError(error),
+          onClose: () => this.handleTransportClose()
+        }
+      )
+    } catch (error) {
+      this.finishConnectingFailure(normalizeRemoteRuntimeConnectionError(error))
+      return connectPromise
+    }
+    void subscriptionPromise
+      .then((subscription) => {
+        if (this.phase !== 'connecting' || this.connectPromise !== connectPromise) {
+          // Why: close/error can arrive before subscribe() resolves because
+          // preload listens before ipcMain.handle() returns. The multiplexer
+          // may already be released; do not retain the late handle.
+          releaseRuntimeEnvironmentSubscription(subscription)
+          return
+        }
+        this.subscription = subscription
+        this.resolveReadyIfConnected()
+      })
+      .catch((error) => {
+        if (this.phase === 'connecting' && this.connectPromise === connectPromise) {
+          this.finishConnectingFailure(normalizeRemoteRuntimeConnectionError(error))
+        }
+      })
+    return connectPromise
   }
 
   private handleResponse(response: RuntimeRpcResponse<unknown>): void {
+    if (this.phase === 'closed') {
+      return
+    }
     let event: TerminalMultiplexEvent
     try {
       event = unwrapRuntimeRpcResult(response) as TerminalMultiplexEvent
     } catch (error) {
-      this.failConnection(error instanceof Error ? error : new Error(String(error)))
+      this.handleTransportError(normalizeRemoteRuntimeConnectionError(error))
       return
     }
 
@@ -429,6 +485,9 @@ class RemoteRuntimeTerminalMultiplexer {
   }
 
   private handleBinary(bytes: Uint8Array<ArrayBufferLike>): void {
+    if (this.phase === 'closed') {
+      return
+    }
     const frame = decodeTerminalStreamFrame(bytes)
     if (!frame) {
       return
@@ -707,7 +766,7 @@ class RemoteRuntimeTerminalMultiplexer {
     opcode: TerminalStreamOpcode,
     payload: Uint8Array<ArrayBufferLike> = new Uint8Array()
   ): boolean {
-    if (!this.ready || !this.subscription) {
+    if (this.phase !== 'established' || !this.ready || !this.subscription) {
       return false
     }
     this.subscription.sendBinary(encodeTerminalStreamFrame({ opcode, streamId, seq: 0, payload }))
@@ -715,58 +774,106 @@ class RemoteRuntimeTerminalMultiplexer {
   }
 
   private resolveReadyIfConnected(): void {
-    if (!this.ready || !this.subscription) {
+    if (this.phase !== 'connecting' || !this.ready || !this.subscription) {
       return
     }
-    this.readyResolver?.()
+    const resolve = this.readyResolver
+    this.phase = 'established'
+    this.pendingTransportError = null
     this.readyResolver = null
     this.readyRejecter = null
+    resolve?.()
   }
 
-  private failConnection(error: Error): void {
-    this.readyRejecter?.(error)
-    this.readyResolver = null
-    this.readyRejecter = null
-    for (const stream of this.streams.values()) {
-      stream.callbacks.onError?.(error.message)
+  private handleTransportError(error: RemoteRuntimeClientErrorLike): void {
+    if (this.phase === 'closed') {
+      return
     }
-    this.subscription?.unsubscribe()
-    this.handleClose()
+    const structuredError = { code: error.code, message: error.message }
+    if (this.phase === 'connecting') {
+      this.finishConnectingFailure(
+        new RemoteRuntimeClientError(structuredError.code, structuredError.message)
+      )
+      return
+    }
+    if (isRecoverableRemoteRuntimeConnectionError(structuredError)) {
+      this.pendingTransportError = structuredError
+      return
+    }
+    this.finishFatalConnection(structuredError)
   }
 
-  private handleClose(message?: string): void {
-    const streams = Array.from(this.streams.values())
-    this.ready = false
-    this.connectPromise = null
-    this.readyRejecter?.(new Error(message ?? 'Remote runtime connection closed.'))
-    this.readyResolver = null
-    this.readyRejecter = null
-    this.subscription = null
-    this.streams.clear()
+  private handleTransportClose(): void {
+    if (this.phase === 'closed') {
+      return
+    }
+    const error =
+      this.pendingTransportError ??
+      ({
+        code: 'remote_runtime_unavailable',
+        message: 'Remote Orca runtime closed the connection.'
+      } as const)
+    if (this.phase === 'connecting') {
+      this.finishConnectingFailure(new RemoteRuntimeClientError(error.code, error.message))
+      return
+    }
+    this.finishRecoverableConnection(error)
+  }
+
+  private finishConnectingFailure(error: RemoteRuntimeClientError): void {
+    const reject = this.readyRejecter
+    this.closeConnectionState()
+    reject?.(error)
+  }
+
+  private finishRecoverableConnection(error: RemoteRuntimeClientErrorLike): void {
+    const streams = this.closeConnectionState()
     for (const stream of streams) {
       clearSnapshot(stream)
-      rejectPendingSnapshotRequest(stream, message ?? 'Remote runtime connection closed.')
+      rejectPendingSnapshotRequest(stream, error.message)
       const canHandleClose = Boolean(stream.callbacks.onTransportClose)
-      stream.callbacks.onTransportClose?.()
-      if (message && !canHandleClose) {
-        stream.callbacks.onError?.(message)
+      if (canHandleClose) {
+        invokeRemoteRuntimeTerminalCallback(() =>
+          stream.callbacks.onTransportClose?.({ code: error.code, message: error.message })
+        )
+      } else {
+        invokeRemoteRuntimeTerminalCallback(() => stream.callbacks.onError?.(error.message))
       }
     }
-    // Why: a closed transport has no live streams or subscription; keeping it
-    // in the module map only retains callbacks for an environment that must
-    // reconnect through a fresh subscription anyway.
+  }
+
+  private finishFatalConnection(error: RemoteRuntimeClientErrorLike): void {
+    const streams = this.closeConnectionState()
+    for (const stream of streams) {
+      clearSnapshot(stream)
+      rejectPendingSnapshotRequest(stream, error.message)
+      invokeRemoteRuntimeTerminalCallback(() => stream.callbacks.onError?.(error.message))
+    }
+  }
+
+  private closeConnectionState(): RemoteRuntimeMultiplexedTerminalState[] {
+    const streams = Array.from(this.streams.values())
+    const subscription = this.subscription
+    this.phase = 'closed'
+    this.ready = false
+    this.connectPromise = null
+    this.readyResolver = null
+    this.readyRejecter = null
+    this.pendingTransportError = null
+    this.subscription = null
+    this.streams.clear()
+    // Why: callback reentrancy must observe the old multiplexer as fully closed
+    // and released before physical cleanup or consumer notification begins.
     this.releaseIfCurrent(this.environmentId, this)
+    releaseRuntimeEnvironmentSubscription(subscription)
+    return streams
   }
 
   private closeIfIdle(): void {
-    if (this.streams.size > 0) {
+    if (this.streams.size > 0 || this.phase === 'closed') {
       return
     }
-    this.subscription?.unsubscribe()
-    this.subscription = null
-    this.connectPromise = null
-    this.ready = false
-    this.releaseIfCurrent(this.environmentId, this)
+    this.closeConnectionState()
   }
 }
 

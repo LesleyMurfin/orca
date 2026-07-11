@@ -19,6 +19,7 @@ describe('createRemoteRuntimePtyTransport', () => {
   const runtimeCall = vi.fn()
   const runtimeSubscribe = vi.fn()
   const subscriptionSendBinary = vi.fn()
+  const subscriptionUnsubscribe = vi.fn()
   let subscriptionCallbacks: {
     onResponse: (response: unknown) => void
     onBinary?: (bytes: Uint8Array<ArrayBufferLike>) => void
@@ -128,12 +129,13 @@ describe('createRemoteRuntimePtyTransport', () => {
     vi.clearAllMocks()
     subscriptionCallbacks = null
     subscriptionSendBinary.mockReset()
+    subscriptionUnsubscribe.mockReset()
     runtimeCall.mockResolvedValue({ ok: true, result: { terminal: { handle: 'terminal-1' } } })
     runtimeSubscribe.mockImplementation(
       async (_args: unknown, callbacks: typeof subscriptionCallbacks) => {
         subscriptionCallbacks = callbacks
         queueMicrotask(emitMultiplexReady)
-        return { unsubscribe: vi.fn(), sendBinary: subscriptionSendBinary }
+        return { unsubscribe: subscriptionUnsubscribe, sendBinary: subscriptionSendBinary }
       }
     )
     vi.stubGlobal('window', {
@@ -1416,7 +1418,400 @@ describe('createRemoteRuntimePtyTransport', () => {
     )
   })
 
-  it('resubscribes without surfacing a PTY error when the remote runtime subscription closes', async () => {
+  it('reconstructs plain startup rejection data as a local structured error', async () => {
+    runtimeSubscribe.mockRejectedValue({
+      code: 'unauthorized',
+      message: 'Remote Orca runtime rejected the pairing token.'
+    })
+    const {
+      _getRemoteRuntimeTerminalMultiplexerCountForTest,
+      getRemoteRuntimeTerminalMultiplexer
+    } = await import('../../runtime/remote-runtime-terminal-multiplexer')
+    const onError = vi.fn()
+    const onTransportClose = vi.fn()
+
+    const rejection = await getRemoteRuntimeTerminalMultiplexer('env-1')
+      .subscribeTerminal({
+        terminal: 'terminal-1',
+        client: { id: 'desktop:test', type: 'desktop' },
+        callbacks: {
+          onData: vi.fn(),
+          onSnapshot: vi.fn(),
+          onError,
+          onTransportClose
+        }
+      })
+      .catch((error: unknown) => error)
+
+    expect(rejection).toBeInstanceOf(Error)
+    expect(rejection).toMatchObject({
+      code: 'unauthorized',
+      message: 'Remote Orca runtime rejected the pairing token.'
+    })
+    expect(onError).not.toHaveBeenCalled()
+    expect(onTransportClose).not.toHaveBeenCalled()
+    expect(_getRemoteRuntimeTerminalMultiplexerCountForTest()).toBe(0)
+  })
+
+  it('rejects every connecting waiter without pane delivery when error and close precede the handle', async () => {
+    let resolveSubscription!: (value: {
+      unsubscribe: () => void
+      sendBinary: typeof subscriptionSendBinary
+    }) => void
+    runtimeSubscribe.mockImplementation(
+      (_args: unknown, callbacks: typeof subscriptionCallbacks) => {
+        subscriptionCallbacks = callbacks
+        return new Promise((resolve) => {
+          resolveSubscription = resolve
+        })
+      }
+    )
+    const {
+      _getRemoteRuntimeTerminalMultiplexerCountForTest,
+      getRemoteRuntimeTerminalMultiplexer
+    } = await import('../../runtime/remote-runtime-terminal-multiplexer')
+    const multiplexer = getRemoteRuntimeTerminalMultiplexer('env-1')
+    const firstError = vi.fn()
+    const secondError = vi.fn()
+    const firstTransportClose = vi.fn()
+    const secondTransportClose = vi.fn()
+
+    const firstPromise = multiplexer.subscribeTerminal({
+      terminal: 'terminal-1',
+      client: { id: 'desktop:first', type: 'desktop' },
+      callbacks: {
+        onData: vi.fn(),
+        onSnapshot: vi.fn(),
+        onError: firstError,
+        onTransportClose: firstTransportClose
+      }
+    })
+    const secondPromise = multiplexer.subscribeTerminal({
+      terminal: 'terminal-2',
+      client: { id: 'desktop:second', type: 'desktop' },
+      callbacks: {
+        onData: vi.fn(),
+        onSnapshot: vi.fn(),
+        onError: secondError,
+        onTransportClose: secondTransportClose
+      }
+    })
+    const settledPromise = Promise.allSettled([firstPromise, secondPromise])
+
+    await vi.waitFor(() => expect(subscriptionCallbacks).not.toBeNull())
+    // Ready alone is not established: the physical handle has not been retained.
+    emitMultiplexReady()
+    const firstSubscriptionCallbacks = subscriptionCallbacks
+    firstSubscriptionCallbacks?.onError?.({
+      code: 'unauthorized',
+      message: 'Remote Orca runtime rejected the pairing token.'
+    })
+    firstSubscriptionCallbacks?.onClose?.()
+
+    const settled = await settledPromise
+    for (const result of settled) {
+      expect(result.status).toBe('rejected')
+      if (result.status === 'rejected') {
+        expect(result.reason).toBeInstanceOf(Error)
+        expect(result.reason).toMatchObject({
+          code: 'unauthorized',
+          message: 'Remote Orca runtime rejected the pairing token.'
+        })
+      }
+    }
+    expect(firstError).not.toHaveBeenCalled()
+    expect(secondError).not.toHaveBeenCalled()
+    expect(firstTransportClose).not.toHaveBeenCalled()
+    expect(secondTransportClose).not.toHaveBeenCalled()
+    expect(_getRemoteRuntimeTerminalMultiplexerCountForTest()).toBe(0)
+
+    resolveSubscription({
+      unsubscribe: subscriptionUnsubscribe,
+      sendBinary: subscriptionSendBinary
+    })
+    await vi.waitFor(() => expect(subscriptionUnsubscribe).toHaveBeenCalledOnce())
+    firstSubscriptionCallbacks?.onError?.({ code: 'runtime_error', message: 'late error' })
+    firstSubscriptionCallbacks?.onClose?.()
+    expect(firstError).not.toHaveBeenCalled()
+    expect(secondError).not.toHaveBeenCalled()
+    expect(firstTransportClose).not.toHaveBeenCalled()
+    expect(secondTransportClose).not.toHaveBeenCalled()
+    expect(subscriptionUnsubscribe).toHaveBeenCalledOnce()
+  })
+
+  it('rejects connecting waiters on close before ready without starting recovery', async () => {
+    runtimeSubscribe.mockImplementation(
+      async (_args: unknown, callbacks: typeof subscriptionCallbacks) => {
+        subscriptionCallbacks = callbacks
+        return { unsubscribe: subscriptionUnsubscribe, sendBinary: subscriptionSendBinary }
+      }
+    )
+    const {
+      _getRemoteRuntimeTerminalMultiplexerCountForTest,
+      getRemoteRuntimeTerminalMultiplexer
+    } = await import('../../runtime/remote-runtime-terminal-multiplexer')
+    const onError = vi.fn()
+    const onTransportClose = vi.fn()
+    const streamPromise = getRemoteRuntimeTerminalMultiplexer('env-1').subscribeTerminal({
+      terminal: 'terminal-1',
+      client: { id: 'desktop:test', type: 'desktop' },
+      callbacks: {
+        onData: vi.fn(),
+        onSnapshot: vi.fn(),
+        onError,
+        onTransportClose
+      }
+    })
+    const rejectionPromise = streamPromise.catch((error: unknown) => error)
+
+    await vi.waitFor(() => expect(subscriptionCallbacks).not.toBeNull())
+    await Promise.resolve()
+    subscriptionCallbacks?.onClose?.()
+    const rejection = await rejectionPromise
+
+    expect(rejection).toBeInstanceOf(Error)
+    expect(rejection).toMatchObject({
+      code: 'remote_runtime_unavailable',
+      message: 'Remote Orca runtime closed the connection.'
+    })
+    expect(onError).not.toHaveBeenCalled()
+    expect(onTransportClose).not.toHaveBeenCalled()
+    expect(subscriptionUnsubscribe).toHaveBeenCalledOnce()
+    expect(_getRemoteRuntimeTerminalMultiplexerCountForTest()).toBe(0)
+  })
+
+  it('fans one established recoverable close out once per stream after physical release', async () => {
+    const {
+      _getRemoteRuntimeTerminalMultiplexerCountForTest,
+      getRemoteRuntimeTerminalMultiplexer
+    } = await import('../../runtime/remote-runtime-terminal-multiplexer')
+    const multiplexer = getRemoteRuntimeTerminalMultiplexer('env-1')
+    const firstError = vi.fn()
+    const secondError = vi.fn()
+    let firstStream: { close: () => void } | null = null
+    const firstTransportClose = vi.fn(() => {
+      expect(_getRemoteRuntimeTerminalMultiplexerCountForTest()).toBe(0)
+      firstStream?.close()
+      throw new Error('first recovery callback failed')
+    })
+    const secondTransportClose = vi.fn()
+
+    const streams = await Promise.all([
+      multiplexer.subscribeTerminal({
+        terminal: 'terminal-1',
+        client: { id: 'desktop:first', type: 'desktop' },
+        callbacks: {
+          onData: vi.fn(),
+          onSnapshot: vi.fn(),
+          onError: firstError,
+          onTransportClose: firstTransportClose
+        }
+      }),
+      multiplexer.subscribeTerminal({
+        terminal: 'terminal-2',
+        client: { id: 'desktop:second', type: 'desktop' },
+        callbacks: {
+          onData: vi.fn(),
+          onSnapshot: vi.fn(),
+          onError: secondError,
+          onTransportClose: secondTransportClose
+        }
+      })
+    ])
+    firstStream = streams[0]
+    const firstSubscriptionCallbacks = subscriptionCallbacks
+    const transportError = {
+      code: 'remote_runtime_unavailable',
+      message: 'Remote Orca runtime stopped responding; the stream connection was reset.'
+    }
+
+    firstSubscriptionCallbacks?.onError?.(transportError)
+    expect(firstError).not.toHaveBeenCalled()
+    expect(secondError).not.toHaveBeenCalled()
+    expect(firstTransportClose).not.toHaveBeenCalled()
+    expect(secondTransportClose).not.toHaveBeenCalled()
+    expect(subscriptionUnsubscribe).not.toHaveBeenCalled()
+
+    expect(() => firstSubscriptionCallbacks?.onClose?.()).not.toThrow()
+    expect(firstTransportClose).toHaveBeenCalledOnce()
+    expect(firstTransportClose).toHaveBeenCalledWith(transportError)
+    expect(secondTransportClose).toHaveBeenCalledOnce()
+    expect(secondTransportClose).toHaveBeenCalledWith(transportError)
+    expect(firstError).not.toHaveBeenCalled()
+    expect(secondError).not.toHaveBeenCalled()
+    expect(subscriptionUnsubscribe).toHaveBeenCalledOnce()
+    expect(_getRemoteRuntimeTerminalMultiplexerCountForTest()).toBe(0)
+
+    firstSubscriptionCallbacks?.onError?.({ code: 'runtime_timeout', message: 'late timeout' })
+    firstSubscriptionCallbacks?.onClose?.()
+    expect(firstTransportClose).toHaveBeenCalledOnce()
+    expect(secondTransportClose).toHaveBeenCalledOnce()
+    expect(subscriptionUnsubscribe).toHaveBeenCalledOnce()
+  })
+
+  it('fans one established fatal error out per stream with no recovery and ignores late close', async () => {
+    const {
+      _getRemoteRuntimeTerminalMultiplexerCountForTest,
+      getRemoteRuntimeTerminalMultiplexer
+    } = await import('../../runtime/remote-runtime-terminal-multiplexer')
+    const multiplexer = getRemoteRuntimeTerminalMultiplexer('env-1')
+    let firstStream: { close: () => void } | null = null
+    const firstError = vi.fn(() => {
+      expect(_getRemoteRuntimeTerminalMultiplexerCountForTest()).toBe(0)
+      firstStream?.close()
+      throw new Error('first fatal callback failed')
+    })
+    const secondError = vi.fn()
+    const firstTransportClose = vi.fn()
+    const secondTransportClose = vi.fn()
+
+    const streams = await Promise.all([
+      multiplexer.subscribeTerminal({
+        terminal: 'terminal-1',
+        client: { id: 'desktop:first', type: 'desktop' },
+        callbacks: {
+          onData: vi.fn(),
+          onSnapshot: vi.fn(),
+          onError: firstError,
+          onTransportClose: firstTransportClose
+        }
+      }),
+      multiplexer.subscribeTerminal({
+        terminal: 'terminal-2',
+        client: { id: 'desktop:second', type: 'desktop' },
+        callbacks: {
+          onData: vi.fn(),
+          onSnapshot: vi.fn(),
+          onError: secondError,
+          onTransportClose: secondTransportClose
+        }
+      })
+    ])
+    firstStream = streams[0]
+    const firstSubscriptionCallbacks = subscriptionCallbacks
+
+    expect(() =>
+      firstSubscriptionCallbacks?.onError?.({
+        code: 'unauthorized',
+        message: 'Remote Orca runtime rejected the pairing token.'
+      })
+    ).not.toThrow()
+    expect(firstError).toHaveBeenCalledOnce()
+    expect(firstError).toHaveBeenCalledWith('Remote Orca runtime rejected the pairing token.')
+    expect(secondError).toHaveBeenCalledOnce()
+    expect(secondError).toHaveBeenCalledWith('Remote Orca runtime rejected the pairing token.')
+    expect(firstTransportClose).not.toHaveBeenCalled()
+    expect(secondTransportClose).not.toHaveBeenCalled()
+    expect(subscriptionUnsubscribe).toHaveBeenCalledOnce()
+    expect(_getRemoteRuntimeTerminalMultiplexerCountForTest()).toBe(0)
+
+    firstSubscriptionCallbacks?.onClose?.()
+    firstSubscriptionCallbacks?.onError?.({ code: 'runtime_error', message: 'late error' })
+    expect(firstError).toHaveBeenCalledOnce()
+    expect(secondError).toHaveBeenCalledOnce()
+    expect(firstTransportClose).not.toHaveBeenCalled()
+    expect(secondTransportClose).not.toHaveBeenCalled()
+    expect(subscriptionUnsubscribe).toHaveBeenCalledOnce()
+  })
+
+  it('delivers a structured normal close only to recovery-capable streams', async () => {
+    const { getRemoteRuntimeTerminalMultiplexer } =
+      await import('../../runtime/remote-runtime-terminal-multiplexer')
+    const multiplexer = getRemoteRuntimeTerminalMultiplexer('env-1')
+    const recoveringError = vi.fn()
+    const recoveringClose = vi.fn()
+    const nonRecoveringError = vi.fn()
+
+    await Promise.all([
+      multiplexer.subscribeTerminal({
+        terminal: 'terminal-1',
+        client: { id: 'desktop:first', type: 'desktop' },
+        callbacks: {
+          onData: vi.fn(),
+          onSnapshot: vi.fn(),
+          onError: recoveringError,
+          onTransportClose: recoveringClose
+        }
+      }),
+      multiplexer.subscribeTerminal({
+        terminal: 'terminal-2',
+        client: { id: 'desktop:second', type: 'desktop' },
+        callbacks: {
+          onData: vi.fn(),
+          onSnapshot: vi.fn(),
+          onError: nonRecoveringError
+        }
+      })
+    ])
+    const firstSubscriptionCallbacks = subscriptionCallbacks
+
+    firstSubscriptionCallbacks?.onClose?.()
+
+    expect(recoveringClose).toHaveBeenCalledOnce()
+    expect(recoveringClose).toHaveBeenCalledWith({
+      code: 'remote_runtime_unavailable',
+      message: 'Remote Orca runtime closed the connection.'
+    })
+    expect(recoveringError).not.toHaveBeenCalled()
+    expect(nonRecoveringError).toHaveBeenCalledOnce()
+    expect(nonRecoveringError).toHaveBeenCalledWith('Remote Orca runtime closed the connection.')
+    expect(subscriptionUnsubscribe).toHaveBeenCalledOnce()
+  })
+
+  it('keeps terminal event errors scoped to their target stream and physical connection', async () => {
+    const { getRemoteRuntimeTerminalMultiplexer } =
+      await import('../../runtime/remote-runtime-terminal-multiplexer')
+    const multiplexer = getRemoteRuntimeTerminalMultiplexer('env-1')
+    const firstError = vi.fn()
+    const secondError = vi.fn()
+    const firstTransportClose = vi.fn()
+    const secondTransportClose = vi.fn()
+    const [first, second] = await Promise.all([
+      multiplexer.subscribeTerminal({
+        terminal: 'terminal-1',
+        client: { id: 'desktop:first', type: 'desktop' },
+        callbacks: {
+          onData: vi.fn(),
+          onSnapshot: vi.fn(),
+          onError: firstError,
+          onTransportClose: firstTransportClose
+        }
+      }),
+      multiplexer.subscribeTerminal({
+        terminal: 'terminal-2',
+        client: { id: 'desktop:second', type: 'desktop' },
+        callbacks: {
+          onData: vi.fn(),
+          onSnapshot: vi.fn(),
+          onError: secondError,
+          onTransportClose: secondTransportClose
+        }
+      })
+    ])
+    subscriptionSendBinary.mockClear()
+
+    subscriptionCallbacks?.onResponse({
+      id: 'terminal-error',
+      ok: true,
+      result: { type: 'error', streamId: first.streamId, message: 'terminal command failed' },
+      _meta: { runtimeId: 'runtime-test' }
+    })
+
+    expect(firstError).toHaveBeenCalledOnce()
+    expect(firstError).toHaveBeenCalledWith('terminal command failed')
+    expect(secondError).not.toHaveBeenCalled()
+    expect(firstTransportClose).not.toHaveBeenCalled()
+    expect(secondTransportClose).not.toHaveBeenCalled()
+    expect(subscriptionUnsubscribe).not.toHaveBeenCalled()
+    expect(second.sendInput('still alive')).toBe(true)
+    expect(subscriptionSendBinary).toHaveBeenCalledOnce()
+
+    first.close()
+    second.close()
+    expect(subscriptionUnsubscribe).toHaveBeenCalledOnce()
+  })
+
+  it('resubscribes once without a PTY error for established recoverable error then close', async () => {
     const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
     const onExit = vi.fn()
     const onDisconnect = vi.fn()
@@ -1431,13 +1826,55 @@ describe('createRemoteRuntimePtyTransport', () => {
 
     await transport.connect({ url: '', callbacks: { onExit, onDisconnect, onError } })
     await vi.waitFor(() => expect(subscriptionSendBinary).toHaveBeenCalled())
-    subscriptionCallbacks?.onClose?.()
+    const firstSubscriptionCallbacks = subscriptionCallbacks
+    firstSubscriptionCallbacks?.onError?.({
+      code: 'remote_runtime_unavailable',
+      message: 'Remote Orca runtime stopped responding; the stream connection was reset.'
+    })
+
+    expect(onError).not.toHaveBeenCalled()
+    expect(runtimeSubscribe).toHaveBeenCalledTimes(1)
+    expect(subscriptionUnsubscribe).not.toHaveBeenCalled()
+
+    firstSubscriptionCallbacks?.onClose?.()
 
     expect(onExit).not.toHaveBeenCalled()
     expect(onDisconnect).not.toHaveBeenCalled()
     expect(onPtyExit).not.toHaveBeenCalled()
     expect(onError).not.toHaveBeenCalled()
     await vi.waitFor(() => expect(runtimeSubscribe).toHaveBeenCalledTimes(2))
+    expect(subscriptionUnsubscribe).toHaveBeenCalledOnce()
+
+    firstSubscriptionCallbacks?.onClose?.()
+    firstSubscriptionCallbacks?.onError?.({ code: 'runtime_timeout', message: 'late timeout' })
+    expect(runtimeSubscribe).toHaveBeenCalledTimes(2)
+    expect(subscriptionUnsubscribe).toHaveBeenCalledOnce()
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('surfaces established fatal transport errors once without recovery', async () => {
+    const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
+    const onError = vi.fn()
+    const transport = createRemoteRuntimePtyTransport('env-1', {
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      leafId: 'pane:1'
+    })
+
+    await transport.connect({ url: '', callbacks: { onError } })
+    await vi.waitFor(() => expect(subscriptionSendBinary).toHaveBeenCalled())
+    const firstSubscriptionCallbacks = subscriptionCallbacks
+
+    firstSubscriptionCallbacks?.onError?.({
+      code: 'unauthorized',
+      message: 'Remote Orca runtime rejected the pairing token.'
+    })
+    firstSubscriptionCallbacks?.onClose?.()
+
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError).toHaveBeenCalledWith('Remote Orca runtime rejected the pairing token.')
+    expect(runtimeSubscribe).toHaveBeenCalledTimes(1)
+    expect(subscriptionUnsubscribe).toHaveBeenCalledOnce()
   })
 
   it('releases pending claimed input when reconnect subscription fails', async () => {

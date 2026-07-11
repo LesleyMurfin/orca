@@ -140,8 +140,13 @@ describe('subscribeRemoteRuntimeRequest', () => {
     try {
       const server = await createSubscriptionServer({ sendMismatchedResponseAfterSubscribe: true })
       const onResponse = vi.fn()
-      const onError = vi.fn()
-      const onClose = vi.fn()
+      const lifecycle: string[] = []
+      const onError = vi.fn(() => lifecycle.push('error'))
+      const onClose = vi.fn(() => {
+        const removedEvents = offSpy.mock.calls.map(([event]) => event)
+        expect(removedEvents).toEqual(expect.arrayContaining(['open', 'error', 'close', 'message']))
+        lifecycle.push('close')
+      })
 
       const subscription = await subscribeRemoteRuntimeRequest(
         server.pairing,
@@ -162,10 +167,14 @@ describe('subscribeRemoteRuntimeRequest', () => {
         )
       )
       expect(onClose).toHaveBeenCalledOnce()
+      expect(lifecycle).toEqual(['error', 'close'])
 
       const removedEvents = offSpy.mock.calls.map(([event]) => event)
       expect(removedEvents).toEqual(expect.arrayContaining(['open', 'error', 'close', 'message']))
       expect(subscription.sendBinary(new Uint8Array([9]))).toBe(false)
+      subscription.close()
+      await Promise.resolve()
+      expect(onClose).toHaveBeenCalledOnce()
     } finally {
       offSpy.mockRestore()
     }
