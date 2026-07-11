@@ -97,6 +97,22 @@ function writeStoredRuntimeEnvironment(storage: Storage): void {
   )
 }
 
+function encodeWebRuntimePairingCode(): string {
+  return Buffer.from(
+    JSON.stringify({
+      v: 2,
+      endpoint: 'ws://127.0.0.1:6768',
+      deviceToken: 'replacement-token',
+      publicKeyB64: 'replacement-public-key'
+    }),
+    'utf-8'
+  )
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
+}
+
 function trackPromiseSettled(promise: Promise<unknown>): () => boolean {
   let settled = false
   void promise.then(
@@ -268,6 +284,37 @@ describe('web settings preload API', () => {
     expect(settings.autoRenameBranchFromWorkDefaultedOn).toBe(true)
     expect(stored.autoRenameBranchFromWork).toBe(true)
     expect(stored.autoRenameBranchFromWorkDefaultedOn).toBe(true)
+  })
+
+  it('invalidates terminal recovery before clearing the active web runtime', async () => {
+    const globals = installBrowserGlobals('Linux')
+    writeStoredRuntimeEnvironment(globals.storage)
+    const { getRemoteRuntimeTerminalRecoveryGeneration } =
+      await import('../runtime/remote-runtime-terminal-recovery-coordinator')
+    const before = getRemoteRuntimeTerminalRecoveryGeneration('web-env-1')
+    const { installWebPreloadApi } = await import('./web-preload-api')
+    installWebPreloadApi()
+
+    await globals.window.api.settings.set({ activeRuntimeEnvironmentId: null })
+
+    expect(getRemoteRuntimeTerminalRecoveryGeneration('web-env-1')).toBe(before + 1)
+  })
+
+  it('invalidates the old recovery generation before replacing a paired web runtime', async () => {
+    const globals = installBrowserGlobals('Linux')
+    writeStoredRuntimeEnvironment(globals.storage)
+    const { getRemoteRuntimeTerminalRecoveryGeneration } =
+      await import('../runtime/remote-runtime-terminal-recovery-coordinator')
+    const before = getRemoteRuntimeTerminalRecoveryGeneration('web-env-1')
+    const { installWebPreloadApi } = await import('./web-preload-api')
+    installWebPreloadApi()
+
+    await globals.window.api.runtimeEnvironments.addFromPairingCode({
+      name: 'Replacement runtime',
+      pairingCode: encodeWebRuntimePairingCode()
+    })
+
+    expect(getRemoteRuntimeTerminalRecoveryGeneration('web-env-1')).toBe(before + 1)
   })
 
   it('migrates inherited terminal bar cursor defaults for stored web settings once', async () => {

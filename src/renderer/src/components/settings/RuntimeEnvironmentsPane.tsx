@@ -53,6 +53,10 @@ import {
   getWebRuntimeEnvironmentsSearchEntry
 } from './runtime-environments-search'
 import { unwrapRuntimeRpcResult } from '@/runtime/runtime-rpc-client'
+import {
+  disconnectSavedRuntimeEnvironment,
+  removeSavedRuntimeEnvironment
+} from '@/runtime/runtime-environment-connection-lifecycle'
 import { useAppStore } from '@/store'
 import { translate } from '@/i18n/i18n'
 import { cn } from '@/lib/utils'
@@ -432,7 +436,7 @@ export function RuntimeEnvironmentsPane({
       if (!allowLocalRuntime) {
         const switched = await switchRuntimeEnvironment(result.environment.id)
         if (!switched) {
-          await window.api.runtimeEnvironments.remove({ selector: result.environment.id })
+          await removeSavedRuntimeEnvironment(result.environment.id)
           await loadEnvironments()
           return
         }
@@ -509,7 +513,7 @@ export function RuntimeEnvironmentsPane({
           return true
         }
       }
-      await window.api.runtimeEnvironments.remove({ selector: environment.id })
+      await removeSavedRuntimeEnvironment(environment.id)
       await loadEnvironments()
       if (mountedRef.current) {
         toast.success(
@@ -542,6 +546,7 @@ export function RuntimeEnvironmentsPane({
     setDisconnectingId(environment.id)
     setSwitchError(null)
     try {
+      let disconnectedByFocusSwitch = false
       if (settings.activeRuntimeEnvironmentId === environment.id) {
         const switched = await switchRuntimeEnvironment(null)
         if (!switched) {
@@ -554,8 +559,13 @@ export function RuntimeEnvironmentsPane({
           }
           return false
         }
+        if (!allowLocalRuntime) {
+          disconnectedByFocusSwitch = true
+        }
       }
-      await window.api.runtimeEnvironments.disconnect({ selector: environment.id })
+      if (!disconnectedByFocusSwitch) {
+        await disconnectSavedRuntimeEnvironment(environment.id)
+      }
       // Why: disconnect is non-destructive; keep the saved server but show the
       // user that this live client is no longer attached to it.
       useAppStore.getState().setRuntimeEnvironmentStatus(environment.id, {

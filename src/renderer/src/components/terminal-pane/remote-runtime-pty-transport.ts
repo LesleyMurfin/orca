@@ -26,6 +26,8 @@ import {
 import { resolveRemoteRuntimeHostTerminal } from '../../runtime/remote-runtime-host-terminal-resolution'
 import {
   beginRemoteRuntimeTerminalRecovery,
+  getRemoteRuntimeTerminalRecoveryGeneration,
+  isRemoteRuntimeTerminalRecoveryGenerationCurrent,
   type RemoteRuntimeTerminalRecoveryLease,
   type RemoteRuntimeTerminalRecoverySnapshot
 } from '../../runtime/remote-runtime-terminal-recovery-coordinator'
@@ -84,12 +86,15 @@ export function createRemoteRuntimePtyTransport(
   let handle: string | null = null
   let remotePtyId: string | null = null
   let currentRuntimeEnvironmentId = runtimeEnvironmentId
+  let recoveryEnvironmentGeneration =
+    getRemoteRuntimeTerminalRecoveryGeneration(runtimeEnvironmentId)
   let multiplexedStream: RemoteRuntimeMultiplexedTerminal | null = null
   let multiplexedStreamHandle: string | null = null
   let desiredViewport: { cols: number; rows: number } | null = null
   let storedCallbacks: Parameters<PtyTransport['connect']>[0]['callbacks'] = {}
   let bindingGeneration = 0
   let recovering = false
+  let recoveryQueryRepliesEnabled = false
   let recoveryLease: RemoteRuntimeTerminalRecoveryLease | null = null
   let stagedRecoveryToken: object | null = null
   let pendingViewportClaim = false
@@ -387,6 +392,7 @@ export function createRemoteRuntimePtyTransport(
   function retireRemoteTerminalId(): void {
     bindingGeneration += 1
     recovering = false
+    recoveryQueryRepliesEnabled = false
     stagedRecoveryToken = null
     cancelRecoveryLease()
     inputBatcher.clear()
@@ -411,9 +417,28 @@ export function createRemoteRuntimePtyTransport(
     }
   }
 
-  function prepareBindingReplacement(): void {
+  function stopAfterEnvironmentTeardown(): void {
     bindingGeneration += 1
     recovering = false
+    recoveryQueryRepliesEnabled = false
+    stagedRecoveryToken = null
+    cancelRecoveryLease()
+    inputBatcher.clear()
+    viewportBatcher.clear()
+    outputProcessor.clearAccumulatedState()
+    connected = false
+    clearPendingViewportClaim()
+    closeMultiplexedStream()
+    invokeSafely(() => storedCallbacks.onDisconnect?.())
+  }
+
+  function prepareBindingReplacement(): void {
+    recoveryEnvironmentGeneration = getRemoteRuntimeTerminalRecoveryGeneration(
+      currentRuntimeEnvironmentId
+    )
+    bindingGeneration += 1
+    recovering = false
+    recoveryQueryRepliesEnabled = false
     stagedRecoveryToken = null
     cancelRecoveryLease()
     inputBatcher.clear()
@@ -498,6 +523,7 @@ export function createRemoteRuntimePtyTransport(
     }
     bindingGeneration += 1
     recovering = false
+    recoveryQueryRepliesEnabled = false
     stagedRecoveryToken = null
     cancelRecoveryLease()
     inputBatcher.clear()
@@ -524,8 +550,18 @@ export function createRemoteRuntimePtyTransport(
     if (!isCurrentRemoteTerminal(sourceGeneration, sourceHandle, sourcePtyId)) {
       return
     }
+    if (
+      !isRemoteRuntimeTerminalRecoveryGenerationCurrent(
+        currentRuntimeEnvironmentId,
+        recoveryEnvironmentGeneration
+      )
+    ) {
+      stopAfterEnvironmentTeardown()
+      return
+    }
     const recoveryBindingGeneration = ++bindingGeneration
     recovering = true
+    recoveryQueryRepliesEnabled = false
     stagedRecoveryToken = null
     inputBatcher.clear()
     viewportBatcher.clear()
@@ -564,7 +600,13 @@ export function createRemoteRuntimePtyTransport(
         }
         recoveryLease = null
         stagedRecoveryToken = null
+        recoveryQueryRepliesEnabled = false
         invokeSafely(() => storedCallbacks.onError?.(error.message))
+      },
+      onDispose: () => {
+        if (bindingGeneration === recoveryBindingGeneration && recovering) {
+          stopAfterEnvironmentTeardown()
+        }
       }
     }
     recoveryLease = beginRemoteRuntimeTerminalRecovery({
@@ -580,6 +622,7 @@ export function createRemoteRuntimePtyTransport(
   }): Promise<void> {
     const token = {}
     stagedRecoveryToken = token
+    recoveryQueryRepliesEnabled = false
     let previousPtyId: string | null = null
     let nextPtyId: string | null = null
     let activatedStream: RemoteRuntimeMultiplexedTerminal | null = null
@@ -622,6 +665,12 @@ export function createRemoteRuntimePtyTransport(
         candidateHandle === args.nextHandle &&
         stream === activatedStream &&
         isRecoveredBindingCurrent(),
+      onReplayReady: () => {
+        if (isRecoveredBindingCurrent() && recovering) {
+          // Snapshot bytes stay reply-silent; only the following live-query replay gets authority.
+          recoveryQueryRepliesEnabled = true
+        }
+      },
       onCommitted: (subscribedViewport) => {
         const stream = getCurrentMultiplexedStream(args.nextHandle)
         const stillCurrent = (): boolean =>
@@ -631,6 +680,7 @@ export function createRemoteRuntimePtyTransport(
           return
         }
         recovering = false
+        recoveryQueryRepliesEnabled = false
         recoveryLease = null
         if (stream && desiredViewport && !sameViewport(desiredViewport, subscribedViewport)) {
           // Why: a resize racing the subscribe handshake must converge on the
@@ -667,6 +717,9 @@ export function createRemoteRuntimePtyTransport(
         startRecovery(args.recoveryBindingGeneration, args.nextHandle, nextPtyId)
     })
     return promise.finally(() => {
+      if (recovering) {
+        recoveryQueryRepliesEnabled = false
+      }
       if (stagedRecoveryToken === token) {
         stagedRecoveryToken = null
       }
@@ -838,10 +891,10 @@ export function createRemoteRuntimePtyTransport(
       if (destroyed) {
         return
       }
-      prepareBindingReplacement()
       storedCallbacks = options.callbacks
       currentRuntimeEnvironmentId =
         getRemoteRuntimePtyEnvironmentId(options.existingPtyId) ?? runtimeEnvironmentId
+      prepareBindingReplacement()
       const nextHandle = getRemoteRuntimeTerminalHandle(options.existingPtyId)
       handle = nextHandle
       if (!handle) {
@@ -876,6 +929,7 @@ export function createRemoteRuntimePtyTransport(
     disconnect() {
       bindingGeneration += 1
       recovering = false
+      recoveryQueryRepliesEnabled = false
       stagedRecoveryToken = null
       cancelRecoveryLease()
       inputBatcher.clear()
@@ -899,6 +953,7 @@ export function createRemoteRuntimePtyTransport(
     detach() {
       bindingGeneration += 1
       recovering = false
+      recoveryQueryRepliesEnabled = false
       stagedRecoveryToken = null
       cancelRecoveryLease()
       inputBatcher.clear()
@@ -931,7 +986,7 @@ export function createRemoteRuntimePtyTransport(
     sendInputImmediate(data: string): boolean {
       const targetHandle = handle
       const targetGeneration = bindingGeneration
-      if (!connected || !targetHandle || recovering) {
+      if (!connected || !targetHandle || (recovering && !recoveryQueryRepliesEnabled)) {
         return false
       }
       if (!data) {

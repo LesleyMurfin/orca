@@ -37,6 +37,7 @@ type RemoteRuntimePtyStagedRebindArgs = {
     handle: string
     stream: RemoteRuntimeMultiplexedTerminal
   }) => boolean
+  onReplayReady: () => void
   onCommitted: (subscribedViewport: { cols: number; rows: number } | null) => void
   onData: (...event: DataEvent) => void
   onSnapshot: (...event: SnapshotEvent) => void | Promise<void>
@@ -55,6 +56,7 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
     let subscribed = false
     let committed = false
     let replayPending = false
+    let replayReady = false
     let committing = false
     let settled = false
     let closed = false
@@ -97,6 +99,10 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
           snapshot = null
           await invokeSafelyAsync(() => args.onSnapshot(...event))
           continue
+        }
+        if (!replayReady) {
+          replayReady = true
+          invokeSafely(args.onReplayReady)
         }
         const event = data.shift()
         if (event) {

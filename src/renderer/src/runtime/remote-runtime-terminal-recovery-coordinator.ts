@@ -67,9 +67,15 @@ export class RemoteRuntimeTerminalRecoveryCoordinator extends RemoteRuntimeTermi
       return
     }
     this.disposed = true
-    this.participants.forEach((record) => record.lifetime.abort())
+    const records = Array.from(this.participants.values())
+    records.forEach((record) => record.lifetime.abort())
     this.participants.clear()
     this.cleanupIdle()
+    records.forEach((record) => {
+      if (record.participant.onDispose) {
+        invokeSafely(record.participant.onDispose)
+      }
+    })
   }
 
   protected removeRecord(record: ParticipantRecord): void {
@@ -109,6 +115,30 @@ export class RemoteRuntimeTerminalRecoveryCoordinator extends RemoteRuntimeTermi
 }
 
 const coordinators = new Map<string, RemoteRuntimeTerminalRecoveryCoordinator>()
+const environmentGenerations = new Map<string, number>()
+
+export function getRemoteRuntimeTerminalRecoveryGeneration(environmentId: string): number {
+  return environmentGenerations.get(environmentId) ?? 0
+}
+
+export function isRemoteRuntimeTerminalRecoveryGenerationCurrent(
+  environmentId: string,
+  generation: number
+): boolean {
+  return generation === getRemoteRuntimeTerminalRecoveryGeneration(environmentId)
+}
+
+export function cancelRemoteRuntimeTerminalRecoveriesForEnvironment(environmentId: string): void {
+  environmentGenerations.set(
+    environmentId,
+    getRemoteRuntimeTerminalRecoveryGeneration(environmentId) + 1
+  )
+  const coordinator = coordinators.get(environmentId)
+  if (coordinator) {
+    coordinators.delete(environmentId)
+    coordinator.dispose()
+  }
+}
 
 export function beginRemoteRuntimeTerminalRecovery(args: {
   environmentId: string

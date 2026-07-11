@@ -41,7 +41,8 @@ This design fixes the ownership and recovery model. It does not merely increase 
 - Adding input sequence numbers, delivery acknowledgements, or exactly-once input semantics.
 - Automatically replaying arbitrary short RPC requests after a reconnect.
 - Adding a new terminal UI component. Existing remote-host status can show reconnecting; the pane keeps its last rendered buffer and must not show a fatal transport banner.
-- Changing pairing, encryption, or the runtime RPC wire protocol.
+- Changing pairing or encryption, or making a breaking runtime RPC wire change. The terminal
+  stream may add capability-negotiated frames that old peers never receive.
 
 ## Current failure chain
 
@@ -327,7 +328,18 @@ Deliver this as three linear stacked PRs:
 2. cloneable subscription startup errors and structured dedicated-stream close semantics;
 3. the recovery coordinator, terminal rebind/input fencing, and deterministic integration coverage.
 
-The first two PRs reference #8180; only the final PR uses `Fixes #8180`. Each layer keeps the prior one-shot terminal recovery path usable until the final coordinator layer lands. The wire protocol is unchanged, so mixed desktop/runtime versions remain supported. Rollback proceeds in reverse stack order. Reverting the final layer restores the one-shot recovery behavior without persisted-state or server migration work; lower layers can then be reverted independently. The remote PTY is never mutated by the new coordinator, which limits rollback risk.
+The first two PRs reference #8180; only the final PR uses `Fixes #8180`. Each layer keeps the prior one-shot terminal recovery path usable until the final coordinator layer lands. The final layer adds an additive, capability-negotiated `QueryReplay` terminal frame and snapshot completion barrier; it does not replace an existing opcode or change pairing/encryption.
+
+| Desktop client | Runtime | Behavior                                                                                                                               |
+| -------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Patched        | Patched | Advertises `queryReplayFrames`; the runtime sends reconstructed queries, ACK-ordered pending output, then an empty completion barrier. |
+| Patched        | Older   | No barrier metadata is present, so the client commits on the legacy `SnapshotEnd`; legacy `Output` query replay remains accepted.      |
+| Older          | Patched | No capability is advertised, so the runtime retains the legacy `Output`/`SnapshotEnd` path and never emits opcode 15.                  |
+| Older          | Older   | Unchanged.                                                                                                                             |
+
+A patched runtime never sends a partial query replay. If a capable stream exceeds the bounded query-reconstruction budget, the runtime resets only that stream with a recoverable error and the existing coordinator resubscribes it; legacy peers keep the pre-extension path.
+
+Rollback proceeds in reverse stack order. Reverting the final layer restores the one-shot recovery behavior and legacy stream path without persisted-state or server migration work; lower layers can then be reverted independently. The remote PTY is never mutated by the new coordinator, which limits rollback risk.
 
 ## Resolved design choices
 

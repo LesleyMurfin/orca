@@ -35,6 +35,7 @@ type RemoteRuntimePtyRecoveryFixture = {
   subscribeTerminal: Mock
   streams: RecoveryStreamRecord[]
   registrations: RecoveryRegistration[]
+  invalidateRecoveryForEnvironment: (environmentId: string) => void
   createAttachedTransport: (args?: {
     handle?: string
     environmentId?: string
@@ -48,6 +49,7 @@ export function installRemoteRuntimePtyRecoveryFixture(): RemoteRuntimePtyRecove
   const runtimeCall = vi.fn(async () => ({ ok: true, result: {} }))
   const streams: RecoveryStreamRecord[] = []
   const registrations: RecoveryRegistration[] = []
+  const recoveryGenerations = new Map<string, number>()
   let nextStreamId = 1
 
   const subscribeTerminal = vi.fn(
@@ -56,6 +58,7 @@ export function installRemoteRuntimePtyRecoveryFixture(): RemoteRuntimePtyRecove
         streamId: nextStreamId++,
         sendInput: vi.fn(() => true),
         resize: vi.fn(() => true),
+        claimViewport: vi.fn(() => true),
         serializeBuffer: vi.fn(async () => null),
         close: vi.fn()
       }
@@ -81,7 +84,11 @@ export function installRemoteRuntimePtyRecoveryFixture(): RemoteRuntimePtyRecove
     getRemoteRuntimeTerminalMultiplexer: vi.fn(() => ({ subscribeTerminal }))
   }))
   vi.doMock('../../runtime/remote-runtime-terminal-recovery-coordinator', () => ({
-    beginRemoteRuntimeTerminalRecovery: beginRecovery
+    beginRemoteRuntimeTerminalRecovery: beginRecovery,
+    getRemoteRuntimeTerminalRecoveryGeneration: (environmentId: string) =>
+      recoveryGenerations.get(environmentId) ?? 0,
+    isRemoteRuntimeTerminalRecoveryGenerationCurrent: (environmentId: string, generation: number) =>
+      generation === (recoveryGenerations.get(environmentId) ?? 0)
   }))
   vi.stubGlobal('window', {
     api: {
@@ -103,6 +110,9 @@ export function installRemoteRuntimePtyRecoveryFixture(): RemoteRuntimePtyRecove
     subscribeTerminal,
     streams,
     registrations,
+    invalidateRecoveryForEnvironment(environmentId) {
+      recoveryGenerations.set(environmentId, (recoveryGenerations.get(environmentId) ?? 0) + 1)
+    },
     settle,
     async createAttachedTransport(args = {}) {
       const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')

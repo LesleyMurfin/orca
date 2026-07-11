@@ -18,6 +18,7 @@ export type RemoteRuntimeTerminalRecoveryParticipant = {
   rebind: (args: { handle: string; signal: AbortSignal }) => Promise<void>
   onGone: () => void
   onFatal: (error: { code: string; message: string }) => void
+  onDispose?: () => void
 }
 
 export type RemoteRuntimeTerminalRecoveryLease = {

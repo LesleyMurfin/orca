@@ -125,6 +125,7 @@ import {
 import { normalizeContextualTourIds, type ContextualTourId } from '../../../shared/contextual-tours'
 import { translate } from '@/i18n/i18n'
 import { getDefaultCreateProjectParent } from '@/components/sidebar/create-project-defaults'
+import { cancelRemoteRuntimeTerminalRecoveriesForEnvironment } from '../runtime/remote-runtime-terminal-recovery-coordinator'
 
 const SETTINGS_STORAGE_KEY = 'orca.web.settings.v1'
 const UI_STORAGE_KEY = 'orca.web.ui.v1'
@@ -2998,6 +2999,13 @@ function getClientForEnvironment(environment: StoredWebRuntimeEnvironment): WebR
 }
 
 function closeActiveRuntimeClients(): void {
+  const closingEnvironmentId =
+    activeEnvironment?.id ?? activeClientEnvironmentId ?? readStoredWebRuntimeEnvironment()?.id
+  if (closingEnvironmentId) {
+    // Web replacement mutates the only runtime in place. Fence late terminal
+    // close callbacks before they can resolve the old web-* selector to the new host.
+    cancelRemoteRuntimeTerminalRecoveriesForEnvironment(closingEnvironmentId)
+  }
   activeClient?.close()
   activeClient = null
   activeClientEnvironmentId = null
