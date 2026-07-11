@@ -15,6 +15,7 @@ export function requestSharedControl<TResult>(args: {
   params: unknown
   timeoutMs: number
   ensureReady: () => Promise<void>
+  getInboundActivityGeneration: () => number
   send: (requestId: string, method: string, params: unknown) => void
   onTimeout?: (error: RemoteRuntimeClientError) => void
   // Why: default off — ordinary short RPCs keep an absolute deadline. Only
@@ -30,25 +31,43 @@ export function requestSharedControl<TResult>(args: {
       }
       args.pendingRequests.delete(requestId)
       pending.reject(remoteRuntimeTimeoutError())
-      // Why: a request the server never answered means the socket is suspect
-      // (half-open tunnels swallow frames silently); mirror
-      // RemoteRuntimeRequestConnection and hand the connection a teardown
-      // error so reconnect+replay runs instead of keeping a zombie socket.
-      args.onTimeout?.(
-        remoteRuntimeUnavailableError(
-          'Remote Orca runtime did not answer in time; resetting the control connection.'
+      const sentAt = pending.inboundActivityGenerationAtSend
+      const socketIsUnproven = sentAt === null || args.getInboundActivityGeneration() === sentAt
+      // Why: the RPC deadline stays absolute, but newer validated traffic
+      // proves the shared socket is alive and avoids disrupting subscriptions.
+      if (socketIsUnproven) {
+        args.onTimeout?.(
+          remoteRuntimeUnavailableError(
+            'Remote Orca runtime did not answer in time; resetting the control connection.'
+          )
         )
-      )
+      }
     }, args.timeoutMs)
     args.pendingRequests.set(requestId, {
       method: args.method,
       resolve: resolve as (response: RuntimeRpcResponse<unknown>) => void,
       reject,
       timeout,
+      inboundActivityGenerationAtSend: null,
       refreshTimeoutOnKeepalive: args.refreshTimeoutOnKeepalive ?? false
     })
     void args.ensureReady().then(
-      () => args.send(requestId, args.method, args.params),
+      () => {
+        const pending = args.pendingRequests.get(requestId)
+        if (!pending) {
+          return
+        }
+        pending.inboundActivityGenerationAtSend = args.getInboundActivityGeneration()
+        try {
+          args.send(requestId, args.method, args.params)
+        } catch (error) {
+          rejectSharedControlPendingRequest(
+            args.pendingRequests,
+            requestId,
+            toRemoteRuntimeClientError(error)
+          )
+        }
+      },
       (error) =>
         rejectSharedControlPendingRequest(
           args.pendingRequests,
