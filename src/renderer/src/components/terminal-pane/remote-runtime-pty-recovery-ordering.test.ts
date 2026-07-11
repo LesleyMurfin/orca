@@ -28,6 +28,12 @@ const eventOrders = [
   ['control-timeout', 'stream-close', 'resume'],
   ['resume', 'old-snapshot', 'new-snapshot']
 ] as const
+const terminalGoneCodes = [
+  'terminal_handle_stale',
+  'terminal_exited',
+  'terminal_gone',
+  'no_connected_pty'
+] as const
 
 function sessionTab(handle: string | null, status: 'ready' | 'pending-handle' = 'ready') {
   return {
@@ -103,7 +109,9 @@ async function settle(): Promise<void> {
   }
 }
 
-async function createIntegrationHarness(args: { failFirstSessionStart?: boolean } = {}): Promise<{
+async function createIntegrationHarness(
+  args: { failFirstSessionStart?: boolean; direct?: boolean } = {}
+): Promise<{
   transport: PtyTransport
   records: RuntimeSubscriptionRecord[]
   runtimeCall: ReturnType<typeof vi.fn>
@@ -141,7 +149,7 @@ async function createIntegrationHarness(args: { failFirstSessionStart?: boolean 
   const onPtyExit = vi.fn()
   const transport = createRemoteRuntimePtyTransport('env-1', {
     worktreeId: 'wt-1',
-    tabId: 'web-terminal-host-tab',
+    tabId: args.direct ? 'tab-1' : 'web-terminal-host-tab',
     leafId: 'pane:1',
     onPtyExit
   })
@@ -213,6 +221,37 @@ describe('remote runtime PTY cross-lane recovery ordering', () => {
     expect(gone.onPtyExit).toHaveBeenCalledWith('remote:env-1@@terminal-1')
     expect(gone.onError).not.toHaveBeenCalled()
   })
+
+  it.each(terminalGoneCodes)(
+    'retires staged message-only %s errors without a pane error',
+    async (code) => {
+      const harness = await createIntegrationHarness({ direct: true })
+      harness.records[0].callbacks.onClose?.()
+      await vi.waitFor(() =>
+        expect(
+          harness.records.filter((record) => record.method === 'terminal.multiplex')
+        ).toHaveLength(2)
+      )
+      expect(
+        harness.records.filter((record) => record.method === 'session.tabs.subscribe')
+      ).toEqual([])
+      const stagedMux = harness.records.filter(
+        (record) => record.method === 'terminal.multiplex'
+      )[1]
+      const staged = subscribePayload(stagedMux)
+      expect(staged.terminal).toBe('terminal-1')
+
+      stagedMux.callbacks.onResponse({
+        ok: true,
+        result: { type: 'error', streamId: staged.streamId, message: code }
+      })
+      await settle()
+
+      expect(harness.transport.getPtyId()).toBeNull()
+      expect(harness.onPtyExit).toHaveBeenCalledWith('remote:env-1@@terminal-1')
+      expect(harness.onError).not.toHaveBeenCalled()
+    }
+  )
 
   it.each(eventOrders)('recovers one generation for cross-lane order %j', async (order) => {
     vi.useFakeTimers()

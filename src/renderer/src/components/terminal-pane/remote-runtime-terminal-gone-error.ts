@@ -1,0 +1,14 @@
+const REMOTE_RUNTIME_TERMINAL_GONE_CODES = [
+  'terminal_handle_stale',
+  'terminal_exited',
+  'terminal_gone',
+  'no_connected_pty'
+] as const
+
+export type RemoteRuntimeTerminalGoneCode = (typeof REMOTE_RUNTIME_TERMINAL_GONE_CODES)[number]
+
+export function findRemoteRuntimeTerminalGoneCode(
+  message: string
+): RemoteRuntimeTerminalGoneCode | null {
+  return REMOTE_RUNTIME_TERMINAL_GONE_CODES.find((code) => message.includes(code)) ?? null
+}
