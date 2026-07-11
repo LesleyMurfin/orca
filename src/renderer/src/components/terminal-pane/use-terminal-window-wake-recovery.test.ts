@@ -3,12 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import type { PaneManager } from '@/lib/pane-manager/pane-manager'
 
-const { recoverVisibleTerminalWindowWakeMock } = vi.hoisted(() => ({
-  recoverVisibleTerminalWindowWakeMock: vi.fn()
-}))
+const { recoverVisibleTerminalWindowWakeMock, retryRemoteRuntimeTerminalRecoveriesNowMock } =
+  vi.hoisted(() => ({
+    recoverVisibleTerminalWindowWakeMock: vi.fn(),
+    retryRemoteRuntimeTerminalRecoveriesNowMock: vi.fn()
+  }))
 
 vi.mock('./terminal-visibility-resume', () => ({
   recoverVisibleTerminalWindowWake: recoverVisibleTerminalWindowWakeMock
+}))
+
+vi.mock('@/runtime/remote-runtime-terminal-recovery-coordinator', () => ({
+  retryRemoteRuntimeTerminalRecoveriesNow: retryRemoteRuntimeTerminalRecoveriesNowMock
 }))
 
 import { useTerminalWindowWakeRecovery } from './use-terminal-window-wake-recovery'
@@ -29,6 +35,7 @@ describe('useTerminalWindowWakeRecovery', () => {
   beforeEach(() => {
     systemResumedCallback = null
     recoverVisibleTerminalWindowWakeMock.mockClear()
+    retryRemoteRuntimeTerminalRecoveriesNowMock.mockClear()
     unsubscribeSystemResumed.mockClear()
     onSystemResumed.mockClear()
     resetTerminalFreezeBreadcrumbsForTesting()
@@ -95,6 +102,19 @@ describe('useTerminalWindowWakeRecovery', () => {
       ['wake-recovery:focus', { clearGlyphAtlases: false }],
       ['wake-recovery:system-resumed', { clearGlyphAtlases: true }]
     ])
+  })
+
+  it('retries remote terminal recovery on system resume while the document is hidden', () => {
+    const visibilityStateSpy = vi
+      .spyOn(document, 'visibilityState', 'get')
+      .mockReturnValue('hidden')
+    renderWakeRecoveryHook()
+
+    systemResumedCallback?.()
+
+    expect(retryRemoteRuntimeTerminalRecoveriesNowMock).toHaveBeenCalledTimes(1)
+    expect(recoverVisibleTerminalWindowWakeMock).not.toHaveBeenCalled()
+    visibilityStateSpy.mockRestore()
   })
 
   it('unsubscribes from the system resume event on cleanup', () => {
