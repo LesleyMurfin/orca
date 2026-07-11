@@ -677,7 +677,7 @@ describe('module recovery adapter', () => {
       error: { code: 'unauthorized', message: 'denied' }
     })
     await flush()
-    expect(failed.onFatal).toHaveBeenCalledWith({ code: 'runtime_error', message: 'denied' })
+    expect(failed.onFatal).toHaveBeenCalledWith({ code: 'unauthorized', message: 'denied' })
 
     const malformed = participant('malformed', 'wt-malformed')
     beginRemoteRuntimeTerminalRecovery({

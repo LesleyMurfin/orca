@@ -182,7 +182,7 @@ function adaptSessionTabsResponse(
   >
 ): void {
   if (response.ok === false) {
-    callbacks.onError({ code: 'runtime_error', message: response.error.message })
+    callbacks.onError({ code: response.error.code, message: response.error.message })
     return
   }
   if (typeof response.result !== 'object' || response.result === null) {
