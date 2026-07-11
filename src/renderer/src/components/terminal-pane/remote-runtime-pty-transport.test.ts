@@ -377,9 +377,11 @@ describe('createRemoteRuntimePtyTransport', () => {
     const { streamId } = latestSubscribePayload()
     emitSnapshot(streamId, 'authoritative replay')
 
-    expect(transport.getPtyId()).toBe('remote:env-1@@terminal-2')
-    expect(onPtySpawn).toHaveBeenCalledOnce()
-    expect(onReplayData).toHaveBeenCalledWith('authoritative replay')
+    await vi.waitFor(() => {
+      expect(transport.getPtyId()).toBe('remote:env-1@@terminal-2')
+      expect(onPtySpawn).toHaveBeenCalledOnce()
+      expect(onReplayData).toHaveBeenCalledWith('authoritative replay')
+    })
     expect(runtimeCall).not.toHaveBeenCalledWith(
       expect.objectContaining({ method: 'terminal.create' })
     )
@@ -430,8 +432,10 @@ describe('createRemoteRuntimePtyTransport', () => {
     )
     expect(transport.getPtyId()).toContain('terminal-1')
     emitSnapshot(latestSubscribePayload().streamId, 'recovered')
-    expect(transport.getPtyId()).toContain('terminal-2')
-    expect(onPtySpawn).toHaveBeenCalledWith(expect.stringContaining('terminal-2'))
+    await vi.waitFor(() => {
+      expect(transport.getPtyId()).toContain('terminal-2')
+      expect(onPtySpawn).toHaveBeenCalledWith(expect.stringContaining('terminal-2'))
+    })
   })
 
   it('retires the mirror when the host no longer publishes the surface after a transport close', async () => {

@@ -138,7 +138,9 @@ describe('remote runtime PTY recovery binding lifecycle', () => {
     transport = await fixture.createAttachedTransport({
       options: { onPtySpawn },
       callbacks: {
-        onReplayData: () => events.push(`replay:${transport.sendInput('during replay')}`),
+        onReplayData: () => {
+          events.push(`replay:${transport.sendInput('during replay')}`)
+        },
         onConnect: () => events.push('connect'),
         onStatus: () => events.push('status')
       }
@@ -152,6 +154,119 @@ describe('remote runtime PTY recovery binding lifecycle', () => {
 
     expect(events).toEqual(['replay:false', 'spawn', 'connect', 'status'])
     expect(transport.sendInput('after replay')).toBe(true)
+  })
+
+  it('keeps input and live output paused until asynchronous replay finishes', async () => {
+    const fixture = installRemoteRuntimePtyRecoveryFixture()
+    let finishReplay!: () => void
+    const replayFinished = new Promise<void>((resolve) => {
+      finishReplay = resolve
+    })
+    const onReplayData = vi.fn(() => replayFinished)
+    const onData = vi.fn()
+    const onConnect = vi.fn()
+    const transport = await fixture.createAttachedTransport({
+      callbacks: { onReplayData, onData, onConnect }
+    })
+    const initial = fixture.streams[0]
+    const { promise, staged } = await beginStagedRebind({ fixture, initial })
+
+    staged.args.callbacks.onSnapshot('authoritative')
+    staged.args.callbacks.onSubscribed?.()
+    staged.args.callbacks.onData('live-after-snapshot')
+    await fixture.settle()
+
+    expect(onReplayData).toHaveBeenCalledWith('authoritative')
+    expect(transport.sendInput('while replay is parsing')).toBe(false)
+    expect(onData).not.toHaveBeenCalled()
+    expect(onConnect).not.toHaveBeenCalled()
+
+    finishReplay()
+    await expect(promise).resolves.toBeUndefined()
+
+    expect(onData).toHaveBeenCalledWith('live-after-snapshot')
+    expect(onConnect).toHaveBeenCalledOnce()
+    expect(transport.sendInput('after replay parsed')).toBe(true)
+  })
+
+  it('does not reopen an activated binding aborted during asynchronous replay', async () => {
+    const fixture = installRemoteRuntimePtyRecoveryFixture()
+    let finishReplay!: () => void
+    const replayFinished = new Promise<void>((resolve) => {
+      finishReplay = resolve
+    })
+    const onConnect = vi.fn()
+    const transport = await fixture.createAttachedTransport({
+      callbacks: { onReplayData: () => replayFinished, onConnect }
+    })
+    const initial = fixture.streams[0]
+    const abort = new AbortController()
+    const { promise, staged } = await beginStagedRebind({
+      fixture,
+      initial,
+      signal: abort.signal
+    })
+
+    staged.args.callbacks.onSnapshot('authoritative')
+    staged.args.callbacks.onSubscribed?.()
+    await fixture.settle()
+    abort.abort()
+
+    await expect(promise).rejects.toMatchObject({ name: 'AbortError' })
+    finishReplay()
+    await fixture.settle()
+
+    expect(staged.stream.close).toHaveBeenCalledOnce()
+    expect(onConnect).not.toHaveBeenCalled()
+    expect(transport.sendInput('aborted binding')).toBe(false)
+  })
+
+  it('drops queued live output superseded by a newer authoritative snapshot', async () => {
+    const fixture = installRemoteRuntimePtyRecoveryFixture()
+    let finishInitialReplay!: () => void
+    const initialReplayFinished = new Promise<void>((resolve) => {
+      finishInitialReplay = resolve
+    })
+    const onReplayData = vi.fn((data: string) =>
+      data === 'initial snapshot' ? initialReplayFinished : undefined
+    )
+    const onData = vi.fn()
+    const transport = await fixture.createAttachedTransport({ callbacks: { onReplayData, onData } })
+    const initial = fixture.streams[0]
+    const { promise, staged } = await beginStagedRebind({ fixture, initial })
+
+    staged.args.callbacks.onSnapshot('initial snapshot')
+    staged.args.callbacks.onSubscribed?.()
+    staged.args.callbacks.onData('before newer snapshot')
+    staged.args.callbacks.onSnapshot('newer snapshot')
+    staged.args.callbacks.onData('after newer snapshot')
+    await fixture.settle()
+
+    finishInitialReplay()
+    await promise
+
+    expect(onReplayData.mock.calls.map(([data]) => data)).toEqual([
+      'initial snapshot',
+      'newer snapshot'
+    ])
+    expect(onData).toHaveBeenCalledOnce()
+    expect(onData).toHaveBeenCalledWith('after newer snapshot')
+    expect(transport.sendInput('after resync replay')).toBe(true)
+  })
+
+  it('delivers an empty authoritative snapshot so stale terminal contents are cleared', async () => {
+    const fixture = installRemoteRuntimePtyRecoveryFixture()
+    const onReplayData = vi.fn()
+    const transport = await fixture.createAttachedTransport({ callbacks: { onReplayData } })
+    const initial = fixture.streams[0]
+    const { promise, staged } = await beginStagedRebind({ fixture, initial })
+
+    staged.args.callbacks.onSnapshot('')
+    staged.args.callbacks.onSubscribed?.()
+    await promise
+
+    expect(onReplayData).toHaveBeenCalledWith('')
+    expect(transport.sendInput('after empty replay')).toBe(true)
   })
 
   it('drops old deferred OSC effects when replay reattaches the transport', async () => {

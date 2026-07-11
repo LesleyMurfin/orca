@@ -4721,75 +4721,77 @@ export function connectPanePty(
     let pendingReplayData: PendingReplayData | null = null
     let replayDrainQueued = false
     const drainReplayDataQueue = async (): Promise<void> => {
-      while (pendingReplayData !== null) {
-        const { data, clearBeforeReplay, pendingEscapeTailAnsi } = pendingReplayData
-        pendingReplayData = null
-        // Relay replay buffers may overlap with content already rendered in
-        // xterm. Local eager replay decides this earlier so metadata-only frames
-        // can keep restored scrollback while still using the replay guard.
-        if (clearBeforeReplay) {
-          await writeReplayDataAsync('\x1b[2J\x1b[3J\x1b[H')
-        }
-        if (clearBeforeReplay || data.length > 0) {
-          // Why: an empty clearing frame is still an authoritative repaint and
-          // must clear a stale agent signal from an earlier payload.
-          rememberReattachPayloadAgentSignal(data, { fullScreenReplay: clearBeforeReplay })
-        }
-        // Why: replayed application bytes carry the live TUI's kitty keyboard
-        // negotiation; the mirror must re-arm from them after a reload. Replay
-        // semantics: relay reconnects redeliver the same window, so pushes
-        // apply as sets to keep the mirrored stack from accumulating frames.
-        kittyKeyboardModes.scanReplay(data)
-        await writeReplayDataAsync(data)
-        if (clearBeforeReplay || data.length > 0) {
-          await writeReplayDataAsync(reattachReplayResetSequence(data))
-          sendFocusedReattachFocusInAfterReplay()
-        }
-        // Why: the daemon could not serialize a PTY read that ended mid-escape,
-        // so the emulator shipped the dangling partial separately. Write it LAST
-        // — after the reset, whose ESC would otherwise abort it — so the next
-        // live chunk completes the sequence instead of rendering literally
-        // (#7329). Guarded so a later ESC cannot leave the parser wedged.
-        if (pendingEscapeTailAnsi) {
-          await writeReplayDataAsync(pendingEscapeTailAnsi)
-        }
-        if (disposed) {
+      try {
+        while (pendingReplayData !== null) {
+          const { data, clearBeforeReplay, pendingEscapeTailAnsi } = pendingReplayData
           pendingReplayData = null
-          return
+          try {
+            // Relay replay buffers may overlap with content already rendered in
+            // xterm. Local eager replay decides this earlier so metadata-only frames
+            // can keep restored scrollback while still using the replay guard.
+            if (clearBeforeReplay) {
+              await writeReplayDataAsync('\x1b[2J\x1b[3J\x1b[H')
+            }
+            if (clearBeforeReplay || data.length > 0) {
+              // Why: an empty clearing frame is still an authoritative repaint and
+              // must clear a stale agent signal from an earlier payload.
+              rememberReattachPayloadAgentSignal(data, { fullScreenReplay: clearBeforeReplay })
+            }
+            // Why: replayed application bytes carry the live TUI's kitty keyboard
+            // negotiation; the mirror must re-arm from them after a reload. Replay
+            // semantics: relay reconnects redeliver the same window, so pushes
+            // apply as sets to keep the mirrored stack from accumulating frames.
+            kittyKeyboardModes.scanReplay(data)
+            await writeReplayDataAsync(data)
+            if (clearBeforeReplay || data.length > 0) {
+              await writeReplayDataAsync(reattachReplayResetSequence(data))
+              sendFocusedReattachFocusInAfterReplay()
+            }
+            // Why: the daemon could not serialize a PTY read that ended mid-escape,
+            // so the emulator shipped the dangling partial separately. Write it LAST
+            // — after the reset, whose ESC would otherwise abort it — so the next
+            // live chunk completes the sequence instead of rendering literal
+            // (#7329). Guarded so a later ESC cannot leave the parser wedged.
+            if (pendingEscapeTailAnsi) {
+              await writeReplayDataAsync(pendingEscapeTailAnsi)
+            }
+          } catch {
+            // The replay queue is best effort; one failed write must not strand
+            // a later authoritative frame behind a permanently rejected chain.
+          }
+          if (disposed) {
+            pendingReplayData = null
+            return
+          }
+          // Why: remote-runtime snapshots can arrive after WebGL attached to an
+          // empty buffer; rebuilding after replay parses seeds the glyph atlas
+          // from the now-populated xterm state.
+          manager.rebuildPaneWebgl(pane.id)
         }
-        // Why: remote-runtime snapshots can arrive after WebGL attached to an
-        // empty buffer; rebuilding after replay parses seeds the glyph atlas
-        // from the now-populated xterm state.
-        manager.rebuildPaneWebgl(pane.id)
+      } finally {
+        // Set this before the drain promise settles so a later replay starts a
+        // new queue instead of attaching to a completed drain.
+        replayDrainQueued = false
       }
     }
     const replayDataCallback = (
       data: string,
       meta: { clearBeforeReplay?: boolean; pendingEscapeTailAnsi?: string } = {}
-    ): void => {
+    ): Promise<void> => {
       pendingReplayData = {
         data,
         clearBeforeReplay: meta.clearBeforeReplay !== false,
         ...(meta.pendingEscapeTailAnsi ? { pendingEscapeTailAnsi: meta.pendingEscapeTailAnsi } : {})
       }
       if (replayDrainQueued) {
-        return
+        return replayWriteQueue
       }
       replayDrainQueued = true
       replayWriteQueue = replayWriteQueue
         .catch(() => undefined)
         .then(drainReplayDataQueue)
-        .finally(() => {
-          replayDrainQueued = false
-          if (pendingReplayData !== null) {
-            replayDataCallback(pendingReplayData.data, {
-              clearBeforeReplay: pendingReplayData.clearBeforeReplay,
-              ...(pendingReplayData.pendingEscapeTailAnsi
-                ? { pendingEscapeTailAnsi: pendingReplayData.pendingEscapeTailAnsi }
-                : {})
-            })
-          }
-        })
+        .catch(() => undefined)
+      return replayWriteQueue
     }
 
     type PendingHiddenOutputRestoreChunk = {

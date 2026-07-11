@@ -143,7 +143,7 @@ export function createPtyOutputProcessor({
     callbacks: PtyOutputCallbacks,
     options?: ProcessPtyOutputOptions,
     meta?: PtyDataMeta
-  ) => void
+  ) => void | Promise<void>
   clearAccumulatedState: () => void
   clearStaleTitleTimer: () => void
   flushPendingSideEffects: () => void
@@ -430,9 +430,10 @@ export function createPtyOutputProcessor({
     callbacks: PtyOutputCallbacks,
     options: ProcessPtyOutputOptions = {},
     meta?: PtyDataMeta
-  ): void {
+  ): void | Promise<void> {
     const rawLength = meta?.rawLength ?? data.length
     const suppressAttentionEvents = options.suppressAttentionEvents === true
+    let replayCompletion: void | Promise<void> = undefined
     // Why: OSC 9999 is an Orca control protocol. Parse it before xterm sees
     // the bytes, and keep parser state across chunks so partial PTY reads do
     // not drop valid status updates or print escape garbage.
@@ -451,11 +452,10 @@ export function createPtyOutputProcessor({
       }
       // Why: preserve the bare-data call shape when there is no replay metadata,
       // so eager-buffer replay (which passes neither) is unchanged.
-      if (Object.keys(replayMeta).length > 0) {
-        callbacks.onReplayData(data, replayMeta)
-      } else {
-        callbacks.onReplayData(data)
-      }
+      replayCompletion =
+        Object.keys(replayMeta).length > 0
+          ? callbacks.onReplayData(data, replayMeta)
+          : callbacks.onReplayData(data)
     } else {
       if (meta) {
         callbacks.onData?.(data, { ...meta, rawLength })
@@ -464,6 +464,7 @@ export function createPtyOutputProcessor({
       }
     }
     schedulePtySideEffects(data, processed.payloads, suppressAttentionEvents)
+    return replayCompletion
   }
 
   function clearAccumulatedState(): void {
