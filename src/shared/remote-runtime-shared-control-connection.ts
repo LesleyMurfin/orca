@@ -34,6 +34,7 @@ import type {
 
 export class RemoteRuntimeSharedControlConnection {
   private state: SharedControlConnectionState = 'closed'
+  private inboundActivityGeneration = 0
   private ws: WebSocket | null = null
   private sharedKey: Uint8Array | null = null
   private socketCleanup: (() => void) | null = null
@@ -73,10 +74,11 @@ export class RemoteRuntimeSharedControlConnection {
       params,
       timeoutMs,
       ensureReady: () => this.ensureReadyWithTimeout(timeoutMs),
+      getInboundActivityGeneration: () => this.inboundActivityGeneration,
       send: (requestId, requestMethod, requestParams) =>
         this.sendRequest(requestId, requestMethod, requestParams),
-      // Why: a timed-out request marks the socket as suspect (#7718) — tear
-      // it down so reconnect+replay runs instead of keeping a zombie socket.
+      // Why: only a timeout with no newer validated inbound frame reaches
+      // here; reconnect+replay replaces that unproven shared socket (#7718).
       onTimeout: (error) => this.handleSocketClosed(error)
     })
   }
@@ -190,6 +192,7 @@ export class RemoteRuntimeSharedControlConnection {
       },
       handleSocketClosed: (error) => this.handleSocketClosed(error),
       sendEncrypted: (payload) => this.sendEncrypted(payload),
+      markInboundActivity: () => (this.inboundActivityGeneration += 1),
       markReady: () => {
         this.lastConnectedAt = Date.now()
         this.scheduleReconnectAttemptReset()
@@ -292,12 +295,8 @@ export class RemoteRuntimeSharedControlConnection {
       reconnectAttempt: this.reconnectAttempt,
       subscriptions: this.subscriptions,
       getCurrentTimer: () => this.reconnectTimer,
-      onTimerFired: () => {
-        this.reconnectTimer = null
-      },
-      open: () => {
-        this.open()
-      }
+      onTimerFired: () => this.clearReconnectTimer(),
+      open: () => this.open()
     })
     this.reconnectTimer = scheduled.timer
     this.reconnectAttempt = scheduled.reconnectAttempt

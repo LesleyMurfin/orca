@@ -15,6 +15,7 @@ import { RemoteRuntimeClientError } from './remote-runtime-client-error'
 import { RemoteRuntimeSharedControlConnection } from './remote-runtime-shared-control-connection'
 import * as sharedControlProtocol from './remote-runtime-shared-control-protocol'
 import type {
+  RemoteRuntimeSharedSubscription,
   SharedControlLogicalSubscription,
   SharedControlSubscriptionCallbacks
 } from './remote-runtime-shared-control-types'
@@ -33,6 +34,7 @@ const servers: WebSocketServer[] = []
 
 type TestableSharedControlConnection = {
   subscriptions: Map<string, SharedControlLogicalSubscription<unknown>>
+  inboundActivityGeneration: number
   reconnectAttempt: number
   scheduleReconnect: () => void
   closeSubscription: (requestId: string) => void
@@ -119,10 +121,7 @@ describe('RemoteRuntimeSharedControlConnection', () => {
       onResponse: onAccounts,
       onError: vi.fn()
     })
-    await connection.subscribe('runtime.clientEvents.subscribe', null, 1000, {
-      onResponse: onEvents,
-      onError: vi.fn()
-    })
+    await subscribeToClientEvents(connection, onEvents)
 
     await vi.waitFor(() => expect(onAccounts).toHaveBeenCalled())
     await vi.waitFor(() => expect(onEvents).toHaveBeenCalled())
@@ -195,13 +194,15 @@ describe('RemoteRuntimeSharedControlConnection', () => {
   it('reconnects and replays passive subscriptions without closing them', async () => {
     const server = await createServer({ closeAfterFirstStreamingResponse: true })
     const connection = new RemoteRuntimeSharedControlConnection(server.pairing)
+    const unsafe = asTestableConnection(connection)
+    const activityGenerations: number[] = []
     const onClose = vi.fn()
 
-    await connection.subscribe('runtime.clientEvents.subscribe', null, 1000, {
-      onResponse: vi.fn(),
-      onError: vi.fn(),
+    await subscribeToClientEvents(
+      connection,
+      () => activityGenerations.push(unsafe.inboundActivityGeneration),
       onClose
-    })
+    )
 
     await vi.waitFor(() => expect(server.connectionCount()).toBe(2))
     await vi.waitFor(() =>
@@ -210,6 +211,8 @@ describe('RemoteRuntimeSharedControlConnection', () => {
         'runtime.clientEvents.subscribe'
       ])
     )
+    await vi.waitFor(() => expect(activityGenerations).toHaveLength(2))
+    expect(activityGenerations).toEqual([3, 6])
     expect(onClose).not.toHaveBeenCalled()
 
     connection.close()
@@ -305,12 +308,7 @@ describe('RemoteRuntimeSharedControlConnection', () => {
       throw unavailable
     }
 
-    await expect(
-      connection.subscribe('runtime.clientEvents.subscribe', null, 1000, {
-        onResponse: vi.fn(),
-        onError: vi.fn()
-      })
-    ).rejects.toBe(unavailable)
+    await expect(subscribeToClientEvents(connection)).rejects.toBe(unavailable)
 
     expect(connection.getDiagnostics()).toMatchObject({ subscriptionCount: 0 })
     expect(vi.getTimerCount()).toBe(0)
@@ -503,7 +501,7 @@ describe('RemoteRuntimeSharedControlConnection', () => {
     connection.close()
   })
 
-  it('times out a stuck short RPC on its absolute deadline despite keepalive frames', async () => {
+  it('keeps shared control ready when another valid frame proves the socket alive', async () => {
     // Why: a keepalive on the shared socket is armed by an unrelated long-poll,
     // not by this request. It must NOT extend a stuck short RPC's deadline —
     // otherwise a hung server call hangs the caller forever (#7948).
@@ -513,9 +511,14 @@ describe('RemoteRuntimeSharedControlConnection', () => {
       keepaliveDelayMs: 20
     })
     const connection = new RemoteRuntimeSharedControlConnection(server.pairing)
+    const onResponse = vi.fn()
+    await subscribeToClientEvents(connection, onResponse)
+    await vi.waitFor(() => expect(onResponse).toHaveBeenCalled())
 
     await expect(connection.request('worktree.hang', undefined, 60)).rejects.toThrow('Timed out')
 
+    expect(server.connectionCount()).toBe(1)
+    expect(connection.getDiagnostics().state).toBe('ready')
     connection.close()
   })
 
@@ -524,10 +527,7 @@ describe('RemoteRuntimeSharedControlConnection', () => {
     const connection = new RemoteRuntimeSharedControlConnection(server.pairing)
     const onResponse = vi.fn()
 
-    await connection.subscribe('runtime.clientEvents.subscribe', null, 1000, {
-      onResponse,
-      onError: vi.fn()
-    })
+    await subscribeToClientEvents(connection, onResponse)
     await vi.waitFor(() => expect(onResponse).toHaveBeenCalled())
 
     connection.close()
@@ -554,10 +554,7 @@ describe('RemoteRuntimeSharedControlConnection', () => {
     const server = await createServer()
     const connection = new RemoteRuntimeSharedControlConnection(server.pairing)
 
-    const subscription = await connection.subscribe('runtime.clientEvents.subscribe', null, 1000, {
-      onResponse: vi.fn(),
-      onError: vi.fn()
-    })
+    const subscription = await subscribeToClientEvents(connection)
     await vi.waitFor(() => expect(server.requests).toHaveLength(1))
 
     expect(subscription.sendBinary(new Uint8Array([1, 2, 3]))).toBe(false)
@@ -576,11 +573,7 @@ describe('RemoteRuntimeSharedControlConnection', () => {
     const onResponse = vi.fn()
     const onClose = vi.fn()
 
-    await connection.subscribe('runtime.clientEvents.subscribe', null, 1000, {
-      onResponse,
-      onError: vi.fn(),
-      onClose
-    })
+    await subscribeToClientEvents(connection, onResponse, onClose)
     await vi.waitFor(() => expect(onResponse).toHaveBeenCalled())
     expect(isRuntimeSubscriptionReplayResponse(onResponse.mock.calls[0]?.[0])).toBe(false)
 
@@ -617,11 +610,7 @@ describe('RemoteRuntimeSharedControlConnection', () => {
     const onResponse = vi.fn()
     const onClose = vi.fn()
 
-    await connection.subscribe('runtime.clientEvents.subscribe', null, 1000, {
-      onResponse,
-      onError: vi.fn(),
-      onClose
-    })
+    await subscribeToClientEvents(connection, onResponse, onClose)
     await vi.waitFor(() => expect(onResponse).toHaveBeenCalled())
 
     // Why: mirrors RemoteRuntimeRequestConnection — a request the server never
@@ -710,6 +699,18 @@ function asTestableConnection(
   connection: RemoteRuntimeSharedControlConnection
 ): TestableSharedControlConnection {
   return connection as unknown as TestableSharedControlConnection
+}
+
+function subscribeToClientEvents(
+  connection: RemoteRuntimeSharedControlConnection,
+  onResponse: SharedControlSubscriptionCallbacks<unknown>['onResponse'] = vi.fn(),
+  onClose?: SharedControlSubscriptionCallbacks<unknown>['onClose']
+): Promise<RemoteRuntimeSharedSubscription> {
+  return connection.subscribe('runtime.clientEvents.subscribe', null, 1000, {
+    onResponse,
+    onError: vi.fn(),
+    onClose
+  })
 }
 
 function addTestSubscription(
