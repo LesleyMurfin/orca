@@ -43,7 +43,6 @@ describe('remote runtime PTY recovery input and viewport fencing', () => {
 
       const rebind = fixture.registrations[0].participant.rebind({
         handle: 'terminal-2',
-        generation: 4,
         signal: new AbortController().signal
       })
       await fixture.settle()
@@ -164,7 +163,6 @@ describe('remote runtime PTY recovery input and viewport fencing', () => {
     initial.args.callbacks.onTransportClose?.(recoverableClose)
     const rebind = fixture.registrations[0].participant.rebind({
       handle: 'terminal-1',
-      generation: 5,
       signal: new AbortController().signal
     })
     await fixture.settle()

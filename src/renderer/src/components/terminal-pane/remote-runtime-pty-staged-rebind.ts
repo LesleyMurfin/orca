@@ -9,10 +9,9 @@ type StructuredRuntimeError = { code: string; message: string }
 type SnapshotEvent = Parameters<RemoteRuntimeMultiplexedTerminalCallbacks['onSnapshot']>
 type DataEvent = Parameters<RemoteRuntimeMultiplexedTerminalCallbacks['onData']>
 
-export type RemoteRuntimePtyStagedRebindArgs = {
+type RemoteRuntimePtyStagedRebindArgs = {
   handle: string
   bindingGeneration: number
-  coordinatorGeneration: number
   signal: AbortSignal
   client: { id: string; type: 'desktop' }
   viewport: { cols: number; rows: number } | null
@@ -24,20 +23,17 @@ export type RemoteRuntimePtyStagedRebindArgs = {
   }) => Promise<RemoteRuntimeMultiplexedTerminal>
   canCommit: (args: {
     bindingGeneration: number
-    coordinatorGeneration: number
     handle: string
     stream: RemoteRuntimeMultiplexedTerminal
   }) => boolean
   activate: (args: {
     bindingGeneration: number
-    coordinatorGeneration: number
     handle: string
     stream: RemoteRuntimeMultiplexedTerminal
     subscribedViewport: { cols: number; rows: number } | null
   }) => void
   isActive: (args: {
     bindingGeneration: number
-    coordinatorGeneration: number
     handle: string
     stream: RemoteRuntimeMultiplexedTerminal
   }) => boolean
@@ -90,7 +86,6 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
     const current = (target: RemoteRuntimeMultiplexedTerminal): boolean =>
       args.isActive({
         bindingGeneration: args.bindingGeneration,
-        coordinatorGeneration: args.coordinatorGeneration,
         handle: args.handle,
         stream: target
       })
@@ -134,7 +129,6 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
         args.signal.aborted ||
         !args.canCommit({
           bindingGeneration: args.bindingGeneration,
-          coordinatorGeneration: args.coordinatorGeneration,
           handle: args.handle,
           stream
         })
@@ -146,7 +140,6 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
       try {
         args.activate({
           bindingGeneration: args.bindingGeneration,
-          coordinatorGeneration: args.coordinatorGeneration,
           handle: args.handle,
           stream,
           subscribedViewport: args.viewport

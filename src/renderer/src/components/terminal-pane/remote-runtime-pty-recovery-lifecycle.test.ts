@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { RuntimeMobileSessionTabsResult } from '../../../../shared/runtime-types'
+import type { RemoteRuntimeTerminalRecoverySnapshot } from '../../runtime/remote-runtime-terminal-recovery-coordinator'
 import {
   installRemoteRuntimePtyRecoveryFixture,
   type RecoveryStreamRecord
@@ -10,14 +10,8 @@ const recoverableClose = {
   message: 'Remote Orca runtime connection closed.'
 }
 
-function readySnapshot(handle: string): RuntimeMobileSessionTabsResult {
+function readySnapshot(handle: string): RemoteRuntimeTerminalRecoverySnapshot {
   return {
-    worktree: 'id:wt-1',
-    publicationEpoch: 'epoch-1',
-    snapshotVersion: 1,
-    activeGroupId: null,
-    activeTabId: 'host-tab::pane:1',
-    activeTabType: 'terminal',
     tabs: [
       {
         type: 'terminal',
@@ -37,7 +31,6 @@ async function beginStagedRebind(args: {
   fixture: ReturnType<typeof installRemoteRuntimePtyRecoveryFixture>
   initial: RecoveryStreamRecord
   handle?: string
-  coordinatorGeneration?: number
   signal?: AbortSignal
 }): Promise<{
   promise: Promise<void>
@@ -51,7 +44,6 @@ async function beginStagedRebind(args: {
   const participant = args.fixture.registrations[0].participant
   const promise = participant.rebind({
     handle: args.handle ?? 'terminal-2',
-    generation: args.coordinatorGeneration ?? 7,
     signal: args.signal ?? new AbortController().signal
   })
   await args.fixture.settle()
@@ -417,7 +409,6 @@ describe('remote runtime PTY recovery binding lifecycle', () => {
       }
       const promise = fixture.registrations[0].participant.rebind({
         handle: 'terminal-2',
-        generation: 8,
         signal: abort.signal
       })
       await fixture.settle()
@@ -479,7 +470,6 @@ describe('remote runtime PTY recovery binding lifecycle', () => {
 
     const retryPromise = first.participant.rebind({
       handle: 'terminal-1',
-      generation: 8,
       signal: new AbortController().signal
     })
     await fixture.settle()
@@ -562,7 +552,6 @@ describe('remote runtime PTY recovery binding lifecycle', () => {
 
     const directRebind = directParticipant.rebind({
       handle: 'terminal-1',
-      generation: 1,
       signal: new AbortController().signal
     })
     await directFixture.settle()

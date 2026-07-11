@@ -1,11 +1,11 @@
 import type {
-  RuntimeMobileSessionTabsResult,
+  RuntimeMobileSessionClientTab,
   RuntimeMobileSessionTerminalClientTab
 } from '../../../shared/runtime-types'
-import type { RemoteRuntimeTerminalHandleResolution } from './remote-runtime-terminal-recovery-coordinator'
+import type { RemoteRuntimeTerminalHandleResolution } from './remote-runtime-terminal-recovery-types'
 
 export function resolveRemoteRuntimeHostTerminal(
-  snapshot: RuntimeMobileSessionTabsResult,
+  snapshot: { tabs: RuntimeMobileSessionClientTab[] },
   args: { hostTabId: string; leafId?: string | null }
 ): RemoteRuntimeTerminalHandleResolution {
   const surfaces = snapshot.tabs.filter(

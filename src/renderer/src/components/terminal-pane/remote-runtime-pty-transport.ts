@@ -26,7 +26,8 @@ import {
 import { resolveRemoteRuntimeHostTerminal } from '../../runtime/remote-runtime-host-terminal-resolution'
 import {
   beginRemoteRuntimeTerminalRecovery,
-  type RemoteRuntimeTerminalRecoveryLease
+  type RemoteRuntimeTerminalRecoveryLease,
+  type RemoteRuntimeTerminalRecoverySnapshot
 } from '../../runtime/remote-runtime-terminal-recovery-coordinator'
 import {
   toRuntimeTerminalWorktreeSelector,
@@ -85,7 +86,6 @@ export function createRemoteRuntimePtyTransport(
   let currentRuntimeEnvironmentId = runtimeEnvironmentId
   let multiplexedStream: RemoteRuntimeMultiplexedTerminal | null = null
   let multiplexedStreamHandle: string | null = null
-  let multiplexedStreamRecoveryGeneration: number | null = null
   let desiredViewport: { cols: number; rows: number } | null = null
   let storedCallbacks: Parameters<PtyTransport['connect']>[0]['callbacks'] = {}
   let bindingGeneration = 0
@@ -364,7 +364,6 @@ export function createRemoteRuntimePtyTransport(
     multiplexedStream?.close()
     multiplexedStream = null
     multiplexedStreamHandle = null
-    multiplexedStreamRecoveryGeneration = null
   }
 
   function isCurrentBinding(targetGeneration: number, targetHandle: string): boolean {
@@ -510,7 +509,6 @@ export function createRemoteRuntimePtyTransport(
     remotePtyId = null
     multiplexedStream = null
     multiplexedStreamHandle = null
-    multiplexedStreamRecoveryGeneration = null
     invokeSafely(() => storedCallbacks.onExit?.(0))
     invokeSafely(() => storedCallbacks.onDisconnect?.())
     if (targetPtyId) {
@@ -540,7 +538,7 @@ export function createRemoteRuntimePtyTransport(
     const participant = {
       id: recoveryParticipantId,
       worktreeId: hostMirror ? (worktreeId ?? null) : null,
-      resolveHandle: (snapshot: RuntimeMobileSessionTabsResult | null) => {
+      resolveHandle: (snapshot: RemoteRuntimeTerminalRecoverySnapshot | null) => {
         if (hostTabId) {
           return snapshot
             ? resolveRemoteRuntimeHostTerminal(snapshot, { hostTabId, leafId })
@@ -548,18 +546,9 @@ export function createRemoteRuntimePtyTransport(
         }
         return { kind: 'ready' as const, handle: sourceHandle }
       },
-      rebind: ({
-        handle: nextHandle,
-        generation: coordinatorGeneration,
-        signal
-      }: {
-        handle: string
-        generation: number
-        signal: AbortSignal
-      }) =>
+      rebind: ({ handle: nextHandle, signal }: { handle: string; signal: AbortSignal }) =>
         rebindRecoveredTerminal({
           recoveryBindingGeneration,
-          coordinatorGeneration,
           nextHandle,
           signal
         }),
@@ -586,7 +575,6 @@ export function createRemoteRuntimePtyTransport(
 
   function rebindRecoveredTerminal(args: {
     recoveryBindingGeneration: number
-    coordinatorGeneration: number
     nextHandle: string
     signal: AbortSignal
   }): Promise<void> {
@@ -599,12 +587,10 @@ export function createRemoteRuntimePtyTransport(
       activatedStream !== null &&
       isCurrentRemoteTerminal(args.recoveryBindingGeneration, args.nextHandle, nextPtyId) &&
       multiplexedStream === activatedStream &&
-      multiplexedStreamHandle === args.nextHandle &&
-      multiplexedStreamRecoveryGeneration === args.coordinatorGeneration
+      multiplexedStreamHandle === args.nextHandle
     const promise = stageRemoteRuntimePtyRebind({
       handle: args.nextHandle,
       bindingGeneration: args.recoveryBindingGeneration,
-      coordinatorGeneration: args.coordinatorGeneration,
       signal: args.signal,
       client: { id: clientId, type: 'desktop' },
       viewport: desiredViewport,
@@ -618,12 +604,7 @@ export function createRemoteRuntimePtyTransport(
         recovering &&
         bindingGeneration === candidateGeneration &&
         stagedRecoveryToken === token,
-      activate: ({
-        bindingGeneration: candidateGeneration,
-        coordinatorGeneration,
-        handle: nextHandle,
-        stream
-      }) => {
+      activate: ({ bindingGeneration: candidateGeneration, handle: nextHandle, stream }) => {
         previousPtyId = remotePtyId
         nextPtyId = toRemoteRuntimePtyId(nextHandle, currentRuntimeEnvironmentId)
         if (multiplexedStream && multiplexedStream !== stream) {
@@ -633,18 +614,11 @@ export function createRemoteRuntimePtyTransport(
         remotePtyId = nextPtyId
         multiplexedStream = stream
         multiplexedStreamHandle = nextHandle
-        multiplexedStreamRecoveryGeneration = coordinatorGeneration
         bindingGeneration = candidateGeneration
         activatedStream = stream
       },
-      isActive: ({
-        bindingGeneration: candidateGeneration,
-        coordinatorGeneration,
-        handle: candidateHandle,
-        stream
-      }) =>
+      isActive: ({ bindingGeneration: candidateGeneration, handle: candidateHandle, stream }) =>
         candidateGeneration === args.recoveryBindingGeneration &&
-        coordinatorGeneration === args.coordinatorGeneration &&
         candidateHandle === args.nextHandle &&
         stream === activatedStream &&
         isRecoveredBindingCurrent(),
@@ -765,7 +739,6 @@ export function createRemoteRuntimePtyTransport(
     closeMultiplexedStream()
     multiplexedStream = nextStream
     multiplexedStreamHandle = subscribedHandle
-    multiplexedStreamRecoveryGeneration = null
     // Why: a viewport change that landed during the subscribe round-trip took
     // the now-no-op one-shot fallback, so the stream record is still at the
     // subscribe-time size. Replay the latest remembered viewport so the PTY

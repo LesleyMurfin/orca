@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RuntimeRpcResponse } from '../../../shared/runtime-rpc-envelope'
-import type { RuntimeMobileSessionTabsResult } from '../../../shared/runtime-types'
 import {
   RemoteRuntimeTerminalRecoveryCoordinator,
   beginRemoteRuntimeTerminalRecovery,
   retryRemoteRuntimeTerminalRecoveriesNow,
   type RemoteRuntimeTerminalHandleResolution,
   type RemoteRuntimeTerminalRecoveryDependencies,
-  type RemoteRuntimeTerminalRecoveryParticipant
+  type RemoteRuntimeTerminalRecoveryParticipant,
+  type RemoteRuntimeTerminalRecoverySnapshot
 } from './remote-runtime-terminal-recovery-coordinator'
 import { resolveRemoteRuntimeHostTerminal } from './remote-runtime-host-terminal-resolution'
 
@@ -28,15 +28,20 @@ async function flush(): Promise<void> {
   }
 }
 
-function snapshot(version = 1): RuntimeMobileSessionTabsResult {
+function snapshot(version = 1): RemoteRuntimeTerminalRecoverySnapshot {
   return {
-    worktree: 'wt-1',
-    publicationEpoch: 'epoch-1',
-    snapshotVersion: version,
-    activeGroupId: null,
-    activeTabId: null,
-    activeTabType: null,
-    tabs: []
+    tabs: [
+      {
+        type: 'terminal',
+        id: `snapshot-${version}`,
+        parentTabId: 'snapshot-marker',
+        leafId: 'snapshot-marker',
+        title: 'Snapshot marker',
+        isActive: false,
+        status: 'ready',
+        terminal: `snapshot-${version}`
+      }
+    ]
   }
 }
 
@@ -45,7 +50,7 @@ function participant(
   worktreeId: string | null,
   options: {
     resolve?: (
-      value: RuntimeMobileSessionTabsResult | null
+      value: RemoteRuntimeTerminalRecoverySnapshot | null
     ) => RemoteRuntimeTerminalHandleResolution
     rebind?: RemoteRuntimeTerminalRecoveryParticipant['rebind']
     onGone?: () => void
@@ -54,7 +59,9 @@ function participant(
 ): RemoteRuntimeTerminalRecoveryParticipant {
   const resolve =
     options.resolve ??
-    ((_value: RuntimeMobileSessionTabsResult | null): RemoteRuntimeTerminalHandleResolution => ({
+    ((
+      _value: RemoteRuntimeTerminalRecoverySnapshot | null
+    ): RemoteRuntimeTerminalHandleResolution => ({
       kind: 'ready',
       handle: `handle-${id}`
     }))
@@ -293,7 +300,7 @@ describe('RemoteRuntimeTerminalRecoveryCoordinator', () => {
     expect(signals.get('second')?.aborted).toBe(false)
   })
 
-  it('fences stale generations and releases a late subscription handle', async () => {
+  it('fences stale runs and releases a late subscription handle', async () => {
     const h = createHarness()
     h.deferNext()
     const coordinator = new RemoteRuntimeTerminalRecoveryCoordinator('env-1', h.dependencies)
@@ -302,9 +309,8 @@ describe('RemoteRuntimeTerminalRecoveryCoordinator', () => {
     await flush()
     leaseA.cancel()
     const current = participant('current', 'wt-1')
-    const leaseB = coordinator.register(current)
+    coordinator.register(current)
     await flush()
-    expect(leaseB.generation).toBeGreaterThan(leaseA.generation)
 
     h.calls[0]?.args.onSnapshot(snapshot())
     h.calls[0]?.resolve?.()
@@ -381,12 +387,15 @@ describe('RemoteRuntimeTerminalRecoveryCoordinator', () => {
       snapshotHarness.dependencies
     )
     let snapshotReplacement: RemoteRuntimeTerminalRecoveryParticipant | undefined
-    const initialLease = snapshotCoordinator.register(
+    snapshotCoordinator.register(
       participant('snapshot-first', 'wt-1', {
         resolve: () => ({ kind: 'gone' }),
         onGone: () => {
           snapshotReplacement = participant('snapshot-replacement', 'wt-1', {
-            resolve: (value) => ({ kind: 'ready', handle: `handle-${value?.snapshotVersion}` })
+            resolve: (value) => ({
+              kind: 'ready',
+              handle: value?.tabs[0]?.terminal ?? 'missing'
+            })
           })
           snapshotCoordinator.register(snapshotReplacement)
         }
@@ -403,7 +412,7 @@ describe('RemoteRuntimeTerminalRecoveryCoordinator', () => {
     await flush()
     expect(snapshotReplacement?.resolveHandle).toHaveBeenCalledWith(snapshot(2))
     expect(snapshotReplacement?.rebind).toHaveBeenCalledWith(
-      expect.objectContaining({ generation: initialLease.generation + 1, handle: 'handle-2' })
+      expect.objectContaining({ handle: 'snapshot-2', signal: expect.any(AbortSignal) })
     )
   })
 
@@ -574,10 +583,16 @@ describe('RemoteRuntimeTerminalRecoveryCoordinator', () => {
   it('resumes a deferred retry when an early-snapshot start handle resolves late', async () => {
     const h = createHarness()
     h.deferNext()
-    const rebind = vi.fn().mockRejectedValueOnce(OFFLINE).mockResolvedValue(undefined)
+    const rebindCalls: { signal: AbortSignal; abortedAtCall: boolean }[] = []
+    const rebind = vi.fn(async ({ signal }: { signal: AbortSignal }) => {
+      rebindCalls.push({ signal, abortedAtCall: signal.aborted })
+      if (rebindCalls.length === 1) {
+        throw OFFLINE
+      }
+    })
     const recovering = participant('recovering', 'wt-1', { rebind })
     const coordinator = new RemoteRuntimeTerminalRecoveryCoordinator('env-1', h.dependencies)
-    const lease = coordinator.register(recovering)
+    coordinator.register(recovering)
     await flush()
 
     h.calls[0]?.args.onSnapshot(snapshot(1))
@@ -595,8 +610,12 @@ describe('RemoteRuntimeTerminalRecoveryCoordinator', () => {
     await flush()
     expect(rebind).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ generation: lease.generation + 1 })
+      expect.objectContaining({ signal: expect.anything() })
     )
+    expect(rebindCalls).toHaveLength(2)
+    expect(rebindCalls[0]?.signal.aborted).toBe(true)
+    expect(rebindCalls[1]?.signal).not.toBe(rebindCalls[0]?.signal)
+    expect(rebindCalls.every((call) => !call.abortedAtCall)).toBe(true)
   })
 })
 
@@ -622,7 +641,9 @@ describe('module recovery adapter', () => {
 
     const updated = participant('updated', 'wt-updated', {
       resolve: (value) =>
-        value?.snapshotVersion === 2 ? { kind: 'ready', handle: 'fresh' } : { kind: 'pending' }
+        value?.tabs[0]?.terminal === 'snapshot-2'
+          ? { kind: 'ready', handle: 'fresh' }
+          : { kind: 'pending' }
     })
     const updatedLease = beginRemoteRuntimeTerminalRecovery({
       environmentId: 'adapter-updated',
@@ -774,10 +795,9 @@ describe('module recovery adapter', () => {
     vi.stubGlobal('window', { api: { runtimeEnvironments: { subscribe } } })
     const recovering = participant('future-tab', 'wt-1', {
       resolve: (value) => {
-        expect(value?.activeTabType).toBeNull()
-        expect(value?.tabs).toEqual([
-          expect.objectContaining({ type: 'terminal', terminal: 'terminal-1' })
-        ])
+        expect(value).toEqual({
+          tabs: [expect.objectContaining({ type: 'terminal', terminal: 'terminal-1' })]
+        })
         return resolveRemoteRuntimeHostTerminal(value!, {
           hostTabId: 'tab-1',
           leafId: 'pane:1'
@@ -793,8 +813,6 @@ describe('module recovery adapter', () => {
     callbacks[0]?.onResponse(
       success({
         type: 'snapshot',
-        ...snapshot(1),
-        activeTabType: 'canvas',
         tabs: [
           {
             type: 'canvas',

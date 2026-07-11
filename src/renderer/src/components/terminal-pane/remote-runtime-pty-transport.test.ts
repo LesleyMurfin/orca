@@ -390,54 +390,6 @@ describe('createRemoteRuntimePtyTransport', () => {
     )
   })
 
-  it('re-derives the host session handle after a transport close instead of resubscribing the stale one', async () => {
-    const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
-    const onPtySpawn = vi.fn()
-    const transport = createRemoteRuntimePtyTransport('env-1', {
-      worktreeId: 'wt-1',
-      tabId: 'web-terminal-tab-1',
-      leafId: 'pane:1',
-      onPtySpawn
-    })
-
-    transport.attach({
-      existingPtyId: 'remote:env-1@@terminal-1',
-      cols: 80,
-      rows: 24,
-      callbacks: {}
-    })
-    await vi.waitFor(() => expect(subscriptionSendBinary).toHaveBeenCalled())
-    expect(latestSubscribePayload()).toMatchObject({ terminal: 'terminal-1' })
-
-    // The dedicated multiplex socket dies (liveness/close) → onTransportClose.
-    subscriptionCallbacks?.onClose?.()
-    await vi.waitFor(() => expect(sessionTabsCallbacks).not.toBeNull())
-    // Why: while the tunnel was down the host re-minted this pane's handle;
-    // recovery must use the authoritative logical subscription, not a one-shot
-    // list that can race shared-control reconnect (#7718, #8180).
-    emitSessionTabsSnapshot([
-      {
-        type: 'terminal',
-        id: 'tab-1::pane:1',
-        parentTabId: 'tab-1',
-        leafId: 'pane:1',
-        title: 'Terminal',
-        isActive: true,
-        status: 'ready',
-        terminal: 'terminal-2'
-      }
-    ])
-    await vi.waitFor(() =>
-      expect(latestSubscribePayload()).toMatchObject({ terminal: 'terminal-2' })
-    )
-    expect(transport.getPtyId()).toContain('terminal-1')
-    emitSnapshot(latestSubscribePayload().streamId, 'recovered')
-    await vi.waitFor(() => {
-      expect(transport.getPtyId()).toContain('terminal-2')
-      expect(onPtySpawn).toHaveBeenCalledWith(expect.stringContaining('terminal-2'))
-    })
-  })
-
   it('retires the mirror when the host no longer publishes the surface after a transport close', async () => {
     const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
     const onPtyExit = vi.fn()

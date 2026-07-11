@@ -24,13 +24,13 @@ export type RecoveryStreamRecord = {
   }
 }
 
-export type RecoveryRegistration = {
+type RecoveryRegistration = {
   environmentId: string
   participant: RemoteRuntimeTerminalRecoveryParticipant
   lease: RemoteRuntimeTerminalRecoveryLease & { cancel: Mock<() => void> }
 }
 
-export type RemoteRuntimePtyRecoveryFixture = {
+type RemoteRuntimePtyRecoveryFixture = {
   runtimeCall: Mock
   subscribeTerminal: Mock
   streams: RecoveryStreamRecord[]
@@ -69,7 +69,7 @@ export function installRemoteRuntimePtyRecoveryFixture(): RemoteRuntimePtyRecove
       environmentId: string
       participant: RemoteRuntimeTerminalRecoveryParticipant
     }): RemoteRuntimeTerminalRecoveryLease => {
-      const lease = { generation: registrations.length + 1, cancel: vi.fn() }
+      const lease = { cancel: vi.fn() }
       registrations.push({ ...args, lease })
       return lease
     }

@@ -1,14 +1,14 @@
 import type { RuntimeRpcResponse } from '../../../shared/runtime-rpc-envelope'
+import type { RuntimeMobileSessionTerminalClientTab } from '../../../shared/runtime-types'
 import type {
-  RuntimeMobileSessionTabsResult,
-  RuntimeMobileSessionTerminalClientTab
-} from '../../../shared/runtime-types'
-import type { RemoteRuntimeTerminalRecoveryDependencies } from './remote-runtime-terminal-recovery-types'
+  RemoteRuntimeTerminalRecoveryDependencies,
+  RemoteRuntimeTerminalRecoverySnapshot
+} from './remote-runtime-terminal-recovery-types'
 import { toRuntimeWorktreeSelector } from './runtime-worktree-selector'
 
 type StructuredError = { code: string; message: string }
 type RecoveryCallbacks = {
-  onSnapshot: (snapshot: RuntimeMobileSessionTabsResult) => void
+  onSnapshot: (snapshot: RemoteRuntimeTerminalRecoverySnapshot) => void
   onError: (error: StructuredError) => void
   onClose: () => void
   onStartReady: () => void
@@ -16,7 +16,7 @@ type RecoveryCallbacks = {
 }
 
 export class RemoteRuntimeSessionTabsRecoverySubscription {
-  snapshot: RuntimeMobileSessionTabsResult | null = null
+  snapshot: RemoteRuntimeTerminalRecoverySnapshot | null = null
   startPending = false
   private handle: { unsubscribe: () => void } | null = null
   private disposed = false
@@ -145,21 +145,12 @@ function isSessionTabsTerminalClientTab(
 
 function parseSessionTabsSnapshotForRecovery(
   value: unknown
-): RuntimeMobileSessionTabsResult | null {
+): RemoteRuntimeTerminalRecoverySnapshot | null {
   if (typeof value !== 'object' || value === null) {
     return null
   }
   const snapshot = value as Record<string, unknown>
-  const activeType = snapshot.activeTabType
-  if (
-    typeof snapshot.worktree !== 'string' ||
-    typeof snapshot.publicationEpoch !== 'string' ||
-    typeof snapshot.snapshotVersion !== 'number' ||
-    (typeof snapshot.activeGroupId !== 'string' && snapshot.activeGroupId !== null) ||
-    (typeof snapshot.activeTabId !== 'string' && snapshot.activeTabId !== null) ||
-    (typeof activeType !== 'string' && activeType !== null) ||
-    !Array.isArray(snapshot.tabs)
-  ) {
+  if (!Array.isArray(snapshot.tabs)) {
     return null
   }
   const terminalTabs: RuntimeMobileSessionTerminalClientTab[] = []
@@ -178,24 +169,9 @@ function parseSessionTabsSnapshotForRecovery(
       terminalTabs.push(tab)
     }
   }
-  const normalizedActiveType =
-    activeType === 'terminal' ||
-    activeType === 'markdown' ||
-    activeType === 'file' ||
-    activeType === 'browser'
-      ? activeType
-      : null
   // Why: recovery only resolves terminal handles. Dropping newer non-terminal
   // surfaces keeps compatible runtime versions from blocking terminal repair.
-  return {
-    worktree: snapshot.worktree,
-    publicationEpoch: snapshot.publicationEpoch,
-    snapshotVersion: snapshot.snapshotVersion,
-    activeGroupId: snapshot.activeGroupId,
-    activeTabId: snapshot.activeTabId,
-    activeTabType: normalizedActiveType,
-    tabs: terminalTabs
-  }
+  return { tabs: terminalTabs }
 }
 
 function adaptSessionTabsResponse(
