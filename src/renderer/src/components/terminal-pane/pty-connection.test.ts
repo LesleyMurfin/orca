@@ -228,7 +228,10 @@ type ConnectCallbacks = {
     data: string,
     meta?: { seq?: number; rawLength?: number; background?: boolean; droppedOutput?: boolean }
   ) => void
-  onReplayData?: (data: string, meta?: { clearBeforeReplay?: boolean }) => void
+  onReplayData?: (
+    data: string,
+    meta?: { clearBeforeReplay?: boolean; pendingEscapeTailAnsi?: string }
+  ) => void | Promise<void>
   onError?: (msg: string) => void
 }
 
@@ -12016,6 +12019,50 @@ describe('connectPanePty', () => {
 
     expect(pane.terminal.write).toHaveBeenCalledWith('remote prompt\r\n$ ', expect.any(Function))
     expect(refresh).toHaveBeenCalledWith(0, 39, true)
+    expect(manager.rebuildPaneWebgl).toHaveBeenCalledWith(1)
+    disposable.dispose()
+  })
+
+  it('settles the remote replay callback only after xterm parses every queued write', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+    enableActiveRuntimeEnvironment()
+    const transport = createMockTransport('remote:env-1@@terminal-1')
+    const capturedReplayCallback: {
+      current: ((data: string) => void | Promise<void>) | null
+    } = { current: null }
+    transport.connect.mockImplementation(async ({ callbacks }: { callbacks: ConnectCallbacks }) => {
+      capturedReplayCallback.current = callbacks.onReplayData ?? null
+      return { id: 'remote:env-1@@terminal-1', replay: '' }
+    })
+    transportFactoryQueue.push(transport)
+
+    const pane = createPane(1)
+    const pendingParses: (() => void)[] = []
+    pane.terminal.write = vi.fn((_data: string, callback?: () => void) => {
+      if (callback) {
+        pendingParses.push(callback)
+      }
+    })
+    const manager = createManager(1)
+    const deps = createDeps()
+    const disposable = connectPanePty(pane as never, manager as never, deps as never)
+    await flushAsyncTicks(6)
+
+    const replayCompletion = capturedReplayCallback.current?.('authoritative replay')
+    let settled = false
+    void Promise.resolve(replayCompletion).then(() => {
+      settled = true
+    })
+    await flushAsyncTicks(4)
+    expect(settled).toBe(false)
+
+    for (let index = 0; index < 6 && !settled; index += 1) {
+      pendingParses.shift()?.()
+      await flushAsyncTicks(4)
+    }
+
+    await expect(replayCompletion).resolves.toBeUndefined()
+    expect(settled).toBe(true)
     expect(manager.rebuildPaneWebgl).toHaveBeenCalledWith(1)
     disposable.dispose()
   })

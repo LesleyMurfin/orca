@@ -43,7 +43,7 @@ export type RemoteRuntimePtyStagedRebindArgs = {
   }) => boolean
   onCommitted: (subscribedViewport: { cols: number; rows: number } | null) => void
   onData: (...event: DataEvent) => void
-  onSnapshot: (...event: SnapshotEvent) => void
+  onSnapshot: (...event: SnapshotEvent) => void | Promise<void>
   onEnd: () => void
   onError: (message: string) => void
   onFitOverrideChanged: NonNullable<
@@ -58,6 +58,8 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
     let stream: RemoteRuntimeMultiplexedTerminal | null = null
     let subscribed = false
     let committed = false
+    let replayPending = false
+    let committing = false
     let settled = false
     let closed = false
     let snapshot: SnapshotEvent | null = null
@@ -93,8 +95,39 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
         stream: target
       })
 
+    const finishCommit = async (target: RemoteRuntimeMultiplexedTerminal): Promise<void> => {
+      while (!settled && current(target)) {
+        if (snapshot) {
+          const event = snapshot
+          snapshot = null
+          await invokeSafelyAsync(() => args.onSnapshot(...event))
+          continue
+        }
+        const event = data.shift()
+        if (event) {
+          invokeSafely(() => args.onData(...event))
+          continue
+        }
+        break
+      }
+      if (settled) {
+        return
+      }
+      replayPending = false
+      settled = true
+      removeAbortListener()
+      snapshot = null
+      data.length = 0
+      // The authoritative replay stays input-fenced; only a still-current
+      // binding may open input and notify the pane after replay completes.
+      if (current(target)) {
+        invokeSafely(() => args.onCommitted(args.viewport))
+      }
+      resolve()
+    }
+
     const commitIfReady = (): void => {
-      if (settled || committed || !subscribed || !stream) {
+      if (settled || committed || committing || !subscribed || !stream) {
         return
       }
       if (
@@ -109,6 +142,7 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
         fail(abortRebindError())
         return
       }
+      committing = true
       try {
         args.activate({
           bindingGeneration: args.bindingGeneration,
@@ -121,29 +155,28 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
         fail(error)
         return
       }
+      if (settled || args.signal.aborted) {
+        return
+      }
       committed = true
-      settled = true
-      removeAbortListener()
-      if (snapshot && current(stream)) {
-        invokeSafely(() => args.onSnapshot(...snapshot!))
-      }
-      for (const event of data) {
-        if (!current(stream)) {
-          break
-        }
-        invokeSafely(() => args.onData(...event))
-      }
-      snapshot = null
-      data.length = 0
-      // The authoritative replay stays input-fenced; only a still-current
-      // binding may open input and notify the pane after replay completes.
-      if (current(stream)) {
-        invokeSafely(() => args.onCommitted(args.viewport))
-      }
-      resolve()
+      replayPending = true
+      void finishCommit(stream)
     }
 
-    const onAbort = (): void => fail(abortRebindError())
+    const onAbort = (): void => {
+      if (!committed) {
+        fail(abortRebindError())
+        return
+      }
+      if (settled) {
+        return
+      }
+      settled = true
+      replayPending = false
+      removeAbortListener()
+      closeStream()
+      reject(abortRebindError())
+    }
     args.signal.addEventListener('abort', onAbort, { once: true })
     if (args.signal.aborted) {
       onAbort()
@@ -152,7 +185,7 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
 
     const callbacks: RemoteRuntimeMultiplexedTerminalCallbacks = {
       onData: (...event) => {
-        if (!stream || !committed) {
+        if (!stream || !committed || replayPending) {
           if (!settled) {
             data.push(event)
           }
@@ -163,14 +196,17 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
         }
       },
       onSnapshot: (...event) => {
-        if (!stream || !committed) {
+        if (!stream || !committed || replayPending) {
           if (!settled) {
+            // A newer authoritative snapshot already contains all preceding
+            // live output, so replay only data that arrives after its boundary.
+            data.length = 0
             snapshot = event
           }
           return
         }
         if (current(stream)) {
-          invokeSafely(() => args.onSnapshot(...event))
+          void invokeSafelyAsync(() => args.onSnapshot(...event))
         }
       },
       onSubscribed: () => {
@@ -253,5 +289,13 @@ function invokeSafely(callback: () => void): void {
     callback()
   } catch {
     // Consumer callbacks cannot roll back an already-settled binding transition.
+  }
+}
+
+async function invokeSafelyAsync(callback: () => void | Promise<void>): Promise<void> {
+  try {
+    await callback()
+  } catch {
+    // Consumer callbacks cannot roll back an already-activated binding transition.
   }
 }

@@ -460,19 +460,21 @@ export function createRemoteRuntimePtyTransport(
     data: string,
     meta: { pendingEscapeTailAnsi?: string } | undefined,
     isStillCurrent: () => boolean
-  ): void {
+  ): void | Promise<void> {
     // Why: a snapshot with no body can still carry a pending mid-escape tail
-    // that must be replayed so the next live chunk completes it.
-    if (data || meta?.pendingEscapeTailAnsi) {
-      const deliveryProcessor = outputProcessor
-      deliveryProcessor.processData(data, storedCallbacks, {
-        replayingBufferedData: true,
-        suppressAttentionEvents: true,
-        ...(meta?.pendingEscapeTailAnsi
-          ? { pendingEscapeTailAnsi: meta.pendingEscapeTailAnsi }
-          : {})
+    // that must be replayed so the next live chunk completes it. An empty
+    // authoritative snapshot must still clear stale mirror contents.
+    const deliveryProcessor = outputProcessor
+    const replayCompletion = deliveryProcessor.processData(data, storedCallbacks, {
+      replayingBufferedData: true,
+      suppressAttentionEvents: true,
+      ...(meta?.pendingEscapeTailAnsi ? { pendingEscapeTailAnsi: meta.pendingEscapeTailAnsi } : {})
+    })
+    clearInvalidatedOutputSideEffects(deliveryProcessor, isStillCurrent)
+    if (replayCompletion) {
+      return replayCompletion.finally(() => {
+        clearInvalidatedOutputSideEffects(deliveryProcessor, isStillCurrent)
       })
-      clearInvalidatedOutputSideEffects(deliveryProcessor, isStillCurrent)
     }
   }
 
