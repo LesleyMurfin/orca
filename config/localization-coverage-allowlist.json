@@ -1,1 +1,26 @@
-[]
+[
+  {
+    "filePath": "src/renderer/src/components/terminal-pane/remote-runtime-pty-staged-rebind.ts",
+    "kind": "object-property:message",
+    "text": "Remote terminal stream ended.",
+    "dynamic": false,
+    "count": 1,
+    "reason": "Structured terminal-gone diagnostic consumed by recovery control flow, not UI copy."
+  },
+  {
+    "filePath": "src/renderer/src/runtime/remote-runtime-session-tabs-recovery-subscription.ts",
+    "kind": "object-property:message",
+    "text": "Malformed session.tabs subscription response.",
+    "dynamic": false,
+    "count": 1,
+    "reason": "Stable protocol-validation diagnostic, not authored product copy."
+  },
+  {
+    "filePath": "src/renderer/src/runtime/remote-runtime-terminal-recovery-registry.ts",
+    "kind": "object-property:message",
+    "text": "A direct terminal recovery cannot remain pending.",
+    "dynamic": false,
+    "count": 1,
+    "reason": "Stable recovery-invariant diagnostic, not authored product copy."
+  }
+]
