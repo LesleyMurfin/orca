@@ -8,6 +8,7 @@ type RecoveryCallbacks = {
   onSnapshot: (snapshot: RuntimeMobileSessionTabsResult) => void
   onError: (error: StructuredError) => void
   onClose: () => void
+  onStartReady: () => void
   onStartError: (error: StructuredError) => void
 }
 
@@ -65,6 +66,7 @@ export class RemoteRuntimeSessionTabsRecoverySubscription {
           releaseHandle(handle)
         } else {
           this.handle = handle
+          this.callbacks.onStartReady()
         }
       },
       (error) => {
@@ -110,6 +112,31 @@ function releaseHandle(handle: { unsubscribe: () => void }): void {
   }
 }
 
+function isSessionTabsClientTab(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+  const tab = value as Record<string, unknown>
+  if (
+    typeof tab.id !== 'string' ||
+    typeof tab.title !== 'string' ||
+    typeof tab.isActive !== 'boolean'
+  ) {
+    return false
+  }
+  if (tab.type !== 'terminal') {
+    return tab.type === 'markdown' || tab.type === 'file' || tab.type === 'browser'
+  }
+  if (typeof tab.parentTabId !== 'string' || typeof tab.leafId !== 'string') {
+    return false
+  }
+  // Terminal status and handle form a wire union; partial pairs must not look pending.
+  return (
+    (tab.status === 'pending-handle' && tab.terminal === null) ||
+    (tab.status === 'ready' && typeof tab.terminal === 'string' && tab.terminal.length > 0)
+  )
+}
+
 function isSessionTabsSnapshot(value: unknown): value is RuntimeMobileSessionTabsResult {
   if (typeof value !== 'object' || value === null) {
     return false
@@ -127,7 +154,8 @@ function isSessionTabsSnapshot(value: unknown): value is RuntimeMobileSessionTab
       activeType === 'markdown' ||
       activeType === 'file' ||
       activeType === 'browser') &&
-    Array.isArray(snapshot.tabs)
+    Array.isArray(snapshot.tabs) &&
+    snapshot.tabs.every(isSessionTabsClientTab)
   )
 }
 

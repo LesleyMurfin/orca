@@ -68,7 +68,12 @@ export abstract class RemoteRuntimeTerminalRecoveryRegistry {
       if (this.disposed || this.retry.timer || this.participants.size === 0) {
         return
       }
-      this.participants.forEach((record) => this.processRecord(record))
+      const generation = this.generation
+      Array.from(this.participants.values()).forEach((record) => {
+        if (generation === this.generation) {
+          this.processRecord(record)
+        }
+      })
     })
   }
 
@@ -154,6 +159,11 @@ export abstract class RemoteRuntimeTerminalRecoveryRegistry {
         onSnapshot: (snapshot) => this.acceptSnapshot(entry, snapshot),
         onError: (error) => this.endWorktree(entry, error, false),
         onClose: () => this.endWorktree(entry, null, true),
+        onStartReady: () => {
+          if (this.isCurrentEntry(entry)) {
+            this.runDeferredRetry()
+          }
+        },
         onStartError: (error) => this.endWorktree(entry, error, true)
       }
     )
@@ -169,8 +179,8 @@ export abstract class RemoteRuntimeTerminalRecoveryRegistry {
     if (!this.isCurrentEntry(entry)) {
       return
     }
-    this.participants.forEach((record) => {
-      if (record.participant.worktreeId === entry.worktreeId) {
+    Array.from(this.participants.values()).forEach((record) => {
+      if (this.isCurrentEntry(entry) && record.participant.worktreeId === entry.worktreeId) {
         this.processRecord(record, snapshot)
       }
     })
