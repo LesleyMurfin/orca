@@ -93,14 +93,18 @@ No protocol changes are required because Node `ws` already answers RFC 6455 ping
 
 ### 2. Structured dedicated-stream close
 
-The established dedicated subscription boundary already preserves `{ code, message }`. The multiplexer will distinguish:
+The established dedicated subscription boundary already preserves `{ code, message }`. Subscription startup must keep that shape across both Electron boundaries. Main IPC returns a serializable result union instead of throwing. Preload rejects with plain cloneable `{ code, message }` data, and the renderer reconstructs the local error after the bridge; it must not throw a custom `Error` from preload because Electron documents that [`contextBridge` drops custom Error properties](https://www.electronjs.org/docs/latest/api/context-bridge#api-functions).
+
+The main subscription registry also treats an `onClose` arriving before the async subscription handle as a tombstone: it removes the destroyed listener immediately, never retains the late closed handle, and makes the late continuation release-only.
+
+The multiplexer uses explicit connecting, established, and closed phases and will distinguish:
 
 - startup failure before the subscription becomes ready: reject `subscribeTerminal()`;
 - remote terminal stream `error` event: deliver the terminal-specific error;
 - established physical socket loss with a recoverable code: deliver one `onTransportClose` event carrying the reason, without first calling pane `onError`;
 - fatal authentication/protocol failure: deliver one fatal error and close.
 
-This removes the current recoverable `onError` then `onClose` double delivery. It does not hide actual server-side terminal errors.
+Startup failure only rejects the shared connect promise; it cannot start recovery for a stream that was never established. Established recoverable close snapshots and clears all streams before delivering one transport-close callback per stream. Established fatal close uses a separate callback-safe terminal path and never falls through to recovery. Late callbacks from either path are ignored. This removes the current recoverable `onError` then `onClose` double delivery without hiding actual server-side terminal errors.
 
 ### 3. Environment recovery coordinator
 
