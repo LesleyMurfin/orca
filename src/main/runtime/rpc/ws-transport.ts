@@ -6,6 +6,7 @@
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http'
 import { WebSocketServer, type WebSocket } from 'ws'
+import { isRemoteRuntimeLivenessTickDelayed } from '../../../shared/remote-runtime-socket-liveness'
 import type { RpcTransport } from './transport'
 import { createStaticWebClientHandler } from './static-web-client-handler'
 
@@ -68,9 +69,10 @@ export class WebSocketTransport implements RpcTransport {
   private httpServer: HttpsServer | HttpServer | null = null
   private wss: WebSocketServer | null = null
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  private lastHeartbeatTickAt: number | null = null
   // Why: tracks whether each socket has pong'd since the last heartbeat
-  // sweep. A socket missing from the set when the next sweep fires is
-  // assumed dead and terminated.
+  // sweep. A socket missing from the next normal-cadence sweep is assumed
+  // dead; a delayed sweep re-probes it instead.
   private wsAlive = new WeakSet<WebSocket>()
   private messageHandler: WebSocketMessageHandler | null = null
   private connectionCloseHandler:
@@ -228,38 +230,51 @@ export class WebSocketTransport implements RpcTransport {
     this.startHeartbeat()
   }
 
-  // Why: ping every live socket on a fixed cadence and terminate any that
-  // didn't pong since the previous tick. This is the only thing that
-  // reliably reaps half-open mobile sockets stranded by background
-  // suspension without a TCP FIN. See HEARTBEAT_INTERVAL_MS comment.
+  // Why: normal-cadence sweeps terminate sockets that missed the prior pong,
+  // while delayed sweeps first re-probe because pre-pause state is stale.
+  // This still reliably reaps half-open mobile sockets stranded without a
+  // TCP FIN. See HEARTBEAT_INTERVAL_MS comment.
   private startHeartbeat(): void {
     if (this.heartbeatTimer) {
       return
     }
-    this.heartbeatTimer = setInterval(() => {
-      const wss = this.wss
-      if (!wss) {
-        return
-      }
-      for (const ws of wss.clients) {
-        if (!this.wsAlive.has(ws)) {
-          // Why: terminate() (vs close()) skips the close handshake and
-          // immediately fires the 'close' event, freeing the slot. close()
-          // on an already-dead socket can hang for the OS-level TCP timeout.
-          ws.terminate()
-          continue
-        }
-        this.wsAlive.delete(ws)
-        try {
-          ws.ping()
-        } catch {
-          // Why: ping() can throw on a socket that's mid-tear-down; the
-          // close handler will run regardless, so swallow the throw.
-        }
-      }
-    }, this.heartbeatIntervalMs)
+    this.lastHeartbeatTickAt = Date.now()
+    this.heartbeatTimer = setInterval(
+      () => this.runHeartbeatSweep(Date.now()),
+      this.heartbeatIntervalMs
+    )
     if (typeof this.heartbeatTimer.unref === 'function') {
       this.heartbeatTimer.unref()
+    }
+  }
+
+  private runHeartbeatSweep(now: number): void {
+    const delayed =
+      this.lastHeartbeatTickAt !== null &&
+      isRemoteRuntimeLivenessTickDelayed({
+        now,
+        lastTickAt: this.lastHeartbeatTickAt,
+        intervalMs: this.heartbeatIntervalMs
+      })
+    this.lastHeartbeatTickAt = now
+
+    for (const ws of this.wss?.clients ?? []) {
+      if (!delayed && !this.wsAlive.has(ws)) {
+        // Why: terminate() (vs close()) skips the close handshake and
+        // immediately fires the 'close' event, freeing the slot. close()
+        // on an already-dead socket can hang for the OS-level TCP timeout.
+        ws.terminate()
+        continue
+      }
+      // Why: a delayed sweep cannot trust pre-pause liveness state, so every
+      // socket gets a fresh probe before normal-cadence reaping resumes.
+      this.wsAlive.delete(ws)
+      try {
+        ws.ping()
+      } catch {
+        // Why: ping() can throw on a socket that's mid-tear-down; the
+        // close handler will run regardless, so swallow the throw.
+      }
     }
   }
 
@@ -268,6 +283,7 @@ export class WebSocketTransport implements RpcTransport {
       clearInterval(this.heartbeatTimer)
       this.heartbeatTimer = null
     }
+    this.lastHeartbeatTickAt = null
   }
 
   async stop(): Promise<void> {
