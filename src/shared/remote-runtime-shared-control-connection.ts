@@ -291,6 +291,7 @@ export class RemoteRuntimeSharedControlConnection {
       isIntentionallyClosed: () => this.intentionallyClosed,
       reconnectAttempt: this.reconnectAttempt,
       subscriptions: this.subscriptions,
+      getCurrentTimer: () => this.reconnectTimer,
       onTimerFired: () => {
         this.reconnectTimer = null
       },
