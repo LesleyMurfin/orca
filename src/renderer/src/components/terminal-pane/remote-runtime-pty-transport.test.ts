@@ -202,7 +202,8 @@ describe('createRemoteRuntimePtyTransport', () => {
     await vi.waitFor(() =>
       expect(latestSubscribePayload().capabilities).toEqual({
         ackOutput: 1,
-        desktopViewportClaims: 1
+        desktopViewportClaims: 1,
+        queryReplayFrames: 1
       })
     )
     expect(runtimeSubscribe).toHaveBeenCalledWith(

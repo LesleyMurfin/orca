@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR,
   TerminalStreamOpcode,
   decodeTerminalStreamFrame,
   decodeTerminalStreamJson,
@@ -105,6 +106,15 @@ class FakeMultiplexServer {
     this.send(TerminalStreamOpcode.Output, encodeTerminalStreamText(text), this.cursorUnits)
   }
 
+  queryReplay(text: string, coveredThroughSeq: number): void {
+    this.cursorUnits = coveredThroughSeq
+    this.send(TerminalStreamOpcode.QueryReplay, encodeTerminalStreamText(text), coveredThroughSeq)
+  }
+
+  error(message: string): void {
+    this.send(TerminalStreamOpcode.Error, encodeTerminalStreamText(message), 0)
+  }
+
   flushHeldManualSnapshot(): void {
     if (this.heldManualRequestId === null) {
       throw new Error('No manual snapshot is held')
@@ -144,24 +154,29 @@ describe('remote terminal frame-drop resync', () => {
 
   async function subscribeClient(): Promise<{
     data: string[]
+    dataMeta: ({ seq?: number; rawLength?: number } | undefined)[]
     snapshots: string[]
     stream: RemoteRuntimeMultiplexedTerminal
   }> {
     const data: string[] = []
+    const dataMeta: ({ seq?: number; rawLength?: number } | undefined)[] = []
     const snapshots: string[] = []
     const multiplexer = getRemoteRuntimeTerminalMultiplexer('env-1')
     const stream = await multiplexer.subscribeTerminal({
       terminal: 'terminal-1',
       client: { id: 'desktop-1', type: 'desktop' },
       callbacks: {
-        onData: (chunk) => data.push(chunk),
+        onData: (chunk, meta) => {
+          data.push(chunk)
+          dataMeta.push(meta)
+        },
         onSnapshot: (chunk) => snapshots.push(chunk)
       }
     })
     // Let the initial snapshot round-trip settle.
     await Promise.resolve()
     await Promise.resolve()
-    return { data, snapshots, stream }
+    return { data, dataMeta, snapshots, stream }
   }
 
   it('detects a dropped Output frame via the seq gap and resyncs', async () => {
@@ -195,6 +210,47 @@ describe('remote terminal frame-drop resync', () => {
 
     expect(data).toEqual(['one', 'two', 'three'])
     expect(snapshots).toEqual(['INITIAL'])
+  })
+
+  it('advances continuity for a synthetic query replay without exposing snapshot seq metadata', async () => {
+    const { data, dataMeta, snapshots } = await subscribeClient()
+
+    server.queryReplay('\x1b[?2026$p', 9)
+    server.output('TAIL')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(data).toEqual(['\x1b[?2026$p', 'TAIL'])
+    expect(dataMeta[0]?.seq).toBeUndefined()
+    expect(snapshots).toEqual(['INITIAL'])
+    expect(server.snapshotRequests).toEqual([])
+  })
+
+  it('recovers only the affected stream when query replay exceeds its bounded buffer', async () => {
+    const onTransportClose = vi.fn()
+    const onError = vi.fn()
+    const multiplexer = getRemoteRuntimeTerminalMultiplexer('env-1')
+    const stream = await multiplexer.subscribeTerminal({
+      terminal: 'terminal-1',
+      client: { id: 'desktop-1', type: 'desktop' },
+      callbacks: {
+        onData: vi.fn(),
+        onSnapshot: vi.fn(),
+        onError,
+        onTransportClose
+      }
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    server.holdNextManualSnapshot = true
+    const pendingSnapshot = stream.serializeBuffer({ scrollbackRows: 100 })
+    await Promise.resolve()
+    server.error(TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR.code)
+
+    await expect(pendingSnapshot).rejects.toThrow(TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR.message)
+    expect(onTransportClose).toHaveBeenCalledWith(TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR)
+    expect(onError).not.toHaveBeenCalled()
   })
 
   it('uses UTF-16 sequence units when detecting gaps in multibyte output', async () => {

@@ -6,6 +6,7 @@ import {
 } from '../../../shared/remote-runtime-client-error-classification'
 import { RemoteRuntimeClientError } from '../../../shared/remote-runtime-client-error'
 import {
+  TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR,
   TerminalStreamOpcode,
   decodeTerminalStreamFrame,
   decodeTerminalStreamJson,
@@ -93,6 +94,8 @@ type RemoteRuntimeMultiplexedTerminalState = {
   expectedSeq: number | undefined
   resyncInFlight: boolean
   resyncPendingSend: boolean
+  queryReplayBarrierPending: boolean
+  initialSubscriptionPending: boolean
 }
 
 type RemoteRuntimeSnapshotInfo = {
@@ -102,6 +105,7 @@ type RemoteRuntimeSnapshotInfo = {
   source?: 'headless' | 'renderer'
   requestId?: number
   truncated?: boolean
+  queryReplayBarrier?: boolean
   // Why: a mid-escape tail the emulator could not serialize; the transport
   // must write it AFTER the replay reset so the next live chunk completes it
   // instead of rendering literally (#7329).
@@ -276,7 +280,9 @@ class RemoteRuntimeTerminalMultiplexer {
       pendingSnapshotRequest: null,
       expectedSeq: undefined,
       resyncInFlight: false,
-      resyncPendingSend: false
+      resyncPendingSend: false,
+      queryReplayBarrierPending: false,
+      initialSubscriptionPending: false
     }
     this.streams.set(streamId, state)
 
@@ -331,7 +337,9 @@ class RemoteRuntimeTerminalMultiplexer {
           client: args.client,
           viewport: args.viewport,
           capabilities:
-            args.client.type === 'desktop' ? { ackOutput: 1, desktopViewportClaims: 1 } : undefined
+            args.client.type === 'desktop'
+              ? { ackOutput: 1, desktopViewportClaims: 1, queryReplayFrames: 1 }
+              : undefined
         })
       )
       if (!sent) {
@@ -453,12 +461,8 @@ class RemoteRuntimeTerminalMultiplexer {
       stream.callbacks.onEnd?.()
       this.closeIfIdle()
     } else if (event.type === 'error') {
-      clearSnapshot(stream)
-      rejectPendingSnapshotRequest(
+      this.handleStreamError(
         stream,
-        typeof event.message === 'string' ? event.message : 'Remote terminal stream failed.'
-      )
-      stream.callbacks.onError?.(
         typeof event.message === 'string' ? event.message : 'Remote terminal stream failed.'
       )
     } else if (event.type === 'fit-override-changed') {
@@ -525,9 +529,31 @@ class RemoteRuntimeTerminalMultiplexer {
       }
       return
     }
+    if (frame.opcode === TerminalStreamOpcode.QueryReplay) {
+      const data = decodeTerminalStreamText(frame.payload)
+      const coveredThroughSeq = frame.seq > 0 ? frame.seq : undefined
+      if (typeof coveredThroughSeq === 'number') {
+        stream.expectedSeq = Math.max(stream.expectedSeq ?? 0, coveredThroughSeq)
+      }
+      // Why: query replay includes synthetic prefix bytes from before the
+      // snapshot. Keep seq off the consumer event so snapshot dedupe cannot
+      // trim the query, while the transport continuity above still advances.
+      try {
+        if (data) {
+          stream.callbacks.onData(data, { rawLength: data.length })
+        }
+      } finally {
+        if (!data && stream.initialSubscriptionPending) {
+          stream.initialSubscriptionPending = false
+          stream.callbacks.onSubscribed?.()
+        }
+      }
+      return
+    }
     if (frame.opcode === TerminalStreamOpcode.SnapshotStart) {
       clearSnapshot(stream)
       stream.snapshotInfo = decodeSnapshotInfo(frame.payload)
+      stream.queryReplayBarrierPending = stream.snapshotInfo?.queryReplayBarrier === true
       const requestId = stream.snapshotInfo?.requestId
       stream.snapshotTarget =
         typeof requestId === 'number' ||
@@ -554,19 +580,21 @@ class RemoteRuntimeTerminalMultiplexer {
       return
     }
     if (frame.opcode === TerminalStreamOpcode.SnapshotEnd) {
-      const data = stream.snapshotOverflowed
+      const snapshotOverflowed = stream.snapshotOverflowed
+      const data = snapshotOverflowed
         ? null
         : decodeTerminalStreamText(concatBytes(stream.snapshotChunks))
       const target = stream.snapshotTarget
       const info = stream.snapshotInfo
       const pendingRequest = stream.pendingSnapshotRequest
+      const waitForQueryReplayBarrier = stream.queryReplayBarrierPending
       const matchesPendingRequest =
         target === 'request' &&
         pendingRequest &&
         (typeof info?.requestId === 'number'
           ? info.requestId === pendingRequest.requestId
           : stream.initialSnapshotReceived)
-      if (!stream.snapshotOverflowed && info?.truncated !== true) {
+      if (!snapshotOverflowed && info?.truncated !== true) {
         if (matchesPendingRequest) {
           pendingRequest.resolve({
             data: data ?? '',
@@ -595,34 +623,64 @@ class RemoteRuntimeTerminalMultiplexer {
         clearPendingSnapshotRequest(stream)
       }
       clearSnapshot(stream)
-      // Why: the snapshot is the new authoritative output high-water; align the
-      // gap detector to it and re-open the live path (used by both the initial
-      // snapshot and a frame-drop resync, which reuses the 'initial' target).
-      if (target === 'initial') {
-        stream.expectedSeq = typeof info?.seq === 'number' ? info.seq : undefined
+      // Why: the server omits buffered bytes covered by every successful
+      // snapshot, including explicit requests. Align the wire high-water before
+      // subsequent Output frames so the covered range is not reported as a gap.
+      if (!snapshotOverflowed && typeof info?.seq === 'number') {
+        stream.expectedSeq = info.seq
+      }
+      if (target === 'initial' || target === 'recovery') {
         stream.resyncInFlight = false
         stream.resyncPendingSend = false
-        stream.initialSnapshotReceived = true
-        stream.callbacks.onSubscribed?.()
+        if (target === 'initial') {
+          stream.initialSnapshotReceived = true
+          if (waitForQueryReplayBarrier) {
+            stream.initialSubscriptionPending = true
+          } else {
+            stream.callbacks.onSubscribed?.()
+          }
+        }
       } else {
         this.sendDeferredResyncSnapshot(stream)
       }
       return
     }
     if (frame.opcode === TerminalStreamOpcode.Error) {
-      clearSnapshot(stream)
+      const message = decodeTerminalStreamText(frame.payload)
+      if (message === TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR.code) {
+        this.handleStreamError(stream, message)
+        return
+      }
       const pendingSnapshotRequest = stream.pendingSnapshotRequest
       if (pendingSnapshotRequest) {
         clearPendingSnapshotRequest(stream)
-        pendingSnapshotRequest.reject(new Error(decodeTerminalStreamText(frame.payload)))
+        pendingSnapshotRequest.reject(new Error(message))
         this.sendDeferredResyncSnapshot(stream)
         return
       }
-      // Why: a failed resync must re-open the live path or output stalls forever.
-      stream.resyncInFlight = false
-      stream.resyncPendingSend = false
-      stream.callbacks.onError?.(decodeTerminalStreamText(frame.payload))
+      this.handleStreamError(stream, message)
     }
+  }
+
+  private handleStreamError(stream: RemoteRuntimeMultiplexedTerminalState, message: string): void {
+    clearSnapshot(stream)
+    if (message === TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR.code) {
+      rejectPendingSnapshotRequest(stream, TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR.message)
+      this.streams.delete(stream.streamId)
+      const canHandleClose = Boolean(stream.callbacks.onTransportClose)
+      invokeRemoteRuntimeTerminalCallback(() =>
+        canHandleClose
+          ? stream.callbacks.onTransportClose?.(TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR)
+          : stream.callbacks.onError?.(TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR.message)
+      )
+      this.closeIfIdle()
+      return
+    }
+    // Why: a failed resync must re-open the live path or output stalls forever.
+    stream.resyncInFlight = false
+    stream.resyncPendingSend = false
+    rejectPendingSnapshotRequest(stream, message)
+    invokeRemoteRuntimeTerminalCallback(() => stream.callbacks.onError?.(message))
   }
 
   // Why: Output `seq` is the UTF-16 high-water at the end of a chunk, so a chunk
@@ -930,6 +988,7 @@ function clearSnapshot(stream: RemoteRuntimeMultiplexedTerminalState): void {
   stream.snapshotOverflowed = false
   stream.snapshotTarget = 'initial'
   stream.snapshotInfo = null
+  stream.queryReplayBarrierPending = false
 }
 
 function clearPendingSnapshotRequest(stream: RemoteRuntimeMultiplexedTerminalState): void {
@@ -963,6 +1022,7 @@ function decodeSnapshotInfo(
     requestId?: unknown
     truncated?: unknown
     pendingEscapeTailAnsi?: unknown
+    queryReplayBarrier?: unknown
   }>(payload)
   if (!raw) {
     return null
@@ -974,6 +1034,7 @@ function decodeSnapshotInfo(
     source: raw.source === 'headless' || raw.source === 'renderer' ? raw.source : undefined,
     requestId: typeof raw.requestId === 'number' ? raw.requestId : undefined,
     truncated: raw.truncated === true,
+    queryReplayBarrier: raw.queryReplayBarrier === true,
     pendingEscapeTailAnsi:
       typeof raw.pendingEscapeTailAnsi === 'string' ? raw.pendingEscapeTailAnsi : undefined
   }

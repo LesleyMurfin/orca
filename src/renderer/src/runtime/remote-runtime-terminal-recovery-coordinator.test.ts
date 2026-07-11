@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RuntimeRpcResponse } from '../../../shared/runtime-rpc-envelope'
+import { TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR } from '../../../shared/terminal-stream-protocol'
 import {
   RemoteRuntimeTerminalRecoveryCoordinator,
   beginRemoteRuntimeTerminalRecovery,
@@ -203,6 +204,28 @@ describe('RemoteRuntimeTerminalRecoveryCoordinator', () => {
     expect(vi.mocked(saturated.dependencies.setTimer).mock.calls.map((call) => call[1])).toEqual([
       250, 500, 1000, 2000, 4000, 8000, 15_000, 30_000, 30_000, 30_000, 30_000
     ])
+  })
+
+  it('retries a staged query-replay overflow instead of reporting it as fatal', async () => {
+    const h = createHarness()
+    const rebind = vi
+      .fn()
+      .mockRejectedValueOnce(TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR)
+      .mockResolvedValueOnce(undefined)
+    const recovering = participant('direct-overflow', null, { rebind })
+    const coordinator = new RemoteRuntimeTerminalRecoveryCoordinator('env-1', h.dependencies)
+
+    coordinator.register(recovering)
+    await flush()
+
+    expect(rebind).toHaveBeenCalledTimes(1)
+    expect(recovering.onFatal).not.toHaveBeenCalled()
+    expect([...h.timers.values()].map((timer) => timer.delayMs)).toEqual([250])
+
+    await h.fireTimer()
+
+    expect(rebind).toHaveBeenCalledTimes(2)
+    expect(recovering.onFatal).not.toHaveBeenCalled()
   })
 
   it('retryNow cancels backoff, advances its tier, and never duplicates in-flight work', async () => {

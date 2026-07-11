@@ -183,6 +183,8 @@ function adaptSessionTabsResponse(
 ): void {
   if (response.ok === false) {
     callbacks.onError({ code: response.error.code, message: response.error.message })
+    // A rejected subscribe request created no server subscription, so no later close can arrive.
+    callbacks.onClose()
     return
   }
   if (typeof response.result !== 'object' || response.result === null) {

@@ -64,6 +64,21 @@ describe('remote runtime PTY recovery input and viewport fencing', () => {
     }
   })
 
+  it('does not reopen recovery after the owning environment is explicitly torn down', async () => {
+    const fixture = installRemoteRuntimePtyRecoveryFixture()
+    const onDisconnect = vi.fn()
+    const transport = await fixture.createAttachedTransport({ callbacks: { onDisconnect } })
+    const initial = fixture.streams[0]
+
+    fixture.invalidateRecoveryForEnvironment('env-1')
+    initial.args.callbacks.onTransportClose?.(recoverableClose)
+    await fixture.settle()
+
+    expect(fixture.registrations).toHaveLength(0)
+    expect(transport.isConnected()).toBe(false)
+    expect(onDisconnect).toHaveBeenCalledTimes(1)
+  })
+
   it('does not send the next acknowledged chunk after recovery changes generation', async () => {
     const fixture = installRemoteRuntimePtyRecoveryFixture()
     let resolveFirstSend!: (value: unknown) => void

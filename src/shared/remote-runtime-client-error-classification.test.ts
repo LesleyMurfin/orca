@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR } from './terminal-stream-protocol'
 import { isRecoverableRemoteRuntimeConnectionError } from './remote-runtime-client-error-classification'
 
 describe('isRecoverableRemoteRuntimeConnectionError', () => {
-  it('classifies only connection availability and timeout errors as recoverable', () => {
+  it('classifies transient connection and bounded replay errors as recoverable', () => {
     expect(
       isRecoverableRemoteRuntimeConnectionError({
         code: 'remote_runtime_unavailable',
@@ -15,6 +16,9 @@ describe('isRecoverableRemoteRuntimeConnectionError', () => {
         message: 'timeout'
       })
     ).toBe(true)
+    expect(isRecoverableRemoteRuntimeConnectionError(TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR)).toBe(
+      true
+    )
 
     for (const code of [
       'unauthorized',

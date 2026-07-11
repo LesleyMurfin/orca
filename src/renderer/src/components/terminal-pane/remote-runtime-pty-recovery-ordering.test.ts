@@ -92,10 +92,17 @@ function subscribePayload(record: RuntimeSubscriptionRecord): {
 function emitTerminalSnapshot(
   record: RuntimeSubscriptionRecord,
   streamId: number,
-  data = 'authoritative'
+  data = 'authoritative',
+  options: { queryReplayBarrier?: boolean } = {}
 ): void {
   for (const [opcode, payload] of [
-    [TerminalStreamOpcode.SnapshotStart, encodeTerminalStreamJson({ kind: 'scrollback' })],
+    [
+      TerminalStreamOpcode.SnapshotStart,
+      encodeTerminalStreamJson({
+        kind: 'scrollback',
+        queryReplayBarrier: options.queryReplayBarrier === true
+      })
+    ],
     [TerminalStreamOpcode.SnapshotChunk, encodeTerminalStreamText(data)],
     [TerminalStreamOpcode.SnapshotEnd, new Uint8Array()]
   ] as const) {
@@ -110,7 +117,7 @@ async function settle(): Promise<void> {
 }
 
 async function createIntegrationHarness(
-  args: { failFirstSessionStart?: boolean; direct?: boolean } = {}
+  args: { failFirstSessionStart?: boolean; direct?: boolean; replyToQueries?: boolean } = {}
 ): Promise<{
   transport: PtyTransport
   records: RuntimeSubscriptionRecord[]
@@ -157,7 +164,18 @@ async function createIntegrationHarness(
     existingPtyId: 'remote:env-1@@terminal-1',
     cols: 80,
     rows: 24,
-    callbacks: { onError }
+    callbacks: {
+      onError,
+      ...(args.replyToQueries
+        ? {
+            onData: (data: string) => {
+              if (data.includes('\x1b[6n')) {
+                transport.sendInputImmediate('\x1b[1;1R')
+              }
+            }
+          }
+        : {})
+    }
   })
   await vi.waitFor(() =>
     expect(records.filter((record) => record.method === 'terminal.multiplex')).toHaveLength(1)
@@ -220,6 +238,96 @@ describe('remote runtime PTY cross-lane recovery ordering', () => {
     expect(gone.transport.getPtyId()).toBeNull()
     expect(gone.onPtyExit).toHaveBeenCalledWith('remote:env-1@@terminal-1')
     expect(gone.onError).not.toHaveBeenCalled()
+  })
+
+  it('allows the recovered view to answer a live query after its snapshot replay', async () => {
+    const harness = await createIntegrationHarness({ direct: true, replyToQueries: true })
+    harness.records[0].callbacks.onClose?.()
+    await vi.waitFor(() =>
+      expect(
+        harness.records.filter((record) => record.method === 'terminal.multiplex')
+      ).toHaveLength(2)
+    )
+    const recoveredMux = harness.records.filter(
+      (record) => record.method === 'terminal.multiplex'
+    )[1]
+    const recovered = subscribePayload(recoveredMux)
+
+    emitTerminalSnapshot(recoveredMux, recovered.streamId, 'screen', {
+      queryReplayBarrier: true
+    })
+    await settle()
+    expect(harness.transport.sendInput('still fenced')).toBe(false)
+    recoveredMux.callbacks.onBinary?.(
+      encodeTerminalStreamFrame({
+        opcode: TerminalStreamOpcode.QueryReplay,
+        streamId: recovered.streamId,
+        seq: 9,
+        payload: encodeTerminalStreamText('\x1b[6n')
+      })
+    )
+    await settle()
+    expect(harness.transport.sendInput('fenced after replay data')).toBe(false)
+
+    recoveredMux.callbacks.onBinary?.(
+      encodeTerminalStreamFrame({
+        opcode: TerminalStreamOpcode.Output,
+        streamId: recovered.streamId,
+        seq: 13,
+        payload: encodeTerminalStreamText('\x1b[6n')
+      })
+    )
+    await settle()
+    expect(harness.transport.sendInput('fenced after pending output')).toBe(false)
+
+    recoveredMux.callbacks.onBinary?.(
+      encodeTerminalStreamFrame({
+        opcode: TerminalStreamOpcode.QueryReplay,
+        streamId: recovered.streamId,
+        seq: 13,
+        payload: new Uint8Array()
+      })
+    )
+    await settle()
+    expect(harness.transport.sendInput('ready after final barrier')).toBe(true)
+
+    const replies = recoveredMux.sendBinary.mock.calls
+      .map((call) => decodeTerminalStreamFrame(call[0]))
+      .filter((frame) => frame?.opcode === TerminalStreamOpcode.Input)
+      .map((frame) => (frame ? new TextDecoder().decode(frame.payload) : ''))
+    expect(replies).toEqual(['\x1b[1;1R', '\x1b[1;1R'])
+  })
+
+  it('keeps recovery fenced until an empty query replay barrier arrives', async () => {
+    const harness = await createIntegrationHarness({ direct: true })
+    harness.records[0].callbacks.onClose?.()
+    await vi.waitFor(() =>
+      expect(
+        harness.records.filter((record) => record.method === 'terminal.multiplex')
+      ).toHaveLength(2)
+    )
+    const recoveredMux = harness.records.filter(
+      (record) => record.method === 'terminal.multiplex'
+    )[1]
+    const recovered = subscribePayload(recoveredMux)
+
+    emitTerminalSnapshot(recoveredMux, recovered.streamId, 'screen', {
+      queryReplayBarrier: true
+    })
+    await settle()
+    expect(harness.transport.sendInput('still fenced')).toBe(false)
+
+    recoveredMux.callbacks.onBinary?.(
+      encodeTerminalStreamFrame({
+        opcode: TerminalStreamOpcode.QueryReplay,
+        streamId: recovered.streamId,
+        seq: 1,
+        payload: new Uint8Array()
+      })
+    )
+    await settle()
+
+    expect(harness.transport.sendInput('ready')).toBe(true)
   })
 
   it.each(terminalGoneCodes)(

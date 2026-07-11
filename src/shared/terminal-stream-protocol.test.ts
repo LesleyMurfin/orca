@@ -82,6 +82,21 @@ describe('terminal-stream-protocol', () => {
     expect(metadata && decodeTerminalStreamJson(metadata.payload)).toEqual({ cwd: '/repo/src' })
   })
 
+  it('round-trips synthetic terminal query replay frames', () => {
+    const replay = decodeTerminalStreamFrame(
+      encodeTerminalStreamFrame({
+        opcode: TerminalStreamOpcode.QueryReplay,
+        streamId: 11,
+        seq: 23,
+        payload: encodeTerminalStreamText('\x1b[?2026$p')
+      })
+    )
+
+    expect(replay?.opcode).toBe(TerminalStreamOpcode.QueryReplay)
+    expect(replay?.seq).toBe(23)
+    expect(replay ? decodeTerminalStreamText(replay.payload) : '').toBe('\x1b[?2026$p')
+  })
+
   it('round-trips multiplex subscribe, snapshot request, and unsubscribe frames', () => {
     const subscribe = decodeTerminalStreamFrame(
       encodeTerminalStreamFrame({
