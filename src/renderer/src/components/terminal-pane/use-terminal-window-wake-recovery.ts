@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import type { PaneManager } from '@/lib/pane-manager/pane-manager'
+import { retryRemoteRuntimeTerminalRecoveriesNow } from '@/runtime/remote-runtime-terminal-recovery-coordinator'
 import { recoverVisibleTerminalWindowWake } from './terminal-visibility-resume'
 import { recordTerminalFreezeBreadcrumb } from './terminal-freeze-breadcrumbs'
 
@@ -91,6 +92,8 @@ export function useTerminalWindowWakeRecovery({
     // Why: Linux has no window-occlusion tracking, so visibilitychange never
     // fires around system suspend; the main process broadcasts OS resume.
     const onSystemResumed = (): void => {
+      // Transport recovery is independent of document paint visibility.
+      retryRemoteRuntimeTerminalRecoveriesNow()
       if (typeof document === 'undefined' || document.visibilityState === 'visible') {
         recoverVisibleWake(true, 'system-resumed')
       }
