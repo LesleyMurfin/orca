@@ -9,6 +9,7 @@ import {
   type RemoteRuntimeTerminalRecoveryDependencies,
   type RemoteRuntimeTerminalRecoveryParticipant
 } from './remote-runtime-terminal-recovery-coordinator'
+import { resolveRemoteRuntimeHostTerminal } from './remote-runtime-host-terminal-resolution'
 
 const OFFLINE = { code: 'remote_runtime_unavailable', message: 'offline' }
 type SubscribeArgs = Parameters<
@@ -355,6 +356,57 @@ describe('RemoteRuntimeTerminalRecoveryCoordinator', () => {
     expect(onIdle).toHaveBeenCalledTimes(3)
   })
 
+  it('freezes queue and snapshot passes across reentrant registrations', async () => {
+    const queueHarness = createHarness()
+    const queueCoordinator = new RemoteRuntimeTerminalRecoveryCoordinator(
+      'queue-env',
+      queueHarness.dependencies
+    )
+    const queueReplacement = participant('queue-replacement', null)
+    const queueFirst = participant('queue-first', null, {
+      resolve: () => ({ kind: 'gone' }),
+      onGone: () => queueCoordinator.register(queueReplacement)
+    })
+
+    queueCoordinator.register(queueFirst)
+    await Promise.resolve()
+
+    expect.soft(queueReplacement.resolveHandle).not.toHaveBeenCalled()
+    queueCoordinator.dispose()
+    await flush()
+
+    const snapshotHarness = createHarness()
+    const snapshotCoordinator = new RemoteRuntimeTerminalRecoveryCoordinator(
+      'snapshot-env',
+      snapshotHarness.dependencies
+    )
+    let snapshotReplacement: RemoteRuntimeTerminalRecoveryParticipant | undefined
+    const initialLease = snapshotCoordinator.register(
+      participant('snapshot-first', 'wt-1', {
+        resolve: () => ({ kind: 'gone' }),
+        onGone: () => {
+          snapshotReplacement = participant('snapshot-replacement', 'wt-1', {
+            resolve: (value) => ({ kind: 'ready', handle: `handle-${value?.snapshotVersion}` })
+          })
+          snapshotCoordinator.register(snapshotReplacement)
+        }
+      })
+    )
+    await flush()
+
+    snapshotHarness.calls[0]?.args.onSnapshot(snapshot(1))
+    await flush()
+
+    expect.soft(snapshotReplacement?.resolveHandle).not.toHaveBeenCalledWith(snapshot(1))
+    expect.soft(snapshotHarness.calls).toHaveLength(2)
+    snapshotHarness.calls[1]?.args.onSnapshot(snapshot(2))
+    await flush()
+    expect(snapshotReplacement?.resolveHandle).toHaveBeenCalledWith(snapshot(2))
+    expect(snapshotReplacement?.rebind).toHaveBeenCalledWith(
+      expect.objectContaining({ generation: initialLease.generation + 1, handle: 'handle-2' })
+    )
+  })
+
   it('keeps established recoverable errors logical, retries only on close, and stops fatal close', async () => {
     const h = createHarness()
     const coordinator = new RemoteRuntimeTerminalRecoveryCoordinator('env-1', h.dependencies)
@@ -518,6 +570,34 @@ describe('RemoteRuntimeTerminalRecoveryCoordinator', () => {
     await flush()
     expect(replacements[0]?.rebind).toHaveBeenCalledTimes(1)
   })
+
+  it('resumes a deferred retry when an early-snapshot start handle resolves late', async () => {
+    const h = createHarness()
+    h.deferNext()
+    const rebind = vi.fn().mockRejectedValueOnce(OFFLINE).mockResolvedValue(undefined)
+    const recovering = participant('recovering', 'wt-1', { rebind })
+    const coordinator = new RemoteRuntimeTerminalRecoveryCoordinator('env-1', h.dependencies)
+    const lease = coordinator.register(recovering)
+    await flush()
+
+    h.calls[0]?.args.onSnapshot(snapshot(1))
+    await flush()
+    expect([...h.timers.values()][0]?.delayMs).toBe(250)
+
+    await h.fireTimer()
+    expect(h.calls).toHaveLength(1)
+    h.calls[0]?.resolve?.()
+    await flush()
+
+    expect(h.calls).toHaveLength(2)
+    expect(h.calls[0]?.handle.unsubscribe).toHaveBeenCalledTimes(1)
+    h.calls[1]?.args.onSnapshot(snapshot(2))
+    await flush()
+    expect(rebind).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ generation: lease.generation + 1 })
+    )
+  })
 })
 
 type BridgeCallbacks = {
@@ -621,5 +701,65 @@ describe('module recovery adapter', () => {
     expect(subscribe).toHaveBeenCalledTimes(beforeRetry + 1)
     current.cancel()
     current.cancel()
+  })
+
+  it('rejects malformed terminal tab discriminants before host resolution', async () => {
+    const callbacks: BridgeCallbacks[] = []
+    const subscribe = vi.fn(async (_args: unknown, next: BridgeCallbacks) => {
+      callbacks.push(next)
+      return { unsubscribe: vi.fn(), sendBinary: vi.fn() }
+    })
+    vi.stubGlobal('window', { api: { runtimeEnvironments: { subscribe } } })
+    const terminalBase = {
+      type: 'terminal',
+      id: 'pane:1',
+      title: 'Terminal',
+      parentTabId: 'tab-1',
+      leafId: 'pane:1',
+      isActive: true
+    }
+    const malformedTabs = [
+      { ...terminalBase, terminal: 'terminal-1' },
+      { ...terminalBase, status: 'starting', terminal: null },
+      { ...terminalBase, status: 'ready' },
+      { ...terminalBase, status: 'ready', terminal: 42 },
+      { ...terminalBase, status: 'ready', terminal: '' },
+      {
+        type: 'terminal',
+        title: 'Terminal',
+        leafId: 'pane:1',
+        isActive: true,
+        status: 'pending-handle',
+        terminal: null
+      },
+      { ...terminalBase, status: 'pending-handle', terminal: 'terminal-1' }
+    ]
+    const leases: { cancel: () => void }[] = []
+
+    for (const [index, tab] of malformedTabs.entries()) {
+      const malformed = participant(`malformed-tab-${index}`, `wt-${index}`, {
+        resolve: (value) =>
+          resolveRemoteRuntimeHostTerminal(value!, { hostTabId: 'tab-1', leafId: 'pane:1' })
+      })
+      leases.push(
+        beginRemoteRuntimeTerminalRecovery({
+          environmentId: `adapter-malformed-tab-${index}`,
+          participant: malformed
+        })
+      )
+      await flush()
+      callbacks[index]?.onResponse(
+        success({ type: 'snapshot', ...snapshot(index + 1), tabs: [tab] })
+      )
+      await flush()
+
+      expect.soft(malformed.resolveHandle).not.toHaveBeenCalled()
+      expect.soft(malformed.rebind).not.toHaveBeenCalled()
+      expect.soft(malformed.onGone).not.toHaveBeenCalled()
+      expect
+        .soft(malformed.onFatal)
+        .toHaveBeenCalledWith(expect.objectContaining({ code: 'invalid_runtime_response' }))
+    }
+    leases.forEach((lease) => lease.cancel())
   })
 })
