@@ -202,6 +202,83 @@ describe('remote runtime PTY recovery binding lifecycle', () => {
     }
   })
 
+  it('does not concatenate partial live OSC state across a reentrant attach', async () => {
+    vi.useFakeTimers()
+    try {
+      const fixture = installRemoteRuntimePtyRecoveryFixture()
+      const onAgentStatus = vi.fn()
+      const onTitleChange = vi.fn()
+      let transport!: Awaited<ReturnType<typeof fixture.createAttachedTransport>>
+      let reattached = false
+      transport = await fixture.createAttachedTransport({
+        options: { onAgentStatus, onTitleChange },
+        callbacks: {
+          onData: () => {
+            if (!reattached) {
+              reattached = true
+              transport.attach({
+                existingPtyId: 'remote:env-1@@terminal-1',
+                callbacks: {}
+              })
+            }
+          }
+        }
+      })
+      const initial = fixture.streams[0]
+      initial.args.callbacks.onSubscribed?.()
+      const statusOsc =
+        '\u001b]9999;{"state":"working","prompt":"cross binding","agentType":"codex"}\u0007'
+      const splitAt = statusOsc.indexOf(',"prompt"')
+
+      initial.args.callbacks.onData(statusOsc.slice(0, splitAt))
+      await fixture.settle()
+      const replacement = fixture.streams[1]
+      replacement.args.callbacks.onData(statusOsc.slice(splitAt))
+      await vi.runAllTimersAsync()
+
+      expect(onAgentStatus).not.toHaveBeenCalled()
+      expect(onTitleChange).not.toHaveBeenCalled()
+      expect(transport.getPtyId()).toBe('remote:env-1@@terminal-1')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears full live OSC title and bell effects queued after reentrant attach', async () => {
+    vi.useFakeTimers()
+    try {
+      const fixture = installRemoteRuntimePtyRecoveryFixture()
+      const onAgentStatus = vi.fn()
+      const onTitleChange = vi.fn()
+      const onBell = vi.fn()
+      let transport!: Awaited<ReturnType<typeof fixture.createAttachedTransport>>
+      transport = await fixture.createAttachedTransport({
+        options: { onAgentStatus, onTitleChange, onBell },
+        callbacks: {
+          onData: () =>
+            transport.attach({
+              existingPtyId: 'remote:env-1@@terminal-1',
+              callbacks: {}
+            })
+        }
+      })
+      const initial = fixture.streams[0]
+      initial.args.callbacks.onSubscribed?.()
+
+      initial.args.callbacks.onData(
+        '\u001b]9999;{"state":"working"}\u0007\u001b]0;old live title\u0007\u0007'
+      )
+      await fixture.settle()
+      await vi.runAllTimersAsync()
+
+      expect(onAgentStatus).not.toHaveBeenCalled()
+      expect(onTitleChange).not.toHaveBeenCalled()
+      expect(onBell).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it.each(['transport-close', 'stream-error', 'stream-end', 'abort', 'startup'] as const)(
     'settles a staged %s once without mutating the committed binding',
     async (failure) => {

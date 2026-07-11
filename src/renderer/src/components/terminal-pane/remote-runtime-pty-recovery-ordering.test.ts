@@ -253,6 +253,29 @@ describe('remote runtime PTY cross-lane recovery ordering', () => {
     }
   )
 
+  it('keeps embedded terminal-gone text on the staged fatal path', async () => {
+    const harness = await createIntegrationHarness({ direct: true })
+    harness.records[0].callbacks.onClose?.()
+    await vi.waitFor(() =>
+      expect(
+        harness.records.filter((record) => record.method === 'terminal.multiplex')
+      ).toHaveLength(2)
+    )
+    const stagedMux = harness.records.filter((record) => record.method === 'terminal.multiplex')[1]
+    const staged = subscribePayload(stagedMux)
+    const message = 'failed during terminal_gone cleanup'
+
+    stagedMux.callbacks.onResponse({
+      ok: true,
+      result: { type: 'error', streamId: staged.streamId, message }
+    })
+    await settle()
+
+    expect(harness.transport.getPtyId()).toBe('remote:env-1@@terminal-1')
+    expect(harness.onPtyExit).not.toHaveBeenCalled()
+    expect(harness.onError).toHaveBeenCalledWith(message)
+  })
+
   it.each(eventOrders)('recovers one generation for cross-lane order %j', async (order) => {
     vi.useFakeTimers()
     try {

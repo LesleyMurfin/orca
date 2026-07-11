@@ -7,8 +7,15 @@ const REMOTE_RUNTIME_TERMINAL_GONE_CODES = [
 
 export type RemoteRuntimeTerminalGoneCode = (typeof REMOTE_RUNTIME_TERMINAL_GONE_CODES)[number]
 
-export function findRemoteRuntimeTerminalGoneCode(
+export function findEmbeddedRemoteRuntimeTerminalGoneCode(
   message: string
 ): RemoteRuntimeTerminalGoneCode | null {
   return REMOTE_RUNTIME_TERMINAL_GONE_CODES.find((code) => message.includes(code)) ?? null
+}
+
+export function parseExactRemoteRuntimeTerminalGoneCode(
+  message: string
+): RemoteRuntimeTerminalGoneCode | null {
+  const normalized = message.trim()
+  return REMOTE_RUNTIME_TERMINAL_GONE_CODES.find((code) => code === normalized) ?? null
 }
