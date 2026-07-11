@@ -5,7 +5,7 @@ const REMOTE_RUNTIME_TERMINAL_GONE_CODES = [
   'no_connected_pty'
 ] as const
 
-export type RemoteRuntimeTerminalGoneCode = (typeof REMOTE_RUNTIME_TERMINAL_GONE_CODES)[number]
+type RemoteRuntimeTerminalGoneCode = (typeof REMOTE_RUNTIME_TERMINAL_GONE_CODES)[number]
 
 export function findEmbeddedRemoteRuntimeTerminalGoneCode(
   message: string

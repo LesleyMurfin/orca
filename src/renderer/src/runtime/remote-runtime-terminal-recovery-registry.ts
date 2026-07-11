@@ -1,5 +1,4 @@
 import { isRecoverableRemoteRuntimeConnectionError } from '../../../shared/remote-runtime-client-error-classification'
-import type { RuntimeMobileSessionTabsResult } from '../../../shared/runtime-types'
 import {
   RemoteRuntimeSessionTabsRecoverySubscription,
   normalizeRecoveryError
@@ -7,7 +6,8 @@ import {
 import type {
   RemoteRuntimeTerminalHandleResolution,
   RemoteRuntimeTerminalRecoveryDependencies,
-  RemoteRuntimeTerminalRecoveryParticipant
+  RemoteRuntimeTerminalRecoveryParticipant,
+  RemoteRuntimeTerminalRecoverySnapshot
 } from './remote-runtime-terminal-recovery-types'
 
 type StructuredError = { code: string; message: string }
@@ -17,7 +17,7 @@ export type ParticipantRecord = {
   lifetime: AbortController
   rebindToken: object | null
 }
-type RetryTimer = { token: object; handle?: unknown }
+type RetryTimer = { handle?: unknown }
 
 const RETRY_DELAYS_MS = [250, 500, 1000, 2000, 4000, 8000, 15_000, 30_000] as const
 const TERMINAL_GONE_CODES = new Set([
@@ -79,7 +79,7 @@ export abstract class RemoteRuntimeTerminalRecoveryRegistry {
 
   private processRecord(
     record: ParticipantRecord,
-    providedSnapshot?: RuntimeMobileSessionTabsResult
+    providedSnapshot?: RemoteRuntimeTerminalRecoverySnapshot
   ): void {
     if (!this.isCurrent(record) || record.rebindToken) {
       return
@@ -119,7 +119,7 @@ export abstract class RemoteRuntimeTerminalRecoveryRegistry {
     const signal = AbortSignal.any([record.lifetime.signal, runSignal])
     record.rebindToken = token
     void Promise.resolve()
-      .then(() => record.participant.rebind({ handle, generation, signal }))
+      .then(() => record.participant.rebind({ handle, signal }))
       .then(
         () => this.finishRebind(record, token, generation, signal),
         (error) => this.finishRebind(record, token, generation, signal, error)
@@ -174,7 +174,7 @@ export abstract class RemoteRuntimeTerminalRecoveryRegistry {
 
   private acceptSnapshot(
     entry: RemoteRuntimeSessionTabsRecoverySubscription,
-    snapshot: RuntimeMobileSessionTabsResult
+    snapshot: RemoteRuntimeTerminalRecoverySnapshot
   ): void {
     if (!this.isCurrentEntry(entry)) {
       return
@@ -227,7 +227,7 @@ export abstract class RemoteRuntimeTerminalRecoveryRegistry {
     }
     const delay = RETRY_DELAYS_MS[Math.min(this.retry.attempt, RETRY_DELAYS_MS.length - 1)]
     this.retry.attempt += 1
-    const timer: RetryTimer = { token: {} }
+    const timer: RetryTimer = {}
     this.retry.timer = timer
     const handle = this.dependencies.setTimer(() => {
       if (this.retry.timer !== timer) {

@@ -12,7 +12,8 @@ export type {
   RemoteRuntimeTerminalHandleResolution,
   RemoteRuntimeTerminalRecoveryDependencies,
   RemoteRuntimeTerminalRecoveryLease,
-  RemoteRuntimeTerminalRecoveryParticipant
+  RemoteRuntimeTerminalRecoveryParticipant,
+  RemoteRuntimeTerminalRecoverySnapshot
 } from './remote-runtime-terminal-recovery-types'
 
 export class RemoteRuntimeTerminalRecoveryCoordinator extends RemoteRuntimeTerminalRecoveryRegistry {
@@ -20,7 +21,7 @@ export class RemoteRuntimeTerminalRecoveryCoordinator extends RemoteRuntimeTermi
     participant: RemoteRuntimeTerminalRecoveryParticipant
   ): RemoteRuntimeTerminalRecoveryLease {
     if (this.disposed) {
-      return { generation: this.generation, cancel: () => {} }
+      return { cancel: () => {} }
     }
     const existing = this.participants.get(participant.id)
     if (this.participants.size === 0 && !existing) {
@@ -45,7 +46,6 @@ export class RemoteRuntimeTerminalRecoveryCoordinator extends RemoteRuntimeTermi
     this.idleNotified = false
     this.queueProcess()
     return {
-      generation: this.generation,
       cancel: () => {
         if (this.isCurrent(record)) {
           this.removeRecord(record)
