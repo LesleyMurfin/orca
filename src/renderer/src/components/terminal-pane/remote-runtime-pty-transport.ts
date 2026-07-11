@@ -38,7 +38,7 @@ import {
 } from './remote-runtime-pty-batching'
 import { createBrowserUuid } from '@/lib/browser-uuid'
 import { stageRemoteRuntimePtyRebind } from './remote-runtime-pty-staged-rebind'
-import { findRemoteRuntimeTerminalGoneCode } from './remote-runtime-terminal-gone-error'
+import { findEmbeddedRemoteRuntimeTerminalGoneCode } from './remote-runtime-terminal-gone-error'
 import { setFitOverride } from '@/lib/pane-manager/mobile-fit-overrides'
 import { setDriverForPty } from '@/lib/pane-manager/mobile-driver-state'
 import { isWebTerminalSurfaceTabId, toHostSessionTabId } from '@/runtime/web-terminal-surface-id'
@@ -107,14 +107,16 @@ export function createRemoteRuntimePtyTransport(
   // shares them. The instance suffix keeps one viewer's refresh off peer records.
   const clientId = `desktop:${tabId ?? 'tab'}:${leafId ?? 'leaf'}:${createBrowserUuid()}`
   const recoveryParticipantId = `remote-pty:${nextRemoteRuntimeRecoveryParticipantId++}`
-  const outputProcessor = createPtyOutputProcessor({
-    onTitleChange,
-    onBell,
-    onAgentBecameIdle,
-    onAgentBecameWorking,
-    onAgentExited,
-    onAgentStatus
-  })
+  const createRemoteOutputProcessor = () =>
+    createPtyOutputProcessor({
+      onTitleChange,
+      onBell,
+      onAgentBecameIdle,
+      onAgentBecameWorking,
+      onAgentExited,
+      onAgentStatus
+    })
+  let outputProcessor = createRemoteOutputProcessor()
 
   function findReadyHostSessionHandle(
     snapshot: RuntimeMobileSessionTabsResult,
@@ -390,6 +392,7 @@ export function createRemoteRuntimePtyTransport(
     cancelRecoveryLease()
     inputBatcher.clear()
     viewportBatcher.clear()
+    outputProcessor.clearAccumulatedState()
     connected = false
     clearPendingViewportClaim()
     const stalePtyId = remotePtyId
@@ -417,7 +420,13 @@ export function createRemoteRuntimePtyTransport(
     inputBatcher.clear()
     viewportBatcher.clear()
     clearPendingViewportClaim()
+    replaceOutputProcessor()
     closeMultiplexedStream()
+  }
+
+  function replaceOutputProcessor(): void {
+    outputProcessor.clearAccumulatedState()
+    outputProcessor = createRemoteOutputProcessor()
   }
 
   function handleRemoteTerminalError(error: unknown): void {
@@ -427,7 +436,7 @@ export function createRemoteRuntimePtyTransport(
       // flowing — informational, not fatal, so never surface a red xterm banner.
       return
     }
-    if (findRemoteRuntimeTerminalGoneCode(message)) {
+    if (findEmbeddedRemoteRuntimeTerminalGoneCode(message)) {
       // Why: paired web clients consume host-published PTY handles. If the host
       // retires one between snapshots, clear this mirror and wait for the next
       // session-tabs update instead of surfacing a red xterm error.
@@ -442,8 +451,9 @@ export function createRemoteRuntimePtyTransport(
     meta: { seq?: number; rawLength?: number } | undefined,
     isStillCurrent: () => boolean
   ): void {
-    outputProcessor.processData(data, storedCallbacks, undefined, meta)
-    clearInvalidatedOutputSideEffects(isStillCurrent)
+    const deliveryProcessor = outputProcessor
+    deliveryProcessor.processData(data, storedCallbacks, undefined, meta)
+    clearInvalidatedOutputSideEffects(deliveryProcessor, isStillCurrent)
   }
 
   function processRemoteSnapshot(
@@ -454,22 +464,26 @@ export function createRemoteRuntimePtyTransport(
     // Why: a snapshot with no body can still carry a pending mid-escape tail
     // that must be replayed so the next live chunk completes it.
     if (data || meta?.pendingEscapeTailAnsi) {
-      outputProcessor.processData(data, storedCallbacks, {
+      const deliveryProcessor = outputProcessor
+      deliveryProcessor.processData(data, storedCallbacks, {
         replayingBufferedData: true,
         suppressAttentionEvents: true,
         ...(meta?.pendingEscapeTailAnsi
           ? { pendingEscapeTailAnsi: meta.pendingEscapeTailAnsi }
           : {})
       })
-      clearInvalidatedOutputSideEffects(isStillCurrent)
+      clearInvalidatedOutputSideEffects(deliveryProcessor, isStillCurrent)
     }
   }
 
-  function clearInvalidatedOutputSideEffects(isStillCurrent: () => boolean): void {
+  function clearInvalidatedOutputSideEffects(
+    deliveryProcessor: ReturnType<typeof createPtyOutputProcessor>,
+    isStillCurrent: () => boolean
+  ): void {
     if (!isStillCurrent()) {
       // `processData` queues derived OSC/BEL work after delivering output. A
       // reentrant attach invalidates that delivery, so discard its queued facts.
-      outputProcessor.clearAccumulatedState()
+      deliveryProcessor.clearAccumulatedState()
     }
   }
 
@@ -516,6 +530,7 @@ export function createRemoteRuntimePtyTransport(
     inputBatcher.clear()
     viewportBatcher.clear()
     clearPendingViewportClaim()
+    replaceOutputProcessor()
     closeMultiplexedStream()
     cancelRecoveryLease()
     const hostMirror = Boolean(tabId && worktreeId && isWebTerminalSurfaceTabId(tabId))
