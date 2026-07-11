@@ -154,38 +154,52 @@ describe('remote runtime PTY recovery binding lifecycle', () => {
     expect(transport.sendInput('after replay')).toBe(true)
   })
 
-  it('does not notify or reopen an old recovery when replay reattaches the transport', async () => {
-    const fixture = installRemoteRuntimePtyRecoveryFixture()
-    const onPtySpawn = vi.fn()
-    const oldConnect = vi.fn()
-    const oldStatus = vi.fn()
-    let transport!: Awaited<ReturnType<typeof fixture.createAttachedTransport>>
-    transport = await fixture.createAttachedTransport({
-      options: { onPtySpawn },
-      callbacks: {
-        onReplayData: () => {
-          transport.attach({
-            existingPtyId: 'remote:env-1@@terminal-manual',
-            callbacks: {}
-          })
-        },
-        onConnect: oldConnect,
-        onStatus: oldStatus
-      }
-    })
-    const initial = fixture.streams[0]
-    const { promise, staged } = await beginStagedRebind({ fixture, initial })
+  it('drops old deferred OSC effects when replay reattaches the transport', async () => {
+    vi.useFakeTimers()
+    try {
+      const fixture = installRemoteRuntimePtyRecoveryFixture()
+      const onPtySpawn = vi.fn()
+      const onTitleChange = vi.fn()
+      const onBell = vi.fn()
+      const onAgentStatus = vi.fn()
+      const oldConnect = vi.fn()
+      const oldStatus = vi.fn()
+      let transport!: Awaited<ReturnType<typeof fixture.createAttachedTransport>>
+      transport = await fixture.createAttachedTransport({
+        options: { onPtySpawn, onTitleChange, onBell, onAgentStatus },
+        callbacks: {
+          onReplayData: () => {
+            transport.attach({
+              existingPtyId: 'remote:env-1@@terminal-manual',
+              callbacks: {}
+            })
+          },
+          onConnect: oldConnect,
+          onStatus: oldStatus
+        }
+      })
+      const initial = fixture.streams[0]
+      const { promise, staged } = await beginStagedRebind({ fixture, initial })
 
-    staged.args.callbacks.onSnapshot('authoritative')
-    staged.args.callbacks.onSubscribed?.()
-    await promise
-    await fixture.settle()
+      staged.args.callbacks.onSnapshot(
+        '\u001b]0;old recovery title\u0007\u001b]9999;{"state":"working"}\u0007\u0007'
+      )
+      staged.args.callbacks.onSubscribed?.()
+      await promise
+      await fixture.settle()
+      await vi.runAllTimersAsync()
 
-    expect(transport.getPtyId()).toBe('remote:env-1@@terminal-manual')
-    expect(onPtySpawn).not.toHaveBeenCalled()
-    expect(oldConnect).not.toHaveBeenCalled()
-    expect(oldStatus).not.toHaveBeenCalled()
-    expect(transport.sendInput('manual binding')).toBe(true)
+      expect(transport.getPtyId()).toBe('remote:env-1@@terminal-manual')
+      expect(onPtySpawn).not.toHaveBeenCalled()
+      expect(oldConnect).not.toHaveBeenCalled()
+      expect(oldStatus).not.toHaveBeenCalled()
+      expect(onTitleChange).not.toHaveBeenCalled()
+      expect(onAgentStatus).not.toHaveBeenCalled()
+      expect(onBell).not.toHaveBeenCalled()
+      expect(transport.sendInput('manual binding')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it.each(['transport-close', 'stream-error', 'stream-end', 'abort', 'startup'] as const)(
@@ -290,42 +304,56 @@ describe('remote runtime PTY recovery binding lifecycle', () => {
   })
 
   it('fences same-handle reattach callbacks and ignores attach after destroy', async () => {
-    const fixture = installRemoteRuntimePtyRecoveryFixture()
-    const oldData = vi.fn()
-    const currentData = vi.fn()
-    const currentError = vi.fn()
-    const transport = await fixture.createAttachedTransport({ callbacks: { onData: oldData } })
-    const initial = fixture.streams[0]
+    vi.useFakeTimers()
+    try {
+      const fixture = installRemoteRuntimePtyRecoveryFixture()
+      const oldData = vi.fn()
+      const currentData = vi.fn()
+      const currentReplay = vi.fn()
+      const currentError = vi.fn()
+      const onTitleChange = vi.fn()
+      const transport = await fixture.createAttachedTransport({
+        options: { onTitleChange },
+        callbacks: { onData: oldData }
+      })
+      const initial = fixture.streams[0]
 
-    transport.attach({
-      existingPtyId: 'remote:env-1@@terminal-1',
-      cols: 90,
-      rows: 30,
-      callbacks: { onData: currentData, onError: currentError }
-    })
-    await fixture.settle()
-    const replacement = fixture.streams[1]
-    initial.args.callbacks.onData('late old data')
-    initial.args.callbacks.onEnd?.()
-    initial.args.callbacks.onError?.('late old error')
-    replacement.args.callbacks.onData('current data')
+      transport.attach({
+        existingPtyId: 'remote:env-1@@terminal-1',
+        cols: 90,
+        rows: 30,
+        callbacks: { onData: currentData, onReplayData: currentReplay, onError: currentError }
+      })
+      await fixture.settle()
+      const replacement = fixture.streams[1]
+      initial.args.callbacks.onSnapshot('late\u001b]0;old title\u0007')
+      initial.args.callbacks.onData('late old data')
+      initial.args.callbacks.onEnd?.()
+      initial.args.callbacks.onError?.('late old error')
+      replacement.args.callbacks.onData('current data')
+      await vi.runAllTimersAsync()
 
-    expect(initial.stream.close).toHaveBeenCalledOnce()
-    expect(oldData).not.toHaveBeenCalled()
-    expect(currentData).toHaveBeenCalledWith('current data')
-    expect(currentError).not.toHaveBeenCalled()
-    expect(transport.getPtyId()).toBe('remote:env-1@@terminal-1')
+      expect(initial.stream.close).toHaveBeenCalledOnce()
+      expect(oldData).not.toHaveBeenCalled()
+      expect(currentReplay).not.toHaveBeenCalled()
+      expect(onTitleChange).not.toHaveBeenCalled()
+      expect(currentData).toHaveBeenCalledWith('current data')
+      expect(currentError).not.toHaveBeenCalled()
+      expect(transport.getPtyId()).toBe('remote:env-1@@terminal-1')
 
-    transport.destroy?.()
-    const streamCount = fixture.streams.length
-    transport.attach({
-      existingPtyId: 'remote:env-1@@terminal-after-destroy',
-      callbacks: { onError: currentError }
-    })
-    await fixture.settle()
+      transport.destroy?.()
+      const streamCount = fixture.streams.length
+      transport.attach({
+        existingPtyId: 'remote:env-1@@terminal-after-destroy',
+        callbacks: { onError: currentError }
+      })
+      await fixture.settle()
 
-    expect(fixture.streams).toHaveLength(streamCount)
-    expect(transport.getPtyId()).toBeNull()
+      expect(fixture.streams).toHaveLength(streamCount)
+      expect(transport.getPtyId()).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('uses a stable participant id and routes host versus direct handle resolution', async () => {

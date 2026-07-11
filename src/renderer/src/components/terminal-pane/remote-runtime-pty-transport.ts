@@ -38,6 +38,7 @@ import {
 } from './remote-runtime-pty-batching'
 import { createBrowserUuid } from '@/lib/browser-uuid'
 import { stageRemoteRuntimePtyRebind } from './remote-runtime-pty-staged-rebind'
+import { findRemoteRuntimeTerminalGoneCode } from './remote-runtime-terminal-gone-error'
 import { setFitOverride } from '@/lib/pane-manager/mobile-fit-overrides'
 import { setDriverForPty } from '@/lib/pane-manager/mobile-driver-state'
 import { isWebTerminalSurfaceTabId, toHostSessionTabId } from '@/runtime/web-terminal-surface-id'
@@ -47,15 +48,6 @@ const REMOTE_TERMINAL_VIEWPORT_FLUSH_MS = 33
 const HOST_SESSION_ATTACH_POLL_MS = 150
 const HOST_SESSION_ATTACH_TIMEOUT_MS = 15_000
 let nextRemoteRuntimeRecoveryParticipantId = 1
-
-function isRemoteTerminalGoneMessage(message: string): boolean {
-  return (
-    message.includes('terminal_handle_stale') ||
-    message.includes('terminal_exited') ||
-    message.includes('terminal_gone') ||
-    message.includes('no_connected_pty')
-  )
-}
 
 /**
  * PTY transport backing a renderer terminal pane with a terminal on a remote Orca
@@ -435,7 +427,7 @@ export function createRemoteRuntimePtyTransport(
       // flowing — informational, not fatal, so never surface a red xterm banner.
       return
     }
-    if (isRemoteTerminalGoneMessage(message)) {
+    if (findRemoteRuntimeTerminalGoneCode(message)) {
       // Why: paired web clients consume host-published PTY handles. If the host
       // retires one between snapshots, clear this mirror and wait for the next
       // session-tabs update instead of surfacing a red xterm error.
@@ -445,7 +437,20 @@ export function createRemoteRuntimePtyTransport(
     invokeSafely(() => storedCallbacks.onError?.(message))
   }
 
-  function processRemoteSnapshot(data: string, meta?: { pendingEscapeTailAnsi?: string }): void {
+  function processRemoteData(
+    data: string,
+    meta: { seq?: number; rawLength?: number } | undefined,
+    isStillCurrent: () => boolean
+  ): void {
+    outputProcessor.processData(data, storedCallbacks, undefined, meta)
+    clearInvalidatedOutputSideEffects(isStillCurrent)
+  }
+
+  function processRemoteSnapshot(
+    data: string,
+    meta: { pendingEscapeTailAnsi?: string } | undefined,
+    isStillCurrent: () => boolean
+  ): void {
     // Why: a snapshot with no body can still carry a pending mid-escape tail
     // that must be replayed so the next live chunk completes it.
     if (data || meta?.pendingEscapeTailAnsi) {
@@ -456,6 +461,15 @@ export function createRemoteRuntimePtyTransport(
           ? { pendingEscapeTailAnsi: meta.pendingEscapeTailAnsi }
           : {})
       })
+      clearInvalidatedOutputSideEffects(isStillCurrent)
+    }
+  }
+
+  function clearInvalidatedOutputSideEffects(isStillCurrent: () => boolean): void {
+    if (!isStillCurrent()) {
+      // `processData` queues derived OSC/BEL work after delivering output. A
+      // reentrant attach invalidates that delivery, so discard its queued facts.
+      outputProcessor.clearAccumulatedState()
     }
   }
 
@@ -563,6 +577,13 @@ export function createRemoteRuntimePtyTransport(
     stagedRecoveryToken = token
     let previousPtyId: string | null = null
     let nextPtyId: string | null = null
+    let activatedStream: RemoteRuntimeMultiplexedTerminal | null = null
+    const isRecoveredBindingCurrent = (): boolean =>
+      activatedStream !== null &&
+      isCurrentRemoteTerminal(args.recoveryBindingGeneration, args.nextHandle, nextPtyId) &&
+      multiplexedStream === activatedStream &&
+      multiplexedStreamHandle === args.nextHandle &&
+      multiplexedStreamRecoveryGeneration === args.coordinatorGeneration
     const promise = stageRemoteRuntimePtyRebind({
       handle: args.nextHandle,
       bindingGeneration: args.recoveryBindingGeneration,
@@ -597,6 +618,7 @@ export function createRemoteRuntimePtyTransport(
         multiplexedStreamHandle = nextHandle
         multiplexedStreamRecoveryGeneration = coordinatorGeneration
         bindingGeneration = candidateGeneration
+        activatedStream = stream
       },
       isActive: ({
         bindingGeneration: candidateGeneration,
@@ -604,10 +626,11 @@ export function createRemoteRuntimePtyTransport(
         handle: candidateHandle,
         stream
       }) =>
-        isCurrentRemoteTerminal(candidateGeneration, candidateHandle, nextPtyId) &&
-        multiplexedStream === stream &&
-        multiplexedStreamHandle === candidateHandle &&
-        multiplexedStreamRecoveryGeneration === coordinatorGeneration,
+        candidateGeneration === args.recoveryBindingGeneration &&
+        coordinatorGeneration === args.coordinatorGeneration &&
+        candidateHandle === args.nextHandle &&
+        stream === activatedStream &&
+        isRecoveredBindingCurrent(),
       onCommitted: (subscribedViewport) => {
         const stream = getCurrentMultiplexedStream(args.nextHandle)
         const stillCurrent = (): boolean =>
@@ -634,8 +657,8 @@ export function createRemoteRuntimePtyTransport(
           invokeSafely(() => storedCallbacks.onStatus?.('shell'))
         }
       },
-      onData: (data, meta) => outputProcessor.processData(data, storedCallbacks, undefined, meta),
-      onSnapshot: processRemoteSnapshot,
+      onData: (data, meta) => processRemoteData(data, meta, isRecoveredBindingCurrent),
+      onSnapshot: (data, meta) => processRemoteSnapshot(data, meta, isRecoveredBindingCurrent),
       onEnd: () =>
         endCurrentRemoteTerminal(args.recoveryBindingGeneration, args.nextHandle, nextPtyId),
       onError: handleRemoteTerminalError,
@@ -682,12 +705,12 @@ export function createRemoteRuntimePtyTransport(
       callbacks: {
         onData: (data, meta) => {
           if (isCurrentSubscription()) {
-            outputProcessor.processData(data, storedCallbacks, undefined, meta)
+            processRemoteData(data, meta, isCurrentSubscription)
           }
         },
         onSnapshot: (data, meta) => {
           if (isCurrentSubscription()) {
-            processRemoteSnapshot(data, meta)
+            processRemoteSnapshot(data, meta, isCurrentSubscription)
           }
         },
         onSubscribed: () => {

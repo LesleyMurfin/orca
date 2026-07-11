@@ -3,6 +3,7 @@ import {
   type RemoteRuntimeMultiplexedTerminal,
   type RemoteRuntimeMultiplexedTerminalCallbacks
 } from '../../runtime/remote-runtime-terminal-multiplexer'
+import { findRemoteRuntimeTerminalGoneCode } from './remote-runtime-terminal-gone-error'
 
 type StructuredRuntimeError = { code: string; message: string }
 type SnapshotEvent = Parameters<RemoteRuntimeMultiplexedTerminalCallbacks['onSnapshot']>
@@ -190,7 +191,8 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
           return
         }
         if (!stream || !committed) {
-          fail({ code: 'runtime_error', message })
+          const goneCode = findRemoteRuntimeTerminalGoneCode(message)
+          fail({ code: goneCode ?? 'runtime_error', message })
         } else if (current(stream)) {
           invokeSafely(() => args.onError(message))
         }
