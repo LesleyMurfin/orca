@@ -560,6 +560,8 @@ export function RuntimeEnvironmentsPane({
           return false
         }
         if (!allowLocalRuntime) {
+          // Why: switching away from the active remote already closes its
+          // transport and subscriptions, so a second disconnect is redundant.
           disconnectedByFocusSwitch = true
         }
       }
