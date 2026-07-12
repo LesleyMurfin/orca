@@ -18,9 +18,6 @@ export function useTerminalWindowWakeRecovery({
   isVisibleRef
 }: UseTerminalWindowWakeRecoveryArgs): void {
   useEffect(() => {
-    if (!isVisible) {
-      return
-    }
     let wakeRecoveryFrameId: number | null = null
     let settledClearGlyphAtlases = false
     const cancelScheduledWakeRecovery = (): void => {
@@ -94,13 +91,18 @@ export function useTerminalWindowWakeRecovery({
     const onSystemResumed = (): void => {
       // Transport recovery is independent of document paint visibility.
       retryRemoteRuntimeTerminalRecoveriesNow()
-      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+      if (
+        isVisible &&
+        (typeof document === 'undefined' || document.visibilityState === 'visible')
+      ) {
         recoverVisibleWake(true, 'system-resumed')
       }
     }
-    window.addEventListener('focus', onFocus)
-    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
-      document.addEventListener('visibilitychange', onVisibilityChange)
+    if (isVisible) {
+      window.addEventListener('focus', onFocus)
+      if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+        document.addEventListener('visibilitychange', onVisibilityChange)
+      }
     }
     // Why: a focus-preserving display wake fires neither focus nor
     // visibilitychange, so main relays powerMonitor resume over IPC. Genuine
@@ -112,9 +114,11 @@ export function useTerminalWindowWakeRecovery({
         : null
     return () => {
       cancelScheduledWakeRecovery()
-      window.removeEventListener('focus', onFocus)
-      if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
-        document.removeEventListener('visibilitychange', onVisibilityChange)
+      if (isVisible) {
+        window.removeEventListener('focus', onFocus)
+        if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+          document.removeEventListener('visibilitychange', onVisibilityChange)
+        }
       }
       unsubscribeSystemResumed?.()
     }
