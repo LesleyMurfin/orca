@@ -16,7 +16,10 @@ import type { RemoteRuntimeSubscription } from '../../shared/remote-runtime-clie
 import { RemoteRuntimeClientError } from '../../shared/remote-runtime-client-error'
 import type { Store } from '../persistence'
 import { clearActiveRuntimeEnvironmentFocusIfMatches } from '../runtime-environment-focus-self-heal'
-import { closeRemoteRuntimeRequestConnection } from './runtime-environment-request-connections'
+import {
+  closeRemoteRuntimeRequestConnection,
+  retryRemoteRuntimeSharedControlConnectionsNow
+} from './runtime-environment-request-connections'
 import {
   callRuntimeEnvironment,
   clearSharedControlSupport,
@@ -32,6 +35,7 @@ const RUNTIME_ENVIRONMENT_HANDLER_CHANNELS = [
   'runtimeEnvironments:remove',
   'runtimeEnvironments:disconnect',
   'runtimeEnvironments:getStatus',
+  'runtimeEnvironments:retryConnectionsNow',
   'runtimeEnvironments:call',
   'runtimeEnvironments:subscribe',
   'runtimeEnvironments:unsubscribe'
@@ -150,6 +154,9 @@ export function registerRuntimeEnvironmentHandlers(store: Store): void {
       return getRuntimeEnvironmentStatus(getUserDataPath(), args.selector, args.timeoutMs)
     }
   )
+  ipcMain.handle('runtimeEnvironments:retryConnectionsNow', () => {
+    retryRemoteRuntimeSharedControlConnectionsNow()
+  })
   ipcMain.handle(
     'runtimeEnvironments:call',
     async (

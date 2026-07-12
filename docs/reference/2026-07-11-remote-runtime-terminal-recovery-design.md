@@ -63,7 +63,7 @@ This design fixes the ownership and recovery model. It does not merely increase 
 | Transport topology | Keep shared control and `terminal.multiplex` as separate sockets. | Binary terminal traffic must not head-of-line block control RPCs or subscriptions. | Recovery needs explicit coordination between the two lanes. |
 | Recovery ownership | Add one recovery coordinator per runtime environment, with worktree-scoped authoritative snapshot requests. | Panes currently retry independently and can stampede control RPCs. | Adds a small lifecycle state machine and registry. |
 | Snapshot source | During host-mirror recovery, wait on one temporary, coalesced `session.tabs.subscribe` snapshot instead of a one-shot `session.tabs.list`. | Shared-control subscriptions survive reconnect and replay an authoritative snapshot; a short RPC does not. | A temporary subscription exists during recovery, then closes after the generation settles. |
-| Retry policy | Exponential base delays from 250 ms to a 30 s cap, with actual jitter kept inside that cap while logical owners remain. System resume requests an immediate attempt. | A remote task may run for hours; a finite retry budget creates permanent client-side failure. | Persistent outages keep a low-frequency retry timer until panes close or the error is fatal. |
+| Retry policy | Shared control uses exponential base delays from 250 ms to a 30 s cap, with actual jitter kept inside that cap; the renderer coordinator uses the same fixed tiers without jitter. Both retry while logical owners remain. System resume and the browser's network-online signal request an immediate attempt. | A remote task may run for hours; a finite retry budget creates permanent client-side failure. | Persistent outages keep a low-frequency retry timer until panes close or the error is fatal. |
 | Error policy | Transport/liveness/timeout failures are recoverable. Authentication, invalid protocol, removed environment, and confirmed terminal-gone results are terminal. | Users should not see duplicate fatal banners for a reconnectable socket loss. | Error classification must preserve structured codes across the subscription boundary. |
 | Binding safety | Fence callbacks and asynchronous sends by recovery generation; commit a replacement binding atomically. | Handle equality alone is insufficient when the same handle string can reappear after reconnect. | Adds generation checks to existing handle checks. |
 | Input safety | Clear pending batches when recovery starts and reject new input until the new binding is ready. Never replay delivery-ambiguous bytes. | Sending old bytes to a new handle is worse than rejecting keystrokes during a short reconnect. | Keystrokes entered during recovery are not buffered; callers receive `false` and can retry. |
@@ -152,7 +152,7 @@ For a direct remote terminal whose handle is not host-published, skip the sessio
 
 Shared-control logical subscriptions will no longer fail only because a fixed reconnect delay list was exhausted.
 
-- Recoverable transport errors use base delays of `250, 500, 1000, 2000, 4000, 8000, 15000, 30000` ms. Existing 20% jitter is preserved, and the saturated window shifts below the hard 30-second cap.
+- Recoverable transport errors use base delays of `250, 500, 1000, 2000, 4000, 8000, 15000, 30000` ms. Existing 20% jitter is preserved. Below saturation the window is `[base, base + floor(base * 0.2))`; the saturated `30000` tier shifts to `[24000, 30000)`, so every scheduled delay remains below the hard 30-second cap.
 - Closing the last logical subscription cancels the timer and allows the connection to become idle.
 - `unauthorized`, `invalid_argument`, and `invalid_runtime_response` stop retrying and notify subscribers once.
 - Successful readiness keeps the existing stable-window attempt reset, so short flaps do not create a tight loop.
@@ -199,7 +199,7 @@ Resize remains locally meaningful while input is paused. A resize during recover
 
 The renderer already receives `window.api.ui.onSystemResumed`. The terminal wake-recovery hook will also notify the Remote Orca recovery coordinator.
 
-Resume does not create a new recovery when all streams are healthy. It only cancels a pending backoff delay and requests an immediate attempt for entries already in `waiting-control` or `backoff`. Normal capped backoff resumes after a failed immediate attempt.
+Resume and the browser's `online` event do not create a new recovery when all streams are healthy. They only advance shared-control reconnect and request an immediate attempt for entries already in `waiting-control` or `backoff`. Normal capped backoff resumes after a failed immediate attempt. Route-specific recovery that does not change the browser's online state still relies on the capped retry timer.
 
 ## Recovery sequence
 

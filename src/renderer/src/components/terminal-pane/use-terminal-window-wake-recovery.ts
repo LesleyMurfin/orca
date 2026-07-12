@@ -11,6 +11,19 @@ type UseTerminalWindowWakeRecoveryArgs = {
   isVisibleRef: React.RefObject<boolean>
 }
 
+let lastHandledNetworkOnlineEvent: Event | null = null
+
+function retryRemoteRuntimeConnectionsAfterOnline(event: Event): void {
+  // Why: this hook is mounted once per terminal surface; one browser event
+  // should cross IPC and scan the coordinator registry only once per renderer.
+  if (lastHandledNetworkOnlineEvent === event) {
+    return
+  }
+  lastHandledNetworkOnlineEvent = event
+  void window.api.runtimeEnvironments.retryConnectionsNow().catch(() => undefined)
+  retryRemoteRuntimeTerminalRecoveriesNow()
+}
+
 export function useTerminalWindowWakeRecovery({
   isVisible,
   managerRef,
@@ -98,6 +111,11 @@ export function useTerminalWindowWakeRecovery({
         recoverVisibleWake(true, 'system-resumed')
       }
     }
+    // Why: an awake client can regain network connectivity without any power
+    // or visibility event; advance only existing recoveries, without repainting.
+    // Why: shared control and pane recovery own separate backoff timers.
+    const onNetworkOnline = (event: Event): void => retryRemoteRuntimeConnectionsAfterOnline(event)
+    window.addEventListener('online', onNetworkOnline)
     if (isVisible) {
       window.addEventListener('focus', onFocus)
       if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
@@ -114,6 +132,7 @@ export function useTerminalWindowWakeRecovery({
         : null
     return () => {
       cancelScheduledWakeRecovery()
+      window.removeEventListener('online', onNetworkOnline)
       if (isVisible) {
         window.removeEventListener('focus', onFocus)
         if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {

@@ -1,13 +1,17 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { cleanup, renderHook } from '@testing-library/react'
 import type { PaneManager } from '@/lib/pane-manager/pane-manager'
 
-const { recoverVisibleTerminalWindowWakeMock, retryRemoteRuntimeTerminalRecoveriesNowMock } =
-  vi.hoisted(() => ({
-    recoverVisibleTerminalWindowWakeMock: vi.fn(),
-    retryRemoteRuntimeTerminalRecoveriesNowMock: vi.fn()
-  }))
+const {
+  recoverVisibleTerminalWindowWakeMock,
+  retryRemoteRuntimeConnectionsNowMock,
+  retryRemoteRuntimeTerminalRecoveriesNowMock
+} = vi.hoisted(() => ({
+  recoverVisibleTerminalWindowWakeMock: vi.fn(),
+  retryRemoteRuntimeConnectionsNowMock: vi.fn(() => Promise.resolve()),
+  retryRemoteRuntimeTerminalRecoveriesNowMock: vi.fn()
+}))
 
 vi.mock('./terminal-visibility-resume', () => ({
   recoverVisibleTerminalWindowWake: recoverVisibleTerminalWindowWakeMock
@@ -35,6 +39,7 @@ describe('useTerminalWindowWakeRecovery', () => {
   beforeEach(() => {
     systemResumedCallback = null
     recoverVisibleTerminalWindowWakeMock.mockClear()
+    retryRemoteRuntimeConnectionsNowMock.mockClear()
     retryRemoteRuntimeTerminalRecoveriesNowMock.mockClear()
     unsubscribeSystemResumed.mockClear()
     onSystemResumed.mockClear()
@@ -42,10 +47,14 @@ describe('useTerminalWindowWakeRecovery', () => {
     // Why: without requestAnimationFrame the hook skips its settled-frame
     // follow-up, so every trigger maps to exactly one synchronous recovery.
     vi.stubGlobal('requestAnimationFrame', undefined)
-    ;(window as unknown as { api: unknown }).api = { ui: { onSystemResumed } }
+    ;(window as unknown as { api: unknown }).api = {
+      ui: { onSystemResumed },
+      runtimeEnvironments: { retryConnectionsNow: retryRemoteRuntimeConnectionsNowMock }
+    }
   })
 
   afterEach(() => {
+    cleanup()
     vi.unstubAllGlobals()
     delete (window as unknown as { api?: unknown }).api
   })
@@ -133,5 +142,32 @@ describe('useTerminalWindowWakeRecovery', () => {
     systemResumedCallback?.()
     expect(retryRemoteRuntimeTerminalRecoveriesNowMock).toHaveBeenCalledOnce()
     expect(recoverVisibleTerminalWindowWakeMock).not.toHaveBeenCalled()
+  })
+
+  it('retries remote terminal recovery when the network comes back online', () => {
+    const { unmount } = renderWakeRecoveryHook(false)
+
+    window.dispatchEvent(new Event('online'))
+
+    expect(retryRemoteRuntimeConnectionsNowMock).toHaveBeenCalledOnce()
+    expect(retryRemoteRuntimeTerminalRecoveriesNowMock).toHaveBeenCalledOnce()
+    expect(recoverVisibleTerminalWindowWakeMock).not.toHaveBeenCalled()
+
+    unmount()
+    retryRemoteRuntimeTerminalRecoveriesNowMock.mockClear()
+    retryRemoteRuntimeConnectionsNowMock.mockClear()
+    window.dispatchEvent(new Event('online'))
+    expect(retryRemoteRuntimeConnectionsNowMock).not.toHaveBeenCalled()
+    expect(retryRemoteRuntimeTerminalRecoveriesNowMock).not.toHaveBeenCalled()
+  })
+
+  it('coalesces one online event across multiple mounted terminal surfaces', () => {
+    renderWakeRecoveryHook(false)
+    renderWakeRecoveryHook(false)
+
+    window.dispatchEvent(new Event('online'))
+
+    expect(retryRemoteRuntimeConnectionsNowMock).toHaveBeenCalledOnce()
+    expect(retryRemoteRuntimeTerminalRecoveriesNowMock).toHaveBeenCalledOnce()
   })
 })

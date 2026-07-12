@@ -1178,6 +1178,9 @@ function createRuntimeEnvironmentsApi(): NonNullable<Partial<PreloadApi>['runtim
     },
     getStatus: ({ selector, timeoutMs }) =>
       callEnvironmentEnvelope<RuntimeStatus>(selector, 'status.get', undefined, timeoutMs),
+    // Web runtime subscriptions own reconnect in this process; the renderer
+    // recovery coordinator advances them, so there is no desktop IPC to call.
+    retryConnectionsNow: () => Promise.resolve(),
     call: ({ selector, method, params, timeoutMs }) =>
       callEnvironmentEnvelope(selector, method, params, timeoutMs),
     subscribe: async ({ selector, method, params, timeoutMs }, callbacks) => {

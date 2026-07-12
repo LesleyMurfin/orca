@@ -21,6 +21,7 @@ const {
   sendRemoteRuntimeSharedControlRequestMock,
   subscribeRemoteRuntimeSharedControlRequestMock,
   getRemoteRuntimeSharedControlDiagnosticsMock,
+  retryRemoteRuntimeSharedControlConnectionsNowMock,
   closeRemoteRuntimeRequestConnectionMock
 } = vi.hoisted(() => ({
   handleMock: vi.fn(),
@@ -34,6 +35,7 @@ const {
   sendRemoteRuntimeSharedControlRequestMock: vi.fn(),
   subscribeRemoteRuntimeSharedControlRequestMock: vi.fn(),
   getRemoteRuntimeSharedControlDiagnosticsMock: vi.fn(),
+  retryRemoteRuntimeSharedControlConnectionsNowMock: vi.fn(),
   closeRemoteRuntimeRequestConnectionMock: vi.fn()
 }))
 
@@ -57,6 +59,7 @@ vi.mock('./runtime-environment-request-connections', () => ({
   sendRemoteRuntimeSharedControlRequest: sendRemoteRuntimeSharedControlRequestMock,
   subscribeRemoteRuntimeSharedControlRequest: subscribeRemoteRuntimeSharedControlRequestMock,
   getRemoteRuntimeSharedControlDiagnostics: getRemoteRuntimeSharedControlDiagnosticsMock,
+  retryRemoteRuntimeSharedControlConnectionsNow: retryRemoteRuntimeSharedControlConnectionsNowMock,
   closeRemoteRuntimeRequestConnection: closeRemoteRuntimeRequestConnectionMock
 }))
 
@@ -109,6 +112,7 @@ describe('registerRuntimeEnvironmentHandlers', () => {
     subscribeRemoteRuntimeSharedControlRequestMock.mockReset()
     getRemoteRuntimeSharedControlDiagnosticsMock.mockReset()
     getRemoteRuntimeSharedControlDiagnosticsMock.mockReturnValue(null)
+    retryRemoteRuntimeSharedControlConnectionsNowMock.mockReset()
     closeRemoteRuntimeRequestConnectionMock.mockReset()
   })
 
@@ -126,6 +130,7 @@ describe('registerRuntimeEnvironmentHandlers', () => {
       'runtimeEnvironments:remove',
       'runtimeEnvironments:disconnect',
       'runtimeEnvironments:getStatus',
+      'runtimeEnvironments:retryConnectionsNow',
       'runtimeEnvironments:call',
       'runtimeEnvironments:subscribe',
       'runtimeEnvironments:unsubscribe'
@@ -145,11 +150,21 @@ describe('registerRuntimeEnvironmentHandlers', () => {
       'runtimeEnvironments:remove',
       'runtimeEnvironments:disconnect',
       'runtimeEnvironments:getStatus',
+      'runtimeEnvironments:retryConnectionsNow',
       'runtimeEnvironments:call',
       'runtimeEnvironments:subscribe',
       'runtimeEnvironments:unsubscribe'
     ])
     expect(removeAllListenersMock).toHaveBeenCalledWith('runtimeEnvironments:subscriptionBinary')
+  })
+
+  it('advances shared-control reconnect backoff on demand', () => {
+    registerRuntimeEnvironmentHandlers(store as never)
+    const retry = handler<undefined, void>('runtimeEnvironments:retryConnectionsNow')
+
+    retry(null, undefined)
+
+    expect(retryRemoteRuntimeSharedControlConnectionsNowMock).toHaveBeenCalledOnce()
   })
 
   it('stores, resolves, lists, and removes environments under Electron userData', async () => {
