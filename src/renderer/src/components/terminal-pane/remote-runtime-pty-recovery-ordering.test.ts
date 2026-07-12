@@ -357,7 +357,23 @@ describe('remote runtime PTY cross-lane recovery ordering', () => {
 
       expect(harness.transport.getPtyId()).toBeNull()
       expect(harness.onPtyExit).toHaveBeenCalledWith('remote:env-1@@terminal-1')
+      expect(harness.onPtyExit).toHaveBeenCalledOnce()
       expect(harness.onError).not.toHaveBeenCalled()
+
+      const { retryRemoteRuntimeTerminalRecoveriesNow } =
+        await import('../../runtime/remote-runtime-terminal-recovery-coordinator')
+      retryRemoteRuntimeTerminalRecoveriesNow()
+      await settle()
+      expect(
+        harness.records.filter((record) => record.method === 'terminal.multiplex')
+      ).toHaveLength(2)
+      expect(harness.onPtyExit).toHaveBeenCalledOnce()
+      expect(harness.runtimeCall).not.toHaveBeenCalledWith(
+        expect.objectContaining({ method: 'terminal.create' })
+      )
+      expect(harness.runtimeCall).not.toHaveBeenCalledWith(
+        expect.objectContaining({ method: 'terminal.close' })
+      )
     }
   )
 

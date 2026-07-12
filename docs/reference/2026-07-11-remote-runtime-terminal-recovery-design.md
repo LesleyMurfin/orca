@@ -292,6 +292,11 @@ The implementation may split an already-long module into concrete domain-named f
     - Parameterize `stream error -> control timeout -> resume`, `control timeout -> stream close -> resume`, and `resume -> late old response -> new response`.
     - Assert each outage creates one active generation, no concurrent retry after resume, and no stale completion wins.
 
+11. **Direct-handle terminal outcomes**
+    - Parameterize `terminal_handle_stale`, `terminal_exited`, `terminal_gone`, and `no_connected_pty` and assert exactly-once retirement with no retry timer.
+    - Reject an unknown `runtime_error` exactly once as fatal and assert an explicit retry signal remains a no-op.
+    - Assert neither outcome issues `terminal.create` or `terminal.close`.
+
 ### Real macOS to Windows verifier
 
 Before PR submission, verify against a physical Windows Remote Orca host with a macOS desktop client. Run one round with the same fix commit on both machines, then one backward-compatibility round with the patched Mac client against the current stable Windows runtime:
