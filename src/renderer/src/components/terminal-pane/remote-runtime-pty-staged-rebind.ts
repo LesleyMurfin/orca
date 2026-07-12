@@ -3,6 +3,7 @@ import {
   type RemoteRuntimeMultiplexedTerminal,
   type RemoteRuntimeMultiplexedTerminalCallbacks
 } from '../../runtime/remote-runtime-terminal-multiplexer'
+import { createRemoteRuntimePtyStagedBindingState } from './remote-runtime-pty-staged-binding-state'
 import { parseExactRemoteRuntimeTerminalGoneCode } from './remote-runtime-terminal-gone-error'
 
 type StructuredRuntimeError = { code: string; message: string }
@@ -61,6 +62,7 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
     let settled = false
     let closed = false
     let snapshot: SnapshotEvent | null = null
+    const bindingState = createRemoteRuntimePtyStagedBindingState(args)
     const data: DataEvent[] = []
 
     const closeStream = (target = stream): void => {
@@ -93,6 +95,9 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
       })
 
     const finishCommit = async (target: RemoteRuntimeMultiplexedTerminal): Promise<void> => {
+      // The runtime publishes binding state before `subscribed`; apply only the
+      // latest values after activation so recovery cannot retain stale locks.
+      bindingState.flush(() => !settled && current(target))
       while (!settled && current(target)) {
         if (snapshot) {
           const event = snapshot
@@ -118,6 +123,7 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
       settled = true
       removeAbortListener()
       snapshot = null
+      bindingState.clear()
       data.length = 0
       // The authoritative replay stays input-fenced; only a still-current
       // binding may open input and notify the pane after replay completes.
@@ -233,12 +239,16 @@ export function stageRemoteRuntimePtyRebind(args: RemoteRuntimePtyStagedRebindAr
         }
       },
       onFitOverrideChanged: (event) => {
-        if (stream && committed && current(stream)) {
+        if (!committed && !settled) {
+          bindingState.stageFitOverride(event)
+        } else if (stream && current(stream)) {
           invokeSafely(() => args.onFitOverrideChanged(event))
         }
       },
       onDriverChanged: (driver) => {
-        if (stream && committed && current(stream)) {
+        if (!committed && !settled) {
+          bindingState.stageDriver(driver)
+        } else if (stream && current(stream)) {
           invokeSafely(() => args.onDriverChanged(driver))
         }
       },

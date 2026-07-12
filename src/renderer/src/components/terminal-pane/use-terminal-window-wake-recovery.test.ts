@@ -126,9 +126,12 @@ describe('useTerminalWindowWakeRecovery', () => {
     expect(unsubscribeSystemResumed).toHaveBeenCalledTimes(1)
   })
 
-  it('does not subscribe while the terminal surface is hidden', () => {
+  it('keeps transport recovery subscribed while the terminal surface is hidden', () => {
     renderWakeRecoveryHook(false)
 
-    expect(onSystemResumed).not.toHaveBeenCalled()
+    expect(onSystemResumed).toHaveBeenCalledOnce()
+    systemResumedCallback?.()
+    expect(retryRemoteRuntimeTerminalRecoveriesNowMock).toHaveBeenCalledOnce()
+    expect(recoverVisibleTerminalWindowWakeMock).not.toHaveBeenCalled()
   })
 })
