@@ -3998,6 +3998,8 @@ const api = {
       timeoutMs?: number
     }): Promise<RuntimeRpcResponse<RuntimeStatus>> =>
       ipcRenderer.invoke('runtimeEnvironments:getStatus', args),
+    retryConnectionsNow: (): Promise<void> =>
+      ipcRenderer.invoke('runtimeEnvironments:retryConnectionsNow'),
     call: (args: {
       selector: string
       method: string
