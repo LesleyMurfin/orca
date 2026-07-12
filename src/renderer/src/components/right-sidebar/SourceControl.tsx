@@ -5198,6 +5198,28 @@ function SourceControlInner(): React.JSX.Element {
           upstreamStatus={remoteStatus}
         />
 
+        {/* Surface which worktree the Git pane operates on: name · branch ·
+            absolute path. All values are already in scope; the path is the
+            long field so it truncates while name/branch stay pinned. */}
+        {worktreePath && (
+          <div
+            className="flex min-w-0 items-center gap-1.5 border-b border-border px-3 py-1.5 text-xs text-muted-foreground"
+            title={`${activeWorktree.displayName}${branchName ? ` · ${branchName}` : ''} · ${worktreePath}`}
+          >
+            <span className="shrink-0 truncate font-medium text-foreground">
+              {activeWorktree.displayName}
+            </span>
+            {branchName && (
+              <>
+                <span className="shrink-0 opacity-50">·</span>
+                <span className="shrink-0 truncate">{branchName}</span>
+              </>
+            )}
+            <span className="shrink-0 opacity-50">·</span>
+            <span className="truncate">{worktreePath}</span>
+          </div>
+        )}
+
         {detachedHeadDisplay && (
           <div className="border-b border-border px-3 py-2">
             <DetachedHeadBadge display={detachedHeadDisplay} side="bottom" />

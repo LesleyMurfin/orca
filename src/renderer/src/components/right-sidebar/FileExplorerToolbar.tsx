@@ -46,14 +46,23 @@ export function FileExplorerToolbar({
   showDotfiles,
   onToggleDotfiles
 }: FileExplorerToolbarProps): React.JSX.Element {
+  // Relax the fixed h-8 to min-h-8 so the worktree path can sit under the
+  // repo name without clipping; the path line is omitted when unknown.
   return (
-    <div className="flex h-8 min-h-8 items-center gap-2 border-b border-border px-2">
-      <span
-        className="min-w-0 flex-1 truncate text-xs font-medium text-foreground"
-        title={repoName}
-      >
-        {repoName}
-      </span>
+    <div className="flex min-h-8 items-center gap-2 border-b border-border px-2 py-1">
+      <div className="flex min-w-0 flex-1 flex-col justify-center">
+        <span className="truncate text-xs font-medium text-foreground" title={repoName}>
+          {repoName}
+        </span>
+        {worktreePath && (
+          <span
+            className="truncate text-[10px] leading-tight text-muted-foreground"
+            title={worktreePath}
+          >
+            {worktreePath}
+          </span>
+        )}
+      </div>
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
