@@ -3,6 +3,7 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -237,6 +238,40 @@ describe('rebuild-native-deps @parcel/watcher binding replacement (stablyai/orca
           'utf8'
         )
       ).toBe('FAKE_REBUILT_BINARY_MARKER')
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true })
+    }
+  })
+
+  it('replaces the hard-linked prebuild without rewriting the shared pnpm store blob', () => {
+    const projectDir = mkTempProject()
+
+    try {
+      writeFakeUsableElectronPackage(projectDir)
+      writeFakeElectronRebuild(projectDir, { createParcelWatcherBuildOutput: true })
+      writeFakeParcelWatcherSource(projectDir)
+      writeFakeParcelWatcherSubpackage(projectDir, '@parcel/watcher-linux-x64-glibc')
+
+      // Why: emulate pnpm's Linux/Windows layout where the subpackage's
+      // watcher.node is hard-linked from the global content-addressed store. A
+      // naive in-place copy would rewrite that shared inode and corrupt the
+      // cached prebuild for every other project; point a second "store" path at
+      // the same inode and assert the rebuild leaves it byte-for-byte intact.
+      const subpackageBinding = join(
+        projectDir,
+        'node_modules',
+        '@parcel',
+        'watcher-linux-x64-glibc',
+        'watcher.node'
+      )
+      const storeBlob = join(projectDir, 'fake-pnpm-store-watcher.node')
+      linkSync(subpackageBinding, storeBlob)
+
+      const result = runRebuildScript(projectDir, {}, ['--platform=linux', '--arch=x64', '--force'])
+
+      expect(result.status, result.stderr).toBe(0)
+      expect(readFileSync(subpackageBinding, 'utf8')).toBe('FAKE_REBUILT_BINARY_MARKER')
+      expect(readFileSync(storeBlob, 'utf8')).toBe('stale prebuild\n')
     } finally {
       rmSync(projectDir, { recursive: true, force: true })
     }

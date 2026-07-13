@@ -248,32 +248,70 @@ function verifyPackagedMainRuntimeDeps(resourcesDir, asar = require('@electron/a
 // confirmed load failure (stablyai/orca#8540), and known-good Linux N-API
 // prebuilds (e.g. sherpa-onnx, lightningcss) do consistently export it. A
 // global cross-platform gate would false-fail correct darwin/win32 builds.
-function verifyPackagedParcelWatcherBinding(resourcesDir, electronPlatformName) {
+//
+// Why only the build-target subpackage: config/scripts/rebuild-native-deps.mjs
+// rebuilds and copies over exactly one subpackage per build — the one matching
+// this build's arch and the build host's libc (watcher-linux-<arch>-<libc>).
+// The packaged app still ships the sibling linux prebuilds we do NOT rebuild
+// (the other libc, and cross-arch slices), and those legitimately keep the
+// upstream constructor-based binary that lacks this export. Gating on every
+// watcher-linux* dir would therefore false-fail every real Linux build, so we
+// verify only the subpackage the rebuild guarantees — the one an equal-libc
+// host actually loads at runtime.
+function verifyPackagedParcelWatcherBinding(resourcesDir, electronPlatformName, electronArch) {
   if (electronPlatformName !== 'linux') {
     return
   }
 
-  const parcelDir = join(resourcesDir, 'node_modules', '@parcel')
-  if (!existsSync(parcelDir)) {
+  const subpackageName = rebuiltParcelWatcherLinuxSubpackage(electronArch)
+  if (!subpackageName) {
     return
   }
 
-  for (const entry of readdirSync(parcelDir, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !entry.name.startsWith('watcher-linux')) {
-      continue
-    }
-    const bindingPath = join(parcelDir, entry.name, 'watcher.node')
-    if (!existsSync(bindingPath)) {
-      continue
-    }
-    if (!readFileSync(bindingPath).includes('napi_register_module_v1')) {
-      throw new Error(
-        `Packaged @parcel/${entry.name}/watcher.node is missing the napi_register_module_v1 ` +
-          'export and will fail to load in the Electron AppImage runtime. Rebuild @parcel/watcher ' +
-          'from source against this Electron version before packaging (see ' +
-          'config/scripts/rebuild-native-deps.mjs).'
-      )
-    }
+  const bindingPath = join(resourcesDir, 'node_modules', '@parcel', subpackageName, 'watcher.node')
+  if (!existsSync(bindingPath)) {
+    return
+  }
+
+  if (!readFileSync(bindingPath).includes('napi_register_module_v1')) {
+    throw new Error(
+      `Packaged @parcel/${subpackageName}/watcher.node is missing the napi_register_module_v1 ` +
+        'export and will fail to load in the Electron AppImage runtime. Rebuild @parcel/watcher ' +
+        'from source against this Electron version before packaging (see ' +
+        'config/scripts/rebuild-native-deps.mjs).'
+    )
+  }
+}
+
+// Why: name the exact subpackage rebuild-native-deps.mjs rebuilds — the build
+// arch (electron-builder passes the Arch enum: x64=1, arm64=3) plus the build
+// host's libc, detected the same way the rebuild does so the two never disagree.
+function rebuiltParcelWatcherLinuxSubpackage(electronArch) {
+  const arch =
+    electronArch === 'arm64' || electronArch === 3
+      ? 'arm64'
+      : electronArch === 'x64' || electronArch === 1
+        ? 'x64'
+        : null
+  if (!arch) {
+    return null
+  }
+  return `watcher-linux-${arch}-${detectBuildHostLinuxLibc()}`
+}
+
+function detectBuildHostLinuxLibc() {
+  try {
+    // Why: resolve detect-libc from @parcel/watcher's own closure (mirrors
+    // rebuild-native-deps.mjs) rather than assuming a hoisted copy at the root.
+    const requireFromParcelWatcher = createRequire(
+      join(projectDir, 'node_modules', '@parcel', 'watcher', 'package.json')
+    )
+    const { familySync, MUSL } = requireFromParcelWatcher('detect-libc')
+    return familySync() === MUSL ? 'musl' : 'glibc'
+  } catch {
+    // Why: detect-libc unavailable (or a non-Linux build host cross-building
+    // Linux) — Orca's Linux target is glibc, so default to it.
+    return 'glibc'
   }
 }
 

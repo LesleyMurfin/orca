@@ -135,7 +135,7 @@ module.exports = {
     }
     prunePackagedRuntimeNodeModules(resourcesDir, context.electronPlatformName, context.arch)
     verifyPackagedMainRuntimeDeps(resourcesDir)
-    verifyPackagedParcelWatcherBinding(resourcesDir, context.electronPlatformName)
+    verifyPackagedParcelWatcherBinding(resourcesDir, context.electronPlatformName, context.arch)
     // Why: boot the packaged daemon-entry under plain Node, but only for the
     // slice matching the packaging host's arch — daemon-entry.js is JS, yet it
     // require()s the native (N-API) node-pty for the TARGET arch, which the host

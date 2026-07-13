@@ -191,7 +191,14 @@ function copyRebuiltParcelWatcherBinding(platform, arch) {
     return
   }
 
-  copyFileSync(builtBindingPath, resolve(subpackageDir, 'watcher.node'))
+  // Why: the subpackage's watcher.node is hard-linked from pnpm's global
+  // content-addressed store on Linux/Windows (macOS reflinks it copy-on-write).
+  // Copying in place would rewrite that shared inode and corrupt the cached
+  // prebuild for every other project that links the same package version, so
+  // unlink first to break the link and land a fresh, isolated file.
+  const destBindingPath = resolve(subpackageDir, 'watcher.node')
+  rmSync(destBindingPath, { force: true })
+  copyFileSync(builtBindingPath, destBindingPath)
   console.log(
     `[rebuild] Replaced ${subpackageName}/watcher.node with the Electron-targeted rebuild.`
   )

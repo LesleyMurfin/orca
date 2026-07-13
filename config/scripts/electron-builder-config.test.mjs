@@ -295,14 +295,37 @@ describe('electron-builder config', () => {
     }
   })
 
-  it('throws when a packaged Linux @parcel/watcher binding lacks napi_register_module_v1 (stablyai/orca#8540)', async () => {
+  // Why: create both libc variants of the target arch so these gate tests are
+  // deterministic no matter the test host's own libc (glibc CI or a musl runner);
+  // the gate resolves the build host's libc, and only that variant drives the
+  // result — the other is ignored.
+  async function writeParcelWatcherBinding(resourcesDir, subpackageName, { exportsSymbol }) {
+    const bindingDir = join(resourcesDir, 'node_modules', '@parcel', subpackageName)
+    await mkdir(bindingDir, { recursive: true })
+    await writeFile(
+      join(bindingDir, 'watcher.node'),
+      exportsSymbol
+        ? Buffer.concat([
+            Buffer.from('\0\0\0'),
+            Buffer.from('napi_register_module_v1'),
+            Buffer.from('\0\0\0')
+          ])
+        : 'not a real napi module'
+    )
+  }
+
+  it('throws when the build-target Linux @parcel/watcher binding lacks napi_register_module_v1 (stablyai/orca#8540)', async () => {
     const resourcesDir = await mkdtemp(join(tmpdir(), 'orca-parcel-watcher-verify-'))
     try {
-      const bindingDir = join(resourcesDir, 'node_modules', '@parcel', 'watcher-linux-x64-glibc')
-      await mkdir(bindingDir, { recursive: true })
-      await writeFile(join(bindingDir, 'watcher.node'), 'not a real napi module')
+      await writeParcelWatcherBinding(resourcesDir, 'watcher-linux-x64-glibc', {
+        exportsSymbol: false
+      })
+      await writeParcelWatcherBinding(resourcesDir, 'watcher-linux-x64-musl', {
+        exportsSymbol: false
+      })
 
-      expect(() => verifyPackagedParcelWatcherBinding(resourcesDir, 'linux')).toThrow(
+      // Arch enum 1 = x64.
+      expect(() => verifyPackagedParcelWatcherBinding(resourcesDir, 'linux', 1)).toThrow(
         /napi_register_module_v1/
       )
     } finally {
@@ -310,21 +333,67 @@ describe('electron-builder config', () => {
     }
   })
 
-  it('passes when a packaged Linux @parcel/watcher binding exports napi_register_module_v1', async () => {
+  it('passes when the build-target Linux @parcel/watcher binding exports napi_register_module_v1', async () => {
     const resourcesDir = await mkdtemp(join(tmpdir(), 'orca-parcel-watcher-verify-ok-'))
     try {
-      const bindingDir = join(resourcesDir, 'node_modules', '@parcel', 'watcher-linux-x64-glibc')
-      await mkdir(bindingDir, { recursive: true })
-      await writeFile(
-        join(bindingDir, 'watcher.node'),
-        Buffer.concat([
-          Buffer.from('\0\0\0'),
-          Buffer.from('napi_register_module_v1'),
-          Buffer.from('\0\0\0')
-        ])
-      )
+      await writeParcelWatcherBinding(resourcesDir, 'watcher-linux-x64-glibc', {
+        exportsSymbol: true
+      })
+      await writeParcelWatcherBinding(resourcesDir, 'watcher-linux-x64-musl', {
+        exportsSymbol: true
+      })
 
-      expect(() => verifyPackagedParcelWatcherBinding(resourcesDir, 'linux')).not.toThrow()
+      expect(() => verifyPackagedParcelWatcherBinding(resourcesDir, 'linux', 1)).not.toThrow()
+    } finally {
+      await rm(resourcesDir, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores sibling linux subpackages the rebuild never replaces (only the build-target arch+libc is gated)', async () => {
+    const resourcesDir = await mkdtemp(join(tmpdir(), 'orca-parcel-watcher-verify-siblings-'))
+    try {
+      // Why: an x64 build rebuilds only its own arch+libc binary. The other libc
+      // and the cross-arch arm64 slices still ship the upstream constructor-based
+      // prebuild that lacks the export; gating on them would false-fail every real
+      // Linux AppImage build. This is the regression the original #8540 fix carried.
+      await writeParcelWatcherBinding(resourcesDir, 'watcher-linux-x64-glibc', {
+        exportsSymbol: true
+      })
+      await writeParcelWatcherBinding(resourcesDir, 'watcher-linux-x64-musl', {
+        exportsSymbol: true
+      })
+      await writeParcelWatcherBinding(resourcesDir, 'watcher-linux-arm64-glibc', {
+        exportsSymbol: false
+      })
+      await writeParcelWatcherBinding(resourcesDir, 'watcher-linux-arm64-musl', {
+        exportsSymbol: false
+      })
+
+      expect(() => verifyPackagedParcelWatcherBinding(resourcesDir, 'linux', 1)).not.toThrow()
+    } finally {
+      await rm(resourcesDir, { recursive: true, force: true })
+    }
+  })
+
+  it('gates the binding for the arch of this build slice, not another arch', async () => {
+    const resourcesDir = await mkdtemp(join(tmpdir(), 'orca-parcel-watcher-verify-arch-'))
+    try {
+      // Why: an arm64 slice must verify the arm64 binary even if a healthy x64
+      // binary is also present in the shared node_modules.
+      await writeParcelWatcherBinding(resourcesDir, 'watcher-linux-arm64-glibc', {
+        exportsSymbol: false
+      })
+      await writeParcelWatcherBinding(resourcesDir, 'watcher-linux-arm64-musl', {
+        exportsSymbol: false
+      })
+      await writeParcelWatcherBinding(resourcesDir, 'watcher-linux-x64-glibc', {
+        exportsSymbol: true
+      })
+
+      // Arch enum 3 = arm64.
+      expect(() => verifyPackagedParcelWatcherBinding(resourcesDir, 'linux', 3)).toThrow(
+        /watcher-linux-arm64/
+      )
     } finally {
       await rm(resourcesDir, { recursive: true, force: true })
     }
@@ -333,22 +402,22 @@ describe('electron-builder config', () => {
   it('skips the napi_register_module_v1 gate on non-Linux platforms', async () => {
     const resourcesDir = await mkdtemp(join(tmpdir(), 'orca-parcel-watcher-verify-darwin-'))
     try {
-      const bindingDir = join(resourcesDir, 'node_modules', '@parcel', 'watcher-darwin-arm64')
-      await mkdir(bindingDir, { recursive: true })
       // Why: real darwin N-API prebuilds (e.g. @napi-rs/canvas) can legitimately
       // lack this export; only Linux is a confirmed failure mode.
-      await writeFile(join(bindingDir, 'watcher.node'), 'not a real napi module')
+      await writeParcelWatcherBinding(resourcesDir, 'watcher-darwin-arm64', {
+        exportsSymbol: false
+      })
 
-      expect(() => verifyPackagedParcelWatcherBinding(resourcesDir, 'darwin')).not.toThrow()
+      expect(() => verifyPackagedParcelWatcherBinding(resourcesDir, 'darwin', 3)).not.toThrow()
     } finally {
       await rm(resourcesDir, { recursive: true, force: true })
     }
   })
 
-  it('is a no-op when no @parcel directory was packaged', async () => {
+  it('is a no-op when the build-target subpackage was not packaged', async () => {
     const resourcesDir = await mkdtemp(join(tmpdir(), 'orca-parcel-watcher-verify-absent-'))
     try {
-      expect(() => verifyPackagedParcelWatcherBinding(resourcesDir, 'linux')).not.toThrow()
+      expect(() => verifyPackagedParcelWatcherBinding(resourcesDir, 'linux', 1)).not.toThrow()
     } finally {
       await rm(resourcesDir, { recursive: true, force: true })
     }
