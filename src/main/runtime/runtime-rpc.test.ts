@@ -2,7 +2,7 @@
 import { existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createConnection, type Socket } from 'node:net'
+import { createConnection, createServer, type Socket } from 'node:net'
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
@@ -24,6 +24,7 @@ import {
 } from '../../shared/terminal-stream-protocol'
 import { decrypt, deriveSharedKey, encrypt, generateKeyPair } from './rpc/e2ee-crypto'
 import { DeviceRegistry } from './device-registry'
+import { writeWsFallbackPort } from './rpc/ws-fallback-port-store'
 
 vi.mock('../git/worktree', () => ({
   listWorktrees: vi.fn().mockResolvedValue([
@@ -365,6 +366,75 @@ describe('OrcaRuntimeRpcServer', () => {
     }
 
     await server.stop()
+  })
+
+  // Why: an explicitly pinned `orca serve --port <P>` must win over a persisted
+  // mobile-ws fallback port (STA-1511) — otherwise the fallback is bound FIRST
+  // and silently overrides the port the operator asked for (#8535).
+  describe('explicit --port vs persisted mobile-ws fallback (#8535)', () => {
+    async function reserveFreePort(): Promise<number> {
+      return await new Promise<number>((resolve, reject) => {
+        const probe = createServer()
+        probe.once('error', reject)
+        // Why: bind 0.0.0.0 to match the WebSocket transport's bind host, so a
+        // port free here is actually free when the transport claims it.
+        probe.listen(0, '0.0.0.0', () => {
+          const address = probe.address()
+          const port = typeof address === 'object' && address ? address.port : 0
+          probe.close(() => resolve(port))
+        })
+      })
+    }
+
+    it('binds the explicitly pinned port instead of a persisted fallback', async () => {
+      const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-rpc-'))
+      const pinnedPort = await reserveFreePort()
+      const fallbackPort = await reserveFreePort()
+      expect(pinnedPort).not.toBe(fallbackPort)
+      // A prior session persisted a fallback port; without the fix the transport
+      // binds it BEFORE the explicitly pinned port and strands the pin.
+      writeWsFallbackPort(userDataPath, fallbackPort)
+
+      const runtime = new OrcaRuntimeService()
+      const server = new OrcaRuntimeRpcServer({
+        runtime,
+        userDataPath,
+        enableWebSocket: true,
+        wsPort: pinnedPort,
+        wsPortExplicit: true
+      })
+
+      try {
+        await server.start()
+        expect(server['wsTransport']?.resolvedPort).toBe(pinnedPort)
+      } finally {
+        await server.stop()
+      }
+    })
+
+    it('still honors a persisted fallback for a non-explicit (default) port', async () => {
+      const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-rpc-'))
+      const preferredPort = await reserveFreePort()
+      const fallbackPort = await reserveFreePort()
+      expect(preferredPort).not.toBe(fallbackPort)
+      writeWsFallbackPort(userDataPath, fallbackPort)
+
+      const runtime = new OrcaRuntimeService()
+      const server = new OrcaRuntimeRpcServer({
+        runtime,
+        userDataPath,
+        enableWebSocket: true,
+        wsPort: preferredPort
+        // wsPortExplicit omitted → false: the STA-1511 fallback still applies.
+      })
+
+      try {
+        await server.start()
+        expect(server['wsTransport']?.resolvedPort).toBe(fallbackPort)
+      } finally {
+        await server.stop()
+      }
+    })
   })
 
   it('includes a web client URL when the web bundle is served by the runtime', async () => {

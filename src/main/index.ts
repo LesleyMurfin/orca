@@ -2091,6 +2091,10 @@ app.whenReady().then(async () => {
     ...(isE2E ? { wsPort: 0 } : {}),
     ...(devWsPort !== undefined ? { wsPort: devWsPort } : {}),
     ...(serveOptions?.wsPort !== undefined ? { wsPort: serveOptions.wsPort } : {}),
+    // Why: only an explicit `orca serve --port <P>` may override a persisted
+    // mobile-ws fallback port (#8535). isE2E/devWsPort are internal, not user
+    // pins, so they keep the default STA-1511 fallback behavior.
+    wsPortExplicit: serveOptions?.wsPort !== undefined,
     webClientRoot: getBundledWebClientRoot()
   })
   registerMobileHandlers(runtimeRpc)

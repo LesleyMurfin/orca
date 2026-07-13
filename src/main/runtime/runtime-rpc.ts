@@ -36,6 +36,11 @@ type OrcaRuntimeRpcServerOptions = {
   platform?: NodeJS.Platform
   enableWebSocket?: boolean
   wsPort?: number
+  // Why: true only when the port came from an explicit `orca serve --port <P>`.
+  // An explicit pin must NOT be pre-empted by a persisted mobile-ws fallback
+  // port (#8535), so the raw explicit signal is threaded here to gate that.
+  // Defaults to false, so the internal default port keeps STA-1511 behavior.
+  wsPortExplicit?: boolean
   webClientRoot?: string
   // Why: test-only overrides for the two time-bound constants below.
   // Production callers must not pass these — defaults are set by the design
@@ -400,6 +405,7 @@ export class OrcaRuntimeRpcServer {
   private readonly platform: NodeJS.Platform
   private readonly enableWebSocket: boolean
   private readonly wsPort: number
+  private readonly wsPortExplicit: boolean
   private readonly webClientRoot: string | undefined
   private readonly authToken = randomBytes(24).toString('hex')
   private readonly keepaliveIntervalMs: number
@@ -437,6 +443,7 @@ export class OrcaRuntimeRpcServer {
     platform = process.platform,
     enableWebSocket = false,
     wsPort = DEFAULT_WS_PORT,
+    wsPortExplicit = false,
     webClientRoot,
     keepaliveIntervalMs = KEEPALIVE_INTERVAL_MS,
     longPollCap = LONG_POLL_CAP
@@ -448,6 +455,7 @@ export class OrcaRuntimeRpcServer {
     this.platform = platform
     this.enableWebSocket = enableWebSocket
     this.wsPort = wsPort
+    this.wsPortExplicit = wsPortExplicit
     this.webClientRoot = webClientRoot
     this.keepaliveIntervalMs = keepaliveIntervalMs
     this.longPollCap = longPollCap
@@ -711,8 +719,11 @@ export class OrcaRuntimeRpcServer {
           // devices' stored endpoints stay valid (STA-1511) — the transport
           // binds a persisted fallback before the preferred port. wsPort 0
           // means the caller explicitly wants a random port (E2E) — don't
-          // pin it.
-          ...(this.wsPort !== 0 ? { fallbackPort: readWsFallbackPort(this.userDataPath) } : {})
+          // pin it. An explicit `--port` pin (#8535) likewise skips the
+          // fallback so the pinned port is never pre-empted by it.
+          ...(this.wsPort !== 0 && !this.wsPortExplicit
+            ? { fallbackPort: readWsFallbackPort(this.userDataPath) }
+            : {})
         })
         this.wsTransport = wsTransport
 
@@ -795,7 +806,10 @@ export class OrcaRuntimeRpcServer {
         })
 
         await wsTransport.start()
-        if (this.wsPort !== 0 && wsTransport.resolvedPort !== this.wsPort) {
+        // Why: only persist a fallback when the runtime picked a port itself.
+        // An explicit `--port` pin (#8535) must never write a fallback it will
+        // then ignore on the next launch.
+        if (this.wsPort !== 0 && !this.wsPortExplicit && wsTransport.resolvedPort !== this.wsPort) {
           writeWsFallbackPort(this.userDataPath, wsTransport.resolvedPort)
         }
         activeTransports.push(wsTransport)
