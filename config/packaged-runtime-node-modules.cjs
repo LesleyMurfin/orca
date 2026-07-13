@@ -294,6 +294,9 @@ function rebuiltParcelWatcherLinuxSubpackage(electronArch) {
         ? 'x64'
         : null
   if (!arch) {
+    // Why: x64 and arm64 are the only Linux slices Orca ships, so any other
+    // arch has no rebuilt binary to gate. If a linux armv7l/ia32 target is ever
+    // added, extend this map so the gate does not silently go dark for it.
     return null
   }
   return `watcher-linux-${arch}-${detectBuildHostLinuxLibc()}`
