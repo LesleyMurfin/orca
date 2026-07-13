@@ -239,6 +239,44 @@ function verifyPackagedMainRuntimeDeps(resourcesDir, asar = require('@electron/a
   }
 }
 
+// Why: only enforced on Linux. Empirically, legitimate N-API prebuilds on
+// darwin commonly omit the `napi_register_module_v1` export entirely (e.g.
+// @napi-rs/canvas's darwin-x64 binary) without any known runtime failure —
+// Electron's module loader on macOS/Windows tolerates the older
+// constructor-based N-API registration path. Linux (specifically inside an
+// AppImage) does not: a missing `napi_register_module_v1` export there is a
+// confirmed load failure (stablyai/orca#8540), and known-good Linux N-API
+// prebuilds (e.g. sherpa-onnx, lightningcss) do consistently export it. A
+// global cross-platform gate would false-fail correct darwin/win32 builds.
+function verifyPackagedParcelWatcherBinding(resourcesDir, electronPlatformName) {
+  if (electronPlatformName !== 'linux') {
+    return
+  }
+
+  const parcelDir = join(resourcesDir, 'node_modules', '@parcel')
+  if (!existsSync(parcelDir)) {
+    return
+  }
+
+  for (const entry of readdirSync(parcelDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith('watcher-linux')) {
+      continue
+    }
+    const bindingPath = join(parcelDir, entry.name, 'watcher.node')
+    if (!existsSync(bindingPath)) {
+      continue
+    }
+    if (!readFileSync(bindingPath).includes('napi_register_module_v1')) {
+      throw new Error(
+        `Packaged @parcel/${entry.name}/watcher.node is missing the napi_register_module_v1 ` +
+          'export and will fail to load in the Electron AppImage runtime. Rebuild @parcel/watcher ' +
+          'from source against this Electron version before packaging (see ' +
+          'config/scripts/rebuild-native-deps.mjs).'
+      )
+    }
+  }
+}
+
 function normalizeNodePtyWindowsArch(electronArch) {
   if (electronArch === 'x64' || electronArch === 1) {
     return 'x64'
@@ -419,5 +457,6 @@ module.exports = {
   prunePackagedSherpaOnnx,
   prunePackagedRuntimeTypeDeclarations,
   prunePackagedZodSources,
-  verifyPackagedMainRuntimeDeps
+  verifyPackagedMainRuntimeDeps,
+  verifyPackagedParcelWatcherBinding
 }

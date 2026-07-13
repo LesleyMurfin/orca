@@ -20,7 +20,16 @@
 
 import { rebuild } from '@electron/rebuild'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, globSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  globSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
+import { createRequire } from 'node:module'
 import { platform as osPlatform } from 'node:os'
 import { resolve } from 'node:path'
 
@@ -49,7 +58,16 @@ if (ignoreModules.length > 0) {
 // modules inside pnpm's .pnpm/ store. Passing an explicit list of modules to
 // rebuild via `onlyModules` ensures they're recompiled against Electron's Node
 // ABI regardless of the package manager's store layout.
-const NATIVE_MODULES = ['node-pty', 'cpu-features']
+//
+// Why @parcel/watcher is included: the platform-specific optionalDependency
+// packages (e.g. @parcel/watcher-linux-x64-glibc) ship prebuilt .node binaries
+// from upstream that can lack the modern `napi_register_module_v1` export
+// (relying instead on constructor-based N-API registration). That prebuild
+// loads fine under plain Node but fails silently or crashes under Electron's
+// context-aware module loading in the packaged Linux AppImage (stablyai/orca#8540).
+// Rebuilding from @parcel/watcher's own source against Electron's headers
+// produces a binary with the correct entry point.
+const NATIVE_MODULES = ['node-pty', 'cpu-features', '@parcel/watcher']
 const onlyModules = NATIVE_MODULES.filter((m) => !ignoreModules.includes(m))
 const forceRebuild =
   process.env.ORCA_FORCE_NATIVE_REBUILD === '1' ||
@@ -124,6 +142,9 @@ try {
     // Node before postinstall runs this script.
     force: true
   })
+  if (onlyModules.includes('@parcel/watcher')) {
+    copyRebuiltParcelWatcherBinding(rebuildPlatform, rebuildArch)
+  }
 } catch (/** @type {any} */ err) {
   console.error('[rebuild] Native module rebuild failed:', err?.message ?? err)
   if (isWindowsNativeLockError(err)) {
@@ -141,6 +162,54 @@ try {
     }
   }
   process.exit(1)
+}
+
+// Why: @parcel/watcher's index.js resolves its native binding by requiring
+// the platform-specific optionalDependency package (e.g.
+// @parcel/watcher-linux-x64-glibc) FIRST, only falling back to
+// ./build/Release/watcher.node if that require() throws MODULE_NOT_FOUND.
+// Since the platform package is present (just built with a broken registration
+// entry point upstream), that fallback never triggers. Overwrite the platform
+// package's binary in place with our Electron-targeted rebuild so the existing
+// resolution order picks it up unmodified.
+function copyRebuiltParcelWatcherBinding(platform, arch) {
+  const builtBindingPath = resolve(
+    projectDir,
+    'node_modules/@parcel/watcher/build/Release/watcher.node'
+  )
+  if (!existsSync(builtBindingPath)) {
+    console.log('[rebuild] @parcel/watcher rebuild did not produce build/Release/watcher.node.')
+    return
+  }
+
+  const subpackageName = parcelWatcherSubpackageName(platform, arch)
+  const subpackageDir = resolve(projectDir, 'node_modules', ...subpackageName.split('/'))
+  if (!existsSync(subpackageDir)) {
+    console.log(
+      `[rebuild] Skipping @parcel/watcher binding copy; ${subpackageName} is not installed.`
+    )
+    return
+  }
+
+  copyFileSync(builtBindingPath, resolve(subpackageDir, 'watcher.node'))
+  console.log(
+    `[rebuild] Replaced ${subpackageName}/watcher.node with the Electron-targeted rebuild.`
+  )
+}
+
+function parcelWatcherSubpackageName(platform, arch) {
+  let name = `@parcel/watcher-${platform}-${arch}`
+  if (platform === 'linux') {
+    // Why: resolve detect-libc from @parcel/watcher's own dependency closure
+    // rather than assuming it is hoisted to the project root, since pnpm does
+    // not guarantee that for transitive dependencies.
+    const requireFromParcelWatcher = createRequire(
+      resolve(projectDir, 'node_modules/@parcel/watcher/package.json')
+    )
+    const { familySync, MUSL } = requireFromParcelWatcher('detect-libc')
+    name += familySync() === MUSL ? '-musl' : '-glibc'
+  }
+  return name
 }
 
 function ensureElectronPackageInstalled() {

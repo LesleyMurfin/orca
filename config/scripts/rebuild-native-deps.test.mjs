@@ -146,7 +146,7 @@ describe('rebuild-native-deps patched node-pty rebuild', () => {
         )
 
         const rebuildCall = JSON.parse(readFileSync(rebuildLogPath, 'utf8').trim())
-        expect(rebuildCall.onlyModules).toEqual(['node-pty'])
+        expect(rebuildCall.onlyModules).toEqual(['node-pty', '@parcel/watcher'])
         expect(rebuildCall.ignoreModules).toEqual(['cpu-features'])
         expect(rebuildCall.force).toBe(true)
       } finally {
@@ -167,6 +167,7 @@ describe('rebuild-native-deps patched node-pty rebuild', () => {
         writeFakeLoadableNodePty(projectDir, { nativeDir: '../build/Release/' })
         writeNodePtyPatchFile(projectDir)
         writePatchedNodePtyBuildArtifacts(projectDir)
+        writeFakeLoadableParcelWatcher(projectDir)
 
         const result = runRebuildScript(projectDir, {
           ORCA_REBUILD_TEST_LOG: rebuildLogPath
@@ -205,13 +206,66 @@ describe('rebuild-native-deps patched node-pty rebuild', () => {
         expect(result.stdout).toContain("expected build/Release so Orca's node-pty patch is active")
 
         const rebuildCall = JSON.parse(readFileSync(rebuildLogPath, 'utf8').trim())
-        expect(rebuildCall.onlyModules).toEqual(['node-pty'])
+        expect(rebuildCall.onlyModules).toEqual(['node-pty', '@parcel/watcher'])
         expect(rebuildCall.force).toBe(true)
       } finally {
         rmSync(projectDir, { recursive: true, force: true })
       }
     }
   )
+})
+
+describe('rebuild-native-deps @parcel/watcher binding replacement (stablyai/orca#8540)', () => {
+  it('copies the Electron-targeted rebuild over the matching Linux glibc subpackage', () => {
+    const projectDir = mkTempProject()
+
+    try {
+      writeFakeUsableElectronPackage(projectDir)
+      writeFakeElectronRebuild(projectDir, { createParcelWatcherBuildOutput: true })
+      writeFakeParcelWatcherSource(projectDir)
+      writeFakeParcelWatcherSubpackage(projectDir, '@parcel/watcher-linux-x64-glibc')
+
+      const result = runRebuildScript(projectDir, {}, ['--platform=linux', '--arch=x64', '--force'])
+
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout).toContain(
+        'Replaced @parcel/watcher-linux-x64-glibc/watcher.node with the Electron-targeted rebuild.'
+      )
+      expect(
+        readFileSync(
+          join(projectDir, 'node_modules', '@parcel', 'watcher-linux-x64-glibc', 'watcher.node'),
+          'utf8'
+        )
+      ).toBe('FAKE_REBUILT_BINARY_MARKER')
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true })
+    }
+  })
+
+  it('leaves the subpackage untouched when it is not installed for this build', () => {
+    const projectDir = mkTempProject()
+
+    try {
+      writeFakeUsableElectronPackage(projectDir)
+      writeFakeElectronRebuild(projectDir, { createParcelWatcherBuildOutput: true })
+      writeFakeParcelWatcherSource(projectDir)
+      // Why: darwin build targeting a linux CI box; the darwin subpackage is
+      // absent here on purpose.
+
+      const result = runRebuildScript(projectDir, {}, [
+        '--platform=linux',
+        '--arch=arm64',
+        '--force'
+      ])
+
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout).toContain(
+        'Skipping @parcel/watcher binding copy; @parcel/watcher-linux-arm64-glibc is not installed.'
+      )
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true })
+    }
+  })
 })
 
 function mkTempProject() {
@@ -225,7 +279,7 @@ function mkTempProject() {
   return projectDir
 }
 
-function runRebuildScript(projectDir, extraEnv = {}) {
+function runRebuildScript(projectDir, extraEnv = {}, extraArgs = []) {
   const env = {
     ...process.env,
     npm_config_platform: 'linux',
@@ -239,7 +293,7 @@ function runRebuildScript(projectDir, extraEnv = {}) {
       delete env[key]
     }
   }
-  return spawnSync(process.execPath, ['config/scripts/rebuild-native-deps.mjs'], {
+  return spawnSync(process.execPath, ['config/scripts/rebuild-native-deps.mjs', ...extraArgs], {
     cwd: projectDir,
     encoding: 'utf8',
     env: {
@@ -328,35 +382,50 @@ module.exports = async function extract(_zipPath, options) {
   chmodSync(join(extractDir, 'index.js'), 0o755)
 }
 
-function writeFakeElectronRebuild(projectDir, { logPathEnv = null } = {}) {
+function writeFakeElectronRebuild(
+  projectDir,
+  { logPathEnv = null, createParcelWatcherBuildOutput = false } = {}
+) {
   const rebuildDir = join(projectDir, 'node_modules', '@electron', 'rebuild')
   mkdirSync(rebuildDir, { recursive: true })
   writeFileSync(join(rebuildDir, 'package.json'), JSON.stringify({ type: 'module' }))
+  const parcelWatcherBuildOutputStatement = createParcelWatcherBuildOutput
+    ? `
+  if (options.onlyModules.includes('@parcel/watcher')) {
+    mkdirSync('node_modules/@parcel/watcher/build/Release', { recursive: true })
+    writeFileSync('node_modules/@parcel/watcher/build/Release/watcher.node', 'FAKE_REBUILT_BINARY_MARKER')
+  }
+`
+    : ''
   writeFileSync(
     join(rebuildDir, 'index.js'),
     logPathEnv
       ? `
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 
 export async function rebuild(options) {
   const logPath = process.env[${JSON.stringify(logPathEnv)}]
-  if (!logPath) {
-    return
+  if (logPath) {
+    appendFileSync(
+      logPath,
+      JSON.stringify({
+        arch: options.arch,
+        electronVersion: options.electronVersion,
+        force: options.force,
+        ignoreModules: options.ignoreModules,
+        onlyModules: options.onlyModules,
+        platform: options.platform
+      }) + '\\n'
+    )
   }
-  appendFileSync(
-    logPath,
-    JSON.stringify({
-      arch: options.arch,
-      electronVersion: options.electronVersion,
-      force: options.force,
-      ignoreModules: options.ignoreModules,
-      onlyModules: options.onlyModules,
-      platform: options.platform
-    }) + '\\n'
-  )
-}
+${parcelWatcherBuildOutputStatement}}
 `
-      : 'export async function rebuild() {}\n'
+      : `
+import { mkdirSync, writeFileSync } from 'node:fs'
+
+export async function rebuild(options) {
+${parcelWatcherBuildOutputStatement}}
+`
   )
 }
 
@@ -415,4 +484,47 @@ function writePatchedNodePtyBuildArtifacts(projectDir) {
   if (process.platform === 'darwin') {
     writeFileSync(join(buildDir, 'spawn-helper'), '')
   }
+}
+
+function writeFakeLoadableParcelWatcher(projectDir) {
+  const watcherDir = join(projectDir, 'node_modules', '@parcel', 'watcher')
+  mkdirSync(watcherDir, { recursive: true })
+  writeFileSync(
+    join(watcherDir, 'package.json'),
+    JSON.stringify({ name: '@parcel/watcher', version: '2.5.6', main: 'index.js' })
+  )
+  writeFileSync(join(watcherDir, 'index.js'), 'module.exports = {}\n')
+}
+
+function writeFakeParcelWatcherSource(projectDir) {
+  const watcherDir = join(projectDir, 'node_modules', '@parcel', 'watcher')
+  mkdirSync(watcherDir, { recursive: true })
+  writeFileSync(
+    join(watcherDir, 'package.json'),
+    JSON.stringify({
+      name: '@parcel/watcher',
+      version: '2.5.6',
+      dependencies: { 'detect-libc': '^2.0.3' }
+    })
+  )
+  const detectLibcDir = join(watcherDir, 'node_modules', 'detect-libc')
+  mkdirSync(detectLibcDir, { recursive: true })
+  writeFileSync(
+    join(detectLibcDir, 'package.json'),
+    JSON.stringify({ name: 'detect-libc', main: 'index.js' })
+  )
+  writeFileSync(
+    join(detectLibcDir, 'index.js'),
+    "exports.MUSL = 'musl'\nexports.familySync = function familySync() { return null }\n"
+  )
+}
+
+function writeFakeParcelWatcherSubpackage(
+  projectDir,
+  subpackageName,
+  contents = 'stale prebuild\n'
+) {
+  const dir = join(projectDir, 'node_modules', ...subpackageName.split('/'))
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'watcher.node'), contents)
 }

@@ -15,7 +15,8 @@ const {
   prunePackagedSherpaOnnx,
   prunePackagedRuntimeTypeDeclarations,
   prunePackagedZodSources,
-  verifyPackagedMainRuntimeDeps
+  verifyPackagedMainRuntimeDeps,
+  verifyPackagedParcelWatcherBinding
 } = require('../packaged-runtime-node-modules.cjs')
 
 describe('electron-builder config', () => {
@@ -289,6 +290,65 @@ describe('electron-builder config', () => {
         'watcher',
         'watcher-linux-x64-glibc'
       ])
+    } finally {
+      await rm(resourcesDir, { recursive: true, force: true })
+    }
+  })
+
+  it('throws when a packaged Linux @parcel/watcher binding lacks napi_register_module_v1 (stablyai/orca#8540)', async () => {
+    const resourcesDir = await mkdtemp(join(tmpdir(), 'orca-parcel-watcher-verify-'))
+    try {
+      const bindingDir = join(resourcesDir, 'node_modules', '@parcel', 'watcher-linux-x64-glibc')
+      await mkdir(bindingDir, { recursive: true })
+      await writeFile(join(bindingDir, 'watcher.node'), 'not a real napi module')
+
+      expect(() => verifyPackagedParcelWatcherBinding(resourcesDir, 'linux')).toThrow(
+        /napi_register_module_v1/
+      )
+    } finally {
+      await rm(resourcesDir, { recursive: true, force: true })
+    }
+  })
+
+  it('passes when a packaged Linux @parcel/watcher binding exports napi_register_module_v1', async () => {
+    const resourcesDir = await mkdtemp(join(tmpdir(), 'orca-parcel-watcher-verify-ok-'))
+    try {
+      const bindingDir = join(resourcesDir, 'node_modules', '@parcel', 'watcher-linux-x64-glibc')
+      await mkdir(bindingDir, { recursive: true })
+      await writeFile(
+        join(bindingDir, 'watcher.node'),
+        Buffer.concat([
+          Buffer.from('\0\0\0'),
+          Buffer.from('napi_register_module_v1'),
+          Buffer.from('\0\0\0')
+        ])
+      )
+
+      expect(() => verifyPackagedParcelWatcherBinding(resourcesDir, 'linux')).not.toThrow()
+    } finally {
+      await rm(resourcesDir, { recursive: true, force: true })
+    }
+  })
+
+  it('skips the napi_register_module_v1 gate on non-Linux platforms', async () => {
+    const resourcesDir = await mkdtemp(join(tmpdir(), 'orca-parcel-watcher-verify-darwin-'))
+    try {
+      const bindingDir = join(resourcesDir, 'node_modules', '@parcel', 'watcher-darwin-arm64')
+      await mkdir(bindingDir, { recursive: true })
+      // Why: real darwin N-API prebuilds (e.g. @napi-rs/canvas) can legitimately
+      // lack this export; only Linux is a confirmed failure mode.
+      await writeFile(join(bindingDir, 'watcher.node'), 'not a real napi module')
+
+      expect(() => verifyPackagedParcelWatcherBinding(resourcesDir, 'darwin')).not.toThrow()
+    } finally {
+      await rm(resourcesDir, { recursive: true, force: true })
+    }
+  })
+
+  it('is a no-op when no @parcel directory was packaged', async () => {
+    const resourcesDir = await mkdtemp(join(tmpdir(), 'orca-parcel-watcher-verify-absent-'))
+    try {
+      expect(() => verifyPackagedParcelWatcherBinding(resourcesDir, 'linux')).not.toThrow()
     } finally {
       await rm(resourcesDir, { recursive: true, force: true })
     }
