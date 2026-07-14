@@ -5585,6 +5585,35 @@ function SourceControlInner(): React.JSX.Element {
           manualReviewUrl={manualReviewUrl}
         />
 
+        {/* Why: surface which worktree Source Control is acting on — name, git
+            identity, and the raw remote/POSIX working-tree path (tooltip for the
+            full path). Display-only; all values already in scope. */}
+        {activeWorktree && worktreePath && (
+          <div className="flex min-w-0 items-center gap-1.5 border-b border-border px-3 py-1 text-[11px] text-muted-foreground">
+            <span
+              className="min-w-0 truncate font-medium text-foreground"
+              title={activeWorktree.displayName}
+            >
+              {activeWorktree.displayName}
+            </span>
+            {(branchName || detachedHeadDisplay) && (
+              <>
+                <span className="shrink-0 opacity-60">·</span>
+                <span
+                  className="min-w-0 truncate"
+                  title={branchName || detachedHeadDisplay?.shortHead || ''}
+                >
+                  {branchName || detachedHeadDisplay?.shortHead}
+                </span>
+              </>
+            )}
+            <span className="shrink-0 opacity-60">·</span>
+            <span className="min-w-0 flex-1 truncate" title={worktreePath}>
+              {worktreePath}
+            </span>
+          </div>
+        )}
+
         {detachedHeadDisplay && (
           <div className="border-b border-border px-3 py-2">
             <DetachedHeadBadge display={detachedHeadDisplay} side="bottom" />
