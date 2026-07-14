@@ -164,9 +164,25 @@ function localCliErrorData(error: unknown, context: CliErrorContext): unknown {
   return undefined
 }
 
+/**
+ * `app.running` is false for a HEADLESS SERVE — there is no desktop app, by design.
+ * The boolean is accurate but reads as "Orca is down", and both humans and agents act
+ * on that: they try to restart a perfectly healthy serve. On a headless host that is a
+ * destructive misread — a restart drops every live session.
+ *
+ * A serve is unambiguously identifiable from the fields we already have: no app process,
+ * but a reachable runtime in the `ready` state. Report the MODE instead of a bare boolean.
+ * `--json` is untouched; machine consumers keep the raw `app.running`.
+ */
+function formatAppRunning(status: CliStatusResult): string {
+  if (status.app.running) return 'true'
+  if (status.runtime.reachable && status.runtime.state === 'ready') return 'serve'
+  return 'false'
+}
+
 export function formatCliStatus(status: CliStatusResult): string {
   return [
-    `appRunning: ${status.app.running}`,
+    `appRunning: ${formatAppRunning(status)}`,
     `pid: ${status.app.pid ?? 'none'}`,
     `runtimeState: ${status.runtime.state}`,
     `runtimeReachable: ${status.runtime.reachable}`,

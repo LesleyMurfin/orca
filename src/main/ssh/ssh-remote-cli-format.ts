@@ -32,7 +32,7 @@ function formatRemoteCliError(error: { message: string; data?: unknown }): strin
 function formatStatusResult(status: CliStatusResult): { stdout: string; stderr: string } {
   return {
     stdout: `${[
-      `appRunning: ${status.app.running}`,
+      `appRunning: ${status.app.running ? 'true' : status.runtime.reachable && status.runtime.state === 'ready' ? 'serve' : 'false'}`,
       `pid: ${status.app.pid ?? 'none'}`,
       `runtimeState: ${status.runtime.state}`,
       `runtimeReachable: ${status.runtime.reachable}`,
