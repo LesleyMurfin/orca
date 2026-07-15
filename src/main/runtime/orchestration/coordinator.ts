@@ -21,6 +21,12 @@ export type CoordinatorOptions = {
   maxConcurrent?: number
   worktree?: string
   onLog?: (msg: string) => void
+  /**
+   * Reclaim the terminal slot of a dispatch that has gone silent (see
+   * reclaimStaleDispatches). Defaults to false, preserving today's warn-only
+   * behaviour exactly. Opt-in for unsupervised coordinators.
+   */
+  reclaimStaleDispatches?: boolean
 }
 
 type CoordinatorState = {
@@ -53,6 +59,7 @@ export class Coordinator {
       pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_MS,
       maxConcurrent: options.maxConcurrent ?? MAX_CONCURRENT_DEFAULT,
       worktree: options.worktree,
+      reclaimStaleDispatches: options.reclaimStaleDispatches ?? false,
       onLog: options.onLog ?? (() => {})
     }
     this.state = {
@@ -159,7 +166,7 @@ export class Coordinator {
     this.processMessages()
     this.processEscalations()
     reblockTasksWithPendingGates(this.db)
-    warnStaleDispatches(this.db, this.opts.onLog)
+    warnStaleDispatches(this.db, this.opts.onLog, this.opts.reclaimStaleDispatches)
     await this.dispatchReadyTasks()
     return this.checkConvergence()
   }
