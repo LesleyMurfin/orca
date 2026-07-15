@@ -517,6 +517,105 @@ describe('Coordinator', () => {
     expect(db.getTask(task.id)?.status).toBe('dispatched')
   })
 
+  it('reclaimStaleDispatches: true frees the slot of a silent worker', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = createMockRuntime()
+    const task = db.createTask({ spec: 'work' })
+    const ctx = db.createDispatchContext(task.id, 'term_stale')
+
+    const sqlite = (
+      db as unknown as { db: { prepare: (s: string) => { run: (...a: unknown[]) => void } } }
+    ).db
+    const iso = (ms: number) => new Date(Date.now() - ms).toISOString()
+    sqlite
+      .prepare('UPDATE dispatch_contexts SET dispatched_at = ?, last_heartbeat_at = ? WHERE id = ?')
+      .run(iso(60 * 60 * 1000), iso(30 * 60 * 1000), ctx.id)
+
+    const logs: string[] = []
+    const coordinator = new Coordinator(db, runtime, {
+      spec: 'go',
+      coordinatorHandle: 'coord',
+      pollIntervalMs: 20,
+      reclaimStaleDispatches: true,
+      onLog: (m) => logs.push(m)
+    })
+
+    const runPromise = coordinator.run()
+    await new Promise((r) => {
+      setTimeout(r, 80)
+    })
+    coordinator.stop()
+    await runPromise
+
+    expect(logs.some((l) => /Reclaimed slot/.test(l) && l.includes(task.id))).toBe(true)
+    expect(db.getTask(task.id)?.status).toBe('failed')
+    // The slot is freed: no longer counted against maxConcurrent.
+    expect(db.getStaleDispatches(new Date().toISOString()).some((c) => c.id === ctx.id)).toBe(false)
+  })
+
+  it('reclaimStaleDispatches does NOT touch a heartbeating worker (the R6 false positive)', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = createMockRuntime()
+    const task = db.createTask({ spec: 'work' })
+    const ctx = db.createDispatchContext(task.id, 'term_slow')
+
+    // A SLOW worker: dispatched an hour ago, still heartbeating 1 min ago. This is
+    // exactly the case R6 protects. It must survive reclaim untouched.
+    const sqlite = (
+      db as unknown as { db: { prepare: (s: string) => { run: (...a: unknown[]) => void } } }
+    ).db
+    const iso = (ms: number) => new Date(Date.now() - ms).toISOString()
+    sqlite
+      .prepare('UPDATE dispatch_contexts SET dispatched_at = ?, last_heartbeat_at = ? WHERE id = ?')
+      .run(iso(60 * 60 * 1000), iso(60 * 1000), ctx.id)
+
+    const logs: string[] = []
+    const coordinator = new Coordinator(db, runtime, {
+      spec: 'go',
+      coordinatorHandle: 'coord',
+      pollIntervalMs: 20,
+      reclaimStaleDispatches: true,
+      onLog: (m) => logs.push(m)
+    })
+
+    const runPromise = coordinator.run()
+    await new Promise((r) => {
+      setTimeout(r, 80)
+    })
+    coordinator.stop()
+    await runPromise
+
+    expect(logs.some((l) => /Reclaimed slot/.test(l))).toBe(false)
+    expect(db.getTask(task.id)?.status).toBe('dispatched')
+  })
+
+  it('reclaimStaleDispatches does NOT touch a just-dispatched worker (grace window)', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = createMockRuntime()
+    const task = db.createTask({ spec: 'work' })
+    db.createDispatchContext(task.id, 'term_new')
+    // dispatched_at = now, last_heartbeat_at = NULL: never heartbeated, but young.
+
+    const logs: string[] = []
+    const coordinator = new Coordinator(db, runtime, {
+      spec: 'go',
+      coordinatorHandle: 'coord',
+      pollIntervalMs: 20,
+      reclaimStaleDispatches: true,
+      onLog: (m) => logs.push(m)
+    })
+
+    const runPromise = coordinator.run()
+    await new Promise((r) => {
+      setTimeout(r, 80)
+    })
+    coordinator.stop()
+    await runPromise
+
+    expect(logs.some((l) => /Reclaimed slot/.test(l))).toBe(false)
+    expect(db.getTask(task.id)?.status).toBe('dispatched')
+  })
+
   it('records heartbeat by dispatchId on worker heartbeat messages', async () => {
     db = new OrchestrationDb(':memory:')
     const runtime = createMockRuntime()
