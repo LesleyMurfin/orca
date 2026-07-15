@@ -136,8 +136,12 @@ function formatHostConnection(host: HostListEntry): string {
  * `--json` is untouched; machine consumers keep the raw `app.running`.
  */
 function formatAppRunning(status: CliStatusResult): string {
-  if (status.app.running) return 'true'
-  if (status.runtime.reachable && status.runtime.state === 'ready') return 'serve'
+  if (status.app.running) {
+    return 'true'
+  }
+  if (status.runtime.reachable && status.runtime.state === 'ready') {
+    return 'serve'
+  }
   return 'false'
 }
 
