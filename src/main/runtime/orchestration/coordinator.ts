@@ -1,6 +1,6 @@
 /* eslint-disable max-lines -- Why: the coordinator keeps message processing, task dispatch, gate handling, escalation, and convergence checking in one class so the polling loop can make atomic decisions across all these concerns without split-brain behavior. */
 import type { OrchestrationDb } from './db'
-import type { MessageRow, TaskRow, CoordinatorStatus } from './types'
+import type { MessageRow, TaskRow, CoordinatorStatus, DispatchContextRow } from './types'
 import { buildDispatchPreamble } from './preamble'
 import { reconcileLifecycleMessage } from './lifecycle-reconciliation'
 
@@ -74,6 +74,12 @@ export type CoordinatorOptions = {
   maxConcurrent?: number
   worktree?: string
   onLog?: (msg: string) => void
+  /**
+   * Reclaim the terminal slot of a dispatch that has gone silent (see
+   * reclaimStaleDispatches). Defaults to false, preserving today's warn-only
+   * behaviour exactly. Opt-in for unsupervised coordinators.
+   */
+  reclaimStaleDispatches?: boolean
 }
 
 type CoordinatorState = {
@@ -113,6 +119,7 @@ export class Coordinator {
       pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_MS,
       maxConcurrent: options.maxConcurrent ?? MAX_CONCURRENT_DEFAULT,
       worktree: options.worktree,
+      reclaimStaleDispatches: options.reclaimStaleDispatches ?? false,
       onLog: options.onLog ?? (() => {})
     }
     this.state = {
@@ -231,18 +238,71 @@ export class Coordinator {
     return this.checkConvergence()
   }
 
-  // Why: emit a single warning per stale dispatch per tick. This intentionally
-  // does NOT auto-fail the dispatch — the false-positive cost (a slow worker
-  // producing correct output) is higher than the false-negative cost (a hung
-  // worker keeps its terminal slot until a human notices). Auto-fail policy
-  // is a separate decision documented in R6 of DESIGN_DOC_PREAMBLE_FIX.md.
+  // Why: emit a single warning per stale dispatch per tick. Warn-only remains the
+  // DEFAULT — the false-positive cost (a slow worker producing correct output) is
+  // higher than the false-negative cost (a hung worker keeps its terminal slot until
+  // a human notices). Auto-fail policy is a separate decision documented in R6 of
+  // DESIGN_DOC_PREAMBLE_FIX.md.
+  //
+  // `reclaimStaleDispatches: true` opts into acting on the same signal, for
+  // coordinators where "until a human notices" is not a real backstop. It changes no
+  // default. See reclaimStaleDispatches() for why the false-positive above cannot be
+  // triggered by this detector.
   private warnStaleDispatches(): void {
     const thresholdIso = new Date(Date.now() - HUNG_THRESHOLD_MS).toISOString()
     const stale = this.db.getStaleDispatches(thresholdIso)
+    const minutes = Math.round(HUNG_THRESHOLD_MS / 60000)
     for (const ctx of stale) {
-      const minutes = Math.round(HUNG_THRESHOLD_MS / 60000)
       this.opts.onLog(
         `Warning: worker ${ctx.assignee_handle ?? '<unknown>'} on task ${ctx.task_id} has not sent a heartbeat in ~${minutes} min (dispatch ${ctx.id})`
+      )
+    }
+    if (!this.opts.reclaimStaleDispatches) {
+      return
+    }
+    this.reclaimStaleDispatches(stale, minutes)
+  }
+
+  /**
+   * Fail a dispatch that has gone silent, freeing its terminal slot.
+   *
+   * WHY THIS IS SAFE — the R6 false-positive ("a slow worker producing correct
+   * output") CANNOT be triggered by this detector. getStaleDispatches is not
+   * age-based:
+   *
+   *     WHERE status = 'dispatched'                              -- finished work excluded
+   *       AND dispatched_at IS NOT NULL AND dispatched_at < ?    -- grace for just-dispatched
+   *       AND (last_heartbeat_at IS NULL OR last_heartbeat_at < ?)  -- silent for 2x cadence
+   *
+   * A slow-but-live worker heartbeats and is never selected — the preamble requires
+   * it ("Send heartbeat messages during long active work"), and HUNG_THRESHOLD_MS is
+   * already 2x that cadence so a single missed beat is not enough. Selection means the
+   * worker has said nothing for two full heartbeat intervals, which is not slowness.
+   *
+   * WHY IT MATTERS — without reclaim, a worker that ends its turn without worker_done
+   * holds its slot forever. dispatchReadyTasks computes:
+   *
+   *     let slotsAvailable = this.opts.maxConcurrent - dispatched.length
+   *     if (slotsAvailable <= 0) { return }
+   *
+   * so leaked slots accumulate one per silent worker until slotsAvailable is negative
+   * and the coordinator stops dispatching PERMANENTLY while reporting healthy. Observed
+   * on an unsupervised host: 19 leaked -> 3 - 19 = -16 -> 29 tasks ready, 0 dispatched,
+   * indefinitely. Clearing them by hand restored dispatch on the next poll. "Until a
+   * human notices" is a sound backstop for a supervised session and no backstop at all
+   * for a scheduled or headless one.
+   *
+   * The task is failed, not re-queued: re-dispatching a task whose worker may still be
+   * alive risks duplicate side effects. Freeing the slot is reversible and observable;
+   * silent starvation is neither.
+   */
+  private reclaimStaleDispatches(stale: DispatchContextRow[], minutes: number): void {
+    for (const ctx of stale) {
+      const reason = `stale dispatch reclaimed: no heartbeat in ~${minutes} min`
+      this.db.failDispatch(ctx.id, reason)
+      this.db.updateTaskStatus(ctx.task_id, 'failed', JSON.stringify({ error: reason }))
+      this.opts.onLog(
+        `Reclaimed slot from ${ctx.assignee_handle ?? '<unknown>'} on task ${ctx.task_id} (dispatch ${ctx.id}) — ${reason}`
       )
     }
   }
