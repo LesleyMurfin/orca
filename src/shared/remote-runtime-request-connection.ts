@@ -28,6 +28,12 @@ type ReadyWaiter = {
 }
 
 const IDLE_CLOSE_MS = 60_000
+// Why: a socket that opens but never completes the e2ee_ready/e2ee_authenticated
+// handshake (ws stuck OPEN in awaiting_ready/awaiting_authenticated) would
+// otherwise linger until some unrelated per-request timeout fires — or forever
+// if no request is pending. This bounds the handshake itself. Sized at the
+// subscribe request budget so a legitimately slow handshake is never torn down.
+const CONNECT_TIMEOUT_MS = 15_000
 
 export class RemoteRuntimeRequestConnection {
   private readonly pairing: PairingOffer
@@ -38,6 +44,7 @@ export class RemoteRuntimeRequestConnection {
   private readonly pendingRequests = new Map<string, PendingRequest<unknown>>()
   private readonly readyWaiters: ReadyWaiter[] = []
   private idleCloseTimer: ReturnType<typeof setTimeout> | null = null
+  private connectTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(pairing: PairingOffer) {
     this.pairing = pairing
@@ -82,6 +89,7 @@ export class RemoteRuntimeRequestConnection {
     this.socketCleanup = null
     this.state = 'closed'
     this.clearIdleCloseTimer()
+    this.clearConnectTimer()
 
     const closeError = error ?? remoteRuntimeUnavailableError()
     this.rejectReadyWaiters(closeError)
@@ -142,6 +150,7 @@ export class RemoteRuntimeRequestConnection {
     this.sharedKey = opened.socket.sharedKey
     this.socketCleanup = opened.socket.cleanup
     this.state = 'awaiting_ready'
+    this.armConnectTimer()
   }
 
   private handleTextFrame(frame: string): void {
@@ -196,6 +205,7 @@ export class RemoteRuntimeRequestConnection {
       return
     }
     this.state = 'ready'
+    this.clearConnectTimer()
     this.resolveReadyWaiters()
     this.scheduleIdleCloseIfUnused()
   }
@@ -285,6 +295,21 @@ export class RemoteRuntimeRequestConnection {
     if (this.idleCloseTimer) {
       clearTimeout(this.idleCloseTimer)
       this.idleCloseTimer = null
+    }
+  }
+
+  private armConnectTimer(): void {
+    this.clearConnectTimer()
+    this.connectTimer = setTimeout(() => this.close(remoteRuntimeTimeoutError()), CONNECT_TIMEOUT_MS)
+    if (typeof this.connectTimer.unref === 'function') {
+      this.connectTimer.unref()
+    }
+  }
+
+  private clearConnectTimer(): void {
+    if (this.connectTimer) {
+      clearTimeout(this.connectTimer)
+      this.connectTimer = null
     }
   }
 }

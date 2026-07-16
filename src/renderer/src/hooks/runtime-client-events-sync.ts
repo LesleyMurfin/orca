@@ -95,6 +95,36 @@ export function createRuntimeClientEventsSync(
     retryTimers.set(environmentId, retryTimer)
   }
 
+  const handleSubscriptionDrop = (
+    environmentId: string,
+    subscribeGeneration: number,
+    error: unknown
+  ): void => {
+    console.warn('[runtime-client-events] subscription error:', error)
+    // Why: a mid-stream drop on an already-established subscription must re-enter
+    // the retry supervisor. Otherwise the map keeps a dead entry, sync()'s
+    // `subscriptions.has` guard skips re-subscribing, and the desired env stays
+    // silently unsubscribed until a full relaunch (the PRB-0001 wedge).
+    if (subscribeGeneration !== generation) {
+      return
+    }
+    const unsubscribe = subscriptions.get(environmentId)
+    if (!unsubscribe) {
+      // Not yet established (still pending) or already torn down — the initial
+      // subscribe promise's then/catch owns recovery for that window, so routing
+      // here too would double-count the failure.
+      return
+    }
+    unsubscribe()
+    subscriptions.delete(environmentId)
+    if (deps.getDesiredEnvironmentIds().includes(environmentId)) {
+      consecutiveFailures.set(environmentId, (consecutiveFailures.get(environmentId) ?? 0) + 1)
+      scheduleRetry(environmentId, subscribeGeneration)
+    } else {
+      consecutiveFailures.delete(environmentId)
+    }
+  }
+
   const stop = (): void => {
     generation += 1
     for (const unsubscribe of subscriptions.values()) {
@@ -142,9 +172,7 @@ export function createRuntimeClientEventsSync(
         .subscribe(
           environmentId,
           (event) => deps.onEvent(environmentId, event),
-          (error) => {
-            console.warn('[runtime-client-events] subscription error:', error)
-          }
+          (error) => handleSubscriptionDrop(environmentId, subscribeGeneration, error)
         )
         .then((subscription) => {
           pending.delete(environmentId)
