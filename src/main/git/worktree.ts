@@ -612,18 +612,83 @@ async function readTranslatedWorktreeGraph(
   })
 }
 
+// Why: a stale workspace registration can point at a directory that no longer
+// exists. Every resolved-worktree-cache invalidation re-enumerates it, so
+// `git worktree list` is re-spawned on each status poll with a missing cwd —
+// every spawn fails `spawn git ENOENT` before exec and is swallowed, so the
+// poller hot-loops failed spawns indefinitely. Once a path is *confirmed*
+// missing (stat -> ENOENT), back off and probe it at most once per window
+// instead of on every poll. Any successful scan — or any local worktree
+// mutation — clears the mark, so a recreated path recovers within one window.
+// Keyed by repoPath+wslDistro (not signal), mirroring the in-flight scan key.
+const MISSING_REPO_PATH_BACKOFF_MS = 30_000
+const missingRepoPathBackoffUntil = new Map<string, number>()
+
+function repoPathBackoffKey(repoPath: string, options: GitWorktreeExecOptions): string {
+  return `${repoPath}\0${options.wslDistro ?? ''}`
+}
+
+function isRepoPathBackedOff(key: string): boolean {
+  const until = missingRepoPathBackoffUntil.get(key)
+  if (until === undefined) {
+    return false
+  }
+  if (Date.now() >= until) {
+    missingRepoPathBackoffUntil.delete(key)
+    return false
+  }
+  return true
+}
+
+function markRepoPathMissing(key: string): void {
+  missingRepoPathBackoffUntil.set(key, Date.now() + MISSING_REPO_PATH_BACKOFF_MS)
+}
+
+function clearRepoPathMissing(key: string): void {
+  missingRepoPathBackoffUntil.delete(key)
+}
+
+// Why: a completed local worktree mutation (create/move/remove) proves the repo
+// path exists again, so drop any stale missing-path mark for it — otherwise a
+// path recreated inside the backoff window (e.g. create-then-list) would still
+// short-circuit to [] and break callers that assert the new worktree is
+// present. Mutations don't thread wslDistro, so clear every distro variant of
+// the repo path; re-probing once after a rare failed mutation is cheap.
+function clearRepoPathMissingForRepo(repoPath: string): void {
+  const prefix = `${repoPath}\0`
+  for (const key of missingRepoPathBackoffUntil.keys()) {
+    if (key.startsWith(prefix)) {
+      missingRepoPathBackoffUntil.delete(key)
+    }
+  }
+}
+
+/** Test-only: clear the missing-repo-path backoff memo between cases so the
+ *  module-global map can't leak state across tests (mirrors
+ *  `_resetGitSpanSamplingForTests`). */
+export function _resetWorktreeMissingPathBackoffForTests(): void {
+  missingRepoPathBackoffUntil.clear()
+}
+
 export async function listWorktreeGraph(
   repoPath: string,
   options: GitWorktreeExecOptions = {}
 ): Promise<GitWorktreeInfo[]> {
+  const backoffKey = repoPathBackoffKey(repoPath, options)
+  if (isRepoPathBackedOff(backoffKey)) {
+    return []
+  }
   try {
-    return await readTranslatedWorktreeGraph(repoPath, options)
+    const graph = await readTranslatedWorktreeGraph(repoPath, options)
+    clearRepoPathMissing(backoffKey)
+    return graph
   } catch (err) {
     if (getErrorCode(err) === 'ENOENT') {
       try {
         await stat(repoPath)
       } catch (statErr) {
         if (getErrorCode(statErr) === 'ENOENT') {
+          markRepoPathMissing(backoffKey)
           console.warn(`[git/worktree] repo path missing; skipping worktree list: ${repoPath}`)
           return []
         }
@@ -661,6 +726,12 @@ function hasInFlightWorktreeScanForRepo(repoPath: string): boolean {
 }
 
 function bumpWorktreeScanGeneration(repoPath: string): void {
+  // Why: a completed mutation proves the repo path exists again, so drop any
+  // stale missing-path mark unconditionally — this is independent of scan
+  // generations and must run even when no scan is in flight (create-then-list
+  // with no concurrent scan is the common case), otherwise the list would
+  // short-circuit to [] within the backoff window.
+  clearRepoPathMissingForRepo(repoPath)
   // Why: generations only prevent joining a pre-mutation scan. Without an
   // active scan, retaining the repo path just leaks completed mutation keys.
   if (!hasInFlightWorktreeScanForRepo(repoPath)) {
@@ -724,8 +795,13 @@ async function listWorktreesUnshared(
   repoPath: string,
   options: GitWorktreeExecOptions = {}
 ): Promise<GitWorktreeInfo[]> {
+  const backoffKey = repoPathBackoffKey(repoPath, options)
+  if (isRepoPathBackedOff(backoffKey)) {
+    return []
+  }
   try {
     const worktrees = await readTranslatedWorktreeGraph(repoPath, options)
+    clearRepoPathMissing(backoffKey)
     return annotateSparseCheckoutStatus(worktrees)
   } catch (err) {
     if (getErrorCode(err) === 'ENOENT') {
@@ -733,6 +809,7 @@ async function listWorktreesUnshared(
         await stat(repoPath)
       } catch (statErr) {
         if (getErrorCode(statErr) === 'ENOENT') {
+          markRepoPathMissing(backoffKey)
           console.warn(`[git/worktree] repo path missing; skipping worktree list: ${repoPath}`)
           return []
         }
