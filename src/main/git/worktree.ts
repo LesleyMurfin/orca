@@ -726,13 +726,18 @@ function hasInFlightWorktreeScanForRepo(repoPath: string): boolean {
 }
 
 function bumpWorktreeScanGeneration(repoPath: string): void {
+  // Why: a completed mutation proves the repo path exists again, so drop any
+  // stale missing-path mark unconditionally — this is independent of scan
+  // generations and must run even when no scan is in flight (create-then-list
+  // with no concurrent scan is the common case), otherwise the list would
+  // short-circuit to [] within the backoff window.
+  clearRepoPathMissingForRepo(repoPath)
   // Why: generations only prevent joining a pre-mutation scan. Without an
   // active scan, retaining the repo path just leaks completed mutation keys.
   if (!hasInFlightWorktreeScanForRepo(repoPath)) {
     return
   }
   worktreeScanGenerations.set(repoPath, (worktreeScanGenerations.get(repoPath) ?? 0) + 1)
-  clearRepoPathMissingForRepo(repoPath)
 }
 
 function pruneWorktreeScanGeneration(repoPath: string): void {
