@@ -19,6 +19,13 @@ export const CORE_COMMAND_SPECS: CommandSpec[] = [
     examples: ['orca status', 'orca status --json']
   },
   {
+    path: ['serve', 'stats'],
+    summary: 'Show live runtime counts (agents, tasks, terminals, worktrees)',
+    usage: 'orca serve stats [--json]',
+    allowedFlags: [...GLOBAL_FLAGS],
+    examples: ['orca serve stats', 'orca serve stats --json']
+  },
+  {
     path: ['claude-teams'],
     argumentMode: 'passthrough',
     summary: 'Start Claude Code Agent Teams in the current Orca terminal',
