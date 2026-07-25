@@ -47,13 +47,22 @@ export function FileExplorerToolbar({
   onToggleDotfiles
 }: FileExplorerToolbarProps): React.JSX.Element {
   return (
-    <div className="flex h-8 min-h-8 items-center gap-2 border-b border-border px-2">
-      <span
-        className="min-w-0 flex-1 truncate text-xs font-medium text-foreground"
-        title={repoName}
-      >
-        {repoName}
-      </span>
+    <div className="flex min-h-8 items-center gap-2 border-b border-border px-2 py-1">
+      {/* Why: surface the absolute worktree path under the repo name so the user
+          can tell which checkout Orca is operating against (raw remote/POSIX path). */}
+      <div className="flex min-w-0 flex-1 flex-col justify-center">
+        <span className="min-w-0 truncate text-xs font-medium text-foreground" title={repoName}>
+          {repoName}
+        </span>
+        {worktreePath ? (
+          <span
+            className="truncate text-[10px] leading-tight text-muted-foreground"
+            title={worktreePath}
+          >
+            {worktreePath}
+          </span>
+        ) : null}
+      </div>
       <Tooltip>
         <TooltipTrigger asChild>
           <Button

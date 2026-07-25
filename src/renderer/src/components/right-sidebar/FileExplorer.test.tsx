@@ -344,6 +344,35 @@ describe('FileExplorerToolbar', () => {
     expect(label.props.className).toContain('min-w-0')
   })
 
+  it('surfaces the worktree path under the repo name in a truncated label', () => {
+    const worktreePath = '/very/long/remote/worktree/path/that/should/truncate/orca'
+    const element = makeToolbar({ worktreePath })
+
+    let label: ReactElementLike | null = null
+    visit(element, (entry) => {
+      if (entry.type === 'span' && entry.props.title === worktreePath) {
+        label = entry
+      }
+    })
+
+    expect(label).not.toBeNull()
+    expect((label as unknown as ReactElementLike).props.children).toBe(worktreePath)
+    expect((label as unknown as ReactElementLike).props.className).toContain('truncate')
+  })
+
+  it('omits the worktree path line when no path is available', () => {
+    const element = makeToolbar({ worktreePath: '' })
+
+    let emptyTitleSpan: ReactElementLike | null = null
+    visit(element, (entry) => {
+      if (entry.type === 'span' && entry.props.title === '') {
+        emptyTitleSpan = entry
+      }
+    })
+
+    expect(emptyTitleSpan).toBeNull()
+  })
+
   it('disables the refresh button and shows a spinner while refreshing', () => {
     const element = makeToolbar({
       refresh: makeRefreshState({ isRefreshing: true, showRefreshSpinner: true })
