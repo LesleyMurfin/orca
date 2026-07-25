@@ -107,6 +107,7 @@ import { parseWorkspaceSession } from '../shared/workspace-session-schema'
 import { normalizeUsagePercentageDisplay } from '../shared/usage-percentage-display'
 import { isExistingPersistedProfile } from '../shared/project-order-manual-default-notice'
 import { resolveUsagePercentageDisplayChangeNoticeDismissed } from '../shared/usage-percentage-display-change-notice'
+import { normalizePRBotAuthorOverrides } from '../shared/pr-bot-author-overrides'
 import {
   LOCAL_EXECUTION_HOST_ID,
   normalizeExecutionHostOrder,
@@ -2263,9 +2264,32 @@ function normalizeLegacyPaneKeyAliasEntries(value: unknown): LegacyPaneKeyAliasE
       return false
     }
     const legacy = parseLegacyNumericPaneKey(candidate.legacyPaneKey)
+    const relocatedSource = parsePaneKey(candidate.legacyPaneKey)
     const stable = parsePaneKey(candidate.stablePaneKey)
-    return Boolean(legacy && stable && legacy.tabId === stable.tabId)
+    return Boolean(stable && ((legacy && legacy.tabId === stable.tabId) || relocatedSource))
   })
+}
+
+function registerPersistedPaneKeyAlias(entry: LegacyPaneKeyAliasEntry): void {
+  if (parseLegacyNumericPaneKey(entry.legacyPaneKey)) {
+    agentHookServer.registerPaneKeyAlias(
+      entry.legacyPaneKey,
+      entry.stablePaneKey,
+      entry.ptyId,
+      entry.updatedAt,
+      { overwriteExisting: false }
+    )
+    return
+  }
+  // Why: detached agents keep their original UUID pane key across restarts;
+  // restore the physical-to-current-owner mapping before hook replay begins.
+  agentHookServer.transferPaneAuthority(
+    entry.legacyPaneKey,
+    entry.stablePaneKey,
+    entry.ptyId,
+    entry.updatedAt,
+    { authorityVerified: false }
+  )
 }
 
 function mergeLegacyPaneKeyAliasEntries(
@@ -2647,13 +2671,7 @@ export class Store {
       setMigrationUnsupportedPty(entry)
     }
     for (const entry of normalized.legacyPaneKeyAliasEntries) {
-      agentHookServer.registerPaneKeyAlias(
-        entry.legacyPaneKey,
-        entry.stablePaneKey,
-        entry.ptyId,
-        entry.updatedAt,
-        { overwriteExisting: false }
-      )
+      registerPersistedPaneKeyAlias(entry)
     }
     setMigrationUnsupportedPtyPersistenceListener((entries) => {
       this.state.migrationUnsupportedPtyEntries = entries
@@ -3124,6 +3142,9 @@ export class Store {
             // product intent was only to change the default, and the setting
             // stays user-toggleable.
             ...stripLegacyTerminalScrollbackBytes(parsed.settings),
+            prBotAuthorOverrides: normalizePRBotAuthorOverrides(
+              parsed.settings?.prBotAuthorOverrides
+            ),
             // Why: v1.3.42 renamed the cosmetic sidekick setting to pet. Carry
             // the old persisted flag forward once so enabled users don't lose it.
             experimentalPet:
@@ -5283,6 +5304,13 @@ export class Store {
     if ('uiLanguage' in updates) {
       sanitizedUpdates.uiLanguage = normalizeUiLanguage(updates.uiLanguage)
     }
+    if ('prBotAuthorOverrides' in updates) {
+      // Why: every writer (desktop IPC, paired web RPC, and migrations) reaches
+      // this boundary, so the persisted list stays bounded and well-formed.
+      sanitizedUpdates.prBotAuthorOverrides = normalizePRBotAuthorOverrides(
+        updates.prBotAuthorOverrides
+      )
+    }
     const historyWithPreviousLayout = buildWorkspaceDirHistoryForUpdate(
       this.state.settings,
       sanitizedUpdates
@@ -5678,13 +5706,7 @@ export class Store {
       }
     }
     for (const entry of normalized.legacyPaneKeyAliasEntries) {
-      agentHookServer.registerPaneKeyAlias(
-        entry.legacyPaneKey,
-        entry.stablePaneKey,
-        entry.ptyId,
-        entry.updatedAt,
-        { overwriteExisting: false }
-      )
+      registerPersistedPaneKeyAlias(entry)
     }
     session = normalized.session
     const remappedLeases = remapSshRemotePtyLeaseLeafIds(

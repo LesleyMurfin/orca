@@ -97,6 +97,22 @@ function writeStoredRuntimeEnvironment(storage: Storage): void {
   )
 }
 
+function encodeWebRuntimePairingCode(): string {
+  return Buffer.from(
+    JSON.stringify({
+      v: 2,
+      endpoint: 'ws://127.0.0.1:6768',
+      deviceToken: 'replacement-token',
+      publicKeyB64: 'replacement-public-key'
+    }),
+    'utf-8'
+  )
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
+}
+
 function trackPromiseSettled(promise: Promise<unknown>): () => boolean {
   let settled = false
   void promise.then(
@@ -268,6 +284,37 @@ describe('web settings preload API', () => {
     expect(settings.autoRenameBranchFromWorkDefaultedOn).toBe(true)
     expect(stored.autoRenameBranchFromWork).toBe(true)
     expect(stored.autoRenameBranchFromWorkDefaultedOn).toBe(true)
+  })
+
+  it('invalidates terminal recovery before clearing the active web runtime', async () => {
+    const globals = installBrowserGlobals('Linux')
+    writeStoredRuntimeEnvironment(globals.storage)
+    const { getRemoteRuntimeTerminalRecoveryGeneration } =
+      await import('../runtime/remote-runtime-terminal-recovery-coordinator')
+    const before = getRemoteRuntimeTerminalRecoveryGeneration('web-env-1')
+    const { installWebPreloadApi } = await import('./web-preload-api')
+    installWebPreloadApi()
+
+    await globals.window.api.settings.set({ activeRuntimeEnvironmentId: null })
+
+    expect(getRemoteRuntimeTerminalRecoveryGeneration('web-env-1')).toBe(before + 1)
+  })
+
+  it('invalidates the old recovery generation before replacing a paired web runtime', async () => {
+    const globals = installBrowserGlobals('Linux')
+    writeStoredRuntimeEnvironment(globals.storage)
+    const { getRemoteRuntimeTerminalRecoveryGeneration } =
+      await import('../runtime/remote-runtime-terminal-recovery-coordinator')
+    const before = getRemoteRuntimeTerminalRecoveryGeneration('web-env-1')
+    const { installWebPreloadApi } = await import('./web-preload-api')
+    installWebPreloadApi()
+
+    await globals.window.api.runtimeEnvironments.addFromPairingCode({
+      name: 'Replacement runtime',
+      pairingCode: encodeWebRuntimePairingCode()
+    })
+
+    expect(getRemoteRuntimeTerminalRecoveryGeneration('web-env-1')).toBe(before + 1)
   })
 
   it('migrates inherited terminal bar cursor defaults for stored web settings once', async () => {
@@ -451,6 +498,35 @@ describe('web settings preload API', () => {
     expect(runtimeCalls).toEqual([{ method: 'settings.get', params: undefined }])
   })
 
+  it('hydrates bot-author overrides from paired runtime settings', async () => {
+    const runtimeCalls: { method: string; params: unknown }[] = []
+    vi.doMock('./web-runtime-client', () => ({
+      WebRuntimeClient: class {
+        call(method: string, params?: unknown): Promise<RuntimeRpcResponse<unknown>> {
+          runtimeCalls.push({ method, params })
+          return Promise.resolve({
+            id: 'call-1',
+            ok: true,
+            result: { settings: { prBotAuthorOverrides: [' GretelFlux ', 'gretelflux'] } },
+            _meta: { runtimeId: 'runtime-1' }
+          })
+        }
+
+        close(): void {}
+      }
+    }))
+
+    const globals = installBrowserGlobals('Linux')
+    writeStoredRuntimeEnvironment(globals.storage)
+    const { installWebPreloadApi } = await import('./web-preload-api')
+    installWebPreloadApi()
+
+    const settings = await globals.window.api.settings.get()
+
+    expect(settings.prBotAuthorOverrides).toEqual(['gretelflux'])
+    expect(runtimeCalls).toEqual([{ method: 'settings.get', params: undefined }])
+  })
+
   it('forwards compact worktree card updates to a paired runtime', async () => {
     const runtimeCalls: { method: string; params: unknown }[] = []
     vi.doMock('./web-runtime-client', () => ({
@@ -571,6 +647,105 @@ describe('web settings preload API', () => {
         }
       }
     ])
+  })
+
+  it('forwards normalized bot-author overrides to a paired runtime', async () => {
+    const runtimeCalls: { method: string; params: unknown }[] = []
+    vi.doMock('./web-runtime-client', () => ({
+      WebRuntimeClient: class {
+        call(method: string, params?: unknown): Promise<RuntimeRpcResponse<unknown>> {
+          runtimeCalls.push({ method, params })
+          return Promise.resolve({
+            id: 'call-1',
+            ok: true,
+            result: { settings: { prBotAuthorOverrides: ['gretelflux'] } },
+            _meta: { runtimeId: 'runtime-1' }
+          })
+        }
+
+        close(): void {}
+      }
+    }))
+
+    const globals = installBrowserGlobals('Linux')
+    writeStoredRuntimeEnvironment(globals.storage)
+    const { installWebPreloadApi } = await import('./web-preload-api')
+    installWebPreloadApi()
+
+    const settings = await globals.window.api.settings.set({
+      prBotAuthorOverrides: [' GretelFlux ', 'gretelflux']
+    })
+
+    expect(settings.prBotAuthorOverrides).toEqual(['gretelflux'])
+    expect(runtimeCalls).toEqual([
+      { method: 'settings.update', params: { prBotAuthorOverrides: ['gretelflux'] } }
+    ])
+  })
+
+  it('atomically updates a bot-author override through a paired runtime', async () => {
+    const runtimeCalls: { method: string; params: unknown }[] = []
+    vi.doMock('./web-runtime-client', () => ({
+      WebRuntimeClient: class {
+        call(method: string, params?: unknown): Promise<RuntimeRpcResponse<unknown>> {
+          runtimeCalls.push({ method, params })
+          return Promise.resolve({
+            id: 'call-1',
+            ok: true,
+            result: { settings: { prBotAuthorOverrides: ['gretelflux'] } },
+            _meta: { runtimeId: 'runtime-1' }
+          })
+        }
+
+        close(): void {}
+      }
+    }))
+
+    const globals = installBrowserGlobals('Linux')
+    writeStoredRuntimeEnvironment(globals.storage)
+    const { installWebPreloadApi } = await import('./web-preload-api')
+    installWebPreloadApi()
+
+    const settings = await globals.window.api.settings.updatePRBotAuthorOverride({
+      author: 'gretelflux',
+      isBot: true
+    })
+
+    expect(settings.prBotAuthorOverrides).toEqual(['gretelflux'])
+    expect(runtimeCalls).toEqual([
+      {
+        method: 'settings.updatePRBotAuthorOverride',
+        params: { author: 'gretelflux', isBot: true }
+      }
+    ])
+  })
+
+  it('does not claim a paired bot-author update succeeded when the runtime rejects it', async () => {
+    vi.doMock('./web-runtime-client', () => ({
+      WebRuntimeClient: class {
+        call(): Promise<RuntimeRpcResponse<unknown>> {
+          return Promise.reject(new Error('runtime unavailable'))
+        }
+
+        close(): void {}
+      }
+    }))
+
+    const globals = installBrowserGlobals('Linux')
+    writeStoredRuntimeEnvironment(globals.storage)
+    const { installWebPreloadApi } = await import('./web-preload-api')
+    installWebPreloadApi()
+
+    await expect(
+      globals.window.api.settings.updatePRBotAuthorOverride({
+        author: 'gretelflux',
+        isBot: true
+      })
+    ).rejects.toThrow('runtime unavailable')
+
+    const stored = JSON.parse(globals.storage.getItem('orca.web.settings.v1') ?? '{}') as {
+      prBotAuthorOverrides?: string[]
+    }
+    expect(stored.prBotAuthorOverrides).toBeUndefined()
   })
 })
 

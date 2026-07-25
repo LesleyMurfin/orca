@@ -1,7 +1,6 @@
 /* eslint-disable max-lines -- Why: remote PTY transport keeps lifecycle, JSON fallback, and binary stream wiring together so reconnect/destroy ordering stays testable as one behavior surface. */
 import type { RuntimeRpcResponse } from '../../../../shared/runtime-rpc-envelope'
 import type {
-  RuntimeMobileSessionTerminalClientTab,
   RuntimeMobileSessionTabsResult,
   RuntimeTerminalCreate,
   RuntimeTerminalSend
@@ -24,6 +23,14 @@ import {
   REMOTE_TERMINAL_SNAPSHOT_TOO_LARGE,
   type RemoteRuntimeMultiplexedTerminal
 } from '../../runtime/remote-runtime-terminal-multiplexer'
+import { resolveRemoteRuntimeHostTerminal } from '../../runtime/remote-runtime-host-terminal-resolution'
+import {
+  beginRemoteRuntimeTerminalRecovery,
+  getRemoteRuntimeTerminalRecoveryGeneration,
+  isRemoteRuntimeTerminalRecoveryGenerationCurrent,
+  type RemoteRuntimeTerminalRecoveryLease,
+  type RemoteRuntimeTerminalRecoverySnapshot
+} from '../../runtime/remote-runtime-terminal-recovery-coordinator'
 import {
   toRuntimeTerminalWorktreeSelector,
   toRuntimeWorktreeSelector
@@ -33,6 +40,8 @@ import {
   createRemoteRuntimeViewportBatcher
 } from './remote-runtime-pty-batching'
 import { createBrowserUuid } from '@/lib/browser-uuid'
+import { stageRemoteRuntimePtyRebind } from './remote-runtime-pty-staged-rebind'
+import { findEmbeddedRemoteRuntimeTerminalGoneCode } from './remote-runtime-terminal-gone-error'
 import { setFitOverride } from '@/lib/pane-manager/mobile-fit-overrides'
 import { setDriverForPty } from '@/lib/pane-manager/mobile-driver-state'
 import { isWebTerminalSurfaceTabId, toHostSessionTabId } from '@/runtime/web-terminal-surface-id'
@@ -41,15 +50,7 @@ const REMOTE_TERMINAL_INPUT_FLUSH_MS = 8
 const REMOTE_TERMINAL_VIEWPORT_FLUSH_MS = 33
 const HOST_SESSION_ATTACH_POLL_MS = 150
 const HOST_SESSION_ATTACH_TIMEOUT_MS = 15_000
-
-function isRemoteTerminalGoneMessage(message: string): boolean {
-  return (
-    message.includes('terminal_handle_stale') ||
-    message.includes('terminal_exited') ||
-    message.includes('terminal_gone') ||
-    message.includes('no_connected_pty')
-  )
-}
+let nextRemoteRuntimeRecoveryParticipantId = 1
 
 /**
  * PTY transport backing a renderer terminal pane with a terminal on a remote Orca
@@ -85,13 +86,17 @@ export function createRemoteRuntimePtyTransport(
   let handle: string | null = null
   let remotePtyId: string | null = null
   let currentRuntimeEnvironmentId = runtimeEnvironmentId
+  let recoveryEnvironmentGeneration =
+    getRemoteRuntimeTerminalRecoveryGeneration(runtimeEnvironmentId)
   let multiplexedStream: RemoteRuntimeMultiplexedTerminal | null = null
   let multiplexedStreamHandle: string | null = null
   let desiredViewport: { cols: number; rows: number } | null = null
   let storedCallbacks: Parameters<PtyTransport['connect']>[0]['callbacks'] = {}
-  let resubscribing = false
-  let resubscribeRequested = false
-  let subscriptionGeneration = 0
+  let bindingGeneration = 0
+  let recovering = false
+  let recoveryQueryRepliesEnabled = false
+  let recoveryLease: RemoteRuntimeTerminalRecoveryLease | null = null
+  let stagedRecoveryToken: object | null = null
   let pendingViewportClaim = false
   let pendingClaimInput = ''
   const viewportClaimReadyWaiters = new Set<(ready: boolean) => void>()
@@ -106,57 +111,31 @@ export function createRemoteRuntimePtyTransport(
   // Why: tab/leaf ids identify the mirrored host pane, so every paired viewer
   // shares them. The instance suffix keeps one viewer's refresh off peer records.
   const clientId = `desktop:${tabId ?? 'tab'}:${leafId ?? 'leaf'}:${createBrowserUuid()}`
-  const outputProcessor = createPtyOutputProcessor({
-    onTitleChange,
-    onBell,
-    onAgentBecameIdle,
-    onAgentBecameWorking,
-    onAgentExited,
-    onAgentStatus
-  })
+  const recoveryParticipantId = `remote-pty:${nextRemoteRuntimeRecoveryParticipantId++}`
+  const createRemoteOutputProcessor = () =>
+    createPtyOutputProcessor({
+      onTitleChange,
+      onBell,
+      onAgentBecameIdle,
+      onAgentBecameWorking,
+      onAgentExited,
+      onAgentStatus
+    })
+  let outputProcessor = createRemoteOutputProcessor()
 
   function findReadyHostSessionHandle(
     snapshot: RuntimeMobileSessionTabsResult,
     hostTabId: string
   ): string | null {
-    const terminalTabs = getHostSessionTerminalSurfaces(snapshot, hostTabId, {
-      matchRequestedLeaf: false
-    })
-    if (leafId) {
-      const requestedLeaf = terminalTabs.find(
-        (tab) => tab.status === 'ready' && tab.parentTabId === hostTabId && tab.leafId === leafId
-      )
-      return requestedLeaf?.terminal ?? null
-    }
-    const preferred =
-      terminalTabs.find(
-        (tab) => tab.status === 'ready' && tab.parentTabId === hostTabId && tab.isActive
-      ) ?? terminalTabs.find((tab) => tab.status === 'ready' && tab.parentTabId === hostTabId)
-    return preferred?.terminal ?? null
-  }
-
-  function getHostSessionTerminalSurfaces(
-    snapshot: RuntimeMobileSessionTabsResult,
-    hostTabId: string,
-    options: { matchRequestedLeaf: boolean }
-  ): RuntimeMobileSessionTerminalClientTab[] {
-    return snapshot.tabs.filter(
-      (tab): tab is RuntimeMobileSessionTerminalClientTab =>
-        tab.type === 'terminal' &&
-        (tab.parentTabId === hostTabId || tab.id === hostTabId) &&
-        (!options.matchRequestedLeaf || !leafId || tab.leafId === leafId)
-    )
+    const resolution = resolveRemoteRuntimeHostTerminal(snapshot, { hostTabId, leafId })
+    return resolution.kind === 'ready' ? resolution.handle : null
   }
 
   function hasHostSessionTerminalSurface(
     snapshot: RuntimeMobileSessionTabsResult,
     hostTabId: string
   ): boolean {
-    return (
-      getHostSessionTerminalSurfaces(snapshot, hostTabId, {
-        matchRequestedLeaf: true
-      }).length > 0
-    )
+    return resolveRemoteRuntimeHostTerminal(snapshot, { hostTabId, leafId }).kind !== 'gone'
   }
 
   async function waitForHostSessionHandle(hostTabId: string): Promise<string | null> {
@@ -199,16 +178,6 @@ export function createRemoteRuntimePtyTransport(
     return null
   }
 
-  async function listHostSessionHandle(hostTabId: string): Promise<string | null> {
-    if (!worktreeId) {
-      return null
-    }
-    const listed = await callRuntime<RuntimeMobileSessionTabsResult>('session.tabs.list', {
-      worktree: toRuntimeWorktreeSelector(worktreeId)
-    })
-    return findReadyHostSessionHandle(listed, hostTabId)
-  }
-
   async function attachHostSessionMirror(
     options: Parameters<PtyTransport['connect']>[0]
   ): Promise<PtyConnectResult | undefined> {
@@ -224,6 +193,7 @@ export function createRemoteRuntimePtyTransport(
       return undefined
     }
 
+    prepareBindingReplacement()
     handle = hostHandle
     remotePtyId = toRemoteRuntimePtyId(hostHandle, currentRuntimeEnvironmentId)
     connected = true
@@ -231,7 +201,7 @@ export function createRemoteRuntimePtyTransport(
       cols: options.cols ?? 80,
       rows: options.rows ?? 24
     }
-    onPtySpawn?.(remotePtyId)
+    invokeSafely(() => onPtySpawn?.(remotePtyId!))
 
     await subscribeToHandle()
     if (destroyed || !connected || !remotePtyId) {
@@ -268,14 +238,15 @@ export function createRemoteRuntimePtyTransport(
 
   async function sendInputAcceptedToRuntime(data: string): Promise<boolean> {
     const targetHandle = handle
-    if (!connected || !targetHandle) {
+    const targetGeneration = bindingGeneration
+    if (!connected || !targetHandle || recovering) {
       return false
     }
     if (!data) {
       return true
     }
     await inputBatcher.drain()
-    if (!connected || handle !== targetHandle) {
+    if (!isCurrentBinding(targetGeneration, targetHandle) || recovering) {
       return false
     }
     if (pendingViewportClaim && !getCurrentMultiplexedStream(targetHandle)) {
@@ -297,9 +268,12 @@ export function createRemoteRuntimePtyTransport(
     } catch {
       return false
     }
+    if (!isCurrentBinding(targetGeneration, targetHandle) || recovering) {
+      return false
+    }
     try {
       for (const chunk of iterateTerminalInputChunks(text)) {
-        if (!connected || handle !== targetHandle) {
+        if (!isCurrentBinding(targetGeneration, targetHandle) || recovering) {
           return false
         }
         // Why: acknowledged sends are ordered behind any pending debounce text,
@@ -314,18 +288,21 @@ export function createRemoteRuntimePtyTransport(
           return false
         }
       }
-      return true
+      return isCurrentBinding(targetGeneration, targetHandle) && !recovering
     } catch (error) {
       // Why: stale-handle errors must retire the mirror (recoverable via the
       // next snapshot) rather than dead-end in a red xterm banner (#7718).
-      handleRemoteTerminalError(error)
+      if (isCurrentBinding(targetGeneration, targetHandle) && !recovering) {
+        handleRemoteTerminalError(error)
+      }
       return false
     }
   }
 
   const inputBatcher = createRemoteRuntimePtyTextBatcher(REMOTE_TERMINAL_INPUT_FLUSH_MS, (text) => {
     const targetHandle = handle
-    if (!connected || !targetHandle) {
+    const targetGeneration = bindingGeneration
+    if (!connected || !targetHandle || recovering) {
       return
     }
     const stream = getCurrentMultiplexedStream(targetHandle)
@@ -344,13 +321,15 @@ export function createRemoteRuntimePtyTransport(
       client: { id: clientId, type: 'desktop' },
       ...(desiredViewport ? { viewport: desiredViewport, claimViewport: true as const } : {})
     }).catch((error) => {
-      handleRemoteTerminalError(error)
+      if (isCurrentBinding(targetGeneration, targetHandle) && !recovering) {
+        handleRemoteTerminalError(error)
+      }
     })
   })
 
   function sendViewportUpdate(cols: number, rows: number, claim = false): void {
     const targetHandle = handle
-    if (!connected || !targetHandle) {
+    if (!connected || !targetHandle || recovering) {
       return
     }
     const stream = getCurrentMultiplexedStream(targetHandle)
@@ -392,17 +371,33 @@ export function createRemoteRuntimePtyTransport(
     multiplexedStreamHandle = null
   }
 
-  function isCurrentRemoteTerminal(targetHandle: string, targetPtyId: string | null): boolean {
+  function isCurrentBinding(targetGeneration: number, targetHandle: string): boolean {
     return (
-      !destroyed &&
-      connected &&
-      handle === targetHandle &&
+      !destroyed && connected && bindingGeneration === targetGeneration && handle === targetHandle
+    )
+  }
+
+  function isCurrentRemoteTerminal(
+    targetGeneration: number,
+    targetHandle: string,
+    targetPtyId: string | null
+  ): boolean {
+    return (
+      isCurrentBinding(targetGeneration, targetHandle) &&
       remotePtyId === targetPtyId &&
       targetPtyId !== null
     )
   }
 
   function retireRemoteTerminalId(): void {
+    bindingGeneration += 1
+    recovering = false
+    recoveryQueryRepliesEnabled = false
+    stagedRecoveryToken = null
+    cancelRecoveryLease()
+    inputBatcher.clear()
+    viewportBatcher.clear()
+    outputProcessor.clearAccumulatedState()
     connected = false
     clearPendingViewportClaim()
     const stalePtyId = remotePtyId
@@ -410,8 +405,52 @@ export function createRemoteRuntimePtyTransport(
     remotePtyId = null
     closeMultiplexedStream()
     if (stalePtyId) {
-      onPtyExit?.(stalePtyId)
+      invokeSafely(() => onPtyExit?.(stalePtyId))
     }
+  }
+
+  function cancelRecoveryLease(): void {
+    const lease = recoveryLease
+    recoveryLease = null
+    if (lease) {
+      invokeSafely(lease.cancel)
+    }
+  }
+
+  function stopAfterEnvironmentTeardown(): void {
+    bindingGeneration += 1
+    recovering = false
+    recoveryQueryRepliesEnabled = false
+    stagedRecoveryToken = null
+    cancelRecoveryLease()
+    inputBatcher.clear()
+    viewportBatcher.clear()
+    outputProcessor.clearAccumulatedState()
+    connected = false
+    clearPendingViewportClaim()
+    closeMultiplexedStream()
+    invokeSafely(() => storedCallbacks.onDisconnect?.())
+  }
+
+  function prepareBindingReplacement(): void {
+    recoveryEnvironmentGeneration = getRemoteRuntimeTerminalRecoveryGeneration(
+      currentRuntimeEnvironmentId
+    )
+    bindingGeneration += 1
+    recovering = false
+    recoveryQueryRepliesEnabled = false
+    stagedRecoveryToken = null
+    cancelRecoveryLease()
+    inputBatcher.clear()
+    viewportBatcher.clear()
+    clearPendingViewportClaim()
+    replaceOutputProcessor()
+    closeMultiplexedStream()
+  }
+
+  function replaceOutputProcessor(): void {
+    outputProcessor.clearAccumulatedState()
+    outputProcessor = createRemoteOutputProcessor()
   }
 
   function handleRemoteTerminalError(error: unknown): void {
@@ -421,65 +460,270 @@ export function createRemoteRuntimePtyTransport(
       // flowing — informational, not fatal, so never surface a red xterm banner.
       return
     }
-    if (isRemoteTerminalGoneMessage(message)) {
+    if (findEmbeddedRemoteRuntimeTerminalGoneCode(message)) {
       // Why: paired web clients consume host-published PTY handles. If the host
       // retires one between snapshots, clear this mirror and wait for the next
       // session-tabs update instead of surfacing a red xterm error.
       retireRemoteTerminalId()
       return
     }
-    storedCallbacks.onError?.(message)
+    invokeSafely(() => storedCallbacks.onError?.(message))
   }
 
-  // Why: after a transport drop the host may have re-minted this pane's
-  // handle (reconnect, epoch or PTY change). Re-derive it from the current
-  // session snapshot instead of resubscribing the stale closure value, which
-  // would mirror (and type into) whatever PTY now sits behind it (#7718).
-  async function resubscribeAfterTransportClose(previousHandle: string): Promise<void> {
-    if (tabId && isWebTerminalSurfaceTabId(tabId)) {
-      const nextHandle = await listHostSessionHandle(toHostSessionTabId(tabId))
-      if (destroyed || !connected || handle !== previousHandle) {
-        return
+  function processRemoteData(
+    data: string,
+    meta: { seq?: number; rawLength?: number } | undefined,
+    isStillCurrent: () => boolean
+  ): void {
+    const deliveryProcessor = outputProcessor
+    deliveryProcessor.processData(data, storedCallbacks, undefined, meta)
+    clearInvalidatedOutputSideEffects(deliveryProcessor, isStillCurrent)
+  }
+
+  function processRemoteSnapshot(
+    data: string,
+    meta: { pendingEscapeTailAnsi?: string } | undefined,
+    isStillCurrent: () => boolean
+  ): void | Promise<void> {
+    // Why: a snapshot with no body can still carry a pending mid-escape tail
+    // that must be replayed so the next live chunk completes it. An empty
+    // authoritative snapshot must still clear stale mirror contents.
+    const deliveryProcessor = outputProcessor
+    const replayCompletion = deliveryProcessor.processData(data, storedCallbacks, {
+      replayingBufferedData: true,
+      suppressAttentionEvents: true,
+      ...(meta?.pendingEscapeTailAnsi ? { pendingEscapeTailAnsi: meta.pendingEscapeTailAnsi } : {})
+    })
+    clearInvalidatedOutputSideEffects(deliveryProcessor, isStillCurrent)
+    if (replayCompletion) {
+      return replayCompletion.finally(() => {
+        clearInvalidatedOutputSideEffects(deliveryProcessor, isStillCurrent)
+      })
+    }
+  }
+
+  function clearInvalidatedOutputSideEffects(
+    deliveryProcessor: ReturnType<typeof createPtyOutputProcessor>,
+    isStillCurrent: () => boolean
+  ): void {
+    if (!isStillCurrent()) {
+      // `processData` queues derived OSC/BEL work after delivering output. A
+      // reentrant attach invalidates that delivery, so discard its queued facts.
+      deliveryProcessor.clearAccumulatedState()
+    }
+  }
+
+  function endCurrentRemoteTerminal(
+    targetGeneration: number,
+    targetHandle: string,
+    targetPtyId: string | null
+  ): void {
+    if (!isCurrentRemoteTerminal(targetGeneration, targetHandle, targetPtyId)) {
+      return
+    }
+    bindingGeneration += 1
+    recovering = false
+    recoveryQueryRepliesEnabled = false
+    stagedRecoveryToken = null
+    cancelRecoveryLease()
+    inputBatcher.clear()
+    viewportBatcher.clear()
+    clearPendingViewportClaim()
+    outputProcessor.clearAccumulatedState()
+    connected = false
+    handle = null
+    remotePtyId = null
+    multiplexedStream = null
+    multiplexedStreamHandle = null
+    invokeSafely(() => storedCallbacks.onExit?.(0))
+    invokeSafely(() => storedCallbacks.onDisconnect?.())
+    if (targetPtyId) {
+      invokeSafely(() => onPtyExit?.(targetPtyId))
+    }
+  }
+
+  function startRecovery(
+    sourceGeneration: number,
+    sourceHandle: string,
+    sourcePtyId: string | null
+  ): void {
+    if (!isCurrentRemoteTerminal(sourceGeneration, sourceHandle, sourcePtyId)) {
+      return
+    }
+    if (
+      !isRemoteRuntimeTerminalRecoveryGenerationCurrent(
+        currentRuntimeEnvironmentId,
+        recoveryEnvironmentGeneration
+      )
+    ) {
+      stopAfterEnvironmentTeardown()
+      return
+    }
+    const recoveryBindingGeneration = ++bindingGeneration
+    recovering = true
+    recoveryQueryRepliesEnabled = false
+    stagedRecoveryToken = null
+    inputBatcher.clear()
+    viewportBatcher.clear()
+    clearPendingViewportClaim()
+    replaceOutputProcessor()
+    closeMultiplexedStream()
+    cancelRecoveryLease()
+    const hostMirror = Boolean(tabId && worktreeId && isWebTerminalSurfaceTabId(tabId))
+    const hostTabId = hostMirror && tabId ? toHostSessionTabId(tabId) : null
+    const participant = {
+      id: recoveryParticipantId,
+      worktreeId: hostMirror ? (worktreeId ?? null) : null,
+      resolveHandle: (snapshot: RemoteRuntimeTerminalRecoverySnapshot | null) => {
+        if (hostTabId) {
+          return snapshot
+            ? resolveRemoteRuntimeHostTerminal(snapshot, { hostTabId, leafId })
+            : { kind: 'pending' as const }
+        }
+        return { kind: 'ready' as const, handle: sourceHandle }
+      },
+      rebind: ({ handle: nextHandle, signal }: { handle: string; signal: AbortSignal }) =>
+        rebindRecoveredTerminal({
+          recoveryBindingGeneration,
+          nextHandle,
+          signal
+        }),
+      onGone: () => {
+        if (bindingGeneration === recoveryBindingGeneration && recovering) {
+          recoveryLease = null
+          retireRemoteTerminalId()
+        }
+      },
+      onFatal: (error: { code: string; message: string }) => {
+        if (bindingGeneration !== recoveryBindingGeneration || !recovering) {
+          return
+        }
+        recoveryLease = null
+        stagedRecoveryToken = null
+        recoveryQueryRepliesEnabled = false
+        invokeSafely(() => storedCallbacks.onError?.(error.message))
+      },
+      onDispose: () => {
+        if (bindingGeneration === recoveryBindingGeneration && recovering) {
+          stopAfterEnvironmentTeardown()
+        }
       }
-      if (!nextHandle) {
-        // Why: the host no longer publishes this surface; retire quietly and
-        // let the next session-tabs snapshot drive respawn/removal.
-        retireRemoteTerminalId()
-        return
-      }
-      if (nextHandle !== previousHandle) {
+    }
+    recoveryLease = beginRemoteRuntimeTerminalRecovery({
+      environmentId: currentRuntimeEnvironmentId,
+      participant
+    })
+  }
+
+  function rebindRecoveredTerminal(args: {
+    recoveryBindingGeneration: number
+    nextHandle: string
+    signal: AbortSignal
+  }): Promise<void> {
+    const token = {}
+    stagedRecoveryToken = token
+    recoveryQueryRepliesEnabled = false
+    let previousPtyId: string | null = null
+    let nextPtyId: string | null = null
+    let activatedStream: RemoteRuntimeMultiplexedTerminal | null = null
+    const isRecoveredBindingCurrent = (): boolean =>
+      activatedStream !== null &&
+      isCurrentRemoteTerminal(args.recoveryBindingGeneration, args.nextHandle, nextPtyId) &&
+      multiplexedStream === activatedStream &&
+      multiplexedStreamHandle === args.nextHandle
+    const promise = stageRemoteRuntimePtyRebind({
+      handle: args.nextHandle,
+      bindingGeneration: args.recoveryBindingGeneration,
+      signal: args.signal,
+      client: { id: clientId, type: 'desktop' },
+      viewport: desiredViewport,
+      subscribe: (subscription) =>
+        getRemoteRuntimeTerminalMultiplexer(currentRuntimeEnvironmentId).subscribeTerminal(
+          subscription
+        ),
+      canCommit: ({ bindingGeneration: candidateGeneration }) =>
+        !destroyed &&
+        connected &&
+        recovering &&
+        bindingGeneration === candidateGeneration &&
+        stagedRecoveryToken === token,
+      activate: ({ bindingGeneration: candidateGeneration, handle: nextHandle, stream }) => {
+        previousPtyId = remotePtyId
+        nextPtyId = toRemoteRuntimePtyId(nextHandle, currentRuntimeEnvironmentId)
+        if (multiplexedStream && multiplexedStream !== stream) {
+          closeMultiplexedStream()
+        }
         handle = nextHandle
-        remotePtyId = toRemoteRuntimePtyId(nextHandle, currentRuntimeEnvironmentId)
-        onPtySpawn?.(remotePtyId)
+        remotePtyId = nextPtyId
+        multiplexedStream = stream
+        multiplexedStreamHandle = nextHandle
+        bindingGeneration = candidateGeneration
+        activatedStream = stream
+      },
+      isActive: ({ bindingGeneration: candidateGeneration, handle: candidateHandle, stream }) =>
+        candidateGeneration === args.recoveryBindingGeneration &&
+        candidateHandle === args.nextHandle &&
+        stream === activatedStream &&
+        isRecoveredBindingCurrent(),
+      onReplayReady: () => {
+        if (isRecoveredBindingCurrent() && recovering) {
+          // Snapshot bytes stay reply-silent; only the following live-query replay gets authority.
+          recoveryQueryRepliesEnabled = true
+        }
+      },
+      onCommitted: (subscribedViewport) => {
+        const stream = getCurrentMultiplexedStream(args.nextHandle)
+        const stillCurrent = (): boolean =>
+          isCurrentRemoteTerminal(args.recoveryBindingGeneration, args.nextHandle, nextPtyId) &&
+          getCurrentMultiplexedStream(args.nextHandle) === stream
+        if (!stream || !stillCurrent()) {
+          return
+        }
+        recovering = false
+        recoveryQueryRepliesEnabled = false
+        recoveryLease = null
+        if (stream && desiredViewport && !sameViewport(desiredViewport, subscribedViewport)) {
+          // Why: a resize racing the subscribe handshake must converge on the
+          // committed stream, never fall back to the stale handle's RPC lane.
+          invokeSafely(() => stream.resize(desiredViewport!.cols, desiredViewport!.rows))
+        }
+        if (nextPtyId && nextPtyId !== previousPtyId) {
+          invokeSafely(() => onPtySpawn?.(nextPtyId!))
+        }
+        if (!stillCurrent()) {
+          return
+        }
+        invokeSafely(() => storedCallbacks.onConnect?.())
+        if (stillCurrent()) {
+          invokeSafely(() => storedCallbacks.onStatus?.('shell'))
+        }
+      },
+      onData: (data, meta) => processRemoteData(data, meta, isRecoveredBindingCurrent),
+      onSnapshot: (data, meta) => processRemoteSnapshot(data, meta, isRecoveredBindingCurrent),
+      onEnd: () =>
+        endCurrentRemoteTerminal(args.recoveryBindingGeneration, args.nextHandle, nextPtyId),
+      onError: handleRemoteTerminalError,
+      onFitOverrideChanged: (event) => {
+        if (nextPtyId) {
+          setFitOverride(nextPtyId, event.mode, event.cols, event.rows)
+        }
+      },
+      onDriverChanged: (driver) => {
+        if (nextPtyId) {
+          setDriverForPty(nextPtyId, driver)
+        }
+      },
+      onTransportClose: () =>
+        startRecovery(args.recoveryBindingGeneration, args.nextHandle, nextPtyId)
+    })
+    return promise.finally(() => {
+      if (recovering) {
+        recoveryQueryRepliesEnabled = false
       }
-    }
-    await subscribeToHandle()
-  }
-
-  function scheduleResubscribeAfterTransportClose(): void {
-    if (destroyed || !connected || !handle) {
-      return
-    }
-    if (resubscribing) {
-      resubscribeRequested = true
-      return
-    }
-    resubscribing = true
-    const resubscribeHandle = handle
-    void resubscribeAfterTransportClose(resubscribeHandle)
-      .catch((error) => {
-        if (!destroyed && connected && handle) {
-          clearPendingViewportClaim()
-          handleRemoteTerminalError(error)
-        }
-      })
-      .finally(() => {
-        resubscribing = false
-        if (resubscribeRequested) {
-          resubscribeRequested = false
-          scheduleResubscribeAfterTransportClose()
-        }
-      })
+      if (stagedRecoveryToken === token) {
+        stagedRecoveryToken = null
+      }
+    })
   }
 
   async function subscribeToHandle(): Promise<void> {
@@ -488,17 +732,14 @@ export function createRemoteRuntimePtyTransport(
     }
     const subscribedHandle = handle
     const subscribedPtyId = remotePtyId
-    const generation = ++subscriptionGeneration
-    let transportClosed = false
     // Why: the viewport we hand the subscribe request. A resize landing during
     // the round-trip falls back to the one-shot RPC, which is refresh-only (no
     // leak) and no-ops before the stream record exists — so replay the latest
     // remembered viewport through the stream once it's current (below).
     const subscribedViewport = desiredViewport
+    const subscribedGeneration = bindingGeneration
     const isCurrentSubscription = (): boolean =>
-      !transportClosed &&
-      generation === subscriptionGeneration &&
-      isCurrentRemoteTerminal(subscribedHandle, subscribedPtyId)
+      isCurrentRemoteTerminal(subscribedGeneration, subscribedHandle, subscribedPtyId)
     const nextStream = await getRemoteRuntimeTerminalMultiplexer(
       currentRuntimeEnvironmentId
     ).subscribeTerminal({
@@ -508,46 +749,23 @@ export function createRemoteRuntimePtyTransport(
       callbacks: {
         onData: (data, meta) => {
           if (isCurrentSubscription()) {
-            outputProcessor.processData(data, storedCallbacks, undefined, meta)
+            processRemoteData(data, meta, isCurrentSubscription)
           }
         },
         onSnapshot: (data, meta) => {
-          // Why: a snapshot with no body can still carry a pending mid-escape
-          // tail that must be replayed so the next live chunk completes it.
-          if ((data || meta?.pendingEscapeTailAnsi) && isCurrentSubscription()) {
-            outputProcessor.processData(data, storedCallbacks, {
-              replayingBufferedData: true,
-              suppressAttentionEvents: true,
-              ...(meta?.pendingEscapeTailAnsi
-                ? { pendingEscapeTailAnsi: meta.pendingEscapeTailAnsi }
-                : {})
-            })
+          if (isCurrentSubscription()) {
+            processRemoteSnapshot(data, meta, isCurrentSubscription)
           }
         },
         onSubscribed: () => {
           if (!isCurrentSubscription()) {
             return
           }
-          storedCallbacks.onConnect?.()
-          storedCallbacks.onStatus?.('shell')
+          invokeSafely(() => storedCallbacks.onConnect?.())
+          invokeSafely(() => storedCallbacks.onStatus?.('shell'))
         },
-        onEnd: () => {
-          if (!isCurrentSubscription()) {
-            return
-          }
-          outputProcessor.clearAccumulatedState()
-          connected = false
-          handle = null
-          remotePtyId = null
-          multiplexedStream = null
-          multiplexedStreamHandle = null
-          clearPendingViewportClaim()
-          storedCallbacks.onExit?.(0)
-          storedCallbacks.onDisconnect?.()
-          if (subscribedPtyId) {
-            onPtyExit?.(subscribedPtyId)
-          }
-        },
+        onEnd: () =>
+          endCurrentRemoteTerminal(subscribedGeneration, subscribedHandle, subscribedPtyId),
         onError: (message) => {
           if (isCurrentSubscription()) {
             handleRemoteTerminalError(message)
@@ -563,31 +781,11 @@ export function createRemoteRuntimePtyTransport(
             setDriverForPty(subscribedPtyId, driver)
           }
         },
-        onTransportClose: () => {
-          transportClosed = true
-          if (generation !== subscriptionGeneration) {
-            return
-          }
-          if (!isCurrentSubscription()) {
-            // isCurrentSubscription excludes the just-closed stream by design.
-            if (!isCurrentRemoteTerminal(subscribedHandle, subscribedPtyId)) {
-              return
-            }
-          }
-          multiplexedStream = null
-          multiplexedStreamHandle = null
-          scheduleResubscribeAfterTransportClose()
-        }
+        onTransportClose: () =>
+          startRecovery(subscribedGeneration, subscribedHandle, subscribedPtyId)
       }
     })
-    if (
-      transportClosed ||
-      generation !== subscriptionGeneration ||
-      destroyed ||
-      !connected ||
-      handle !== subscribedHandle ||
-      remotePtyId !== subscribedPtyId
-    ) {
+    if (!isCurrentRemoteTerminal(subscribedGeneration, subscribedHandle, subscribedPtyId)) {
       nextStream.close()
       return
     }
@@ -664,13 +862,15 @@ export function createRemoteRuntimePtyTransport(
           return
         }
 
+        prepareBindingReplacement()
+        handle = created.terminal.handle
         remotePtyId = toRemoteRuntimePtyId(handle, currentRuntimeEnvironmentId)
         connected = true
         desiredViewport = {
           cols: options.cols ?? 80,
           rows: options.rows ?? 24
         }
-        onPtySpawn?.(remotePtyId)
+        invokeSafely(() => onPtySpawn?.(remotePtyId!))
 
         await subscribeToHandle()
         if (destroyed || !connected || !remotePtyId) {
@@ -688,24 +888,24 @@ export function createRemoteRuntimePtyTransport(
     },
 
     attach(options) {
+      if (destroyed) {
+        return
+      }
       storedCallbacks = options.callbacks
       currentRuntimeEnvironmentId =
         getRemoteRuntimePtyEnvironmentId(options.existingPtyId) ?? runtimeEnvironmentId
-      const previousHandle = handle
+      prepareBindingReplacement()
       const nextHandle = getRemoteRuntimeTerminalHandle(options.existingPtyId)
-      if (previousHandle && previousHandle !== nextHandle) {
-        // Why: debounced input is scoped by the current terminal handle at flush time.
-        inputBatcher.clear()
-      }
       handle = nextHandle
       if (!handle) {
         connected = false
         remotePtyId = null
-        closeMultiplexedStream()
-        storedCallbacks.onError?.('Remote runtime terminal id is invalid.')
+        invokeSafely(() => storedCallbacks.onError?.('Remote runtime terminal id is invalid.'))
         return
       }
-      remotePtyId = options.existingPtyId
+      // Why: legacy restored ids omitted their runtime owner. Canonicalize at
+      // attach so renderer stores and lifecycle guards never share raw aliases.
+      remotePtyId = toRemoteRuntimePtyId(handle, currentRuntimeEnvironmentId)
       connected = true
       desiredViewport = {
         cols: options.cols ?? 80,
@@ -713,8 +913,9 @@ export function createRemoteRuntimePtyTransport(
       }
       const targetHandle = handle
       const targetPtyId = remotePtyId
+      const targetGeneration = bindingGeneration
       void subscribeToHandle().catch((error) => {
-        if (!isCurrentRemoteTerminal(targetHandle, targetPtyId)) {
+        if (!isCurrentRemoteTerminal(targetGeneration, targetHandle, targetPtyId)) {
           return
         }
         if (handle === targetHandle && multiplexedStreamHandle !== targetHandle) {
@@ -726,9 +927,13 @@ export function createRemoteRuntimePtyTransport(
     },
 
     disconnect() {
-      inputBatcher.flush()
+      bindingGeneration += 1
+      recovering = false
+      recoveryQueryRepliesEnabled = false
+      stagedRecoveryToken = null
+      cancelRecoveryLease()
       inputBatcher.clear()
-      viewportBatcher.flush()
+      viewportBatcher.clear()
       outputProcessor.clearAccumulatedState()
       if (!connected && !handle) {
         return
@@ -739,16 +944,20 @@ export function createRemoteRuntimePtyTransport(
       closeMultiplexedStream()
       handle = null
       remotePtyId = null
-      storedCallbacks.onDisconnect?.()
+      invokeSafely(() => storedCallbacks.onDisconnect?.())
       if (id) {
-        onPtyExit?.(id)
+        invokeSafely(() => onPtyExit?.(id))
       }
     },
 
     detach() {
-      inputBatcher.flush()
+      bindingGeneration += 1
+      recovering = false
+      recoveryQueryRepliesEnabled = false
+      stagedRecoveryToken = null
+      cancelRecoveryLease()
       inputBatcher.clear()
-      viewportBatcher.flush()
+      viewportBatcher.clear()
       outputProcessor.clearAccumulatedState()
       connected = false
       clearPendingViewportClaim()
@@ -757,7 +966,7 @@ export function createRemoteRuntimePtyTransport(
     },
 
     sendInput(data: string): boolean {
-      if (!connected || !handle) {
+      if (!connected || !handle || recovering) {
         return false
       }
       if (!data) {
@@ -776,7 +985,8 @@ export function createRemoteRuntimePtyTransport(
     // reply immediately without arming the debounce timer.
     sendInputImmediate(data: string): boolean {
       const targetHandle = handle
-      if (!connected || !targetHandle) {
+      const targetGeneration = bindingGeneration
+      if (!connected || !targetHandle || (recovering && !recoveryQueryRepliesEnabled)) {
         return false
       }
       if (!data) {
@@ -811,7 +1021,9 @@ export function createRemoteRuntimePtyTransport(
         client: { id: clientId, type: 'desktop' },
         ...(desiredViewport ? { viewport: desiredViewport, claimViewport: true as const } : {})
       }).catch((error) => {
-        handleRemoteTerminalError(error)
+        if (isCurrentBinding(targetGeneration, targetHandle) && !recovering) {
+          handleRemoteTerminalError(error)
+        }
       })
       return true
     },
@@ -823,6 +1035,9 @@ export function createRemoteRuntimePtyTransport(
         return false
       }
       rememberViewport(cols, rows)
+      if (recovering) {
+        return true
+      }
       viewportBatcher.clear()
       sendViewportUpdate(cols, rows, true)
       return true
@@ -833,6 +1048,9 @@ export function createRemoteRuntimePtyTransport(
         return false
       }
       rememberViewport(cols, rows)
+      if (recovering) {
+        return true
+      }
       if (meta?.claim) {
         viewportBatcher.clear()
         sendViewportUpdate(cols, rows, true)
@@ -856,8 +1074,12 @@ export function createRemoteRuntimePtyTransport(
       return null
     },
 
+    getRuntimeEnvironmentId() {
+      return currentRuntimeEnvironmentId
+    },
+
     async serializeBuffer(opts) {
-      if (!connected || !handle) {
+      if (!connected || !handle || recovering) {
         return null
       }
       return getCurrentMultiplexedStream(handle)?.serializeBuffer(opts) ?? null
@@ -869,5 +1091,20 @@ export function createRemoteRuntimePtyTransport(
       inputBatcher.clear()
       viewportBatcher.clear()
     }
+  }
+}
+
+function sameViewport(
+  left: { cols: number; rows: number } | null,
+  right: { cols: number; rows: number } | null
+): boolean {
+  return left?.cols === right?.cols && left?.rows === right?.rows
+}
+
+function invokeSafely(callback: () => void): void {
+  try {
+    callback()
+  } catch {
+    // Pane callbacks cannot break transport fencing or lifecycle cleanup.
   }
 }

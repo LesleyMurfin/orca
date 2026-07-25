@@ -25,6 +25,13 @@ type RuntimeEnvironmentSubscriptionEvent =
   | { subscriptionId: string; type: 'error'; code: string; message: string }
   | { subscriptionId: string; type: 'close' }
 
+type RuntimeEnvironmentSubscriptionStartResult =
+  | { ok: true; subscriptionId: string; requestId: string }
+  | {
+      ok: false
+      error: { code: string; message: string }
+    }
+
 type RuntimeEnvironmentSubscriptionIpc = {
   invoke: (channel: string, args: unknown) => Promise<unknown>
   send: (channel: string, args: unknown) => void
@@ -122,6 +129,26 @@ function createRuntimeEnvironmentSubscriptionId(): string {
   return `sub-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
+function normalizeRuntimeEnvironmentSubscriptionError(error: unknown): {
+  code: string
+  message: string
+} {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof error.code === 'string' &&
+    'message' in error &&
+    typeof error.message === 'string'
+  ) {
+    return { code: error.code, message: error.message }
+  }
+  return {
+    code: 'runtime_error',
+    message: error instanceof Error ? error.message : String(error)
+  }
+}
+
 export async function subscribeRuntimeEnvironmentFromPreload(
   ipc: RuntimeEnvironmentSubscriptionIpc,
   args: RuntimeEnvironmentSubscribeArgs,
@@ -136,18 +163,27 @@ export async function subscribeRuntimeEnvironmentFromPreload(
   const releaseCurrentSubscription = (): void => {
     releaseSubscription(ipc, dispatcher, subscriptionId)
   }
+  let result: RuntimeEnvironmentSubscriptionStartResult
   try {
-    const result = (await ipc.invoke('runtimeEnvironments:subscribe', {
+    result = (await ipc.invoke('runtimeEnvironments:subscribe', {
       ...args,
       subscriptionId
-    })) as { subscriptionId: string; requestId: string }
-    if (result.subscriptionId !== subscriptionId) {
-      releaseCurrentSubscription()
-      throw new Error('Runtime environment subscription id mismatch')
-    }
+    })) as RuntimeEnvironmentSubscriptionStartResult
   } catch (error) {
     releaseCurrentSubscription()
-    throw error
+    throw normalizeRuntimeEnvironmentSubscriptionError(error)
+  }
+  if (result.ok === false) {
+    releaseCurrentSubscription()
+    // Why: contextBridge clones plain data but drops custom Error properties.
+    throw { code: result.error.code, message: result.error.message }
+  }
+  if (result.subscriptionId !== subscriptionId) {
+    releaseCurrentSubscription()
+    throw {
+      code: 'runtime_error',
+      message: 'Runtime environment subscription id mismatch'
+    }
   }
 
   return {

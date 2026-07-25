@@ -511,6 +511,11 @@ describe('registerWorktreeHandlers', () => {
     expect(handlers['worktrees:resolveMrBase']).toBeDefined()
   })
 
+  it('clears the branch rename failure-output handler before re-registering IPC handlers', () => {
+    expect(removeHandlerMock).toHaveBeenCalledWith('worktrees:getBranchRenameFailureOutput')
+    expect(handlers['worktrees:getBranchRenameFailureOutput']).toBeDefined()
+  })
+
   it('prefetches the local default create base through the runtime refresh cache', async () => {
     const repo = {
       id: 'repo-1',
@@ -8421,6 +8426,45 @@ describe('registerWorktreeHandlers', () => {
     ).rejects.toThrow('ssh read failed')
 
     expect(fsProvider.writeFile).not.toHaveBeenCalled()
+  })
+
+  it('reads an issue-command override from the requested host when repo ids collide', async () => {
+    const localRepo = {
+      id: 'repo-shared',
+      path: '/local/repo',
+      displayName: 'local',
+      badgeColor: '#000',
+      addedAt: 0
+    }
+    const sshRepo = {
+      ...localRepo,
+      path: '/remote/repo',
+      displayName: 'ssh',
+      connectionId: 'conn-1'
+    }
+    const fsProvider = {
+      readFile: vi.fn(async (filePath: string) => {
+        if (filePath.endsWith('/.orca/issue-command')) {
+          return { content: 'remote command\n', isBinary: false }
+        }
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+      })
+    }
+    store.getRepos.mockReturnValue([localRepo, sshRepo])
+    store.getRepo.mockReturnValue(localRepo)
+    getSshFilesystemProviderMock.mockReturnValue(fsProvider)
+
+    await expect(
+      handlers['hooks:readIssueCommand'](null, {
+        repoId: 'repo-shared',
+        hostId: 'ssh:conn-1'
+      })
+    ).resolves.toMatchObject({
+      localContent: 'remote command',
+      effectiveContent: 'remote command',
+      source: 'local'
+    })
+    expect(fsProvider.readFile).toHaveBeenCalledWith('/remote/repo/.orca/issue-command')
   })
 
   it('creates remote .gitignore only when it is missing while writing SSH issue commands', async () => {

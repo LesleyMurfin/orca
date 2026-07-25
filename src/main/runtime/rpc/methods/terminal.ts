@@ -9,6 +9,7 @@ import {
 import { OptionalFiniteNumber, OptionalString, requiredString } from '../schemas'
 import type { DriverState, OrcaRuntimeService } from '../../orca-runtime'
 import {
+  TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR,
   TerminalStreamOpcode,
   decodeTerminalStreamJson,
   decodeTerminalStreamText,
@@ -67,6 +68,7 @@ type SnapshotFrameOptions = {
   source?: 'headless' | 'renderer'
   oscLinks?: TerminalOscLinkRange[]
   pendingEscapeTailAnsi?: string
+  queryReplayBarrier?: boolean
 }
 
 type SerializedSnapshot = {
@@ -97,6 +99,7 @@ type TerminalMultiplexStream = {
   ackOutput: boolean
   ackInFlightBytes: number
   supportsDesktopViewportClaims: boolean
+  supportsQueryReplayFrames: boolean
   desktopClaimTail: Promise<boolean>
   // Why: whether THIS stream registered a remote-desktop width driver, so
   // detach only unregisters what it registered — a passive (viewport-less)
@@ -105,13 +108,17 @@ type TerminalMultiplexStream = {
   remoteDesktopSubscriptionKey: string
   pendingRemoteDesktopViewport: { cols: number; rows: number } | null
   buffering: boolean
-  ackPendingOutput: TerminalOutputFrameChunk[]
+  ackPendingOutput: TerminalAckPendingFrame[]
   ackPendingOutputBytes: number
   ackPendingOutputOverflowed: boolean
   ackRecoverySnapshotInFlight: boolean
   pendingOutput: TerminalOutputChunk[]
   pendingOutputBytes: number
   pendingOutputOverflowed: boolean
+  pendingQueryScanState: TerminalReplyQueryScanState
+  pendingQuerySequences: TerminalReplyQuerySequence[]
+  pendingQueryChars: number
+  pendingQueryOverflowed: boolean
   // Why: the cols the mobile client last rewrapped to. Re-stream the full
   // scrollback only when a reflow actually changes the width.
   lastResizeCols: number | undefined
@@ -139,9 +146,18 @@ type TerminalOutputChunk = {
 type TerminalOutputMeta = { seq?: number; rawLength?: number; cwd?: string }
 
 type TerminalOutputFrameChunk = {
+  kind: 'output'
   bytes: Uint8Array<ArrayBufferLike>
   seq?: number
 }
+
+type TerminalAckPendingFrame =
+  | TerminalOutputFrameChunk
+  | {
+      kind: 'query-replay'
+      bytes: Uint8Array<ArrayBufferLike>
+      seq?: number
+    }
 
 function createTerminalOutputBatcher(onFlush: (data: string, meta?: TerminalOutputMeta) => void): {
   push: (data: string, meta?: TerminalOutputMeta) => void
@@ -227,7 +243,7 @@ function* iterateTerminalOutputFrameChunks(
   meta?: TerminalOutputMeta
 ): Generator<TerminalOutputFrameChunk> {
   if (!terminalStreamByteLengthExceeds(data, TERMINAL_STREAM_CHUNK_BYTES)) {
-    yield { bytes: encodeTerminalStreamText(data), seq: meta?.seq }
+    yield { kind: 'output', bytes: encodeTerminalStreamText(data), seq: meta?.seq }
     return
   }
   const rawLength = meta?.rawLength ?? data.length
@@ -259,11 +275,15 @@ function* iterateTerminalOutputFrameChunks(
       if (nextChunk) {
         if (shouldDelayFinalSeq) {
           if (delayedChunk) {
-            yield { bytes: encodeTerminalStreamText(delayedChunk.text) }
+            yield { kind: 'output', bytes: encodeTerminalStreamText(delayedChunk.text) }
           }
           delayedChunk = nextChunk
         } else {
-          yield { bytes: encodeTerminalStreamText(nextChunk.text), seq: nextChunk.seq }
+          yield {
+            kind: 'output',
+            bytes: encodeTerminalStreamText(nextChunk.text),
+            seq: nextChunk.seq
+          }
         }
       }
     }
@@ -277,17 +297,25 @@ function* iterateTerminalOutputFrameChunks(
     // UTF-16 offsets, only the final frame can safely carry the high-water mark.
     if (finalChunk) {
       if (delayedChunk) {
-        yield { bytes: encodeTerminalStreamText(delayedChunk.text) }
+        yield { kind: 'output', bytes: encodeTerminalStreamText(delayedChunk.text) }
       }
       delayedChunk = finalChunk
     }
     if (delayedChunk) {
-      yield { bytes: encodeTerminalStreamText(delayedChunk.text), seq: meta.seq }
+      yield {
+        kind: 'output',
+        bytes: encodeTerminalStreamText(delayedChunk.text),
+        seq: meta.seq
+      }
     }
     return
   }
   if (finalChunk) {
-    yield { bytes: encodeTerminalStreamText(finalChunk.text), seq: finalChunk.seq }
+    yield {
+      kind: 'output',
+      bytes: encodeTerminalStreamText(finalChunk.text),
+      seq: finalChunk.seq
+    }
   }
 }
 
@@ -392,6 +420,71 @@ function appendPendingMultiplexOutput(
   stream.pendingOutputOverflowed ||= trimmed.overflowed
 }
 
+function appendPendingMultiplexQueryReplay(
+  stream: TerminalMultiplexStream,
+  data: string,
+  meta?: TerminalOutputMeta
+): void {
+  if (
+    typeof meta?.seq !== 'number' ||
+    typeof meta.rawLength !== 'number' ||
+    meta.rawLength !== data.length
+  ) {
+    stream.pendingQueryScanState = EMPTY_TERMINAL_REPLY_QUERY_SCAN_STATE
+    return
+  }
+  const scan = scanTerminalReplyQuerySequences(
+    data,
+    meta.seq - meta.rawLength,
+    stream.pendingQueryScanState
+  )
+  stream.pendingQueryScanState = scan.state
+  for (const query of scan.queries) {
+    if (stream.pendingQueryChars + query.data.length > TERMINAL_QUERY_REPLAY_MAX_CHARS) {
+      stream.pendingQueryOverflowed = true
+      break
+    }
+    stream.pendingQuerySequences.push(query)
+    stream.pendingQueryChars += query.data.length
+  }
+}
+
+function takePendingMultiplexQueryReplay(
+  stream: TerminalMultiplexStream,
+  snapshotOutputSeq: number | undefined,
+  outputOverflowed: boolean
+): {
+  data: string
+  sequences: TerminalReplyQuerySequence[]
+  coveredThroughSeq: number | undefined
+} {
+  const sequences = stream.pendingQuerySequences.slice()
+  const replaySequences = stream.pendingQueryOverflowed
+    ? []
+    : sequences.filter(
+        (query) =>
+          outputOverflowed ||
+          (typeof snapshotOutputSeq === 'number' && query.startSeq < snapshotOutputSeq)
+      )
+  const data = replaySequences.map((query) => query.data).join('')
+  const latestQuerySeq = replaySequences.at(-1)?.endSeq
+  const coveredThroughSeq =
+    typeof snapshotOutputSeq === 'number'
+      ? Math.max(snapshotOutputSeq, latestQuerySeq ?? snapshotOutputSeq)
+      : data
+        ? latestQuerySeq
+        : undefined
+  resetPendingMultiplexQueryReplay(stream)
+  return { data, sequences: replaySequences, coveredThroughSeq }
+}
+
+function resetPendingMultiplexQueryReplay(stream: TerminalMultiplexStream): void {
+  stream.pendingQueryScanState = EMPTY_TERMINAL_REPLY_QUERY_SCAN_STATE
+  stream.pendingQuerySequences.length = 0
+  stream.pendingQueryChars = 0
+  stream.pendingQueryOverflowed = false
+}
+
 function getOutputAfterSnapshotSeq(
   chunk: TerminalOutputChunk,
   snapshotSeq: number | undefined
@@ -436,23 +529,54 @@ function stripSnapshotBoundaryQuerySuffixes(
   return output + data.slice(offset)
 }
 
-function appendAckPendingOutput(
+function getPendingMultiplexOutputAfterSnapshot(
+  chunk: TerminalOutputChunk,
+  snapshotSeq: number | undefined,
+  queries: TerminalReplyQuerySequence[]
+): string | null {
+  const uncoveredData = getOutputAfterSnapshotSeq(chunk, snapshotSeq)
+  if (
+    !uncoveredData ||
+    typeof snapshotSeq !== 'number' ||
+    typeof chunk.meta?.seq !== 'number' ||
+    typeof chunk.meta.rawLength !== 'number'
+  ) {
+    return uncoveredData
+  }
+  const dataStartSeq = Math.max(chunk.meta.seq - chunk.meta.rawLength, snapshotSeq)
+  return stripSnapshotBoundaryQuerySuffixes(uncoveredData, dataStartSeq, snapshotSeq, queries)
+}
+
+function appendAckPendingFrame(
   stream: TerminalMultiplexStream,
-  chunk: TerminalOutputFrameChunk
+  frame: TerminalAckPendingFrame
 ): void {
-  stream.ackPendingOutput.push(chunk)
-  stream.ackPendingOutputBytes += chunk.bytes.byteLength
+  stream.ackPendingOutput.push(frame)
+  stream.ackPendingOutputBytes += frame.bytes.byteLength
   let omittedChunkCount = 0
+  let omittedOutput = false
+  const retainedControlFrames: TerminalAckPendingFrame[] = []
   while (
     stream.ackPendingOutputBytes > TERMINAL_MULTIPLEX_PENDING_MAX_BYTES &&
     omittedChunkCount < stream.ackPendingOutput.length
   ) {
-    stream.ackPendingOutputBytes -= stream.ackPendingOutput[omittedChunkCount]!.bytes.byteLength
+    const omitted = stream.ackPendingOutput[omittedChunkCount]!
+    if (omitted.kind === 'output') {
+      stream.ackPendingOutputBytes -= omitted.bytes.byteLength
+      omittedOutput = true
+    } else {
+      // Query replay controls must survive an overflow recovery snapshot so
+      // their data and final barrier retain order around the covered Output.
+      retainedControlFrames.push(omitted)
+    }
     omittedChunkCount += 1
   }
   if (omittedChunkCount > 0) {
-    stream.ackPendingOutput.splice(0, omittedChunkCount)
-    stream.ackPendingOutputOverflowed = true
+    stream.ackPendingOutput = [
+      ...retainedControlFrames,
+      ...stream.ackPendingOutput.slice(omittedChunkCount)
+    ]
+    stream.ackPendingOutputOverflowed ||= omittedOutput
   }
 }
 
@@ -599,6 +723,7 @@ function sendSnapshotFrames(
       source: options.source,
       oscLinks: options.oscLinks,
       pendingEscapeTailAnsi: options.pendingEscapeTailAnsi,
+      queryReplayBarrier: options.queryReplayBarrier === true,
       truncated: options.truncated === true,
       truncatedByByteBudget: options.truncatedByByteBudget === true
     })
@@ -924,7 +1049,8 @@ const TerminalMultiplexSubscribeFrame = TerminalHandle.extend({
   capabilities: z
     .object({
       ackOutput: z.literal(1).optional(),
-      desktopViewportClaims: z.literal(1).optional()
+      desktopViewportClaims: z.literal(1).optional(),
+      queryReplayFrames: z.literal(1).optional()
     })
     .optional()
 })
@@ -1507,6 +1633,25 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
         sendFrame(streamId, TerminalStreamOpcode.Error, encodeTerminalStreamText(message))
         emit({ type: 'error', streamId, message })
       }
+      const sendMultiplexQueryReplay = (
+        stream: TerminalMultiplexStream,
+        replay: ReturnType<typeof takePendingMultiplexQueryReplay>
+      ): void => {
+        if (!replay.data) {
+          return
+        }
+        if (stream.supportsQueryReplayFrames) {
+          // Why: this is replay data, not the completion marker. Snapshot-
+          // buffered Output must remain ordered between this frame and the barrier.
+          appendAckPendingFrame(stream, {
+            kind: 'query-replay',
+            bytes: encodeTerminalStreamText(replay.data),
+            seq: replay.coveredThroughSeq
+          })
+          return
+        }
+        stream.outputBatcher.push(replay.data)
+      }
       const sendResizedFrame = (
         stream: TerminalMultiplexStream,
         event: { cols: number; rows: number; displayMode: string; reason: string; seq?: number }
@@ -1555,7 +1700,7 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
           stream.ackPendingOutput.length > 0 ||
           !canSendAckGatedOutput(stream, chunk.bytes.byteLength)
         ) {
-          appendAckPendingOutput(stream, chunk)
+          appendAckPendingFrame(stream, chunk)
           return
         }
         sendAckGatedOutput(stream, chunk)
@@ -1598,7 +1743,9 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
             // already contained in it; replaying them would duplicate output.
             const snapshotSeq = serialized.seq
             const retained = stream.ackPendingOutput.filter(
-              (chunk) => !(typeof chunk.seq === 'number' && chunk.seq <= snapshotSeq)
+              (frame) =>
+                frame.kind !== 'output' ||
+                !(typeof frame.seq === 'number' && frame.seq <= snapshotSeq)
             )
             stream.ackPendingOutput = retained
             stream.ackPendingOutputBytes = retained.reduce(
@@ -1625,11 +1772,21 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
           return
         }
         let flushed = 0
-        while (
-          flushed < stream.ackPendingOutput.length &&
-          canSendAckGatedOutput(stream, stream.ackPendingOutput[flushed]!.bytes.byteLength)
-        ) {
-          sendAckGatedOutput(stream, stream.ackPendingOutput[flushed]!)
+        while (flushed < stream.ackPendingOutput.length) {
+          const frame = stream.ackPendingOutput[flushed]!
+          if (frame.kind === 'output') {
+            if (!canSendAckGatedOutput(stream, frame.bytes.byteLength)) {
+              break
+            }
+            sendAckGatedOutput(stream, frame)
+          } else {
+            sendFrame(
+              stream.streamId,
+              TerminalStreamOpcode.QueryReplay,
+              frame.bytes,
+              frame.seq ?? 0
+            )
+          }
           flushed += 1
         }
         if (flushed > 0) {
@@ -1639,6 +1796,24 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
             0
           )
         }
+      }
+      const queueMultiplexQueryReplayBarrier = (
+        stream: TerminalMultiplexStream,
+        coveredThroughSeq: number | undefined
+      ): void => {
+        if (!stream.supportsQueryReplayFrames) {
+          return
+        }
+        // Why: share the ACK-ordered queue with Output. A direct control frame
+        // could otherwise overtake snapshot-buffered bytes waiting for credit.
+        appendAckPendingFrame(stream, {
+          kind: 'query-replay',
+          bytes: new Uint8Array(),
+          seq: coveredThroughSeq
+        })
+        // Why: a retry can inherit query tracking from its overflowed window,
+        // so the barrier itself must start recovery even when no ACK can arrive.
+        flushAckPendingOutput(stream)
       }
       const flushAllAckPendingOutput = (): void => {
         for (const stream of streams.values()) {
@@ -1696,6 +1871,16 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
         if (emitEnd) {
           emit({ type: 'end', streamId })
         }
+      }
+      const resetOverflowedQueryReplayStream = (stream: TerminalMultiplexStream): boolean => {
+        if (!stream.supportsQueryReplayFrames || !stream.pendingQueryOverflowed) {
+          return false
+        }
+        // Why: a partial query replay can corrupt terminal replies. Reset only
+        // this capable stream so its recovery coordinator can subscribe again.
+        sendStreamError(stream.streamId, TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR.code)
+        detachStream(stream.streamId, false)
+        return true
       }
       const closeMultiplex = (): void => {
         if (closed) {
@@ -1860,8 +2045,10 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
         }
         stream.outputBatcher.flush()
         stream.pendingOutputOverflowed = false
+        resetPendingMultiplexQueryReplay(stream)
         stream.buffering = true
         const requestId = request.requestId
+        let snapshotOutputSeq: number | undefined
         try {
           const scrollbackRows = normalizeMultiplexSnapshotScrollbackRows(request.scrollbackRows)
           let serialized = await serializeBudgetedRequestedSnapshot(
@@ -1891,12 +2078,16 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
             size = runtime.getTerminalSize(stream.ptyId)
             displayMode = runtime.getMobileDisplayMode(stream.ptyId)
             if (stream.pendingOutputOverflowed) {
+              if (resetOverflowedQueryReplayStream(stream)) {
+                return
+              }
               sendSnapshotFrames((opcode, payload) => sendFrame(stream.streamId, opcode, payload), {
                 kind: 'scrollback',
                 cols: size?.cols ?? 80,
                 rows: size?.rows ?? 24,
                 requestId,
                 displayMode,
+                queryReplayBarrier: stream.supportsQueryReplayFrames,
                 truncated: true,
                 truncatedByByteBudget: false,
                 data: ''
@@ -1904,12 +2095,17 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
               return
             }
           }
+          if (resetOverflowedQueryReplayStream(stream)) {
+            return
+          }
+          snapshotOutputSeq = serialized?.seq
           sendSnapshotFrames((opcode, payload) => sendFrame(stream.streamId, opcode, payload), {
             kind: 'scrollback',
             cols: serialized?.cols ?? size?.cols ?? 80,
             rows: serialized?.rows ?? size?.rows ?? 24,
             requestId,
             displayMode,
+            queryReplayBarrier: stream.supportsQueryReplayFrames,
             seq: serialized?.seq,
             cwd: serialized?.cwd,
             source: serialized?.source,
@@ -1927,16 +2123,30 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
         } finally {
           if (streams.get(stream.streamId) === stream) {
             const shouldFlushPendingOutput = !stream.pendingOutputOverflowed
-            stream.buffering = false
             const pendingOutput = stream.pendingOutput.splice(0)
+            const queryReplay = takePendingMultiplexQueryReplay(
+              stream,
+              snapshotOutputSeq,
+              stream.pendingOutputOverflowed
+            )
+            stream.buffering = false
+            sendMultiplexQueryReplay(stream, queryReplay)
             if (shouldFlushPendingOutput) {
               for (const chunk of pendingOutput) {
-                stream.outputBatcher.push(chunk.data, chunk.meta)
+                const uncoveredData = getPendingMultiplexOutputAfterSnapshot(
+                  chunk,
+                  snapshotOutputSeq,
+                  queryReplay.sequences
+                )
+                if (uncoveredData) {
+                  stream.outputBatcher.push(uncoveredData, chunk.meta)
+                }
               }
             }
             stream.pendingOutputBytes = 0
             stream.pendingOutputOverflowed = false
             stream.outputBatcher.flush()
+            queueMultiplexQueryReplayBarrier(stream, queryReplay.coveredThroughSeq)
             // Why: a viewer resize that arrived during the snapshot buffering
             // window is parked in pendingRemoteDesktopViewport; apply it now or
             // it is silently dropped until the viewer's next resize.
@@ -2021,6 +2231,7 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
           ackOutput: request.capabilities?.ackOutput === 1,
           ackInFlightBytes: 0,
           supportsDesktopViewportClaims: request.capabilities?.desktopViewportClaims === 1,
+          supportsQueryReplayFrames: request.capabilities?.queryReplayFrames === 1,
           desktopClaimTail: Promise.resolve(true),
           registeredRemoteDesktopDriver: false,
           // Why: streamId is client-local, so two remote connections can both
@@ -2037,6 +2248,10 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
           pendingOutput: [],
           pendingOutputBytes: 0,
           pendingOutputOverflowed: false,
+          pendingQueryScanState: EMPTY_TERMINAL_REPLY_QUERY_SCAN_STATE,
+          pendingQuerySequences: [],
+          pendingQueryChars: 0,
+          pendingQueryOverflowed: false,
           lastResizeCols: undefined,
           resizeGeneration: 0,
           outputBatcher: createTerminalOutputBatcher((data, meta) => {
@@ -2070,6 +2285,7 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
               return
             }
             if (stream.buffering) {
+              appendPendingMultiplexQueryReplay(stream, data, meta)
               appendPendingMultiplexOutput(stream, data, meta)
               return
             }
@@ -2162,6 +2378,9 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
               stream.pendingOutputOverflowed = false
             }
           }
+          if (resetOverflowedQueryReplayStream(stream)) {
+            return
+          }
           const size = runtime.getTerminalSize(ptyId)
           const displayMode = runtime.getMobileDisplayMode(ptyId)
           const layoutSeq = runtime.getLayout(ptyId)?.seq
@@ -2203,6 +2422,7 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
             cols: serialized?.cols ?? size?.cols ?? 80,
             rows: serialized?.rows ?? size?.rows ?? 24,
             displayMode,
+            queryReplayBarrier: stream.supportsQueryReplayFrames,
             seq: snapshotFrameSeq,
             cwd: serialized?.cwd,
             truncated:
@@ -2219,9 +2439,21 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
           stream.lastResizeCols = serialized?.cols ?? size?.cols
           stream.buffering = false
           const pendingOutput = stream.pendingOutput.splice(0)
+          const queryReplay = takePendingMultiplexQueryReplay(
+            stream,
+            snapshotOutputSeq,
+            initialOutputOverflowed
+          )
+          // Serialized snapshots omit queries. Re-emit only covered live queries
+          // after replay so the newly authoritative remote xterm answers once.
+          sendMultiplexQueryReplay(stream, queryReplay)
           if (!initialOutputOverflowed) {
             for (const chunk of pendingOutput) {
-              const uncoveredData = getOutputAfterSnapshotSeq(chunk, snapshotOutputSeq)
+              const uncoveredData = getPendingMultiplexOutputAfterSnapshot(
+                chunk,
+                snapshotOutputSeq,
+                queryReplay.sequences
+              )
               if (uncoveredData) {
                 stream.outputBatcher.push(uncoveredData, chunk.meta)
               }
@@ -2230,6 +2462,7 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
           stream.pendingOutputBytes = 0
           stream.pendingOutputOverflowed = false
           stream.outputBatcher.flush()
+          queueMultiplexQueryReplayBarrier(stream, queryReplay.coveredThroughSeq)
           stream.unsubscribeResize = runtime.subscribeToTerminalResize(ptyId, (event) => {
             stream.outputBatcher.flush()
             const resizeGeneration = stream.resizeGeneration + 1

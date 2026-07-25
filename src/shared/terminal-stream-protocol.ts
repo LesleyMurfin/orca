@@ -2,6 +2,11 @@ const TERMINAL_STREAM_KIND = 0x74
 const TERMINAL_STREAM_VERSION = 1
 const HEADER_BYTES = 16
 
+export const TERMINAL_QUERY_REPLAY_OVERFLOW_ERROR = {
+  code: 'terminal_query_replay_overflow',
+  message: 'Remote terminal query replay exceeded its recovery buffer.'
+} as const
+
 export enum TerminalStreamOpcode {
   Output = 1,
   SnapshotStart = 2,
@@ -20,7 +25,10 @@ export enum TerminalStreamOpcode {
   Ack = 13,
   // Why 14: Ack already occupies 13 on current clients; older runtimes ignore
   // this opcode and still receive the compatibility Resize frame behind it.
-  ClaimViewport = 14
+  ClaimViewport = 14,
+  // Why 15: snapshot replay queries are synthetic bytes, not part of the PTY
+  // sequence span carried by Output frames. A distinct opcode preserves both.
+  QueryReplay = 15
 }
 
 export type TerminalStreamFrame = {
@@ -102,6 +110,7 @@ function isTerminalStreamOpcode(value: number): value is TerminalStreamOpcode {
     value === TerminalStreamOpcode.SnapshotRequest ||
     value === TerminalStreamOpcode.Metadata ||
     value === TerminalStreamOpcode.Ack ||
-    value === TerminalStreamOpcode.ClaimViewport
+    value === TerminalStreamOpcode.ClaimViewport ||
+    value === TerminalStreamOpcode.QueryReplay
   )
 }

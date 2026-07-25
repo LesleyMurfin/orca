@@ -1,9 +1,17 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { registerSystemResumeBroadcast, SYSTEM_RESUMED_CHANNEL } from './system-resume-broadcast'
+
+const { retryRemoteRuntimeSharedControlConnectionsNowMock } = vi.hoisted(() => ({
+  retryRemoteRuntimeSharedControlConnectionsNowMock: vi.fn()
+}))
 
 vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: vi.fn(() => []) },
   powerMonitor: { on: vi.fn(), off: vi.fn() }
+}))
+
+vi.mock('./ipc/runtime-environment-request-connections', () => ({
+  retryRemoteRuntimeSharedControlConnectionsNow: retryRemoteRuntimeSharedControlConnectionsNowMock
 }))
 
 type ResumeListener = () => void
@@ -32,6 +40,22 @@ function createWindow(destroyed = false): {
 }
 
 describe('registerSystemResumeBroadcast', () => {
+  beforeEach(() => {
+    retryRemoteRuntimeSharedControlConnectionsNowMock.mockClear()
+  })
+
+  it('retries shared-control recovery even when no terminal window is visible', () => {
+    const { source, fireResume } = createResumeSource()
+    registerSystemResumeBroadcast({
+      resumeSource: source,
+      getWindows: () => []
+    })
+
+    fireResume()
+
+    expect(retryRemoteRuntimeSharedControlConnectionsNowMock).toHaveBeenCalledOnce()
+  })
+
   it('broadcasts the resume channel to every live window', () => {
     const { source, fireResume } = createResumeSource()
     const liveWindow = createWindow()

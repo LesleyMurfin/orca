@@ -1497,7 +1497,13 @@ export type RepoSlice = {
   // id exists on multiple hosts; without it the focused host is assumed.
   removeProject: (projectId: string, options?: { hostId?: ExecutionHostId }) => Promise<void>
   updateProject: (projectId: string, updates: ProjectUpdate) => Promise<boolean>
-  updateRepo: (projectId: string, updates: RepoUpdate) => Promise<boolean>
+  // options.hostId targets a specific host's repo row + RPC target when the same
+  // repo id exists on multiple hosts; without it the focused host is assumed.
+  updateRepo: (
+    projectId: string,
+    updates: RepoUpdate,
+    options?: { hostId?: ExecutionHostId }
+  ) => Promise<boolean>
   setActiveRepo: (projectId: string | null) => void
   reorderRepos: (orderedIds: string[]) => Promise<void>
 }
@@ -2794,7 +2800,6 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
       // Kill PTYs for all worktrees belonging to this repo
       const worktreeIds = getKnownRepoWorktreeIds(get(), projectId, ownerHostId)
       const killedTabIds = new Set<string>()
-      const killedPtyIds = new Set<string>()
       if (target.kind === 'environment') {
         await Promise.allSettled(
           worktreeIds.map((worktreeId) =>
@@ -2812,7 +2817,6 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
         for (const tab of tabs) {
           killedTabIds.add(tab.id)
           for (const ptyId of get().ptyIdsByTabId[tab.id] ?? []) {
-            killedPtyIds.add(ptyId)
             if (!ptyId.startsWith('remote:')) {
               window.api.pty.kill(ptyId)
             }
@@ -2853,7 +2857,6 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
         const nextLayouts = { ...s.terminalLayoutsByTabId }
         const nextPtyIdsByTabId = { ...s.ptyIdsByTabId }
         const nextRuntimePaneTitlesByTabId = { ...s.runtimePaneTitlesByTabId }
-        const nextSuppressedPtyExitIds = { ...s.suppressedPtyExitIds }
         for (const wId of worktreeIds) {
           delete nextTabs[wId]
         }
@@ -2861,9 +2864,6 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
           delete nextLayouts[tabId]
           delete nextPtyIdsByTabId[tabId]
           delete nextRuntimePaneTitlesByTabId[tabId]
-        }
-        for (const ptyId of killedPtyIds) {
-          nextSuppressedPtyExitIds[ptyId] = true
         }
         // Why: editor state is worktree-scoped. Removing a repo must also
         // remove open editor files and per-worktree active-file tracking for
@@ -2918,7 +2918,6 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
           tabsByWorktree: nextTabs,
           ptyIdsByTabId: nextPtyIdsByTabId,
           runtimePaneTitlesByTabId: nextRuntimePaneTitlesByTabId,
-          suppressedPtyExitIds: nextSuppressedPtyExitIds,
           terminalLayoutsByTabId: nextLayouts,
           activeTabId: s.activeTabId && killedTabIds.has(s.activeTabId) ? null : s.activeTabId,
           openFiles: nextOpenFiles,
@@ -2985,14 +2984,22 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
     }
   },
 
-  updateRepo: async (projectId, updates) => {
+  updateRepo: async (projectId, updates, options) => {
     const updateRepoChains = getRepoUpdateChains(get)
-    const ownerRepo = findRepoForHost(get().repos, projectId, { settings: get().settings })
+    // Why: pass options.hostId so a duplicate repo id across hosts resolves to the
+    // intended row instead of findRepoForHost's settings-focused fallback.
+    const ownerRepo = findRepoForHost(get().repos, projectId, {
+      settings: get().settings,
+      hostId: options?.hostId
+    })
     if (!ownerRepo) {
       return false
     }
+    // Why: an explicit hostId is authoritative — treat it as an explicit host so
+    // routing goes to that host's target (local IPC or its runtime RPC) rather
+    // than the currently-focused runtime, which is the same-id/self-pair case.
     const ownerHasExplicitHost = Boolean(
-      ownerRepo.executionHostId?.trim() || ownerRepo.connectionId?.trim()
+      options?.hostId || ownerRepo.executionHostId?.trim() || ownerRepo.connectionId?.trim()
     )
     const explicitOwnerHostId = getRepoExecutionHostId(ownerRepo)
     const ownerTarget = ownerHasExplicitHost

@@ -129,6 +129,32 @@ export function finishSharedControlSubscription(
   }
 }
 
+export function finishSharedControlSubscriptions(
+  subscriptions: Map<string, SharedControlLogicalSubscription<unknown>>,
+  notifyClose: boolean,
+  error?: RemoteRuntimeClientError
+): void {
+  const finished: SharedControlLogicalSubscription<unknown>[] = []
+  for (const subscription of Array.from(subscriptions.values())) {
+    if (subscription.closed) {
+      continue
+    }
+    subscription.closed = true
+    subscriptions.delete(subscription.requestId)
+    finished.push(subscription)
+  }
+  // Why: fatal callbacks may throw or synchronously close the connection. All
+  // owners are detached first and each notification is isolated from the rest.
+  for (const subscription of finished) {
+    if (error) {
+      invokeSharedControlSubscriptionCallback(() => subscription.callbacks.onError(error))
+    }
+    if (notifyClose && subscription.callbacks.onClose) {
+      invokeSharedControlSubscriptionCallback(subscription.callbacks.onClose)
+    }
+  }
+}
+
 export function resolveSharedControlReadyWaiters(waiters: SharedControlReadyWaiter[]): void {
   for (const waiter of waiters.splice(0)) {
     waiter.resolve()
@@ -204,9 +230,9 @@ export function scheduleSharedControlReconnect(args: {
   if (args.current || args.intentionallyClosed) {
     return { timer: args.current, reconnectAttempt: args.reconnectAttempt }
   }
-  const delay = withReconnectJitter(
-    args.delaysMs[Math.min(args.reconnectAttempt, args.delaysMs.length - 1)]
-  )
+  const maximumDelayMs = args.delaysMs.at(-1)!
+  const baseDelayMs = args.delaysMs[Math.min(args.reconnectAttempt, args.delaysMs.length - 1)]
+  const delay = Math.min(withReconnectJitter(baseDelayMs, maximumDelayMs), maximumDelayMs)
   const timer = setTimeout(args.open, delay)
   if (typeof timer.unref === 'function') {
     timer.unref()
@@ -214,9 +240,18 @@ export function scheduleSharedControlReconnect(args: {
   return { timer, reconnectAttempt: args.reconnectAttempt + 1 }
 }
 
-function withReconnectJitter(delayMs: number): number {
+function withReconnectJitter(delayMs: number, maximumDelayMs: number): number {
   // Why: when a remote host restarts, all passive subscriptions reconnect
-  // together. A small one-sided jitter avoids synchronized retry spikes.
-  const jitterMs = Math.floor(delayMs * 0.2 * Math.random())
-  return delayMs + jitterMs
+  // together. At saturation the same 20% window shifts below the hard cap.
+  const jitterSpanMs = Math.floor(delayMs * 0.2)
+  const windowStartMs = Math.min(delayMs, Math.max(0, maximumDelayMs - jitterSpanMs))
+  return windowStartMs + Math.floor(jitterSpanMs * Math.random())
+}
+
+function invokeSharedControlSubscriptionCallback(callback: () => void): void {
+  try {
+    callback()
+  } catch {
+    // Subscriber cleanup is best-effort; one consumer cannot starve the rest.
+  }
 }

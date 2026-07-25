@@ -55,6 +55,10 @@ import { EMPTY_PTY_MAIN_DELIVERY_DIAGNOSTICS } from '../../../shared/pty-deliver
 import { createE2EConfig } from '../../../shared/e2e-config'
 import { relativePathInsideRoot } from '../../../shared/cross-platform-path'
 import {
+  applyPRBotAuthorOverride,
+  normalizePRBotAuthorOverrides
+} from '../../../shared/pr-bot-author-overrides'
+import {
   LOCAL_EXECUTION_HOST_ID,
   normalizeExecutionHostScope,
   normalizeExecutionHostId,
@@ -121,6 +125,7 @@ import {
 import { normalizeContextualTourIds, type ContextualTourId } from '../../../shared/contextual-tours'
 import { translate } from '@/i18n/i18n'
 import { getDefaultCreateProjectParent } from '@/components/sidebar/create-project-defaults'
+import { cancelRemoteRuntimeTerminalRecoveriesForEnvironment } from '../runtime/remote-runtime-terminal-recovery-coordinator'
 
 const SETTINGS_STORAGE_KEY = 'orca.web.settings.v1'
 const UI_STORAGE_KEY = 'orca.web.ui.v1'
@@ -590,6 +595,7 @@ function createWebPreloadApi(): Partial<PreloadApi> {
         writeJson(SETTINGS_STORAGE_KEY, next)
         return syncRuntimeBackedSettings(sanitizedUpdates, next)
       },
+      updatePRBotAuthorOverride: (args) => updateRuntimePRBotAuthorOverride(args),
       listFonts: () => Promise.resolve([]),
       onChanged: () => noopUnsubscribe
     } satisfies Partial<WebSettingsApi> as unknown as WebSettingsApi,
@@ -740,17 +746,25 @@ function createWebPreloadApi(): Partial<PreloadApi> {
       onMigrationUnsupportedClear: () => noopUnsubscribe,
       getMigrationUnsupportedSnapshot: () => Promise.resolve([]),
       drop: () => {},
-      dropByTabPrefix: () => {}
+      dropByTabPrefix: () => {},
+      retirePaneAuthority: () => {},
+      transferPaneAuthority: () => {}
     },
     mobile: {
       listNetworkInterfaces: () => Promise.resolve({ interfaces: [] }),
       getPairingQR: () => Promise.resolve({ available: false }),
+      getWindowsFirewallStatus: () => Promise.resolve({ supported: false }),
+      repairWindowsFirewall: () => Promise.resolve({ ok: false, reason: 'unsupported' }),
+      openWindowsNetworkSettings: () => Promise.resolve(false),
       getRuntimePairingUrl: () => Promise.resolve({ available: false }),
       listDevices: () => Promise.resolve({ devices: [] }),
       revokeDevice: () => Promise.resolve({ revoked: false }),
       listRuntimeAccessGrants: () => Promise.resolve({ grants: [] }),
       revokeRuntimeAccess: () => Promise.resolve({ revoked: false }),
-      isWebSocketReady: () => Promise.resolve({ ready: Boolean(activeEnvironment), endpoint: null })
+      isWebSocketReady: () =>
+        Promise.resolve({ ready: Boolean(activeEnvironment), endpoint: null }),
+      getRelayStatus: () => Promise.resolve({ status: 'offline' as const }),
+      onRelayStatusChanged: () => noopUnsubscribe
     },
     telemetryTrack: () => Promise.resolve(),
     telemetrySetOptIn: () => Promise.resolve(),
@@ -1177,6 +1191,9 @@ function createRuntimeEnvironmentsApi(): NonNullable<Partial<PreloadApi>['runtim
     },
     getStatus: ({ selector, timeoutMs }) =>
       callEnvironmentEnvelope<RuntimeStatus>(selector, 'status.get', undefined, timeoutMs),
+    // Web runtime subscriptions own reconnect in this process; the renderer
+    // recovery coordinator advances them, so there is no desktop IPC to call.
+    retryConnectionsNow: () => Promise.resolve(),
     call: ({ selector, method, params, timeoutMs }) =>
       callEnvironmentEnvelope(selector, method, params, timeoutMs),
     subscribe: async ({ selector, method, params, timeoutMs }, callbacks) => {
@@ -1457,7 +1474,12 @@ function createWorktreesApi(): NonNullable<Partial<PreloadApi>['worktrees']> {
     persistSortOrder: async ({ orderedIds }) => {
       await callRuntimeResult('worktree.persistSortOrder', { orderedIds })
     },
+    // Why: the capture lives in desktop main memory and is not exposed over
+    // pairing; the dialog falls back to the persisted excerpt on web clients.
+    getBranchRenameFailureOutput: async () => null,
     onChanged: () => noopUnsubscribe,
+    onGitStatusMetadataChanged: () => noopUnsubscribe,
+    onHeadIdentitiesChanged: () => noopUnsubscribe,
     onBaseStatus: () => noopUnsubscribe,
     onRemoteBranchConflict: () => noopUnsubscribe
   }
@@ -2791,7 +2813,7 @@ function createPtyApi(): NonNullable<Partial<PreloadApi>['pty']> {
     clearPendingPaneSerializer: () => Promise.resolve(),
     management: {
       listSessions: () => Promise.resolve({ sessions: [], degraded: false }),
-      killAll: () => Promise.resolve({ killedCount: 0, remainingCount: 0 }),
+      killAll: () => Promise.resolve({ killedCount: 0, remainingCount: 0, killedSessionIds: [] }),
       killOne: () => Promise.resolve({ success: false }),
       restart: () => Promise.resolve({ success: false })
     }
@@ -2985,6 +3007,13 @@ function getClientForEnvironment(environment: StoredWebRuntimeEnvironment): WebR
 }
 
 function closeActiveRuntimeClients(): void {
+  const closingEnvironmentId =
+    activeEnvironment?.id ?? activeClientEnvironmentId ?? readStoredWebRuntimeEnvironment()?.id
+  if (closingEnvironmentId) {
+    // Web replacement mutates the only runtime in place. Fence late terminal
+    // close callbacks before they can resolve the old web-* selector to the new host.
+    cancelRemoteRuntimeTerminalRecoveriesForEnvironment(closingEnvironmentId)
+  }
   activeClient?.close()
   activeClient = null
   activeClientEnvironmentId = null
@@ -3099,6 +3128,11 @@ async function getRuntimeBackedStoredSettings(): Promise<GlobalSettings> {
     if (typeof result.settings.minimaxUsageModels === 'string') {
       runtimeSettings.minimaxUsageModels = result.settings.minimaxUsageModels
     }
+    if (Array.isArray(result.settings.prBotAuthorOverrides)) {
+      runtimeSettings.prBotAuthorOverrides = normalizePRBotAuthorOverrides(
+        result.settings.prBotAuthorOverrides
+      )
+    }
     const next = mergeSettings(local, runtimeSettings)
     writeJson(SETTINGS_STORAGE_KEY, next)
     return next
@@ -3128,6 +3162,11 @@ async function syncRuntimeBackedSettings(
   if (typeof updates.minimaxUsageModels === 'string') {
     runtimeUpdates.minimaxUsageModels = updates.minimaxUsageModels
   }
+  if (Array.isArray(updates.prBotAuthorOverrides)) {
+    runtimeUpdates.prBotAuthorOverrides = normalizePRBotAuthorOverrides(
+      updates.prBotAuthorOverrides
+    )
+  }
   if (Object.keys(runtimeUpdates).length === 0) {
     return localNext
   }
@@ -3144,6 +3183,36 @@ async function syncRuntimeBackedSettings(
     // Why: unpaired/offline web clients still need local settings persistence.
     return localNext
   }
+}
+
+async function updateRuntimePRBotAuthorOverride(args: {
+  author: string
+  isBot: boolean
+}): Promise<GlobalSettings> {
+  const local = getStoredSettings()
+  if (requireActiveEnvironmentOrNull()) {
+    // Why: a paired client must not report a successful mark that the
+    // authoritative runtime failed to persist and will later overwrite.
+    const result = await callRuntimeResult<{ settings: Partial<GlobalSettings> }>(
+      'settings.updatePRBotAuthorOverride',
+      args,
+      15_000
+    )
+    const next = mergeSettings(local, {
+      prBotAuthorOverrides: normalizePRBotAuthorOverrides(result.settings.prBotAuthorOverrides)
+    })
+    writeJson(SETTINGS_STORAGE_KEY, next)
+    return next
+  }
+  const next = mergeSettings(local, {
+    prBotAuthorOverrides: applyPRBotAuthorOverride(
+      local.prBotAuthorOverrides,
+      args.author,
+      args.isBot
+    )
+  })
+  writeJson(SETTINGS_STORAGE_KEY, next)
+  return next
 }
 
 function getStoredOnboarding(): OnboardingState {

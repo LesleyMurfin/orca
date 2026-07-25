@@ -20,6 +20,8 @@ import { isUserManagedRuntimeEnvironment } from '../../../../shared/runtime-envi
 import { RuntimeHostStatusRow, type RuntimeHostConnectionState } from './RuntimeHostStatusRow'
 import { SshTargetStatusRow } from './SshTargetStatusRow'
 import type { RemoteRuntimeSharedConnectionDiagnostics } from '../../../../shared/remote-runtime-shared-control-types'
+import { disconnectSavedRuntimeEnvironment } from '@/runtime/runtime-environment-connection-lifecycle'
+import { isWebClientLocation } from '@/lib/web-client-location'
 
 function isConnecting(status: SshConnectionStatus): boolean {
   return ['connecting', 'deploying-relay', 'reconnecting'].includes(status)
@@ -234,13 +236,20 @@ export function SshStatusSegment({
   const disconnectRuntimeHost = useCallback(
     async (environmentId: string, isActive: boolean): Promise<void> => {
       try {
+        let disconnectedByFocusSwitch = false
         if (isActive) {
+          const webClient = isWebClientLocation()
           const switched = await switchRuntimeEnvironment(null)
           if (!switched) {
             return
           }
+          if (webClient) {
+            disconnectedByFocusSwitch = true
+          }
         }
-        await window.api.runtimeEnvironments.disconnect({ selector: environmentId })
+        if (!disconnectedByFocusSwitch) {
+          await disconnectSavedRuntimeEnvironment(environmentId)
+        }
         setRuntimeEnvironmentStatus(environmentId, { status: null, checkedAt: Date.now() })
         recordFeatureInteraction('ssh')
       } catch (err) {

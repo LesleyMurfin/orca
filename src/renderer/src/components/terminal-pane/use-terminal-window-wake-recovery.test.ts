@@ -1,14 +1,24 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { cleanup, renderHook } from '@testing-library/react'
 import type { PaneManager } from '@/lib/pane-manager/pane-manager'
 
-const { recoverVisibleTerminalWindowWakeMock } = vi.hoisted(() => ({
-  recoverVisibleTerminalWindowWakeMock: vi.fn()
+const {
+  recoverVisibleTerminalWindowWakeMock,
+  retryRemoteRuntimeConnectionsNowMock,
+  retryRemoteRuntimeTerminalRecoveriesNowMock
+} = vi.hoisted(() => ({
+  recoverVisibleTerminalWindowWakeMock: vi.fn(),
+  retryRemoteRuntimeConnectionsNowMock: vi.fn(() => Promise.resolve()),
+  retryRemoteRuntimeTerminalRecoveriesNowMock: vi.fn()
 }))
 
 vi.mock('./terminal-visibility-resume', () => ({
   recoverVisibleTerminalWindowWake: recoverVisibleTerminalWindowWakeMock
+}))
+
+vi.mock('@/runtime/remote-runtime-terminal-recovery-coordinator', () => ({
+  retryRemoteRuntimeTerminalRecoveriesNow: retryRemoteRuntimeTerminalRecoveriesNowMock
 }))
 
 import { useTerminalWindowWakeRecovery } from './use-terminal-window-wake-recovery'
@@ -29,16 +39,22 @@ describe('useTerminalWindowWakeRecovery', () => {
   beforeEach(() => {
     systemResumedCallback = null
     recoverVisibleTerminalWindowWakeMock.mockClear()
+    retryRemoteRuntimeConnectionsNowMock.mockClear()
+    retryRemoteRuntimeTerminalRecoveriesNowMock.mockClear()
     unsubscribeSystemResumed.mockClear()
     onSystemResumed.mockClear()
     resetTerminalFreezeBreadcrumbsForTesting()
     // Why: without requestAnimationFrame the hook skips its settled-frame
     // follow-up, so every trigger maps to exactly one synchronous recovery.
     vi.stubGlobal('requestAnimationFrame', undefined)
-    ;(window as unknown as { api: unknown }).api = { ui: { onSystemResumed } }
+    ;(window as unknown as { api: unknown }).api = {
+      ui: { onSystemResumed },
+      runtimeEnvironments: { retryConnectionsNow: retryRemoteRuntimeConnectionsNowMock }
+    }
   })
 
   afterEach(() => {
+    cleanup()
     vi.unstubAllGlobals()
     delete (window as unknown as { api?: unknown }).api
   })
@@ -97,6 +113,19 @@ describe('useTerminalWindowWakeRecovery', () => {
     ])
   })
 
+  it('retries remote terminal recovery on system resume while the document is hidden', () => {
+    const visibilityStateSpy = vi
+      .spyOn(document, 'visibilityState', 'get')
+      .mockReturnValue('hidden')
+    renderWakeRecoveryHook()
+
+    systemResumedCallback?.()
+
+    expect(retryRemoteRuntimeTerminalRecoveriesNowMock).toHaveBeenCalledTimes(1)
+    expect(recoverVisibleTerminalWindowWakeMock).not.toHaveBeenCalled()
+    visibilityStateSpy.mockRestore()
+  })
+
   it('unsubscribes from the system resume event on cleanup', () => {
     const { unmount } = renderWakeRecoveryHook()
     expect(onSystemResumed).toHaveBeenCalledTimes(1)
@@ -106,9 +135,39 @@ describe('useTerminalWindowWakeRecovery', () => {
     expect(unsubscribeSystemResumed).toHaveBeenCalledTimes(1)
   })
 
-  it('does not subscribe while the terminal surface is hidden', () => {
+  it('keeps transport recovery subscribed while the terminal surface is hidden', () => {
     renderWakeRecoveryHook(false)
 
-    expect(onSystemResumed).not.toHaveBeenCalled()
+    expect(onSystemResumed).toHaveBeenCalledOnce()
+    systemResumedCallback?.()
+    expect(retryRemoteRuntimeTerminalRecoveriesNowMock).toHaveBeenCalledOnce()
+    expect(recoverVisibleTerminalWindowWakeMock).not.toHaveBeenCalled()
+  })
+
+  it('retries remote terminal recovery when the network comes back online', () => {
+    const { unmount } = renderWakeRecoveryHook(false)
+
+    window.dispatchEvent(new Event('online'))
+
+    expect(retryRemoteRuntimeConnectionsNowMock).toHaveBeenCalledOnce()
+    expect(retryRemoteRuntimeTerminalRecoveriesNowMock).toHaveBeenCalledOnce()
+    expect(recoverVisibleTerminalWindowWakeMock).not.toHaveBeenCalled()
+
+    unmount()
+    retryRemoteRuntimeTerminalRecoveriesNowMock.mockClear()
+    retryRemoteRuntimeConnectionsNowMock.mockClear()
+    window.dispatchEvent(new Event('online'))
+    expect(retryRemoteRuntimeConnectionsNowMock).not.toHaveBeenCalled()
+    expect(retryRemoteRuntimeTerminalRecoveriesNowMock).not.toHaveBeenCalled()
+  })
+
+  it('coalesces one online event across multiple mounted terminal surfaces', () => {
+    renderWakeRecoveryHook(false)
+    renderWakeRecoveryHook(false)
+
+    window.dispatchEvent(new Event('online'))
+
+    expect(retryRemoteRuntimeConnectionsNowMock).toHaveBeenCalledOnce()
+    expect(retryRemoteRuntimeTerminalRecoveriesNowMock).toHaveBeenCalledOnce()
   })
 })
