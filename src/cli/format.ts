@@ -1,4 +1,4 @@
-import type { CliStatusResult } from '../shared/runtime-types'
+import type { CliStatusResult, RuntimeServeStatsResult } from '../shared/runtime-types'
 import { prepareComputerCliJsonResult } from './computer-format'
 import type { RuntimeRpcSuccess } from './runtime-client'
 
@@ -131,4 +131,16 @@ export function formatCliStatus(status: CliStatusResult): string {
 
 export function formatStatus(status: CliStatusResult): string {
   return formatCliStatus(status)
+}
+
+export function formatServeStats(stats: RuntimeServeStatsResult): string {
+  return [
+    `version: ${stats.version}`,
+    `uptimeSeconds: ${stats.uptimeSeconds}`,
+    `port: ${stats.port ?? 'none'}`,
+    `agents: ${stats.counts.agents}`,
+    `tasks: ${stats.counts.tasks}`,
+    `terminals: ${stats.counts.terminals}`,
+    `worktrees: ${stats.counts.worktrees}`
+  ].join('\n')
 }

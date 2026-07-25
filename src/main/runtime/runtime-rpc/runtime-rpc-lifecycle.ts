@@ -95,12 +95,22 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
           if (this.wsPort !== 0 && transport.resolvedPort !== this.wsPort) {
             writeWsFallbackPort(this.userDataPath, transport.resolvedPort)
           }
+          // Why: hand the runtime the ACTUAL bound port (resolvedPort), not the
+          // pre-bind request — wsPort may be 0 (OS-assigned) or fall back to an
+          // OS-assigned port on EADDRINUSE. `serve stats` reports this value, so
+          // it must be the post-listen truth, not the requested port.
+          // Optional: remote-host runtime proxies only implement RPC-forwarded
+          // methods (same pattern as activateRecentPtyPathCandidateTracking?.()).
+          this.runtime.setServePort?.(transport.resolvedPort)
           activeTransports.push(transport)
           transportsMeta.push({ kind: 'websocket', endpoint })
         } catch (error) {
           // Why: WebSocket transport is supplementary; on failure (e.g. port in use) continue with Unix socket only.
           console.error('[runtime] Failed to start WebSocket transport:', error)
           this.mobileSocketWiring = null
+          // Why: no WS listener bound, so `serve stats` must report no port
+          // (null) rather than a phantom/stale value.
+          this.runtime.setServePort?.(null)
         }
       }
     }

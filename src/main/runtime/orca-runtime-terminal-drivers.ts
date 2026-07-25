@@ -203,6 +203,11 @@ export class OrcaRuntimeWithTerminalDrivers extends OrcaRuntimeWithFitOverrideLi
 
   protected stats: StatsCollector | null = null
 
+  // Why: the WS port is owned by OrcaRuntimeRpcServer, not the runtime. It sets
+  // this after the transport binds so `serve stats` can report the bound port
+  // without the runtime reaching back into the transport layer.
+  protected servePort: number | null = null
+
   // Why: create and drift probes must share one fetch/freshness owner.
   protected readonly remoteFetches = new RuntimeRemoteFetchController()
 
