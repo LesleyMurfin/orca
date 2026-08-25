@@ -70,8 +70,9 @@ describe('beginHostQualifiedRemoval refusals clear the delete state', () => {
 
   // A hostless row (folder-workspace meta never sets hostId, and runtime rows omit the field
   // when the repo is unresolved) plus more than one saved runtime environment trips the legacy
-  // single-runtime gate in resolveWorktreeOperationRouteResult, which returns `missing`.
-  it('clears when a known worktree has no host and the legacy runtime is ambiguous', () => {
+  // single-runtime gate in resolveWorktreeOperationRouteResult. While the runtime catalog is
+  // still unhydrated the absent owner proves nothing, so the destructive path keeps refusing.
+  it('clears when a known worktree has no host and the runtime catalog is unhydrated', () => {
     const clearWorktreeDeleteState = vi.fn()
     const start = beginHostQualifiedRemoval(
       makeRoutedGet(clearWorktreeDeleteState, {
@@ -87,6 +88,31 @@ describe('beginHostQualifiedRemoval refusals clear the delete state', () => {
 
     expect(start.ok).toBe(false)
     expect(clearWorktreeDeleteState).toHaveBeenCalledWith(WORKTREE_ID)
+  })
+
+  // Regression: with the catalog hydrated, the same hostless row is a plain local workspace, and
+  // refusing left the user unable to delete it at all once any remote runtime was configured.
+  it('deletes a known ownerless worktree locally once the runtime catalog is hydrated', () => {
+    const clearWorktreeDeleteState = vi.fn()
+    const start = beginHostQualifiedRemoval(
+      makeRoutedGet(clearWorktreeDeleteState, {
+        repos: [{ id: 'repo1', connectionId: null, executionHostId: undefined }],
+        worktreesByRepo: { repo1: [{ id: WORKTREE_ID, repoId: 'repo1' }] },
+        settings: { activeRuntimeEnvironmentId: 'env-a' },
+        runtimeEnvironments: [{ id: 'env-a' }, { id: 'env-b' }],
+        runtimeEnvironmentCatalogHydrated: true
+      }),
+      WORKTREE_ID,
+      null,
+      false
+    )
+
+    expect(start.ok).toBe(true)
+    expect(start.ok && start.removalRoute).toEqual({
+      executionHostId: 'local',
+      runtimeEnvironmentId: null
+    })
+    expect(clearWorktreeDeleteState).not.toHaveBeenCalled()
   })
 
   // Folder workspaces fail closed on a stale id by design, so a row whose folder record is gone

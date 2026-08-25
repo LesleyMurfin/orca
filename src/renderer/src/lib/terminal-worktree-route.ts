@@ -140,6 +140,14 @@ export function resolveTerminalWorktreeRoute(
     : { runtimeEnvironmentId: ownership.runtimeEnvironmentId }
 }
 
-export function hasUnroutableTerminalWorktreeOwner(state: AppState, worktreeId: string): boolean {
-  return resolveTerminalWorktreeRoute(state, worktreeId) === null
+/**
+ * The same verdict `resolveTerminalWorktreeRoute` encodes as `null`, for surfaces that gate an
+ * action on it before spawning. Takes the owner state rather than the whole store so a caller
+ * holding a projection of it (AI Vault resume targets) can ask without inventing store fields.
+ */
+export function hasUnroutableTerminalWorktreeOwner(
+  state: WorktreeRuntimeOwnerState,
+  worktreeId: string
+): boolean {
+  return resolveTerminalHostOwnership(state, worktreeId, 'spawn').kind === 'unresolved'
 }

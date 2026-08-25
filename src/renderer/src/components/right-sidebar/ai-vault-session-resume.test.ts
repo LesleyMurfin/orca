@@ -132,6 +132,55 @@ describe('resolveAiVaultSessionResumeState', () => {
     })
   })
 
+  // Resume spawns a terminal, so this gate must agree with the terminal router. Host metadata the
+  // router cannot parse reads as a plain local repo target here, so before the router was
+  // consulted this stayed enabled and failed only after the click.
+  it('blocks a workspace whose owner the terminal router cannot resolve', () => {
+    expect(
+      resolveAiVaultSessionResumeState({
+        sessionFilePath: HOST_SESSION_FILE,
+        worktreeInfo: makeWorktreeInfo('active'),
+        activeWorktreeId: null,
+        worktrees: [],
+        repos: [],
+        targetState: makeTargetState({
+          repos: [makeRepo()],
+          worktreesByRepo: {
+            'repo-1': [makeWorktree({ hostId: 'not-a-host-id' as never })]
+          },
+          runtimeEnvironments: [{ id: 'hub-a' }] as never,
+          runtimeEnvironmentCatalogHydrated: true
+        })
+      })
+    ).toEqual({
+      blocked: true,
+      worktreeId: null,
+      usesSessionWorktree: false
+    })
+  })
+
+  it('keeps an ownerless local workspace resumable while unrelated runtimes exist', () => {
+    expect(
+      resolveAiVaultSessionResumeState({
+        sessionFilePath: HOST_SESSION_FILE,
+        worktreeInfo: makeWorktreeInfo('active'),
+        activeWorktreeId: null,
+        worktrees: [],
+        repos: [],
+        targetState: makeTargetState({
+          repos: [makeRepo()],
+          worktreesByRepo: { 'repo-1': [makeWorktree()] },
+          runtimeEnvironments: [{ id: 'hub-a' }, { id: 'hub-b' }] as never,
+          runtimeEnvironmentCatalogHydrated: true
+        })
+      })
+    ).toEqual({
+      blocked: false,
+      worktreeId: 'repo-1::/repo/orca',
+      usesSessionWorktree: true
+    })
+  })
+
   it('falls back to the active workspace when the session worktree is unavailable', () => {
     expect(
       resolveAiVaultSessionResumeState({

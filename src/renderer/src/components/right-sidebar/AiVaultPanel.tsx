@@ -63,7 +63,14 @@ export default function AiVaultPanel(): React.JSX.Element {
       folderWorkspaces: state.folderWorkspaces,
       projectGroups: state.projectGroups,
       repos: state.repos,
-      worktreesByRepo: state.worktreesByRepo
+      worktreesByRepo: state.worktreesByRepo,
+      // Owner evidence the terminal router needs, so a Resume that would fail to spawn a terminal
+      // shows up disabled instead of erroring after the click.
+      detectedWorktreesByRepo: state.detectedWorktreesByRepo,
+      settings: state.settings,
+      runtimeEnvironments: state.runtimeEnvironments,
+      runtimeEnvironmentCatalogHydrated: state.runtimeEnvironmentCatalogHydrated,
+      removedRuntimeEnvironmentIds: state.removedRuntimeEnvironmentIds
     }))
   )
   const settings = useAppStore((s) => s.settings)

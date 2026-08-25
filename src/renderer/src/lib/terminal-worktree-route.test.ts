@@ -65,6 +65,32 @@ describe('resolveTerminalWorktreeRoute', () => {
     })
   })
 
+  // Regression: a plain local worktree row that published no owner fields must stay routable once
+  // the user configures remote runtimes, or resuming it reports the worktree owner as unresolvable.
+  it('routes a known ownerless worktree locally while unrelated runtimes exist', () => {
+    const state = localState({
+      repos: [{ id: 'repo-1' }],
+      worktreesByRepo: { 'repo-1': [{ id: 'repo-1::/w', repoId: 'repo-1' }] },
+      settings: { activeRuntimeEnvironmentId: 'rt-a' },
+      runtimeEnvironments: [{ id: 'rt-a' }, { id: 'rt-b' }]
+    } as unknown as Partial<AppState>)
+    expect(resolveTerminalWorktreeRoute(state, 'repo-1::/w')).toEqual({
+      runtimeEnvironmentId: null
+    })
+  })
+
+  it('keeps the single focused runtime for a known ownerless worktree', () => {
+    const state = localState({
+      repos: [{ id: 'repo-1' }],
+      worktreesByRepo: { 'repo-1': [{ id: 'repo-1::/w', repoId: 'repo-1' }] },
+      settings: { activeRuntimeEnvironmentId: 'rt-a' },
+      runtimeEnvironments: [{ id: 'rt-a' }]
+    } as unknown as Partial<AppState>)
+    expect(resolveTerminalWorktreeRoute(state, 'repo-1::/w')).toEqual({
+      runtimeEnvironmentId: 'rt-a'
+    })
+  })
+
   it('still fails a genuinely unknown/stale worktree closed', () => {
     expect(resolveTerminalWorktreeRoute(localState(), 'repo-9::/stale')).toBeNull()
   })

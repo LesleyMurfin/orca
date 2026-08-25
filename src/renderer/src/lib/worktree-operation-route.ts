@@ -201,6 +201,22 @@ export function resolveWorktreeOperationRouteResult(
     return { kind: 'missing' }
   }
 
+  // Why: a known row published with no owner fields at all — its repo carries no host either, or
+  // the explicit catalog pass above would have routed it — is positive identity evidence, the same
+  // reasoning folder workspaces use (#10251). Without it a plain local worktree stops routing, and
+  // terminal creation reports an unresolvable owner, the moment one unrelated runtime is
+  // configured. A hydrated catalog with no removed runtimes is what makes the absent owner fields
+  // trustworthy: mid-hydration, or right after a runtime is removed, a genuinely remote row can
+  // still be missing its owner, so those keep failing closed.
+  const ownerlessRowIsLocal =
+    hasKnownWorktree &&
+    state.runtimeEnvironmentCatalogHydrated === true &&
+    (state.removedRuntimeEnvironmentIds?.size ?? 0) === 0
+  const LOCAL_ROUTE: WorktreeOperationRouteResolution = {
+    kind: 'resolved',
+    route: { executionHostId: 'local', runtimeEnvironmentId: null }
+  }
+
   // Why: pre-owner-projection runtimes published no host fields; terminal routing retains their single focused-runtime behavior.
   const legacyRuntimeEnvironmentId = state.settings?.activeRuntimeEnvironmentId?.trim()
   const savedRuntimeIds = state.runtimeEnvironments?.map((environment) => environment.id.trim())
@@ -208,7 +224,7 @@ export function resolveWorktreeOperationRouteResult(
     savedRuntimeIds === undefined ||
     (savedRuntimeIds.length === 1 && savedRuntimeIds[0] === legacyRuntimeEnvironmentId)
   if (legacyRuntimeEnvironmentId && !legacyRuntimeIsUnambiguous) {
-    return { kind: 'missing' }
+    return ownerlessRowIsLocal ? LOCAL_ROUTE : { kind: 'missing' }
   }
   if (legacyRuntimeEnvironmentId) {
     return {
@@ -223,9 +239,7 @@ export function resolveWorktreeOperationRouteResult(
     (savedRuntimeIds === undefined ||
       (state.runtimeEnvironmentCatalogHydrated === true && savedRuntimeIds.length === 0)) &&
     (state.removedRuntimeEnvironmentIds?.size ?? 0) === 0
-  return mayBeLegacyLocal
-    ? { kind: 'resolved', route: { executionHostId: 'local', runtimeEnvironmentId: null } }
-    : { kind: 'missing' }
+  return mayBeLegacyLocal || ownerlessRowIsLocal ? LOCAL_ROUTE : { kind: 'missing' }
 }
 
 function resolveFolderWorkspaceOperationRoute(

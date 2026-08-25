@@ -189,7 +189,11 @@ describe('connectPanePty', () => {
     expect(window.api.ssh.needsPassphrasePrompt).not.toHaveBeenCalled()
   })
 
-  it('fails a missing paired-client owner closed instead of creating a local PTY', async () => {
+  // A row with no owner fields is only suspect while a runtime it could have belonged to has been
+  // removed; that is the paired-client owner that really went missing. Without a removed runtime
+  // the same row is a plain local workspace and must spawn (see the next case) — refusing it broke
+  // resuming and deleting local workspaces for anyone with a remote runtime configured.
+  it('fails a removed paired-client owner closed instead of creating a local PTY', async () => {
     const { connectPanePty } = await import('./pty-connection')
     const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
     const { createIpcPtyTransport } = await import('./pty-transport')
@@ -201,6 +205,7 @@ describe('connectPanePty', () => {
       },
       runtimeEnvironments: [{ id: 'hub-a' }, { id: 'hub-b' }],
       runtimeEnvironmentCatalogHydrated: true,
+      removedRuntimeEnvironmentIds: new Set(['hub-gone']),
       settings: { ...mockStoreState.settings, activeRuntimeEnvironmentId: 'hub-a' }
     } as StoreState
 
@@ -214,6 +219,34 @@ describe('connectPanePty', () => {
     expect(createRemoteRuntimePtyTransport).not.toHaveBeenCalled()
     expect(createIpcPtyTransport).not.toHaveBeenCalled()
     expect(window.api.ssh.connect).not.toHaveBeenCalled()
+  })
+
+  it('spawns a local PTY for an ownerless worktree row while unrelated runtimes exist', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+    const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
+    const { createIpcPtyTransport } = await import('./pty-transport')
+    transportFactoryQueue.push(createMockTransport('local-pty-1'))
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+      worktreesByRepo: {
+        repo1: [{ id: 'wt-1', repoId: 'repo1', path: '/srv/local-worktree' }]
+      },
+      runtimeEnvironments: [{ id: 'hub-a' }, { id: 'hub-b' }],
+      runtimeEnvironmentCatalogHydrated: true,
+      removedRuntimeEnvironmentIds: new Set<string>(),
+      settings: { ...mockStoreState.settings, activeRuntimeEnvironmentId: 'hub-a' }
+    } as StoreState
+
+    connectPanePty(
+      createPane(1) as never,
+      createManager(1) as never,
+      createDeps({ restoredPtyIdByLeafId: { [LEAF_1]: null } }) as never
+    )
+    await flushAsyncTicks()
+
+    expect(createIpcPtyTransport).toHaveBeenCalledTimes(1)
+    expect(createRemoteRuntimePtyTransport).not.toHaveBeenCalled()
   })
 
   it('spawns fresh PTYs through the worktree owner runtime when focus differs', async () => {

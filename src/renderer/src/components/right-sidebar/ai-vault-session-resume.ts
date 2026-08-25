@@ -5,6 +5,7 @@ import {
   getAiVaultResumeWorkspaceExecutionHostId,
   getAiVaultResumeWorkspaceTargetStatus
 } from '@/lib/ai-vault-resume-target'
+import { hasUnroutableTerminalWorktreeOwner } from '@/lib/terminal-worktree-route'
 import {
   isAiVaultSessionResumableContent,
   type AiVaultSession
@@ -21,7 +22,19 @@ import {
 export type AiVaultSessionResumeTargetState = Pick<
   AppState,
   'folderWorkspaces' | 'projectGroups' | 'repos' | 'worktreesByRepo'
->
+> &
+  // Owner evidence the terminal router reads. Optional because target states synthesized from a
+  // worktree/repo list alone cannot see the runtime catalog; those keep their catalog-blind verdict.
+  Partial<
+    Pick<
+      AppState,
+      | 'settings'
+      | 'detectedWorktreesByRepo'
+      | 'runtimeEnvironments'
+      | 'runtimeEnvironmentCatalogHydrated'
+      | 'removedRuntimeEnvironmentIds'
+    >
+  >
 
 export type AiVaultSessionResumeState = {
   blocked: boolean
@@ -161,6 +174,13 @@ function resolveSupportedResumeWorktreeId(args: {
   }
 
   if (!isKnownAiVaultResumeWorkspaceTarget(args.targetState, args.worktreeId)) {
+    return null
+  }
+
+  // Why: resume creates a terminal on the target, so the terminal router — not a weaker existence
+  // check — decides whether the workspace is reachable. Disagreement showed up as an enabled
+  // Resume that failed after the click with "the worktree owner could not be resolved".
+  if (hasUnroutableTerminalWorktreeOwner(args.targetState, args.worktreeId)) {
     return null
   }
 

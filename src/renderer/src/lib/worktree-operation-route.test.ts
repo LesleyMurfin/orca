@@ -214,6 +214,55 @@ describe('resolveWorktreeOperationRouteResult', () => {
     })
   })
 
+  // Regression: terminal creation and workspace deletion both read this verdict, so an ownerless
+  // local row failing closed once remote runtimes exist broke resume AND delete.
+  it('routes a known ownerless row locally once the catalog hydrates with unrelated runtimes', () => {
+    expect(
+      resolveWorktreeOperationRouteResult(
+        {
+          settings: { activeRuntimeEnvironmentId: 'hub-a' } as never,
+          repos: [{ id: 'repo-1' } as never],
+          runtimeEnvironments: [{ id: 'hub-a' } as never, { id: 'hub-b' } as never],
+          runtimeEnvironmentCatalogHydrated: true,
+          worktreesByRepo: { 'repo-1': [worktree(undefined)] }
+        },
+        WORKTREE_ID
+      )
+    ).toEqual({
+      kind: 'resolved',
+      route: { executionHostId: 'local', runtimeEnvironmentId: null }
+    })
+  })
+
+  it('still fails an ownerless row closed while a removed runtime could have owned it', () => {
+    expect(
+      resolveWorktreeOperationRouteResult(
+        {
+          repos: [{ id: 'repo-1' } as never],
+          runtimeEnvironments: [{ id: 'hub-a' } as never, { id: 'hub-b' } as never],
+          runtimeEnvironmentCatalogHydrated: true,
+          removedRuntimeEnvironmentIds: new Set(['hub-gone']),
+          worktreesByRepo: { 'repo-1': [worktree(undefined)] }
+        },
+        WORKTREE_ID
+      )
+    ).toEqual({ kind: 'missing' })
+  })
+
+  it('still fails a repo-only id closed when no worktree row proves the identity', () => {
+    expect(
+      resolveWorktreeOperationRouteResult(
+        {
+          repos: [{ id: 'repo-1' } as never],
+          runtimeEnvironments: [{ id: 'hub-a' } as never, { id: 'hub-b' } as never],
+          runtimeEnvironmentCatalogHydrated: true,
+          worktreesByRepo: {}
+        },
+        WORKTREE_ID
+      )
+    ).toEqual({ kind: 'missing' })
+  })
+
   it('fails an unknown stale worktree closed instead of routing it through focus', () => {
     expect(
       resolveWorktreeOperationRouteResult(
