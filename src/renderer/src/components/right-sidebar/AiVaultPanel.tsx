@@ -70,7 +70,11 @@ export default function AiVaultPanel(): React.JSX.Element {
       settings: state.settings,
       runtimeEnvironments: state.runtimeEnvironments,
       runtimeEnvironmentCatalogHydrated: state.runtimeEnvironmentCatalogHydrated,
-      removedRuntimeEnvironmentIds: state.removedRuntimeEnvironmentIds
+      removedRuntimeEnvironmentIds: state.removedRuntimeEnvironmentIds,
+      // Why: a runtime workspace whose host is still publishing must read as pending, not unknown,
+      // or Resume would look clickable and then fail on the click.
+      runtimeStatusByEnvironmentId: state.runtimeStatusByEnvironmentId,
+      startupWorktreeRefreshCompleted: state.startupWorktreeRefreshCompleted
     }))
   )
   const settings = useAppStore((s) => s.settings)

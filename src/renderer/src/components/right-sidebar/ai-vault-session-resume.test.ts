@@ -159,6 +159,37 @@ describe('resolveAiVaultSessionResumeState', () => {
     })
   })
 
+  // Symptom A: resuming a runtime-owned session on a cold start errored with "the worktree owner
+  // could not be resolved". The router now calls that target `pending` rather than `missing`;
+  // Resume must stay DISABLED for it — a pending target is not clickable-then-error, and the
+  // panel's target state carries the same hydration evidence the router reads.
+  it('keeps Resume blocked while the target workspace is still arriving from its host', () => {
+    expect(
+      resolveAiVaultSessionResumeState({
+        sessionFilePath: HOST_SESSION_FILE,
+        worktreeInfo: makeWorktreeInfo('active'),
+        activeWorktreeId: null,
+        worktrees: [],
+        repos: [],
+        targetState: makeTargetState({
+          repos: [makeRepo({ id: 'repo-local' })],
+          worktreesByRepo: {},
+          runtimeEnvironments: [{ id: 'hub-a' }] as never,
+          runtimeEnvironmentCatalogHydrated: true,
+          removedRuntimeEnvironmentIds: new Set<string>(),
+          runtimeStatusByEnvironmentId: new Map([
+            ['hub-a', { status: { graphStatus: 'ready' } }]
+          ]) as never,
+          startupWorktreeRefreshCompleted: true
+        })
+      })
+    ).toEqual({
+      blocked: true,
+      worktreeId: null,
+      usesSessionWorktree: false
+    })
+  })
+
   it('keeps an ownerless local workspace resumable while unrelated runtimes exist', () => {
     expect(
       resolveAiVaultSessionResumeState({

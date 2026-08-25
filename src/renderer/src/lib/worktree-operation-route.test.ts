@@ -492,3 +492,78 @@ describe('resolveWorktreeOperationRouteResult', () => {
     })
   })
 })
+
+// The owner's live store: repos[] persists ONE local project, while six worktree ids belong to
+// projects on a paired runtime that only publishes them after it connects. Before that, "unknown"
+// is not proof of absence, and calling it `missing` refused resume and delete for real workspaces.
+describe('resolveWorktreeOperationRouteResult unknown-id hydration', () => {
+  const connectedRuntime = new Map([['hub-a', { status: { graphStatus: 'ready' } as never }]])
+
+  it('reports an unknown id pending while a connected runtime has published no rows', () => {
+    expect(
+      resolveWorktreeOperationRouteResult(
+        {
+          repos: [{ id: 'repo-local', executionHostId: 'local' } as never],
+          worktreesByRepo: {},
+          runtimeEnvironments: [{ id: 'hub-a' } as never],
+          runtimeEnvironmentCatalogHydrated: true,
+          removedRuntimeEnvironmentIds: new Set<string>(),
+          runtimeStatusByEnvironmentId: connectedRuntime,
+          startupWorktreeRefreshCompleted: true
+        },
+        WORKTREE_ID
+      )
+    ).toEqual({ kind: 'pending' })
+  })
+
+  it('reports an unknown id pending while the saved-runtime catalog is still loading', () => {
+    expect(
+      resolveWorktreeOperationRouteResult(
+        {
+          repos: [],
+          worktreesByRepo: {},
+          runtimeEnvironments: [],
+          runtimeEnvironmentCatalogHydrated: false,
+          runtimeStatusByEnvironmentId: new Map(),
+          startupWorktreeRefreshCompleted: true
+        },
+        WORKTREE_ID
+      )
+    ).toEqual({ kind: 'pending' })
+  })
+
+  it('still fails an unknown id closed once the owning runtime has published its rows', () => {
+    expect(
+      resolveWorktreeOperationRouteResult(
+        {
+          repos: [{ id: 'repo-remote', executionHostId: 'runtime:hub-a' } as never],
+          worktreesByRepo: {},
+          runtimeEnvironments: [{ id: 'hub-a' } as never],
+          runtimeEnvironmentCatalogHydrated: true,
+          removedRuntimeEnvironmentIds: new Set<string>(),
+          runtimeStatusByEnvironmentId: connectedRuntime,
+          startupWorktreeRefreshCompleted: true
+        },
+        WORKTREE_ID
+      )
+    ).toEqual({ kind: 'missing' })
+  })
+
+  it('still fails an unknown id closed when the only runtime is disconnected', () => {
+    // Why: a disconnected runtime will never publish rows, so waiting on it is a hang, not a fix.
+    expect(
+      resolveWorktreeOperationRouteResult(
+        {
+          repos: [],
+          worktreesByRepo: {},
+          runtimeEnvironments: [{ id: 'hub-a' } as never],
+          runtimeEnvironmentCatalogHydrated: true,
+          removedRuntimeEnvironmentIds: new Set<string>(),
+          runtimeStatusByEnvironmentId: new Map([['hub-a', { status: null }]]),
+          startupWorktreeRefreshCompleted: true
+        },
+        WORKTREE_ID
+      )
+    ).toEqual({ kind: 'missing' })
+  })
+})

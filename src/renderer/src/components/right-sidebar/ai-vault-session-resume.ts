@@ -33,6 +33,10 @@ export type AiVaultSessionResumeTargetState = Pick<
       | 'runtimeEnvironments'
       | 'runtimeEnvironmentCatalogHydrated'
       | 'removedRuntimeEnvironmentIds'
+      // Hydration evidence: without it the panel would read a not-yet-published runtime workspace
+      // as unknown, and its verdict would drift from the router it is meant to mirror.
+      | 'runtimeStatusByEnvironmentId'
+      | 'startupWorktreeRefreshCompleted'
     >
   >
 

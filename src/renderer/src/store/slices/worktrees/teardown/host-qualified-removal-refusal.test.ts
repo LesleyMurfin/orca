@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { beginHostQualifiedRemoval } from './host-qualified-worktree-removal'
 import { folderWorkspaceKey } from '../../../../../../shared/workspace-scope'
+import {
+  WORKTREE_REMOVAL_AMBIGUOUS_ERROR,
+  WORKTREE_REMOVAL_HOST_CATALOG_LOADING_ERROR
+} from '../listing/worktree-slice-constants'
 
 const WORKTREE_ID = 'repo1::/shared/workspace/path'
 
@@ -132,5 +136,50 @@ describe('beginHostQualifiedRemoval refusals clear the delete state', () => {
 
     expect(start.ok).toBe(false)
     expect(clearWorktreeDeleteState).toHaveBeenCalledWith(folderId)
+  })
+
+  // Symptom B: deleting a workspace whose runtime-owned project had not been published yet was
+  // refused as "ambiguous across hosts" — a data-loss-sounding message for a workspace that was
+  // merely still loading. Both refusals must still clear the sidebar's "Deleting…" state.
+  const hydratingRuntimeOverrides = {
+    repos: [{ id: 'repo-local', connectionId: null, executionHostId: 'local' }],
+    worktreesByRepo: {},
+    runtimeEnvironments: [{ id: 'hub-a' }],
+    runtimeEnvironmentCatalogHydrated: true,
+    removedRuntimeEnvironmentIds: new Set<string>(),
+    runtimeStatusByEnvironmentId: new Map([['hub-a', { status: { graphStatus: 'ready' } }]]),
+    startupWorktreeRefreshCompleted: true
+  }
+
+  it('refuses with a still-loading message while the owning host has published nothing', () => {
+    const clearWorktreeDeleteState = vi.fn()
+    const start = beginHostQualifiedRemoval(
+      makeRoutedGet(clearWorktreeDeleteState, hydratingRuntimeOverrides),
+      'repo-remote::/w',
+      null,
+      false
+    )
+
+    expect(start).toEqual({ ok: false, error: WORKTREE_REMOVAL_HOST_CATALOG_LOADING_ERROR })
+    expect(clearWorktreeDeleteState).toHaveBeenCalledWith('repo-remote::/w')
+  })
+
+  it('keeps refusing an unknown id as ambiguous once its runtime has published rows', () => {
+    const clearWorktreeDeleteState = vi.fn()
+    const start = beginHostQualifiedRemoval(
+      makeRoutedGet(clearWorktreeDeleteState, {
+        ...hydratingRuntimeOverrides,
+        repos: [
+          { id: 'repo-local', connectionId: null, executionHostId: 'local' },
+          { id: 'repo-published', connectionId: null, executionHostId: 'runtime:hub-a' }
+        ]
+      }),
+      'repo-remote::/w',
+      null,
+      false
+    )
+
+    expect(start).toEqual({ ok: false, error: WORKTREE_REMOVAL_AMBIGUOUS_ERROR })
+    expect(clearWorktreeDeleteState).toHaveBeenCalledWith('repo-remote::/w')
   })
 })

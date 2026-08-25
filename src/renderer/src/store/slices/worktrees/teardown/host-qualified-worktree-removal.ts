@@ -13,12 +13,14 @@ import {
   getWorktreeOperationOwnerHostIds,
   resolveWorktreeOperationRoute,
   resolveWorktreeOperationRouteForHost,
+  resolveWorktreeOperationRouteResult,
   type WorktreeOperationRoute
 } from '@/lib/worktree-operation-route'
 import { captureWorktreeOperationGenerationGuard } from '@/lib/worktree-operation-generation'
 import { getRepoIdFromWorktreeId } from '../../worktree-helpers'
 import {
   WORKTREE_REMOVAL_AMBIGUOUS_ERROR,
+  WORKTREE_REMOVAL_HOST_CATALOG_LOADING_ERROR,
   WORKTREE_REMOVAL_HOST_CHANGED_ERROR
 } from '../listing/worktree-slice-constants'
 import { translate } from '@/i18n/i18n'
@@ -84,7 +86,18 @@ export function beginHostQualifiedRemoval(
     // this the workspace sits on a "Deleting…" spinner forever with no explanation left
     // on screen.
     get().clearWorktreeDeleteState(worktreeId)
-    return { ok: false, error: WORKTREE_REMOVAL_AMBIGUOUS_ERROR }
+    // Why: "ambiguous across hosts" is a lie for a workspace whose owning host simply has not
+    // published its rows yet — that verdict flips on its own once the catalog lands, so name the
+    // wait instead. A confirmed host resolves from the host id alone and can never be pending.
+    const hostCatalogStillLoading =
+      !requiredExecutionHostId &&
+      resolveWorktreeOperationRouteResult(get(), worktreeId).kind === 'pending'
+    return {
+      ok: false,
+      error: hostCatalogStillLoading
+        ? WORKTREE_REMOVAL_HOST_CATALOG_LOADING_ERROR
+        : WORKTREE_REMOVAL_AMBIGUOUS_ERROR
+    }
   }
   // Fail closed rather than delete on a host the caller never confirmed.
   if (

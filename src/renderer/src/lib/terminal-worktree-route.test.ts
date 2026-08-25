@@ -4,6 +4,8 @@ import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../shared/constants'
 import { brandEphemeralSetupTerminalWorktreeId } from '../../../shared/ephemeral-setup-terminal-worktree-id'
 import { folderWorkspaceKey } from '../../../shared/workspace-scope'
 import {
+  hasPendingTerminalWorktreeOwner,
+  hasUnroutableTerminalWorktreeOwner,
   resolveTerminalHostOwnership,
   resolveTerminalWorktreeRoute
 } from './terminal-worktree-route'
@@ -201,5 +203,52 @@ describe('resolveTerminalHostOwnership teardown', () => {
       kind: 'unresolved',
       runtimeEnvironmentId: null
     })
+  })
+})
+
+// The paired-runtime cold start: the runtime is reachable but has not published its projects yet,
+// so its worktree ids are unknown for a moment. Spawn and teardown must still refuse — killing or
+// starting a PTY on a guess is worse than refusing — but the id is reported as pending so a
+// retryable caller can wait instead of telling the user the workspace has no owner.
+describe('pending terminal worktree owners', () => {
+  const hydratingRuntimeState = (overrides: Partial<AppState> = {}): AppState =>
+    ({
+      repos: [{ id: 'repo-local', connectionId: null, executionHostId: 'local' }],
+      worktreesByRepo: {},
+      detectedWorktreesByRepo: {},
+      runtimeEnvironments: [{ id: 'hub-a' }],
+      runtimeEnvironmentCatalogHydrated: true,
+      removedRuntimeEnvironmentIds: new Set<string>(),
+      runtimeStatusByEnvironmentId: new Map([['hub-a', { status: { graphStatus: 'ready' } }]]),
+      startupWorktreeRefreshCompleted: true,
+      ...overrides
+    }) as unknown as AppState
+
+  it('refuses a pending id for spawn and teardown alike', () => {
+    const state = hydratingRuntimeState()
+    for (const purpose of ['spawn', 'teardown'] as const) {
+      expect(resolveTerminalHostOwnership(state, 'repo-remote::/w', purpose)).toEqual({
+        kind: 'unresolved',
+        runtimeEnvironmentId: null
+      })
+    }
+    expect(resolveTerminalWorktreeRoute(state, 'repo-remote::/w')).toBeNull()
+  })
+
+  it('reports a pending id as pending, not as an unknown owner', () => {
+    const state = hydratingRuntimeState()
+    expect(hasUnroutableTerminalWorktreeOwner(state, 'repo-remote::/w')).toBe(true)
+    expect(hasPendingTerminalWorktreeOwner(state, 'repo-remote::/w')).toBe(true)
+  })
+
+  it('reports an id unknown after its runtime published rows as not pending', () => {
+    const state = hydratingRuntimeState({
+      repos: [
+        { id: 'repo-local', connectionId: null, executionHostId: 'local' },
+        { id: 'repo-published', connectionId: null, executionHostId: 'runtime:hub-a' }
+      ]
+    } as unknown as Partial<AppState>)
+    expect(hasUnroutableTerminalWorktreeOwner(state, 'repo-remote::/w')).toBe(true)
+    expect(hasPendingTerminalWorktreeOwner(state, 'repo-remote::/w')).toBe(false)
   })
 })

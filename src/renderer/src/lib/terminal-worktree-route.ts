@@ -151,3 +151,19 @@ export function hasUnroutableTerminalWorktreeOwner(
 ): boolean {
   return resolveTerminalHostOwnership(state, worktreeId, 'spawn').kind === 'unresolved'
 }
+
+/**
+ * Unroutable *because the owning host's catalog has not arrived yet*, not because the id is
+ * unknown. Spawn and teardown both keep refusing a pending id — killing or spawning on a guess is
+ * worse than refusing — but a request that can be retried (the terminal-create IPC bridge) waits
+ * for hydration instead of reporting an unresolvable owner for a workspace that does exist.
+ */
+export function hasPendingTerminalWorktreeOwner(
+  state: WorktreeRuntimeOwnerState,
+  worktreeId: string
+): boolean {
+  return (
+    hasUnroutableTerminalWorktreeOwner(state, worktreeId) &&
+    resolveWorktreeOperationRouteResult(state, worktreeId).kind === 'pending'
+  )
+}

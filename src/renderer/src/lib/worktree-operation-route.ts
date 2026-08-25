@@ -1,4 +1,6 @@
 import type { AppState } from '@/store/types'
+import type { RuntimeStatus } from '../../../shared/runtime-types'
+import { runtimeHostConnectionState } from '@/runtime/runtime-host-connection-state'
 import { parseExecutionHostId, type ExecutionHostId } from '../../../shared/execution-host'
 import { parseWorkspaceKey } from '../../../shared/workspace-scope'
 import { getRepoIdFromWorktreeId } from '@/store/slices/worktree-helpers'
@@ -25,6 +27,11 @@ export type WorktreeOperationRoute = {
 export type WorktreeOperationRouteResolution =
   | { kind: 'resolved'; route: WorktreeOperationRoute }
   | { kind: 'ambiguous' }
+  // Why: the id is unknown, and the catalogs that would prove it absent have not arrived yet.
+  // Runtime-owned projects are never persisted client-side, so at app start, on reconnect, and
+  // right after a runtime drop every one of that host's ids is briefly unknown. Reporting them
+  // `missing` in that window is what refused resume and delete for workspaces that do exist.
+  | { kind: 'pending' }
   | { kind: 'missing' }
 
 export type WorktreeOperationOwnerRecord = {
@@ -41,6 +48,10 @@ export type WorktreeOperationRouteState = FolderWorkspaceRuntimeOwnerState & {
   detectedWorktreesByRepo?: Record<string, { worktrees: readonly WorktreeOperationOwnerRecord[] }>
   runtimeEnvironmentCatalogHydrated?: boolean
   removedRuntimeEnvironmentIds?: ReadonlySet<string>
+  // Live per-runtime health, keyed by environment id. Absent for narrow adapters that cannot
+  // observe connection state at all; those keep their catalog-blind verdict.
+  runtimeStatusByEnvironmentId?: ReadonlyMap<string, { status: RuntimeStatus | null }>
+  startupWorktreeRefreshCompleted?: boolean
 }
 
 function ownerRecordsOnHost(
@@ -164,6 +175,72 @@ export function getWorktreeOperationOwnerHostIds(
   return [...hostIds]
 }
 
+/** Whether this runtime has published any repo/worktree row into the client store yet. */
+function runtimeEnvironmentHasPublishedRows(
+  state: WorktreeOperationRouteState,
+  environmentId: string
+): boolean {
+  for (const repo of state.repos ?? []) {
+    const host = parseExecutionHostId(repo.executionHostId ?? undefined)
+    if (host?.kind === 'runtime' && host.environmentId === environmentId) {
+      return true
+    }
+  }
+  for (const worktrees of Object.values(state.worktreesByRepo ?? {})) {
+    for (const worktree of worktrees) {
+      const host = parseExecutionHostId(worktree.hostId)
+      if (
+        worktree.runtimeOwnerEnvironmentId === environmentId ||
+        (host?.kind === 'runtime' && host.environmentId === environmentId)
+      ) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+/**
+ * Whether the catalogs that would prove an id absent are still arriving, so an unknown id is
+ * not-yet-known rather than known-absent. Two store signals decide it:
+ * `runtimeEnvironmentCatalogHydrated` (the saved-runtime list itself has not loaded, so the
+ * owning host may not even be nameable yet) and, per saved runtime, `runtimeStatusByEnvironmentId`
+ * read through `runtimeHostConnectionState` — a reachable or still-being-probed runtime that has
+ * published no rows here (or whose rows may be mid-refresh, `startupWorktreeRefreshCompleted`)
+ * still owes this store its projects. A `disconnected` runtime owes nothing: it will never publish,
+ * so its ids stay `missing` and every destructive path keeps failing closed.
+ */
+export function hasPendingWorktreeOperationCatalog(
+  state: WorktreeOperationRouteState
+): boolean {
+  const statuses = state.runtimeStatusByEnvironmentId
+  if (statuses === undefined) {
+    // Why: a caller that cannot observe runtime health has no evidence of pending hydration
+    // either — keep its existing verdict rather than inventing a wait.
+    return false
+  }
+  if (state.runtimeEnvironmentCatalogHydrated !== true) {
+    return true
+  }
+  return (state.runtimeEnvironments ?? []).some((environment) => {
+    const environmentId = environment.id
+    if (state.removedRuntimeEnvironmentIds?.has(environmentId)) {
+      return false
+    }
+    const entry = statuses.get(environmentId)
+    if (
+      runtimeHostConnectionState({ hasStatusEntry: entry !== undefined, status: entry?.status }) ===
+      'disconnected'
+    ) {
+      return false
+    }
+    return (
+      state.startupWorktreeRefreshCompleted === false ||
+      !runtimeEnvironmentHasPublishedRows(state, environmentId)
+    )
+  })
+}
+
 export function resolveWorktreeOperationRoute(
   state: WorktreeOperationRouteState,
   worktreeId: string
@@ -198,7 +275,9 @@ export function resolveWorktreeOperationRouteResult(
   const repoId = getRepoIdFromWorktreeId(worktreeId)
   const hasKnownRepo = state.repos?.some((repo) => repo.id === repoId) === true
   if (!hasKnownWorktree && !hasKnownRepo) {
-    return { kind: 'missing' }
+    // Why: unknown is only proof of absence once the catalogs that would carry the row are
+    // trustworthy. While a paired runtime is still publishing, treat it as not-yet-known.
+    return hasPendingWorktreeOperationCatalog(state) ? { kind: 'pending' } : { kind: 'missing' }
   }
 
   // Why: a known row published with no owner fields at all — its repo carries no host either, or

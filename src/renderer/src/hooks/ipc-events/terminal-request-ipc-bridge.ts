@@ -2,7 +2,10 @@ import { requestBackgroundTerminalWorktreeMount } from '@/components/terminal/ba
 import { getConnectionIdFromState } from '@/lib/connection-context'
 import { initialAgentTabViewModeProps } from '@/lib/native-chat-initial-view-mode'
 import { isNativeChatTranscriptLocalReadable } from '@/lib/native-chat-transcript-readability'
-import { resolveTerminalWorktreeRoute } from '@/lib/terminal-worktree-route'
+import {
+  hasPendingTerminalWorktreeOwner,
+  resolveTerminalWorktreeRoute
+} from '@/lib/terminal-worktree-route'
 import { translate } from '@/i18n/i18n'
 import { useAppStore } from '../../store'
 import {
@@ -11,11 +14,47 @@ import {
   resolveTerminalPresentation
 } from './terminal-command-state'
 
+/**
+ * A paired runtime's projects are never persisted client-side: they arrive live, so at app start,
+ * on reconnect, and right after a runtime drop every one of its worktree ids is briefly unknown to
+ * this store. Bound the wait so a genuinely unknown id still reports the ordinary unresolved-owner
+ * error instead of leaving the request hanging.
+ */
+const PENDING_TERMINAL_OWNER_HYDRATION_TIMEOUT_MS = 10_000
+
+function waitForTerminalOwnerHydration(worktreeId: string): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let unsubscribe: (() => void) | undefined
+    let settled = false
+    const finish = (): void => {
+      if (settled) {
+        return
+      }
+      settled = true
+      clearTimeout(timer)
+      unsubscribe?.()
+      resolve()
+    }
+    const timer = setTimeout(finish, PENDING_TERMINAL_OWNER_HYDRATION_TIMEOUT_MS)
+    unsubscribe = useAppStore.subscribe(() => {
+      if (!hasPendingTerminalWorktreeOwner(useAppStore.getState(), worktreeId)) {
+        finish()
+      }
+    })
+    // Why: the catalog can land between the pending verdict and this subscription.
+    if (!hasPendingTerminalWorktreeOwner(useAppStore.getState(), worktreeId)) {
+      finish()
+    }
+  })
+}
+
 export function registerTerminalRequestIpcBridge(unsubs: (() => void)[]): void {
   unsubs.push(
-    window.api.ui.onRequestTerminalCreate((data) => {
+    // Why: only the pending-owner branch below awaits; every other verdict still replies
+    // synchronously, so a create request is never deferred by a decision this renderer can make now.
+    window.api.ui.onRequestTerminalCreate(async (data) => {
       try {
-        const store = useAppStore.getState()
+        let store = useAppStore.getState()
         const worktreeId = data.worktreeId ?? store.activeWorktreeId
         if (!worktreeId) {
           window.api.ui.replyTerminalCreate({
@@ -24,7 +63,14 @@ export function registerTerminalRequestIpcBridge(unsubs: (() => void)[]): void {
           })
           return
         }
-        const worktreeRoute = resolveTerminalWorktreeRoute(store, worktreeId)
+        let worktreeRoute = resolveTerminalWorktreeRoute(store, worktreeId)
+        if (!worktreeRoute && hasPendingTerminalWorktreeOwner(store, worktreeId)) {
+          // Why: the owner is not unknown, it has not arrived yet — a workspace resumed from
+          // history or the AI Vault hits this on every cold start of a paired client.
+          await waitForTerminalOwnerHydration(worktreeId)
+          store = useAppStore.getState()
+          worktreeRoute = resolveTerminalWorktreeRoute(store, worktreeId)
+        }
         if (!worktreeRoute) {
           window.api.ui.replyTerminalCreate({
             requestId: data.requestId,
