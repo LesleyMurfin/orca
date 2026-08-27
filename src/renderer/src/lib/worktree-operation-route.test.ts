@@ -277,12 +277,13 @@ describe('resolveWorktreeOperationRouteResult', () => {
     })
   })
 
-  it('fails ownerless rows closed until the saved-runtime catalog is hydrated', () => {
+  it('fails ownerless rows closed mid-hydration while a saved runtime could own them', () => {
     expect(
       resolveWorktreeOperationRouteResult(
         {
+          settings: { activeRuntimeEnvironmentId: 'hub-b' } as never,
           repos: [{ id: 'repo-1' } as never],
-          runtimeEnvironments: [],
+          runtimeEnvironments: [{ id: 'hub-a' }, { id: 'hub-b' }],
           runtimeEnvironmentCatalogHydrated: false,
           worktreesByRepo: { 'repo-1': [worktree(undefined)] }
         },
