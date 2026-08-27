@@ -1,5 +1,10 @@
 import type { AppState } from '@/store/types'
-import { parseExecutionHostId, type ExecutionHostId } from '../../../shared/execution-host'
+import {
+  getRepoExecutionHostId,
+  LOCAL_EXECUTION_HOST_ID,
+  parseExecutionHostId,
+  type ExecutionHostId
+} from '../../../shared/execution-host'
 import { parseWorkspaceKey } from '../../../shared/workspace-scope'
 import { getRepoIdFromWorktreeId } from '@/store/slices/worktree-helpers'
 import { resolveExactWorktreeRoute } from './worktree-owner-route'
@@ -220,6 +225,20 @@ export function resolveWorktreeOperationRouteResult(
       }
     }
   }
+  // Why: a found repo/worktree record is positive identity evidence, so keep terminal-owner
+  // parity with the folder branch below. Every stamped row already routed above, so an unstamped
+  // repo row here is a legacy pre-owner-projection row — local by construction, as
+  // getRepoExecutionHostId, main's resolveRepoOwnershipEvidence and Repo.executionHostId's own
+  // contract all agree. Without this, the legacy hydration gates fail a genuinely local git
+  // worktree closed whenever any unrelated runtime is saved — the #10251 symptom, for git
+  // worktrees (#16733). A repo row on its own is repo identity, not worktree identity (#16841),
+  // so a known worktree row — listed or currently detected — must back it.
+  const localOwnerRoute = hasKnownWorktree
+    ? resolveUnstampedLocalWorktreeRoute(state, repoId)
+    : null
+  if (localOwnerRoute) {
+    return { kind: 'resolved', route: localOwnerRoute }
+  }
   // Why: no saved runtime can publish a remote ownerless row; otherwise current detected presence affirms identity under the stamped-writer invariant.
   const mayBeLegacyLocal =
     savedRuntimeIds === undefined ||
@@ -228,6 +247,29 @@ export function resolveWorktreeOperationRouteResult(
   return mayBeLegacyLocal
     ? { kind: 'resolved', route: { executionHostId: 'local', runtimeEnvironmentId: null } }
     : { kind: 'missing' }
+}
+
+/**
+ * A local route for a worktree whose rows predate owner projection, and only that.
+ * `getWorktreeExecutionHostId` is the precedence of record for this decision; it takes a single
+ * repo, so the unanimity every row must satisfy is spelled out here.
+ */
+function resolveUnstampedLocalWorktreeRoute(
+  state: WorktreeOperationRouteState,
+  repoId: string
+): WorktreeOperationRoute | null {
+  const repos = state.repos?.filter((repo) => repo.id === repoId) ?? []
+  // Why: a worktree row alone carries no host evidence; without a repo record keep failing closed.
+  if (repos.length === 0) {
+    return null
+  }
+  // Why: rows that disagree are a contradiction, not a default — refuse, as findExactRepoOwner does.
+  for (const repo of repos) {
+    if (getRepoExecutionHostId(repo) !== LOCAL_EXECUTION_HOST_ID) {
+      return null
+    }
+  }
+  return { executionHostId: LOCAL_EXECUTION_HOST_ID, runtimeEnvironmentId: null }
 }
 
 function resolveFolderWorkspaceOperationRoute(
