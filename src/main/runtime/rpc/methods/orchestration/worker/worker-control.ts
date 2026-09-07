@@ -148,6 +148,9 @@ export const ORCHESTRATION_WORKER_CONTROL_METHODS: RpcMethod[] = [
           `Worker Dispatch ${params.dispatch} no longer resolves to its exact process.`
         )
       }
+      // Read via the handle inspectWorkerTerminal proved live: the durable one, or a handle
+      // re-minted from the recorded incarnation after the durable handle went stale.
+      const liveHandle = observation.terminalHandle ?? terminalHandle
       const structured = readStructuredWorkerOutput({
         db,
         dispatchId: params.dispatch,
@@ -168,7 +171,7 @@ export const ORCHESTRATION_WORKER_CONTROL_METHODS: RpcMethod[] = [
       const output = await readExactWorkerOutput({
         runtime,
         dispatchId: params.dispatch,
-        terminalHandle,
+        terminalHandle: liveHandle,
         workerState: worker?.state ?? 'unsupervised',
         terminalStatus:
           observation.status === 'exited'
