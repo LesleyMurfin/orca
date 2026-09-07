@@ -24,6 +24,7 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
     if (this.activeTransports.length > 0) {
       return
     }
+    this.runtime.setServePort?.(null)
 
     // Why: SIGKILL/OOM skip stop(), orphaning `o-<pid>-*.sock` files; sweep them. Skipped on Windows: named pipes leave no filesystem entries.
     if (this.platform !== 'win32') {
@@ -95,13 +96,6 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
           if (this.wsPort !== 0 && transport.resolvedPort !== this.wsPort) {
             writeWsFallbackPort(this.userDataPath, transport.resolvedPort)
           }
-          // Why: hand the runtime the ACTUAL bound port (resolvedPort), not the
-          // pre-bind request — wsPort may be 0 (OS-assigned) or fall back to an
-          // OS-assigned port on EADDRINUSE. `serve stats` reports this value, so
-          // it must be the post-listen truth, not the requested port.
-          // Optional: remote-host runtime proxies only implement RPC-forwarded
-          // methods (same pattern as activateRecentPtyPathCandidateTracking?.()).
-          this.runtime.setServePort?.(transport.resolvedPort)
           activeTransports.push(transport)
           transportsMeta.push({ kind: 'websocket', endpoint })
         } catch (error) {
@@ -126,6 +120,7 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
       this.activeTransports = []
       this.transports = []
       await Promise.all(activeTransports.map((t) => t.stop().catch(() => {}))).catch(() => {})
+      this.runtime.setServePort?.(null)
       throw error
     }
 
@@ -199,6 +194,7 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
       this.detachWebSocketWiring = null
       throw error
     }
+    this.runtime.setServePort?.(wsTransport.resolvedPort)
     this.wsBoundHost = options.host
     return {
       transport: wsTransport,

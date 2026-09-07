@@ -33,6 +33,7 @@ export class RuntimeRpcShutdown extends RuntimeRpcMobilePairing {
     if (failedStop?.status === 'rejected') {
       throw failedStop.reason
     }
+    this.runtime.setServePort?.(null)
     // Why: leave the metadata file on shutdown — shared userData may host another live runtime whose bootstrap file we'd erase.
   }
 }

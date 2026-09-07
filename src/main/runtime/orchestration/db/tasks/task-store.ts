@@ -159,6 +159,10 @@ export function listTasks(
     .all() as TaskRow[]
 }
 
+export function countTasks(this: OrchestrationDb): number {
+  return Number(this.db.prepare('SELECT COUNT(*) AS count FROM tasks').get()?.count ?? 0)
+}
+
 // Why: the correlated indexed lookup avoids materializing every retained Dispatch before filtering Tasks.
 export function listTasksWithDispatch(
   this: OrchestrationDb,
@@ -238,6 +242,7 @@ export type TaskStoreMethods = {
   createTask: typeof createTask
   getTask: typeof getTask
   listTasks: typeof listTasks
+  countTasks: typeof countTasks
   listTasksWithDispatch: typeof listTasksWithDispatch
   promoteReadyTasks: typeof promoteReadyTasks
 }
@@ -247,6 +252,7 @@ export function attachTaskStore(ctor: { prototype: object }): void {
     createTask,
     getTask,
     listTasks,
+    countTasks,
     listTasksWithDispatch,
     promoteReadyTasks
   })

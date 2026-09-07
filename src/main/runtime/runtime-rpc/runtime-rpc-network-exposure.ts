@@ -50,6 +50,7 @@ export class RuntimeRpcNetworkExposure extends RuntimeRpcLifecycle {
       // Connections never iterates a dead transport; the new listener re-attaches to the SAME wiring.
       this.detachWebSocketWiring?.()
       await current.stop()
+      this.runtime.setServePort?.(null)
       widened = await this.startWebSocketTransport({
         host: WS_BIND_HOST_ALL_INTERFACES,
         port: previousPort,

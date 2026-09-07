@@ -15,6 +15,9 @@ import type { RuntimeCommandSurfaceHost } from './orca-runtime-core'
 import type { MemorySnapshot, StatsSummary } from '../../shared/process-stats-types'
 import type { RuntimeServeStatsResult } from '../../shared/runtime-types'
 import { getAppEnvironment } from '../../shared/app-environment'
+import { getLatestPtyTitle } from './runtime-worktree-status-projection'
+import { getStructuredAgentSessionHost } from '../native-chat/agent-session-wire/structured-agent-session-registry'
+import { observeStructuredWorker } from './structured-worker-authority'
 import { collectMemorySnapshot } from '../memory/collector'
 import type { PersistedUIState } from '../../shared/persisted-ui-state-types'
 import type { FeatureInteractionId } from '../../shared/feature-interactions'
@@ -170,26 +173,41 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
     this.servePort = port
   }
 
-  // Why: live current-state counts for `orca serve stats --json`. Terminals and
-  // worktrees come from in-memory registries; tasks read the local orchestration
-  // DB in-process (same source as orchestration.taskList); agents come from the
-  // stats collector's live set. Version/uptime/port round out the diagnostic
-  // snapshot. This is a stable contract — see RuntimeServeStatsResult.
+  // Occupancy follows runtime PTYs; turn-duration statistics exclude waiting agents.
   async getServeStats(): Promise<RuntimeServeStatsResult> {
     const worktrees = await this.listManagedWorktrees()
-    const tasks = this.getOrchestrationDb().listTasksWithDispatch()
+    const tasks = this.getOrchestrationDb().countTasks()
+    let terminals = 0
+    let agents = 0
+    for (const pty of this.ptysById.values()) {
+      if (!pty.connected) {
+        continue
+      }
+      terminals++
+      if (
+        this.resolvePaneAgentIdentityField(
+          pty.launchAgent,
+          pty.foregroundAgent,
+          getLatestPtyTitle(pty),
+          pty.paneKey
+        ).agentIdentity
+      ) {
+        agents++
+      }
+    }
+    for (const session of getStructuredAgentSessionHost()?.listSessionTabs() ?? []) {
+      if (observeStructuredWorker(session).status === 'live') {
+        agents++
+      }
+    }
     return {
       version: getAppEnvironment().getVersion(),
       uptimeSeconds: Math.floor((Date.now() - this.startedAt) / 1000),
-      // Why: the RPC server sets this to the actual bound WS port after the
-      // transport binds (post-listen resolvedPort), or null when no WS listener
-      // is active. Reporting the real bound port matters most in the port-
-      // conflict / restart cases this diagnostic exists to surface.
       port: this.servePort,
       counts: {
-        agents: this.stats?.getLiveAgentCount() ?? 0,
-        tasks: tasks.length,
-        terminals: this.leaves.size,
+        agents,
+        tasks,
+        terminals,
         worktrees: worktrees.totalCount
       }
     }

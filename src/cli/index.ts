@@ -35,10 +35,7 @@ function shouldIgnoreRemoteSelection(commandPath: string[]): boolean {
     // answer (paired servers) is read from this machine's own pairing store and cannot be routed,
     // so routing the other half produced one listing describing two machines at once.
     commandPath[0] === 'host' ||
-    // Why: bare `serve` starts a local runtime, so remote selection is moot and
-    // must be ignored. But `serve stats` queries a (possibly remote) runtime and
-    // MUST honor --environment/ORCA_ENVIRONMENT — narrow this guard to exactly
-    // `['serve']` so the stats subcommand keeps its remote selection.
+    // Only bare serve launches locally; subcommands query the selected runtime.
     (commandPath[0] === 'serve' && commandPath.length === 1) ||
     commandPath[0] === 'agent' ||
     commandPath[0] === 'vm' ||

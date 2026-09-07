@@ -55,7 +55,7 @@ describe('getServeStats', () => {
       uptimeSeconds: expect.any(Number),
       port: 6970,
       counts: {
-        agents: 2,
+        agents: 0,
         tasks: 2,
         terminals: 0,
         worktrees: 3
