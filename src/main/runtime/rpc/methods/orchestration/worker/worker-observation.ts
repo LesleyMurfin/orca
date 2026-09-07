@@ -106,7 +106,14 @@ export async function inspectWorkerTerminal(
   const agentWait = terminal.agentWait
   const verdict = runtime.getTerminalLivenessVerdict?.(effectiveHandle) ?? null
   if (verdict?.status === 'unverifiable') {
-    return { terminal, exact, status: 'unverifiable', reason: verdict.reason, agentWait, terminalHandle: effectiveHandle }
+    return {
+      terminal,
+      exact,
+      status: 'unverifiable',
+      reason: verdict.reason,
+      agentWait,
+      terminalHandle: effectiveHandle
+    }
   }
   if (verdict?.status === 'live') {
     return { terminal, exact, status: 'live', agentWait, terminalHandle: effectiveHandle }
@@ -114,7 +121,7 @@ export async function inspectWorkerTerminal(
   if (!verdict) {
     const dispatch = db.getDispatchContextById?.(dispatchId)
     const persistedHostScope = parseWorkerTerminalHostScope(dispatch?.host_scope ?? null)
-    const currentHostScope = runtime.getOrchestrationDispatchAuthority?.(terminalHandle)?.hostScope
+    const currentHostScope = runtime.getOrchestrationDispatchAuthority?.(effectiveHandle)?.hostScope
     if (persistedHostScope?.kind === 'ssh' || currentHostScope?.kind === 'ssh') {
       return {
         terminal,
@@ -138,8 +145,8 @@ export async function inspectWorkerTerminal(
     exact,
     status: 'exited',
     agentWait,
-      terminalHandle: effectiveHandle
-    }
+    terminalHandle: effectiveHandle
+  }
 }
 
 /** Why conditional: a present `agentWait: null` must mean "looked, nothing waiting"; an
