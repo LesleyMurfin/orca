@@ -46,7 +46,8 @@ export const WORKTREE_SCAN_FALLBACK_ALLOWANCE_MS = 1500
 // on every TTL expiry. Subtracting keeps that invariant true by construction if either side moves.
 // Why not smaller: the probe reads a subset of what the fallback scan reads, so a probe too slow to
 // fit is a scan that will not fit either — waiting is strictly better right up to the budget.
-// Expiring yields `null`, the existing "cannot prove unchanged" sentinel, so a real scan runs.
+// Expiring is "unknown", not "changed": the reusable cache is served as-is, still stamped with the
+// last confirmed scan, so the reconcile interval bounds how long that can go unverified.
 export const WORKTREE_SCAN_ADMIN_FINGERPRINT_TIMEOUT_MS =
   RESOLVED_WORKTREE_REPO_TIMEOUT_MS - WORKTREE_SCAN_FALLBACK_ALLOWANCE_MS
 
