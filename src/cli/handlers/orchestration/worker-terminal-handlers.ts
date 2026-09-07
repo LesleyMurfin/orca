@@ -7,7 +7,12 @@ import {
 } from '../../flags'
 import { RuntimeClientError } from '../../runtime-client'
 import { callOrchestrationMutation } from './mutation-request'
-import { formatWorkerRelease, type WorkerReleaseReceipt } from './worker-output'
+import {
+  formatWorkerRelease,
+  formatWorkerReleaseBulk,
+  type WorkerReleaseBulkReceipt,
+  type WorkerReleaseReceipt
+} from './worker-output'
 import {
   formatWorkerListScope,
   resolveWorkerListRunScope,
@@ -60,7 +65,36 @@ export const ORCHESTRATION_WORKER_TERMINAL_HANDLERS: Record<string, CommandHandl
     )
   },
 
-  'orchestration worker-release': async ({ flags, client, json }) => {
+  'orchestration worker-release': async ({ flags, client, cwd, json }) => {
+    const terminalState = getOptionalStringFlag(flags, 'terminal-state')
+    if (terminalState !== undefined) {
+      if (flags.has('dispatch')) {
+        throw new RuntimeClientError(
+          'invalid_argument',
+          'worker-release accepts either --dispatch or --terminal-state, not both'
+        )
+      }
+      if (terminalState !== 'reclaimable') {
+        throw new RuntimeClientError(
+          'invalid_argument',
+          `invalid --terminal-state '${terminalState}' for worker-release, expected: reclaimable`
+        )
+      }
+      const scope = await resolveWorkerListRunScope(flags, cwd, client)
+      const result = await callOrchestrationMutation<WorkerReleaseBulkReceipt>(
+        client,
+        flags,
+        'orchestration.workerReleaseBulk',
+        { terminalState: 'reclaimable', run: scope.run }
+      )
+      // Why: individual dispatch errors are recorded, not thrown; a nonzero `failed` count is the
+      // only signal that some releases in the batch need a human to look at them.
+      if (result.result.failed > 0) {
+        process.exitCode = 1
+      }
+      printResult(result, json, formatWorkerReleaseBulk)
+      return
+    }
     const result = await callOrchestrationMutation<WorkerReleaseReceipt>(
       client,
       flags,

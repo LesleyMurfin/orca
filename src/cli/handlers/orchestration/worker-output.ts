@@ -133,3 +133,32 @@ export function formatWorkerRelease(value: WorkerReleaseReceipt): string {
   }
   return lines.join('\n')
 }
+
+export type WorkerReleaseBulkOutcome =
+  | ({ dispatchId: string; ok: true } & Omit<WorkerReleaseReceipt, 'dispatchId'>)
+  | { dispatchId: string; ok: false; error: string }
+
+export type WorkerReleaseBulkReceipt = {
+  terminalState: string
+  requested: number
+  released: number
+  alreadyReleased: number
+  retained: number
+  failed: number
+  outcomes: WorkerReleaseBulkOutcome[]
+}
+
+export function formatWorkerReleaseBulk(value: WorkerReleaseBulkReceipt): string {
+  const rows =
+    value.outcomes.length === 0
+      ? 'No reclaimable workers found.'
+      : value.outcomes
+          .map((outcome) =>
+            outcome.ok
+              ? `${outcome.dispatchId} [${outcome.state}] process=${outcome.processAction}`
+              : `${outcome.dispatchId} [error] ${outcome.error}`
+          )
+          .join('\n')
+  const summary = `Bulk release (${value.terminalState}): requested=${value.requested} released=${value.released} already_released=${value.alreadyReleased} retained=${value.retained} failed=${value.failed}`
+  return `${rows}\n${summary}`
+}

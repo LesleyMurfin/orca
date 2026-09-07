@@ -5,6 +5,15 @@ import { requiredString } from '../../../schemas'
 export const WorkerDispatchParams = z.object({ dispatch: requiredString('Missing --dispatch') })
 export const WorkerRetainParams = WorkerDispatchParams.strict()
 
+// Only `reclaimable` is exposed today: it is the one terminal state a bulk release can act on
+// without special-casing the safety contract already enforced per-dispatch by `workerRelease`.
+export const WORKER_RELEASE_BULK_TERMINAL_STATES = ['reclaimable'] as const
+
+export const WorkerReleaseBulkParams = z.object({
+  terminalState: z.enum(WORKER_RELEASE_BULK_TERMINAL_STATES),
+  run: z.string().min(1).optional()
+})
+
 export const WORKER_TERMINAL_LIST_STATES = [
   'active',
   'reclaimable',
