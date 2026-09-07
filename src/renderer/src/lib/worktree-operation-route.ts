@@ -177,6 +177,11 @@ export function resolveWorktreeOperationRoute(
   return resolution.kind === 'resolved' ? resolution.route : null
 }
 
+/**
+ * Owner precedence for owner-routed operations: stamped identity first, the legacy
+ * pre-owner-projection branches strictly below it, and an id no row can place fails closed —
+ * defaulting an unplaceable id to `local` would aim the operation at the wrong machine.
+ */
 export function resolveWorktreeOperationRouteResult(
   state: WorktreeOperationRouteState,
   worktreeId: string
@@ -272,6 +277,10 @@ function resolveUnstampedLocalWorktreeRoute(
   return { executionHostId: LOCAL_EXECUTION_HOST_ID, runtimeEnvironmentId: null }
 }
 
+/**
+ * Folder workspaces have no repo or worktree rows, so they route off their own owner record
+ * instead of the legacy hydration gates above.
+ */
 function resolveFolderWorkspaceOperationRoute(
   state: WorktreeOperationRouteState,
   folderWorkspaceId: string

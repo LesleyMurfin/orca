@@ -278,14 +278,20 @@ describe('resolveWorktreeOperationRouteResult', () => {
   })
 
   it('fails ownerless rows closed mid-hydration while a saved runtime could own them', () => {
+    // Why: no repo row and no active runtime, so neither the unstamped-local branch nor the
+    // focused-runtime gates can decide — the unhydrated saved-runtime catalog is what fails this
+    // closed. Flipping runtimeEnvironmentCatalogHydrated to true routes it local off the detected
+    // row, so do not re-add repos/activeRuntimeEnvironmentId here: either one decides the case
+    // earlier and leaves this branch uncovered.
     expect(
       resolveWorktreeOperationRouteResult(
         {
-          settings: { activeRuntimeEnvironmentId: 'hub-b' } as never,
-          repos: [{ id: 'repo-1' } as never],
           runtimeEnvironments: [{ id: 'hub-a' }, { id: 'hub-b' }],
           runtimeEnvironmentCatalogHydrated: false,
-          worktreesByRepo: { 'repo-1': [worktree(undefined)] }
+          worktreesByRepo: { 'repo-1': [worktree(undefined)] },
+          detectedWorktreesByRepo: {
+            'repo-1': { worktrees: [worktree(undefined)] }
+          }
         },
         WORKTREE_ID
       )
@@ -374,7 +380,10 @@ describe('resolveWorktreeOperationRouteResult', () => {
   // #16733: a genuinely local git worktree carries no host stamp on legacy rows. Every stamped
   // row is already routed by resolveExplicitWorktreeOperationRouteResult, so an unstamped repo
   // row reaching the legacy hydration gates is local by construction — the same positive-identity
-  // argument the folder-workspace branch below already makes (#10251/#10269).
+  // argument the folder-workspace branch below already makes (#10251/#10269). The repo row is the
+  // host evidence, but it is not worktree identity on its own: a worktree id no row has ever
+  // listed keeps failing closed, per 'does not treat a repo row alone as positive local
+  // identity' above (#16841).
   describe('local git worktrees without a host stamp (#16733)', () => {
     const LOCAL_ROUTE = {
       kind: 'resolved',
@@ -403,19 +412,6 @@ describe('resolveWorktreeOperationRouteResult', () => {
             runtimeEnvironments: [{ id: 'a' }, { id: 'b' }],
             runtimeEnvironmentCatalogHydrated: true,
             worktreesByRepo: { 'repo-1': [worktree(undefined)] }
-          },
-          WORKTREE_ID
-        )
-      ).toEqual(LOCAL_ROUTE)
-    })
-
-    it('routes a known local repo before its worktree row has been listed', () => {
-      expect(
-        resolveWorktreeOperationRouteResult(
-          {
-            repos: [{ id: 'repo-1' } as never],
-            runtimeEnvironments: [{ id: 'some-hub' }],
-            runtimeEnvironmentCatalogHydrated: true
           },
           WORKTREE_ID
         )

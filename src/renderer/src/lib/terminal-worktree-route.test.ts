@@ -99,6 +99,7 @@ describe('resolveTerminalWorktreeRoute', () => {
   // because the worktree owner could not be resolved" reply, so a non-null route here is exactly
   // "that toast cannot fire".
   describe('unstamped local worktrees with a saved runtime (#16733)', () => {
+    /** The single saved runtime is the hazard: it arms the legacy hydration gates while owning nothing here. */
     const unstampedState = (): AppState =>
       localState({
         repos: [{ id: 'repo-1', connectionId: null, executionHostId: null }],
