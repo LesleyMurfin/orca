@@ -52,18 +52,8 @@ export class OrcaRuntimeWithRefreshRepoWorktreeScan extends OrcaRuntimeWithListK
       // caller must never wait on it, or every cold read pays filesystem latency it cannot use.
       const probed = await withTimeoutResult(probe, WORKTREE_SCAN_ADMIN_FINGERPRINT_TIMEOUT_MS)
       if (!probed.ok) {
-        // Why serve the cache instead of scanning: expiry means "unknown", not "changed". This
-        // entry is still inside the reconcile interval, so it is exactly as reusable as it was a
-        // millisecond before the deadline — and the only thing that makes a probe miss a 3.5s
-        // budget is a loaded host, where a fallback `git worktree list` queued behind the git
-        // admission scheduler is the one cost that feeds the next probe's slowness.
-        // Why it cannot go stale forever: `scannedAt` and `adminFingerprint` stay at the last
-        // *confirmed* values, so the reconcile interval keeps measuring from the last real scan
-        // and any run of expiries still reconciles on its original schedule.
-        // Why not thread the abandoned probe through: it may settle after a mutation this cached
-        // result predates, and stamping that fingerprint here would mask the mutation until the
-        // reconcile deadline. The last confirmed value is the only baseline the next probe can
-        // compare against honestly.
+        // Timeout proves no change; avoid adding scan load and preserve the last confirmed baseline.
+        // Ignore the late probe: it could describe a mutation these cached rows predate.
         console.warn('[worktree-scan] admin fingerprint probe expired; serving the cached scan', {
           repoId: repo.id,
           timeoutMs: WORKTREE_SCAN_ADMIN_FINGERPRINT_TIMEOUT_MS

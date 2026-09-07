@@ -122,13 +122,14 @@ the caller treats as "cannot prove unchanged".
 
 ```text
 cached entry exists, same generation + runtimeKey, TTL expired
-  └─ probe eligible? (no connectionId, no wslDistro, fingerprint recorded)
-       ├─ no  → real scan (today's behaviour)
-       └─ yes → read fingerprint now, bounded by the probe deadline
-            ├─ expired before answering        → serve the cached scan unchanged
-            ├─ null or different               → real scan
-            ├─ equal, last real scan < 5 min   → extend TTL, no subprocess
-            └─ equal, last real scan ≥ 5 min   → real scan (bounded reconcile)
+  └─ successful scan less than 5 min old at refresh start?
+       ├─ no  → real scan (bounded reconcile)
+       └─ yes → local fingerprint probe available?
+            ├─ no  → real scan
+            └─ yes → await fingerprint, bounded by the probe deadline
+                 ├─ expired before answering → serve the cached scan unchanged
+                 ├─ null or different        → real scan
+                 └─ equal                    → extend TTL, no subprocess
 ```
 
 `WORKTREE_SCAN_ADMIN_RECONCILE_INTERVAL_MS` is 5 min, matching the existing
@@ -140,20 +141,21 @@ on the 30 s TTL.
 
 The expiry branch above is the one place the two "cannot prove unchanged"
 outcomes have to be told apart. A mismatch proves the cache is stale. An expiry
-proves nothing at all: the entry is still inside the reconcile interval, so it is
-exactly as reusable as it was a millisecond before the deadline.
+proves nothing at all: the entry was inside the reconcile interval when the
+refresh started, so expiry alone does not establish that it changed.
 
-Treating expiry as a mismatch was self-sustaining. Only a loaded host makes the
-probe miss a 3.5 s budget, and the response was to queue a full `git worktree
-list` behind the git-admission scheduler — adding the load that slows the next
-probe. Serving the cache removes that feedback path.
+Treating expiry as a mismatch could feed host overload. A slow filesystem probe
+would queue a full `git worktree list` behind the git-admission scheduler, adding
+load that could slow the next probe. Serving the cache removes that feedback path
+for the refresh whose probe expires.
 
 Nothing is stamped as confirmed on this branch. The entry keeps the `scannedAt`
 and `adminFingerprint` of the last *real* scan, so:
 
-- the reconcile interval keeps measuring from that scan, and any run of
-  consecutive expiries still reconciles on its original schedule — an unconfirmed
-  entry can never outlive the 5-minute ceiling;
+- the reconcile interval keeps measuring from that scan. The next refresh that
+  starts at least 5 minutes after the scan runs a real scan. This is a refresh
+  threshold, not a wall-clock expiry: a refresh begun just before it may finish
+  after it, and the caller caches that result for another 30-second TTL;
 - the next probe compares against the last confirmed fingerprint, so a repo that
   really did change is rescanned on the first probe that answers.
 
