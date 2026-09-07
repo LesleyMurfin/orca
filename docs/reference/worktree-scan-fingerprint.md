@@ -124,16 +124,47 @@ the caller treats as "cannot prove unchanged".
 cached entry exists, same generation + runtimeKey, TTL expired
   └─ probe eligible? (no connectionId, no wslDistro, fingerprint recorded)
        ├─ no  → real scan (today's behaviour)
-       └─ yes → read fingerprint now
-            ├─ null or different              → real scan
-            ├─ equal, last real scan < 5 min  → extend TTL, no subprocess
-            └─ equal, last real scan ≥ 5 min  → real scan (bounded reconcile)
+       └─ yes → read fingerprint now, bounded by the probe deadline
+            ├─ expired before answering        → serve the cached scan unchanged
+            ├─ null or different               → real scan
+            ├─ equal, last real scan < 5 min   → extend TTL, no subprocess
+            └─ equal, last real scan ≥ 5 min   → real scan (bounded reconcile)
 ```
 
 `WORKTREE_SCAN_ADMIN_RECONCILE_INTERVAL_MS` is 5 min, matching the existing
 `WORKTREE_SCAN_AGENT_SCRATCH_TTL_MS` precedent. A cached result whose scan
 failed (`ok: false`) is never extended, so a transient Git failure still retries
 on the 30 s TTL.
+
+### Probe expiry is not a mismatch
+
+The expiry branch above is the one place the two "cannot prove unchanged"
+outcomes have to be told apart. A mismatch proves the cache is stale. An expiry
+proves nothing at all: the entry is still inside the reconcile interval, so it is
+exactly as reusable as it was a millisecond before the deadline.
+
+Treating expiry as a mismatch was self-sustaining. Only a loaded host makes the
+probe miss a 3.5 s budget, and the response was to queue a full `git worktree
+list` behind the git-admission scheduler — adding the load that slows the next
+probe. Serving the cache removes that feedback path.
+
+Nothing is stamped as confirmed on this branch. The entry keeps the `scannedAt`
+and `adminFingerprint` of the last *real* scan, so:
+
+- the reconcile interval keeps measuring from that scan, and any run of
+  consecutive expiries still reconciles on its original schedule — an unconfirmed
+  entry can never outlive the 5-minute ceiling;
+- the next probe compares against the last confirmed fingerprint, so a repo that
+  really did change is rescanned on the first probe that answers.
+
+The abandoned probe is deliberately **not** adopted when it finally settles: it
+was taken after the cached scan, so its value would stamp a later state onto an
+earlier result and mask any mutation in between until the reconcile deadline.
+
+A probe that is still outstanding from a previous refresh is a different case
+again — `startRepoWorktreeAdminFingerprintProbe` returns `null` rather than
+piling a second read onto a wedged mount, the awaited branch is never entered,
+and the refresh takes the real scan.
 
 ### Git version compatibility
 
