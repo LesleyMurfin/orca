@@ -34,6 +34,9 @@ export class RuntimeRpcShutdown extends RuntimeRpcMobilePairing {
     // advertisable once we get here — clear the port before rethrowing, or `serve stats` keeps
     // reporting a dead port after a failed shutdown.
     this.runtime.setServePort?.(null)
+    // Why with the port: no listener means no admission budget, and reporting the caps of a
+    // stopped server would read as capacity a caller can still spend.
+    this.runtime.setLongPollStatsProvider?.(null)
     if (failedStop?.status === 'rejected') {
       throw failedStop.reason
     }

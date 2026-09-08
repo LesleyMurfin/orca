@@ -26,6 +26,10 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
       return
     }
     this.runtime.setServePort?.(null)
+    // Why here, not in the constructor: `serve stats` reports these caps as the live admission
+    // budget, and only a started server has one. Registered once — the reader pulls the counters
+    // when someone asks, so nothing has to push on the long-poll hot path.
+    this.runtime.setLongPollStatsProvider?.(() => this.readLongPollStats())
     // Why here: this is the surface `serve stats` is answered on, so enabling the histogram with
     // the listener means any caller that can read the field had it measured for the runtime's
     // whole serving life. One long-lived histogram; reads are O(1).
@@ -126,6 +130,8 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
       this.transports = []
       await Promise.all(activeTransports.map((t) => t.stop().catch(() => {}))).catch(() => {})
       this.runtime.setServePort?.(null)
+      // Every transport above was just torn down, so there is no admission budget left to report.
+      this.runtime.setLongPollStatsProvider?.(null)
       throw error
     }
 

@@ -5,7 +5,6 @@ import {
   rehydrateClientHostedBrowserPages
 } from './client-hosted-browser-page-persistence'
 import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
-import { getBrowserHostLeaseRegistry } from './browser-host-lease-registry-instance'
 import { splitWorktreeIdForFilesystem } from '../../shared/worktree/id'
 import type { WorkspaceSessionState } from '../../shared/workspace-session-state-types'
 import type { ExecutionHostId } from '../../shared/execution-host'
@@ -16,6 +15,7 @@ import type { RuntimeCommandSurfaceHost } from './orca-runtime-core'
 import type { MemorySnapshot, StatsSummary } from '../../shared/process-stats-types'
 import type {
   RuntimeServeStatsAgentState,
+  RuntimeServeStatsLongPolls,
   RuntimeServeStatsResult
 } from '../../shared/runtime-types'
 import {
@@ -31,6 +31,7 @@ import { observeStructuredWorker } from './structured-worker-authority'
 import { collectMemorySnapshot } from '../memory/collector'
 import { collectServeStatsHost } from './serve-stats-host'
 import { readServeStatsEventLoopDelayP99Ms } from './serve-stats-event-loop-delay'
+import { collectServeStatsBrowserPages } from './serve-stats-browser-pages'
 import type { PersistedUIState } from '../../shared/persisted-ui-state-types'
 import type { FeatureInteractionId } from '../../shared/feature-interactions'
 import type { RuntimeClientSettingsUpdate } from './runtime-client-settings'
@@ -185,6 +186,20 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
     this.servePort = port
   }
 
+  /**
+   * Registers the RPC server's live long-poll reader, or clears it with `null` on shutdown.
+   *
+   * A pull, not a push: the counters move on every long-poll admit and release (the hot path for
+   * every `terminal.wait` / `orchestration.ask` in the fleet), so a setter called per increment
+   * would put a cross-object write on that path and go stale the moment any release path forgot
+   * to call it. One closure registered where `setServePort` is, read only when someone actually
+   * asks for stats, cannot drift from the counters it reads. Null means "no listener is serving",
+   * which is exactly when there is no admission budget to report.
+   */
+  setLongPollStatsProvider(provider: (() => RuntimeServeStatsLongPolls) | null): void {
+    this.longPollStatsProvider = provider
+  }
+
   // Occupancy follows runtime PTYs; turn-duration statistics exclude waiting agents.
   async getServeStats(): Promise<RuntimeServeStatsResult> {
     const worktrees = await this.listManagedWorktrees()
@@ -239,24 +254,9 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
         agentsByState.unknown++
       }
     }
-    const leases = getBrowserHostLeaseRegistry(this)
-    const pageRegistry = getRuntimeBrowserPageRegistry(this)
-    const clientPages = pageRegistry.countPages(
-      (browserPageId) => leases.getPlacement(browserPageId) !== undefined
-    )
-    // Why: the registry only ever holds client-hosted pages, so counting it alone reported 0 for
-    // every page a headless serve opens — the offscreen population #14552 is actually about. Those
-    // pages are keyed by id in the WebContents registration map the bridge reads, so add the ones
-    // the registry does not already hold. `getRegisteredTabs` and not `tabList`: listing sweeps
-    // dead guests out of BrowserManager, and a stats read must deregister nothing.
-    let hostBackedPages = 0
-    // Optional-called like every other bridge read in this runtime: the bridge is injected, so a
-    // caller may hold one that predates this method.
-    for (const browserPageId of this.agentBrowserBridge?.getRegisteredTabs?.().keys() ?? []) {
-      if (!pageRegistry.getPage(browserPageId)) {
-        hostBackedPages++
-      }
-    }
+    // Pages of both kinds plus their renderer footprint, from one walk of the bridge's page-id
+    // registration map.
+    const browserPages = collectServeStatsBrowserPages(this, this.agentBrowserBridge)
     return {
       version: getAppEnvironment().getVersion(),
       runtimeId: this.getRuntimeId(),
@@ -269,9 +269,13 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
         terminalsUnverifiable,
         terminalsExited,
         worktrees: worktrees.totalCount,
-        browserPages: clientPages.total + hostBackedPages,
-        // Retention is a client-hosted notion only (see RuntimeServeStatsResult.counts).
-        browserPagesRetained: clientPages.retained,
+        browserPages: browserPages.total,
+        browserPagesRetained: browserPages.retained,
+        // Bytes, not a count, but scoped to exactly the population `browserPages` counts — and
+        // null, never 0, wherever no renderer footprint was measurable (see
+        // RuntimeServeStatsResult.counts.browserPageMemoryTotalBytes).
+        browserPageMemoryTotalBytes: browserPages.memory.totalBytes,
+        browserPageMemoryMaxBytes: browserPages.memory.maxBytes,
         tasksByStatus,
         agentsByState,
         workersByTerminalState: Object.fromEntries(
@@ -281,7 +285,13 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
       // Host-wide, never Orca-attributed, and null wherever this platform cannot measure
       // (see RuntimeServeStatsResult.host).
       host: collectServeStatsHost(),
-      health: { eventLoopDelayP99Ms: readServeStatsEventLoopDelayP99Ms() }
+      health: {
+        eventLoopDelayP99Ms: readServeStatsEventLoopDelayP99Ms(),
+        // Null whenever no RPC server registered its counters: the caps are the server's, and an
+        // invented 0/0 would read as a runtime that can admit nothing (see
+        // RuntimeServeStatsHealth.longPolls).
+        longPolls: this.longPollStatsProvider?.() ?? null
+      }
     }
   }
 

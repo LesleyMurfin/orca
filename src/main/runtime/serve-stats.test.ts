@@ -90,6 +90,10 @@ describe('getServeStats', () => {
         worktrees: 3,
         browserPages: 0,
         browserPagesRetained: 0,
+        // No pages at all, so no renderer footprint was measurable: null, never a 0 that would
+        // read as pages costing nothing.
+        browserPageMemoryTotalBytes: null,
+        browserPageMemoryMaxBytes: null,
         // Dependency-free tasks are admitted straight to `ready`.
         tasksByStatus: { ...ZERO_TASK_STATUS_COUNTS, ready: 2 },
         agentsByState: ZERO_AGENT_STATE_COUNTS,
@@ -100,7 +104,8 @@ describe('getServeStats', () => {
       // in serve-stats-host.test.ts.
       host: expect.any(Object),
       // No RPC listener started in this test, so the histogram was never enabled: null, not 0.
-      health: { eventLoopDelayP99Ms: null }
+      // `longPolls` is null for the same reason — the caps belong to the server, and there is none.
+      health: { eventLoopDelayP99Ms: null, longPolls: null }
     })
     expect(result.uptimeSeconds).toBeGreaterThanOrEqual(0)
   })
@@ -118,6 +123,7 @@ describe('getServeStats', () => {
       'memoryAvailableBytes',
       'memoryAvailableSource',
       'memoryTotalBytes',
+      'pids',
       'swapUsedBytes'
     ])
     expect(host.cpuCoreCount).toBeGreaterThan(0)
@@ -137,6 +143,11 @@ describe('getServeStats', () => {
       expect(host.swapUsedBytes).toBeGreaterThanOrEqual(0)
     } else {
       expect(host.swapUsedBytes).toBeNull()
+    }
+    // cgroup v2 only: measured here, and null on a host with no pid controller to read. Never 0.
+    if (host.pids !== null) {
+      expect(host.pids.current).toBeGreaterThan(0)
+      expect(host.pids.max === null || host.pids.max >= host.pids.current).toBe(true)
     }
   })
 
@@ -162,10 +173,45 @@ describe('getServeStats', () => {
       worktrees: 0,
       browserPages: 0,
       browserPagesRetained: 0,
+      browserPageMemoryTotalBytes: null,
+      browserPageMemoryMaxBytes: null,
       tasksByStatus: ZERO_TASK_STATUS_COUNTS,
       agentsByState: ZERO_AGENT_STATE_COUNTS,
       workersByTerminalState: ZERO_WORKER_TERMINAL_STATE_COUNTS
     })
+  })
+
+  it('reports the live long-poll budget the RPC server registers, and null once it clears it', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = runtimeWithStubbedWorktrees(db)
+
+    // Nothing is serving yet, so there is no admission budget: null, never 0/0, which would read
+    // as a runtime that can admit no long poll at all.
+    expect((await runtime.getServeStats()).health.longPolls).toBeNull()
+
+    // The server owns the counters; it registers a reader the way it sets the serve port. A pull,
+    // so a value read here is the one admission would fence against right now (#19342).
+    let active = 0
+    runtime.setLongPollStatsProvider(() => ({
+      total: { active, cap: 16 },
+      ask: { active, cap: 8 },
+      browserHost: { active: 0, cap: 8 },
+      specialized: { active, cap: 12 }
+    }))
+    active = 8
+
+    expect((await runtime.getServeStats()).health.longPolls).toEqual({
+      total: { active: 8, cap: 16 },
+      // The ask sub-pool full while the total pool still has room is exactly the state that
+      // rejects an ask with `runtime_busy` on an otherwise idle host.
+      ask: { active: 8, cap: 8 },
+      browserHost: { active: 0, cap: 8 },
+      specialized: { active: 8, cap: 12 }
+    })
+
+    runtime.setLongPollStatsProvider(null)
+
+    expect((await runtime.getServeStats()).health.longPolls).toBeNull()
   })
 
   it('counts a pty that lost host contact as unverifiable, never as a terminal', async () => {

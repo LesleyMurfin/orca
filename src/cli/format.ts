@@ -1,4 +1,9 @@
-import type { CliStatusResult, RuntimeServeStatsResult } from '../shared/runtime-types'
+import type {
+  CliStatusResult,
+  RuntimeServeStatsHostPids,
+  RuntimeServeStatsLongPolls,
+  RuntimeServeStatsResult
+} from '../shared/runtime-types'
 import { prepareComputerCliJsonResult } from './computer-format'
 import type { RuntimeRpcSuccess } from './runtime-client'
 
@@ -147,6 +152,11 @@ export function formatServeStats(stats: RuntimeServeStatsResult): string {
     `worktrees: ${stats.counts.worktrees}`,
     `browserPages: ${stats.counts.browserPages}`,
     `browserPagesRetained: ${stats.counts.browserPagesRetained}`,
+    // Bytes for the same pages `browserPages` counts, deduped per renderer process. `n/a` covers
+    // both "no pages" and "this platform cannot measure a footprint" — never a 0 that would read
+    // as pages costing nothing (see RuntimeServeStatsResult.counts).
+    `browserPageMemoryTotalBytes: ${formatServeStatsMeasurement(stats.counts.browserPageMemoryTotalBytes)}`,
+    `browserPageMemoryMaxBytes: ${formatServeStatsMeasurement(stats.counts.browserPageMemoryMaxBytes)}`,
     `tasksByStatus: ${formatServeStatsHistogram(stats.counts.tasksByStatus)}`,
     `agentsByState: ${formatServeStatsHistogram(stats.counts.agentsByState)}`,
     `workersByTerminalState: ${formatServeStatsHistogram(stats.counts.workersByTerminalState)}`,
@@ -158,7 +168,11 @@ export function formatServeStats(stats: RuntimeServeStatsResult): string {
     `host.memoryAvailableBytes: ${stats.host.memoryAvailableBytes}`,
     `host.memoryAvailableSource: ${stats.host.memoryAvailableSource}`,
     `host.swapUsedBytes: ${formatServeStatsMeasurement(stats.host.swapUsedBytes)}`,
-    `health.eventLoopDelayP99Ms: ${formatServeStatsMeasurement(stats.health.eventLoopDelayP99Ms)}`
+    `host.pids: ${formatServeStatsHostPids(stats.host.pids)}`,
+    `health.eventLoopDelayP99Ms: ${formatServeStatsMeasurement(stats.health.eventLoopDelayP99Ms)}`,
+    // active/cap per pool on one line: the whole point is that a `runtime_busy` rejection names
+    // the ceiling that produced it without a source dive (see RuntimeServeStatsHealth.longPolls).
+    `health.longPolls: ${formatServeStatsLongPolls(stats.health.longPolls)}`
   ].join('\n')
 }
 
@@ -166,6 +180,27 @@ export function formatServeStats(stats: RuntimeServeStatsResult): string {
 // reader could mistake for a healthy zero.
 function formatServeStatsMeasurement(value: number | null): string {
   return value === null ? 'n/a' : String(value)
+}
+
+// Why: `n/a` when no listener is serving, because there is no admission budget then — and pools
+// print as active/cap so the number that sheds the next long poll is right next to the number of
+// slots already held.
+function formatServeStatsLongPolls(longPolls: RuntimeServeStatsLongPolls | null): string {
+  if (longPolls === null) {
+    return 'n/a'
+  }
+  return Object.entries(longPolls)
+    .map(([pool, { active, cap }]) => `${pool}=${active}/${cap}`)
+    .join(' ')
+}
+
+// Why: `unlimited` spells out cgroup's literal `max` rather than printing a number nobody set, and
+// `n/a` covers every host with no cgroup v2 pid controller to read (see RuntimeServeStatsHostPids).
+function formatServeStatsHostPids(pids: RuntimeServeStatsHostPids | null): string {
+  if (pids === null) {
+    return 'n/a'
+  }
+  return `current=${pids.current} max=${pids.max === null ? 'unlimited' : pids.max}`
 }
 
 // Why: one line per breakdown keeps `serve stats` scannable in a terminal, and the fixed key

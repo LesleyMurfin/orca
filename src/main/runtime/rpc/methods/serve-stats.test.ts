@@ -24,6 +24,9 @@ describe('serve.stats RPC method', () => {
         worktrees: 4,
         browserPages: 5,
         browserPagesRetained: 2,
+        // #14552's shape: one 1.3 GB renderer inside a 2.1 GB total.
+        browserPageMemoryTotalBytes: 2_100_000_000,
+        browserPageMemoryMaxBytes: 1_300_000_000,
         tasksByStatus: {
           pending: 1,
           ready: 0,
@@ -48,9 +51,20 @@ describe('serve.stats RPC method', () => {
         memoryTotalBytes: 8 * 1024 ** 3,
         memoryAvailableBytes: 1024 ** 3,
         memoryAvailableSource: 'proc-meminfo',
-        swapUsedBytes: 2_500_000_000
+        swapUsedBytes: 2_500_000_000,
+        // #18789: pids.current pinned just under a 4096 ceiling.
+        pids: { current: 4090, max: 4096 }
       },
-      health: { eventLoopDelayP99Ms: 15_200.5 }
+      health: {
+        eventLoopDelayP99Ms: 15_200.5,
+        // #19342: the ask sub-pool full while the total pool still had room.
+        longPolls: {
+          total: { active: 8, cap: 16 },
+          ask: { active: 8, cap: 8 },
+          browserHost: { active: 0, cap: 8 },
+          specialized: { active: 8, cap: 12 }
+        }
+      }
     }
     const runtime = {
       getRuntimeId: () => 'test-runtime',

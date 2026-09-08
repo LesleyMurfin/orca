@@ -315,6 +315,67 @@ describe('OrcaRuntimeRpcServer', () => {
       }
     })
 
+    it('publishes live long-poll occupancy and the caps that fence it through serve stats', async () => {
+      const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-rpc-'))
+      const runtime = new OrcaRuntimeService()
+      const db = new OrchestrationDb(':memory:')
+      runtime.setOrchestrationDb(db)
+      vi.spyOn(runtime, 'getTerminalPaneKey').mockImplementation((handle) => `tab_${handle}:leaf`)
+      // Why: cap 4 → ask 2, browser-host 2, specialized 3, so every reported ceiling is a
+      // distinct number and a copy-paste between pools would fail this.
+      const server = new OrcaRuntimeRpcServer({
+        runtime,
+        userDataPath,
+        keepaliveIntervalMs: 50,
+        longPollCap: 4
+      })
+
+      // #19342: the operator hit `runtime_busy` and could not find the cap without unpacking
+      // app.asar. Nothing is serving yet, so there is no budget to report.
+      expect((await runtime.getServeStats()).health.longPolls).toBeNull()
+
+      await server.start()
+      try {
+        expect((await runtime.getServeStats()).health.longPolls).toEqual({
+          total: { active: 0, cap: 4 },
+          ask: { active: 0, cap: 2 },
+          browserHost: { active: 0, cap: 2 },
+          specialized: { active: 0, cap: 3 }
+        })
+
+        const metadata = readRuntimeMetadata(userDataPath)
+        const session = openFramedSession(metadata!.transports[0]!.endpoint, {
+          id: 'req_wait',
+          authToken: metadata!.authToken,
+          method: 'orchestration.check',
+          params: { terminal: 'term_nobody', wait: true, timeoutMs: 400 }
+        })
+        await waitFor(() => server['activeLongPolls'] === 1)
+
+        // Read while the poll is genuinely held open: this is the mid-flight state an operator
+        // diagnosing `runtime_busy` needs, and a pushed snapshot could have missed it.
+        const held = (await runtime.getServeStats()).health.longPolls
+        expect(held).toMatchObject({
+          total: { active: 1, cap: 4 },
+          // A wait holds no specialized slot, so the ask reservation stays untouched.
+          ask: { active: 0, cap: 2 },
+          specialized: { active: 0, cap: 3 }
+        })
+
+        await session.done
+        expect((await runtime.getServeStats()).health.longPolls).toMatchObject({
+          total: { active: 0, cap: 4 }
+        })
+      } finally {
+        await server.stop()
+      }
+
+      // A stopped server has no listener and therefore no admission budget; reporting the caps
+      // here would read as capacity a caller can still spend.
+      expect((await runtime.getServeStats()).health.longPolls).toBeNull()
+      db.close()
+    })
+
     it('emits keepalive frames while agent-prompt verification blocks', async () => {
       const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-rpc-'))
       const runtime = new OrcaRuntimeService()

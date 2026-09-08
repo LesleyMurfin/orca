@@ -139,6 +139,22 @@ export type CliStatusResult = {
 export type RuntimeServeStatsAgentState = 'working' | 'permission' | 'idle' | 'unknown'
 
 /**
+ * cgroup v2 pid-controller readings, straight from `/sys/fs/cgroup/pids.current` and
+ * `/sys/fs/cgroup/pids.max`.
+ *
+ * `max: null` means the literal cgroup value `max` — no limit at all — and NOT "unmeasured": the
+ * whole `RuntimeServeStatsHost.pids` object is null when nothing could be read, so this inner null
+ * is unambiguous. The literal is never coerced to a number: 0 would read as "no pids allowed", and
+ * Infinity does not survive JSON.
+ */
+export type RuntimeServeStatsHostPids = {
+  /** `pids.current` — every task in this cgroup, so threads count too, not just processes. */
+  current: number
+  /** `pids.max` — the ceiling `current` is racing, or null for the literal `max` (unlimited). */
+  max: number | null
+}
+
+/**
  * Host-wide CPU/memory pressure, reported alongside the Orca-scoped `counts`.
  *
  * This deliberately reverses #10608's "host CPU/RAM metrics" non-goal, and it lives under its own
@@ -184,6 +200,47 @@ export type RuntimeServeStatsHost = {
    * days against a nearly full swap). 0 means "no swap in use"; `null` means "not measured here".
    */
   swapUsedBytes: number | null
+  /**
+   * cgroup v2 pid accounting for the cgroup this runtime runs in, or `null` where there is nothing
+   * to read: non-Linux, cgroup v1, or a container with no `/sys/fs/cgroup` mount. Never 0 — a
+   * zeroed `current` would claim a measured, empty cgroup.
+   *
+   * #18789 had 8,629 `clone()` calls rejected against `pids.max=4096` while `pids.current` sat
+   * just under that ceiling, and neither `loadAverage1m` nor `memoryAvailableBytes` moved for it:
+   * that host had 44 GB free while it could not fork. Pid exhaustion is invisible to every other
+   * field here, which is why this one exists.
+   */
+  pids: RuntimeServeStatsHostPids | null
+}
+
+/** One long-poll admission pool: slots held right now, against the ceiling that sheds the next. */
+export type RuntimeServeStatsLongPollPool = {
+  active: number
+  cap: number
+}
+
+/**
+ * Long-poll admission state — the `runtime_busy` fence, made readable.
+ *
+ * #19342's operator hit `runtime_busy` on a host at loadavg 4.8 with 44 GB free, so nothing in the
+ * host readings explained it: the limit that rejected them is this in-process slot budget, not the
+ * machine. They could only find the cause by unpacking `app.asar` and reading the cap out of the
+ * source. Both halves are therefore reported — `active` says how full a pool is, `cap` says what
+ * it is full of — so the next rejection is self-diagnosing without a source dive.
+ *
+ * `total` fences every long poll; `ask` and `browserHost` are sub-pools of it, and `specialized`
+ * is the combined ceiling those two share (an ask can be shed by `specialized` while `ask` itself
+ * still has room). Admission checks them in exactly that order — see `admitLongPoll`.
+ *
+ * `null` when no RPC listener is serving: the counters and caps live on the RPC server, so an
+ * un-started or stopped one has no budget to report, and `0/0` would read as a runtime that can
+ * admit nothing.
+ */
+export type RuntimeServeStatsLongPolls = {
+  total: RuntimeServeStatsLongPollPool
+  ask: RuntimeServeStatsLongPollPool
+  browserHost: RuntimeServeStatsLongPollPool
+  specialized: RuntimeServeStatsLongPollPool
 }
 
 /** Whether this runtime can still service work — which process liveness cannot answer. */
@@ -203,6 +260,13 @@ export type RuntimeServeStatsHealth = {
    * operator command, not a scrape target, so freshness is the better trade.
    */
   eventLoopDelayP99Ms: number | null
+  /**
+   * Long-poll slot occupancy against the configured caps, or `null` when no RPC listener is
+   * serving. This is the second half of "can this runtime still service work": a runtime whose
+   * event loop is idle still rejects every new long poll once `total.active` reaches `total.cap`
+   * (#19342).
+   */
+  longPolls: RuntimeServeStatsLongPolls | null
 }
 
 // Why: live current-state counts for `orca serve stats --json`. Deliberately
@@ -260,6 +324,28 @@ export type RuntimeServeStatsResult = {
      * never a partition of it.
      */
     browserPagesRetained: number
+    /**
+     * Resident-set total, in bytes, of the renderer OS processes backing the pages counted by
+     * `browserPages` — or `null` when not one of them could be measured, which includes having no
+     * pages at all (read `browserPages` to tell those two apart). Never 0.
+     *
+     * #14552's six agent-opened headless tabs included one 1.3 GB outlier, which is why
+     * `browserPageMemoryMaxBytes` sits next to this: a total alone hides the single page that is
+     * actually eating the host.
+     *
+     * Attributed per renderer process and de-duplicated by pid, because Electron may back several
+     * pages with one renderer — summing per page would count a shared process twice. Linux only:
+     * one `/proc/<pid>/status` VmRSS read per distinct pid, no subprocess and no `ps` table sweep
+     * (the same polling discipline as `host`), so it is `null` on every other platform.
+     */
+    browserPageMemoryTotalBytes: number | null
+    /**
+     * The largest single renderer footprint behind `browserPages`, with the same measurement and
+     * the same null rule as `browserPageMemoryTotalBytes`. This is the #14552 read: one page at
+     * 1.3 GB among six is a different incident from six pages at 220 MB, and only the max
+     * separates them.
+     */
+    browserPageMemoryMaxBytes: number | null
     /**
      * Every task row grouped by status, with all six statuses always present (0, never omitted).
      *
