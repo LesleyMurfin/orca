@@ -178,7 +178,18 @@ describe('orca serve stats CLI handler', () => {
             release_unknown: 13,
             released: 16
           }
-        }
+        },
+        // Values from #14552 (loadavg 6.85 on 4 cores, 2.5 GB swap in use) and #19312 (new
+        // connections hung 15s+ while the unit reported healthy).
+        host: {
+          loadAverage1m: 6.85,
+          cpuCoreCount: 4,
+          memoryTotalBytes: 8589934592,
+          memoryAvailableBytes: 1073741824,
+          memoryAvailableSource: 'proc-meminfo',
+          swapUsedBytes: 2500000000
+        },
+        health: { eventLoopDelayP99Ms: 15200.5 }
       },
       _meta: { runtimeId: 'rt-1' }
     })
@@ -212,6 +223,14 @@ describe('orca serve stats CLI handler', () => {
     expect(out).toContain(
       'workersByTerminalState: active=1 reclaimable=271 retained=370 release_pending=0 release_unknown=13 released=16'
     )
+    // Host-wide pressure, prefixed so it is never read as Orca's own usage.
+    expect(out).toContain('host.loadAverage1m: 6.85')
+    expect(out).toContain('host.cpuCoreCount: 4')
+    expect(out).toContain('host.memoryTotalBytes: 8589934592')
+    expect(out).toContain('host.memoryAvailableBytes: 1073741824')
+    expect(out).toContain('host.memoryAvailableSource: proc-meminfo')
+    expect(out).toContain('host.swapUsedBytes: 2500000000')
+    expect(out).toContain('health.eventLoopDelayP99Ms: 15200.5')
   })
 
   it('prints JSON when --json is set and renders null port as none in human mode', async () => {
@@ -248,7 +267,17 @@ describe('orca serve stats CLI handler', () => {
             release_unknown: 0,
             released: 0
           }
-        }
+        },
+        // Windows shape: no load average, no procfs swap, and a monitor that never sampled.
+        host: {
+          loadAverage1m: null,
+          cpuCoreCount: 8,
+          memoryTotalBytes: 17179869184,
+          memoryAvailableBytes: 8589934592,
+          memoryAvailableSource: 'free-memory',
+          swapUsedBytes: null
+        },
+        health: { eventLoopDelayP99Ms: null }
       },
       _meta: { runtimeId: 'rt-1' }
     })
@@ -276,5 +305,11 @@ describe('orca serve stats CLI handler', () => {
     })
     const human = String(log.mock.calls.map((c) => c[0]).join('\n'))
     expect(human).toContain('port: none')
+    // Unmeasurable is never 0: a zero here would read as an idle host.
+    expect(human).toContain('host.loadAverage1m: n/a')
+    expect(human).toContain('host.swapUsedBytes: n/a')
+    expect(human).toContain('health.eventLoopDelayP99Ms: n/a')
+    expect(human).not.toContain('host.loadAverage1m: 0')
+    expect(human).not.toContain('health.eventLoopDelayP99Ms: 0')
   })
 })

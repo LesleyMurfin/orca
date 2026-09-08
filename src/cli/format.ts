@@ -148,8 +148,23 @@ export function formatServeStats(stats: RuntimeServeStatsResult): string {
     `browserPagesRetained: ${stats.counts.browserPagesRetained}`,
     `tasksByStatus: ${formatServeStatsHistogram(stats.counts.tasksByStatus)}`,
     `agentsByState: ${formatServeStatsHistogram(stats.counts.agentsByState)}`,
-    `workersByTerminalState: ${formatServeStatsHistogram(stats.counts.workersByTerminalState)}`
+    `workersByTerminalState: ${formatServeStatsHistogram(stats.counts.workersByTerminalState)}`,
+    // Host-wide readings, prefixed so nobody reads them as Orca's own usage. `n/a` is deliberate:
+    // an unmeasurable metric rendered as 0 would read as an idle host (see RuntimeServeStatsHost).
+    `host.loadAverage1m: ${formatServeStatsMeasurement(stats.host.loadAverage1m)}`,
+    `host.cpuCoreCount: ${stats.host.cpuCoreCount}`,
+    `host.memoryTotalBytes: ${stats.host.memoryTotalBytes}`,
+    `host.memoryAvailableBytes: ${stats.host.memoryAvailableBytes}`,
+    `host.memoryAvailableSource: ${stats.host.memoryAvailableSource}`,
+    `host.swapUsedBytes: ${formatServeStatsMeasurement(stats.host.swapUsedBytes)}`,
+    `health.eventLoopDelayP99Ms: ${formatServeStatsMeasurement(stats.health.eventLoopDelayP99Ms)}`
   ].join('\n')
+}
+
+// Why: null means "this platform/monitor cannot measure it", which must never print as a number a
+// reader could mistake for a healthy zero.
+function formatServeStatsMeasurement(value: number | null): string {
+  return value === null ? 'n/a' : String(value)
 }
 
 // Why: one line per breakdown keeps `serve stats` scannable in a terminal, and the fixed key

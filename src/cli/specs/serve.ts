@@ -34,12 +34,14 @@ export const SERVE_COMMAND_SPECS: CommandSpec[] = [
   {
     path: ['serve', 'stats'],
     summary:
-      'Show live runtime counts plus task-status, agent-state and worker-terminal-state breakdowns',
+      'Show live runtime counts, task/agent/worker breakdowns, and host load, memory and event-loop pressure',
     usage: 'orca serve stats [--json]',
     allowedFlags: [...GLOBAL_FLAGS],
     notes: [
       'Queries a running runtime (local or --environment / pairing). Does not start a server.',
-      'JSON shape is a stable contract: version, runtimeId, uptimeSeconds, port, counts.{agents,tasks,terminals,terminalsUnverifiable,worktrees,browserPages,browserPagesRetained,tasksByStatus,agentsByState,workersByTerminalState}. The three breakdowns are objects with every key always present (0, never omitted).',
+      'JSON shape is a stable contract: version, runtimeId, uptimeSeconds, port, counts.{agents,tasks,terminals,terminalsUnverifiable,worktrees,browserPages,browserPagesRetained,tasksByStatus,agentsByState,workersByTerminalState}, host.{loadAverage1m,cpuCoreCount,memoryTotalBytes,memoryAvailableBytes,memoryAvailableSource,swapUsedBytes}, health.{eventLoopDelayP99Ms}. The three breakdowns are objects with every key always present (0, never omitted).',
+      'host.* is HOST-WIDE, never Orca-attributed: a runaway terminal child shows up here (#12588), so host.memoryAvailableBytes is not "what Orca left free". Compare host.loadAverage1m against host.cpuCoreCount. memoryAvailableSource is proc-meminfo (Linux MemAvailable, the real signal) or free-memory (os.freemem(), which understates availability because it excludes reclaimable page cache).',
+      'Unmeasurable fields are null in JSON and n/a in human output, never 0: loadAverage1m is null on Windows, swapUsedBytes is null off Linux or without procfs, and eventLoopDelayP99Ms is null until the monitor records a sample. health.eventLoopDelayP99Ms resets on read, so each call reports the window since the previous call — that is what keeps a saturated hour from being diluted by days of idle.',
       'terminalsUnverifiable counts registered ptys with no current host contact — unverifiable, not proof they exited; it does not authorize cleanup.',
       'tasksByStatus does not sum to counts.tasks: it includes the completed/failed rows that counts.tasks excludes. agentsByState reports unknown for any agent whose turn state is not currently provable (all structured sessions, plus ptys with no live status) — unknown is never idle. workersByTerminalState covers every retained dispatch, so reclaimable/release_unknown pileups are visible without worker-list.'
     ],

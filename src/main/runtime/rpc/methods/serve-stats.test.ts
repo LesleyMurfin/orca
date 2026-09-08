@@ -40,7 +40,16 @@ describe('serve.stats RPC method', () => {
           release_unknown: 3,
           released: 5
         }
-      }
+      },
+      host: {
+        loadAverage1m: 6.85,
+        cpuCoreCount: 4,
+        memoryTotalBytes: 8 * 1024 ** 3,
+        memoryAvailableBytes: 1024 ** 3,
+        memoryAvailableSource: 'proc-meminfo',
+        swapUsedBytes: 2_500_000_000
+      },
+      health: { eventLoopDelayP99Ms: 15_200.5 }
     }
     const runtime = {
       getRuntimeId: () => 'test-runtime',

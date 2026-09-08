@@ -18,6 +18,7 @@ import {
   createRuntimeTransportMetadata,
   sweepOrphanedRuntimeSockets
 } from './runtime-rpc-socket-metadata'
+import { enableServeStatsEventLoopDelayMonitor } from '../serve-stats-event-loop-delay'
 
 export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
   async start(): Promise<void> {
@@ -25,6 +26,10 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
       return
     }
     this.runtime.setServePort?.(null)
+    // Why here: this is the surface `serve stats` is answered on, so enabling the histogram with
+    // the listener means any caller that can read the field had it measured for the runtime's
+    // whole serving life. One long-lived histogram; reads are O(1).
+    enableServeStatsEventLoopDelayMonitor()
 
     // Why: SIGKILL/OOM skip stop(), orphaning `o-<pid>-*.sock` files; sweep them. Skipped on Windows: named pipes leave no filesystem entries.
     if (this.platform !== 'win32') {

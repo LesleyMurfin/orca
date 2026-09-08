@@ -11,6 +11,7 @@ import type { TabGroupLayoutNode } from './tab-types'
 import type { TerminalPaneLayoutNode } from './terminal-tab-types'
 import type { OrchestrationTaskStatus } from './orchestration-task-status'
 import type { WorkerTerminalListState } from './worker-terminal-list-state'
+import type { HostAvailableMemorySource } from './process-stats-types'
 import type {
   RuntimeMobileSessionClientTab,
   RuntimeMobileSessionSnapshotTab,
@@ -137,6 +138,73 @@ export type CliStatusResult = {
  */
 export type RuntimeServeStatsAgentState = 'working' | 'permission' | 'idle' | 'unknown'
 
+/**
+ * Host-wide CPU/memory pressure, reported alongside the Orca-scoped `counts`.
+ *
+ * This deliberately reverses #10608's "host CPU/RAM metrics" non-goal, and it lives under its own
+ * key rather than inside `counts` because it is a different kind of measurement. #14552 and #19312
+ * were both misdiagnosed as network faults for days: from the paired client the only symptom is
+ * `Reconnecting to remote runtime`, while the host is in fact saturated (#19312 sustained a
+ * 1-minute loadavg of 105-112 while systemd still reported the unit healthy/active).
+ *
+ * EVERY number here is HOST-WIDE, never Orca-attributed. The ~60 GiB RSS in #12588 belonged to a
+ * terminal *child* process, not to the runtime, and it still degraded SSH and paired-runtime
+ * availability — so `memoryAvailableBytes` must never be read as "Orca is using the rest".
+ *
+ * `null` means "this platform cannot measure it", and is NEVER interchangeable with 0: `os.loadavg()`
+ * reports meaningless zeros on Windows, so a 0 there would read as an idle host. Readers MUST NOT
+ * coerce null to 0.
+ *
+ * Cheap by construction: in-process `node:os` syscalls plus at most one `/proc/meminfo` read. No
+ * subprocess, and explicitly not `collectMemorySnapshot`'s `ps` process-table sweep, so polling
+ * `serve stats` stays something nobody regrets.
+ */
+export type RuntimeServeStatsHost = {
+  /**
+   * 1-minute load average, unnormalized — compare it against `cpuCoreCount` (#14552's "6.85 on 4
+   * cores" is the shape of the read). `null` on Windows, which has no load average at all.
+   */
+  loadAverage1m: number | null
+  cpuCoreCount: number
+  memoryTotalBytes: number
+  /**
+   * Memory obtainable without material pressure. On Linux this is `/proc/meminfo` MemAvailable,
+   * which is the real signal; `os.freemem()` excludes reclaimable page cache and so badly
+   * understates what is actually available. `memoryAvailableSource` says which one you got.
+   */
+  memoryAvailableBytes: number
+  /**
+   * Which reading `memoryAvailableBytes` came from. Never `memory-pressure`: that darwin reading
+   * needs a subprocess, which this path refuses.
+   */
+  memoryAvailableSource: HostAvailableMemorySource
+  /**
+   * SwapTotal - SwapFree from Linux `/proc/meminfo`; `null` on every other platform and on a Linux
+   * container with no procfs. Swap in use is the #9229 / #14552 tell (19 kernel OOM kills in 30
+   * days against a nearly full swap). 0 means "no swap in use"; `null` means "not measured here".
+   */
+  swapUsedBytes: number | null
+}
+
+/** Whether this runtime can still service work — which process liveness cannot answer. */
+export type RuntimeServeStatsHealth = {
+  /**
+   * 99th-percentile event loop delay in milliseconds (`perf_hooks.monitorEventLoopDelay`, which
+   * reports nanoseconds). `null` when unmeasured — the monitor was never enabled, or no sample has
+   * been recorded yet. Never 0 for "not measured": #19312's whole failure was that "every liveness
+   * signal we had was green while the process was effectively unable to service new work" (new
+   * WebSocket connections hung 15s+ while the unit reported healthy).
+   *
+   * RESET CADENCE — reset-on-read: each read reports the window since the previous read, or since
+   * runtime start for the first read. A lifetime-cumulative percentile over a multi-day serve goes
+   * stale-flat: one saturated hour is diluted to invisibility, and a long-past spike keeps
+   * reporting forever. Both directions make the number uninterpretable, which is the #19312 trap.
+   * The cost is that two concurrent readers split one window between them; `serve stats` is an
+   * operator command, not a scrape target, so freshness is the better trade.
+   */
+  eventLoopDelayP99Ms: number | null
+}
+
 // Why: live current-state counts for `orca serve stats --json`. Deliberately
 // NOT StatsSummary (that is lifetime-cumulative "fun stats"). This shape is a
 // stable contract once shipped — scripts/MOPs parse it, so version it if it
@@ -201,6 +269,8 @@ export type RuntimeServeStatsResult = {
      */
     workersByTerminalState: Record<WorkerTerminalListState, number>
   }
+  host: RuntimeServeStatsHost
+  health: RuntimeServeStatsHealth
 }
 
 export type RuntimeSyncedTab = {

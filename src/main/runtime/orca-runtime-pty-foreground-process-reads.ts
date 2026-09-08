@@ -29,6 +29,8 @@ import { deriveServeStatsAgentState, getLatestPtyTitle } from './runtime-worktre
 import { getStructuredAgentSessionHost } from '../native-chat/agent-session-wire/structured-agent-session-registry'
 import { observeStructuredWorker } from './structured-worker-authority'
 import { collectMemorySnapshot } from '../memory/collector'
+import { collectServeStatsHost } from './serve-stats-host'
+import { readServeStatsEventLoopDelayP99Ms } from './serve-stats-event-loop-delay'
 import type { PersistedUIState } from '../../shared/persisted-ui-state-types'
 import type { FeatureInteractionId } from '../../shared/feature-interactions'
 import type { RuntimeClientSettingsUpdate } from './runtime-client-settings'
@@ -252,7 +254,11 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
         workersByTerminalState: Object.fromEntries(
           WORKER_TERMINAL_LIST_STATES.map((state) => [state, workerTerminals.counts[state] ?? 0])
         ) as Record<WorkerTerminalListState, number>
-      }
+      },
+      // Host-wide, never Orca-attributed, and null wherever this platform cannot measure
+      // (see RuntimeServeStatsResult.host).
+      host: collectServeStatsHost(),
+      health: { eventLoopDelayP99Ms: readServeStatsEventLoopDelayP99Ms() }
     }
   }
 

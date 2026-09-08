@@ -136,6 +136,8 @@ export type {
   RuntimeRendererSyncWindowGraph,
   RuntimeSessionTabCloseReason,
   RuntimeServeStatsAgentState,
+  RuntimeServeStatsHealth,
+  RuntimeServeStatsHost,
   RuntimeServeStatsResult,
   RuntimeStatus,
   RuntimeSyncedLeaf,

@@ -89,9 +89,50 @@ describe('getServeStats', () => {
         tasksByStatus: { ...ZERO_TASK_STATUS_COUNTS, ready: 2 },
         agentsByState: ZERO_AGENT_STATE_COUNTS,
         workersByTerminalState: ZERO_WORKER_TERMINAL_STATE_COUNTS
-      }
+      },
+      // Host readings come from node:os / procfs, so which of them are measurable depends on the
+      // platform (asserted field-by-field below); the unmeasurable cases are covered exhaustively
+      // in serve-stats-host.test.ts.
+      host: expect.any(Object),
+      // No RPC listener started in this test, so the histogram was never enabled: null, not 0.
+      health: { eventLoopDelayP99Ms: null }
     })
     expect(result.uptimeSeconds).toBeGreaterThanOrEqual(0)
+  })
+
+  it('reports host-wide load, cpu, memory and swap alongside the Orca counts', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = runtimeWithStubbedWorktrees(db)
+
+    const host = (await runtime.getServeStats()).host
+
+    // Every key is present, so a reader never has to distinguish "absent" from "unmeasurable".
+    expect(Object.keys(host).sort()).toEqual([
+      'cpuCoreCount',
+      'loadAverage1m',
+      'memoryAvailableBytes',
+      'memoryAvailableSource',
+      'memoryTotalBytes',
+      'swapUsedBytes'
+    ])
+    expect(host.cpuCoreCount).toBeGreaterThan(0)
+    expect(host.memoryTotalBytes).toBeGreaterThan(0)
+    expect(host.memoryAvailableBytes).toBeGreaterThan(0)
+    expect(host.memoryAvailableBytes).toBeLessThanOrEqual(host.memoryTotalBytes)
+    expect(['proc-meminfo', 'free-memory']).toContain(host.memoryAvailableSource)
+    // Measurable on this platform; the null shape is proven against a stubbed win32 host.
+    if (process.platform === 'win32') {
+      expect(host.loadAverage1m).toBeNull()
+    } else {
+      expect(host.loadAverage1m).toBeGreaterThanOrEqual(0)
+    }
+    // Swap and MemAvailable share one procfs read, so they must agree: both measured, or both
+    // absent on a container with no procfs. Neither may report a fabricated 0.
+    if (host.memoryAvailableSource === 'proc-meminfo') {
+      expect(host.swapUsedBytes).toBeGreaterThanOrEqual(0)
+    } else {
+      expect(host.swapUsedBytes).toBeNull()
+    }
   })
 
   it('reports a null port when no server has bound one', async () => {
