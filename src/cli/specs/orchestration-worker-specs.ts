@@ -92,7 +92,7 @@ export const ORCHESTRATION_WORKER_COMMAND_SPECS: CommandSpec[] = [
     summary:
       'Release the terminal of one settled supervised worker, or bulk-release every currently reclaimable one',
     usage:
-      'orca orchestration worker-release (--dispatch <dispatch_id> | --terminal-state reclaimable) [--run <run_id>] [--retry-request <id>] [--json]',
+      'orca orchestration worker-release (--dispatch <dispatch_id> | --terminal-state reclaimable [--run <run_id>]) [--retry-request <id>] [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'dispatch', 'terminal-state', 'run', 'retry-request'],
     notes: [
       'Post-completion cleanup for a settled (succeeded or failed) worker; closes only the exact coordinator-owned agent terminal of that worker.',
@@ -100,8 +100,9 @@ export const ORCHESTRATION_WORKER_COMMAND_SPECS: CommandSpec[] = [
       'An inspectable output archive is preserved before the terminal closes, so worker-read still returns output afterwards.',
       'Never closes setup terminals, configured tabs, reused or pre-existing terminals, user-taken-over terminals, or unproven identities.',
       'Idempotent: repeating the call reports already_released. Only release_unknown exits 1; retained, release_pending, and already_released exit 0.',
-      '--terminal-state reclaimable releases every currently reclaimable Dispatch in one call, using the same enumeration as worker-list --terminal-state reclaimable; --run narrows it the same way worker-list does. Mutually exclusive with --dispatch.',
-      'Bulk mode calls the identical per-dispatch release logic for each Dispatch, so it never touches active, retained, release_pending, or already-released terminals; one Dispatch erroring never aborts the rest, and every outcome is reported in the JSON receipt.'
+      '--terminal-state reclaimable releases every currently reclaimable Dispatch in one call, using the same enumeration as worker-list --terminal-state reclaimable; --run narrows it the same way worker-list does and is only valid together with --terminal-state. Mutually exclusive with --dispatch.',
+      'Bulk mode calls the identical per-dispatch release logic for each Dispatch, so it never touches active, retained, or already-released terminals; one Dispatch erroring never aborts the rest, and every outcome is reported in the JSON receipt, whose released/alreadyReleased/retained/releasePending/failed counts always sum to requested. Only failed exits 1.',
+      'Bulk mode reports which Run it targeted: the JSON receipt carries scope and the human-readable summary prints the same "Scope: ..." line worker-list does, since an unscoped bulk release can act across every Run in the database from a non-coordinator terminal.'
     ]
   },
   {

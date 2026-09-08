@@ -7,6 +7,12 @@ import type { PtyLivenessVerdict } from './pty-liveness-verdict'
 export const ORCHESTRATION_WORKER_READ_SOURCES = ['auto', 'transcript', 'terminal'] as const
 export type OrchestrationWorkerReadSource = (typeof ORCHESTRATION_WORKER_READ_SOURCES)[number]
 
+// Only `reclaimable` is exposed today: it is the one terminal state a bulk release can act on
+// without special-casing the safety contract already enforced per-dispatch by `workerRelease`.
+// Shared (not declared alongside the zod schema in main/) so the CLI's flag-validation error
+// message and the RPC's zod enum read the exact same list and cannot drift apart.
+export const WORKER_RELEASE_BULK_TERMINAL_STATES = ['reclaimable'] as const
+
 export const ORCHESTRATION_WORKER_READ_FALLBACK_REASONS = [
   'provider_unsupported',
   'session_not_reported',

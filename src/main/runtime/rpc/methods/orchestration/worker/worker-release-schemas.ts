@@ -1,13 +1,10 @@
 import { z } from 'zod'
 import { ORCHESTRATION_FLEET_PAGE_MAX } from '../../../../../../shared/orchestration-fleet-projection'
+import { WORKER_RELEASE_BULK_TERMINAL_STATES } from '../../../../../../shared/orchestration-worker-output'
 import { requiredString } from '../../../schemas'
 
 export const WorkerDispatchParams = z.object({ dispatch: requiredString('Missing --dispatch') })
 export const WorkerRetainParams = WorkerDispatchParams.strict()
-
-// Only `reclaimable` is exposed today: it is the one terminal state a bulk release can act on
-// without special-casing the safety contract already enforced per-dispatch by `workerRelease`.
-export const WORKER_RELEASE_BULK_TERMINAL_STATES = ['reclaimable'] as const
 
 export const WorkerReleaseBulkParams = z.object({
   terminalState: z.enum(WORKER_RELEASE_BULK_TERMINAL_STATES),

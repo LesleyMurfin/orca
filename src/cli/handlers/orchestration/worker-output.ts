@@ -1,6 +1,7 @@
 import type { RuntimeTerminalRead } from '../../../shared/runtime-types'
 import type { OrchestrationWorkerReadResult } from '../../../shared/orchestration-worker-output'
 import { formatWorkerTranscriptMessage } from '../../../shared/worker-transcript-text'
+import { formatWorkerListScope, type WorkerListRunScope } from './worker-list-run-scope'
 
 export type LegacyWorkerReadResult = {
   dispatchId: string
@@ -145,7 +146,9 @@ export type WorkerReleaseBulkReceipt = {
   alreadyReleased: number
   retained: number
   failed: number
+  releasePending: number
   outcomes: WorkerReleaseBulkOutcome[]
+  scope?: WorkerListRunScope
 }
 
 export function formatWorkerReleaseBulk(value: WorkerReleaseBulkReceipt): string {
@@ -159,6 +162,7 @@ export function formatWorkerReleaseBulk(value: WorkerReleaseBulkReceipt): string
               : `${outcome.dispatchId} [error] ${outcome.error}`
           )
           .join('\n')
-  const summary = `Bulk release (${value.terminalState}): requested=${value.requested} released=${value.released} already_released=${value.alreadyReleased} retained=${value.retained} failed=${value.failed}`
-  return `${rows}\n${summary}`
+  const summary = `Bulk release (${value.terminalState}): requested=${value.requested} released=${value.released} already_released=${value.alreadyReleased} retained=${value.retained} failed=${value.failed} release_pending=${value.releasePending}`
+  const scopeLine = value.scope ? `\n${formatWorkerListScope(value.scope)}` : ''
+  return `${rows}\n${summary}${scopeLine}`
 }
