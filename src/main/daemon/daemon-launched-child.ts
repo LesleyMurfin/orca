@@ -1,8 +1,11 @@
-import { fork, type ChildProcess } from 'node:child_process'
-import { getAppEnvironment } from '../../shared/app-environment'
+import type { ChildProcess } from 'node:child_process'
+import { isDurableDaemonScopeSupported } from './daemon-cgroup-scope'
 import { DAEMON_EXIT_ENDPOINT_OCCUPIED } from './daemon-endpoint-ownership'
 import type { DaemonEndpointIdentity } from './daemon-hello-protocol'
-import { daemonLogArgs } from './daemon-launch-paths'
+import {
+  spawnDaemonChildProcess,
+  type DaemonChildSpawnOptions
+} from './daemon-launched-child-spawn'
 import { parseDaemonReadyIdentity } from './daemon-ready-identity'
 import { unlinkOwnedDaemonPidFile } from './daemon-spawner'
 
@@ -24,69 +27,39 @@ export type LaunchedDaemonChild = {
   identity: DaemonEndpointIdentity
 }
 
-type LaunchDaemonChildOptions = {
-  entryPath: string
-  forkEntryPath: string
-  relocatedExecPath?: string
-  userDataPath: string
-  socketPath: string
-  tokenPath: string
-  pidPath: string
-  launchNonce: string
-  macosLoginSessionWatch: boolean
-}
+type LaunchDaemonChildOptions = DaemonChildSpawnOptions
 
+/**
+ * Why a wrapper instead of one code path: a durable cgroup scope (see `daemon-cgroup-scope.ts`)
+ * is what lets the daemon survive a combined-unit `systemctl restart`, but the pre-flight
+ * capability probe can still race a real environment fact (a torn-down user session, a polkit
+ * policy rejection at the actual `StartTransientUnit` D-Bus call). Any failure of the scoped
+ * attempt retries once, unscoped, so an environment that cannot support isolation degrades to
+ * today's already-proven behavior instead of failing the daemon launch outright.
+ */
 export async function launchDaemonChild(
   options: LaunchDaemonChildOptions
 ): Promise<LaunchedDaemonChild> {
-  const {
-    entryPath,
-    forkEntryPath,
-    relocatedExecPath,
-    userDataPath,
-    socketPath,
-    tokenPath,
-    pidPath,
-    launchNonce,
-    macosLoginSessionWatch
-  } = options
-  const child = fork(
-    forkEntryPath,
-    [
-      '--socket',
-      socketPath,
-      '--token',
-      tokenPath,
-      '--pid-record',
-      pidPath,
-      '--launch-nonce',
-      launchNonce,
-      '--entry-path',
-      entryPath,
-      '--app-version',
-      getAppEnvironment().getVersion(),
-      '--spawner-exec-path',
-      process.execPath,
-      ...(macosLoginSessionWatch ? ['--login-session-watch'] : []),
-      ...daemonLogArgs()
-    ],
-    {
-      // Why: detached daemons outlive dev worktrees; userData keeps process.cwd() valid after a repo/worktree is deleted.
-      cwd: userDataPath,
-      // Why: detached+unref outlives Electron; stdout 'ignore' (else blocks exit), stderr 'pipe' captures startup crashes lost in v1.4.129-rc.1.
-      detached: true,
-      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
-      // Why: run the byte-identical relocated Orca.exe so the image path sits outside the updater's kill zone.
-      ...(relocatedExecPath ? { execPath: relocatedExecPath } : {}),
-      // Why: run the fork as plain Node so Electron's GPU/display init can't interfere with node-pty's posix_spawn of the spawn-helper.
-      env: {
-        ...process.env,
-        ELECTRON_RUN_AS_NODE: '1',
-        // Why: the detached plain-Node daemon has no AppEnvironment, but shell rcfiles must live outside swept tmp.
-        ORCA_USER_DATA_PATH: userDataPath
-      }
-    }
-  )
+  if (!isDurableDaemonScopeSupported()) {
+    return launchDaemonChildAttempt(options, false)
+  }
+  try {
+    return await launchDaemonChildAttempt(options, true)
+  } catch (error) {
+    console.warn(
+      '[daemon] durable cgroup-scope launch failed, retrying without cgroup isolation:',
+      (error as Error).message
+    )
+    return launchDaemonChildAttempt(options, false)
+  }
+}
+
+async function launchDaemonChildAttempt(
+  options: LaunchDaemonChildOptions,
+  useDurableScope: boolean
+): Promise<LaunchedDaemonChild> {
+  const { pidPath, launchNonce } = options
+  const child = spawnDaemonChildProcess(options, useDurableScope)
 
   // Why: keep only the startup-window stderr tail so a crash cause is visible without unbounded memory.
   let startupStderr = ''
