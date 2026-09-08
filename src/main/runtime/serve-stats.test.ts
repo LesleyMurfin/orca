@@ -56,8 +56,9 @@ describe('getServeStats', () => {
 
     const runtime = new OrcaRuntimeService(null, stats)
     db = new OrchestrationDb(':memory:')
-    db.createTask({ spec: 'first task' })
-    db.createTask({ spec: 'second task' })
+    const runId = seedRun(db)
+    db.createTask({ spec: 'first task', runId })
+    db.createTask({ spec: 'second task', runId })
     runtime.setOrchestrationDb(db)
     runtime.setServePort(6970)
 
@@ -172,10 +173,11 @@ describe('getServeStats', () => {
   it('publishes every task status, including the settled rows counts.tasks drops', async () => {
     db = new OrchestrationDb(':memory:')
     const runtime = runtimeWithStubbedWorktrees(db)
-    const ready = db.createTask({ spec: 'ready work' })
-    const dispatched = db.createTask({ spec: 'dispatched work' })
-    const completed = db.createTask({ spec: 'finished work' })
-    const failed = db.createTask({ spec: 'broken work' })
+    const runId = seedRun(db)
+    const ready = db.createTask({ spec: 'ready work', runId })
+    const dispatched = db.createTask({ spec: 'dispatched work', runId })
+    const completed = db.createTask({ spec: 'finished work', runId })
+    const failed = db.createTask({ spec: 'broken work', runId })
     // `dispatched` is gated on an active Dispatch; the histogram only reads the column.
     db.db.prepare('UPDATE tasks SET status = ? WHERE id = ?').run('dispatched', dispatched.id)
     db.updateTaskStatus(completed.id, 'completed')
@@ -198,9 +200,10 @@ describe('getServeStats', () => {
   it('groups worker terminals by the state their release actually reached', async () => {
     db = new OrchestrationDb(':memory:')
     const runtime = runtimeWithStubbedWorktrees(db)
-    const reclaimable = seedFailedWorkerTerminal(db, 'term_reclaimable', true)
-    const handleOnly = seedFailedWorkerTerminal(db, 'term_retained', false)
-    const releasing = seedFailedWorkerTerminal(db, 'term_releasing', true)
+    const runId = seedRun(db)
+    const reclaimable = seedFailedWorkerTerminal(db, runId, 'term_reclaimable', true)
+    const handleOnly = seedFailedWorkerTerminal(db, runId, 'term_retained', false)
+    const releasing = seedFailedWorkerTerminal(db, runId, 'term_releasing', true)
     db.requestWorkerTerminalRelease(releasing)
 
     expect((await runtime.getServeStats()).counts.workersByTerminalState).toEqual({
@@ -237,12 +240,26 @@ function runtimeWithStubbedWorktrees(db: OrchestrationDb): OrcaRuntimeService {
   return runtime
 }
 
+// Every Task belongs to a Run; these cases only need the one coordinator Run to hang rows off.
+function seedRun(db: OrchestrationDb): string {
+  return db.createRun({
+    objective: 'serve stats',
+    coordinatorHandle: 'term_c',
+    coordinatorPaneKey: 'tab_c:leaf_c'
+  }).id
+}
+
 /**
  * Replays a start that created a terminal and then failed: with `adopt`, the dispatch keeps an
  * owned resource (reclaimable); without it, only the handle survives (retained).
  */
-function seedFailedWorkerTerminal(db: OrchestrationDb, handle: string, adopt: boolean): string {
-  const task = db.createTask({ spec: `worker for ${handle}` })
+function seedFailedWorkerTerminal(
+  db: OrchestrationDb,
+  runId: string,
+  handle: string,
+  adopt: boolean
+): string {
+  const task = db.createTask({ spec: `worker for ${handle}`, runId })
   const started = db.createStartingWorkerDispatch({
     creator: { kind: 'system' },
     maxDepth: Number.MAX_SAFE_INTEGER,

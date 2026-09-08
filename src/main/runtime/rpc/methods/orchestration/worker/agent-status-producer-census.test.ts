@@ -158,6 +158,11 @@ const CENSUS: readonly CensusRow[] = [
     path: 'main/runtime/orca-runtime-prune-mobile-session-tab-group-layout.ts',
     kind: 'consumes',
     role: 'mobile tab-group pruning from provider-session rows, and the pane identity accessors'
+  },
+  {
+    path: 'main/runtime/orca-runtime-pty-foreground-process-reads.ts',
+    kind: 'consumes',
+    role: 'serve stats agentsByState — hook rows matched per connected pty on handle and pane key'
   }
 ]
 
