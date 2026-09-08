@@ -15,12 +15,15 @@
  * `loginctl enable-linger <user>` for a service account). Everywhere else keeps the direct-fork
  * launch, so this module fails closed to "not supported" rather than guessing.
  */
-import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { runProcessSync } from '../../shared/child-process/run-process'
 
 const SYSTEMD_RUN_BINARY = 'systemd-run'
 const UNIT_NAME_PREFIX = 'orca-daemon-'
+/** Long enough for a local binary to print its version, short enough that a wedged systemd
+ *  cannot stall the launch lane. */
+const SYSTEMD_RUN_PROBE_TIMEOUT_MS = 2_000
 
 /** The conventional per-UID runtime dir every login session (and `loginctl enable-linger`)
  *  provisions, from `getuid()` rather than from the environment. The exported functions'
@@ -69,6 +72,11 @@ function resolveUserRuntimeDir(env: NodeJS.ProcessEnv, canonicalDir: string | nu
 /**
  * Best-effort, side-effect-free capability probe. Never throws; any uncertainty resolves to
  * "not supported" so the caller falls back to the existing, already-proven direct-fork launch.
+ *
+ * Stays synchronous: `launchDaemonChild` attaches the readiness listener in the same tick it is
+ * called, and an await here would move the spawn past that tick. The child-process chokepoint
+ * covers this shape with `runProcessSync` (as `isPwshAvailable` does) so the probe still gets
+ * the shared spawn decisions instead of re-deciding them with `execFileSync`.
  */
 export function isDurableDaemonScopeSupported(
   env: NodeJS.ProcessEnv = process.env,
@@ -89,11 +97,19 @@ export function isDurableDaemonScopeSupported(
     return false
   }
   try {
-    execFileSync(SYSTEMD_RUN_BINARY, ['--version'], { stdio: 'ignore', timeout: 2_000 })
+    const probe = runProcessSync({
+      program: SYSTEMD_RUN_BINARY,
+      args: ['--version'],
+      stdio: 'ignore',
+      timeoutMs: SYSTEMD_RUN_PROBE_TIMEOUT_MS
+    })
+    // A non-zero exit is data here rather than a throw, and a timeout kill leaves an exit behind
+    // that answers nothing — both mean "cannot be trusted to place the daemon in a scope".
+    return probe.code === 0 && !probe.timedOut
   } catch {
+    // Throws only when the binary could not be started at all.
     return false
   }
-  return true
 }
 
 export type DurableDaemonScopeCommand = {

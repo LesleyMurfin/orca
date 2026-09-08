@@ -1,4 +1,5 @@
-import { fork, spawn, type ChildProcess, type StdioOptions } from 'node:child_process'
+import { forkProcess, type ForkSpec } from '../../shared/child-process/fork-process'
+import { spawnProcess, type SpawnedProcess } from '../../shared/child-process/run-process'
 import { getAppEnvironment } from '../../shared/app-environment'
 import { buildDurableDaemonScopeCommand } from './daemon-cgroup-scope'
 import { daemonLogArgs } from './daemon-launch-paths'
@@ -45,11 +46,15 @@ function buildDaemonScriptArgs(options: DaemonChildSpawnOptions): string[] {
  * contract and the process it execs into inherits the channel, so the readiness handshake is
  * unchanged. Do not read the daemon's PID off the returned child; the daemon reports its own
  * (see daemon-ready-identity.ts).
+ *
+ * Both arms go through the shared child-process chokepoint (`src/shared/child-process`), which
+ * is what every caller outside that directory must use — `forkProcess` for the Node-module arm,
+ * `spawnProcess` for the program arm.
  */
 export function spawnDaemonChildProcess(
   options: DaemonChildSpawnOptions,
   useDurableScope: boolean
-): ChildProcess {
+): SpawnedProcess {
   const { forkEntryPath, relocatedExecPath, userDataPath, launchNonce } = options
   const scriptArgs = buildDaemonScriptArgs(options)
   // Why: run as plain Node so Electron's GPU/display init can't interfere with node-pty's posix_spawn of the spawn-helper.
@@ -61,14 +66,16 @@ export function spawnDaemonChildProcess(
   }
   // Why cwd: detached daemons outlive dev worktrees; userData keeps process.cwd() valid after a repo/worktree is deleted.
   // Why detached/stdio: detached+unref outlives Electron; stdout 'ignore' (else blocks exit), stderr 'pipe' captures startup crashes lost in v1.4.129-rc.1.
-  const childOptions = {
+  const childOptions: Pick<ForkSpec, 'cwd' | 'detached' | 'stdio'> = {
     cwd: userDataPath,
     detached: true,
-    stdio: ['ignore', 'ignore', 'pipe', 'ipc'] as StdioOptions
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc']
   }
   if (!useDurableScope) {
-    return fork(forkEntryPath, scriptArgs, {
+    return forkProcess({
       ...childOptions,
+      modulePath: forkEntryPath,
+      args: scriptArgs,
       // Why: run the byte-identical relocated Orca.exe so the image path sits outside the updater's kill zone.
       ...(relocatedExecPath ? { execPath: relocatedExecPath } : {}),
       env: daemonEnv
@@ -80,5 +87,10 @@ export function spawnDaemonChildProcess(
     launchNonce,
     daemonEnv
   )
-  return spawn(scoped.command, scoped.args, { ...childOptions, env: scoped.env })
+  return spawnProcess({
+    ...childOptions,
+    program: scoped.command,
+    args: scoped.args,
+    env: scoped.env
+  })
 }
