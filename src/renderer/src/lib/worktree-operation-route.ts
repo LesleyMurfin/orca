@@ -47,6 +47,11 @@ export type WorktreeOperationRouteState = FolderWorkspaceRuntimeOwnerState & {
   removedRuntimeEnvironmentIds?: ReadonlySet<string>
 }
 
+/**
+ * Owner rows for this id on one host, read from the repo catalog AND the detected-worktree index
+ * because owner provenance is split across both stores — a HUB-projected owner may appear in
+ * either one, and missing it would drop the transport the caller needs.
+ */
 function ownerRecordsOnHost(
   state: WorktreeOperationRouteState,
   worktreeId: string,
@@ -105,6 +110,11 @@ export function resolveWorktreeOperationRouteResultForHost(
     : { kind: 'missing' }
 }
 
+/**
+ * `null`-returning adapter for host-qualified callers with no branch for `ambiguous` vs
+ * `missing`. The fail-closed decision stays in the `*Result` resolver so the two entry
+ * points can never disagree about what counts as an owner.
+ */
 export function resolveWorktreeOperationRouteForHost(
   state: WorktreeOperationRouteState,
   worktreeId: string,
@@ -114,6 +124,11 @@ export function resolveWorktreeOperationRouteForHost(
   return resolution.kind === 'resolved' ? resolution.route : null
 }
 
+/**
+ * An authoritative host selection already names the target, so only the transport has to be
+ * recovered — and only for `ssh:`, which a paired HUB can proxy. Rival HUBs projecting the same
+ * host stay unresolved rather than guessing one.
+ */
 function resolveSelectedHostRoute(
   state: WorktreeOperationRouteState,
   worktreeId: string,
@@ -168,6 +183,10 @@ export function getWorktreeOperationOwnerHostIds(
   return [...hostIds]
 }
 
+/**
+ * `null`-returning adapter over the owner-routed resolver for call sites that cannot act on
+ * `ambiguous` — collapsing both refusals to `null` keeps them fail-closed at the call site.
+ */
 export function resolveWorktreeOperationRoute(
   state: WorktreeOperationRouteState,
   worktreeId: string
@@ -299,6 +318,11 @@ function resolveFolderWorkspaceOperationRoute(
   }
 }
 
+/**
+ * Projects the route's runtime environment onto settings so a routed operation runs against the
+ * owner's environment rather than whichever one the UI has active; settings can still be absent
+ * during early hydration, hence the synthesized fallback.
+ */
 export function settingsForWorktreeOperationRoute(
   settings: AppState['settings'],
   route: WorktreeOperationRoute
