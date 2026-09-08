@@ -1,6 +1,5 @@
 import type { AppState } from '@/store/types'
 import {
-  getRepoExecutionHostId,
   LOCAL_EXECUTION_HOST_ID,
   parseExecutionHostId,
   type ExecutionHostId
@@ -250,31 +249,28 @@ export function resolveWorktreeOperationRouteResult(
     (state.runtimeEnvironmentCatalogHydrated === true &&
       (savedRuntimeIds.length === 0 || hasDetectedWorktree))
   return mayBeLegacyLocal
-    ? { kind: 'resolved', route: { executionHostId: 'local', runtimeEnvironmentId: null } }
+    ? {
+        kind: 'resolved',
+        route: { executionHostId: LOCAL_EXECUTION_HOST_ID, runtimeEnvironmentId: null }
+      }
     : { kind: 'missing' }
 }
 
 /**
- * A local route for a worktree whose rows predate owner projection, and only that.
- * `getWorktreeExecutionHostId` is the precedence of record for this decision; it takes a single
- * repo, so the unanimity every row must satisfy is spelled out here.
+ * A local route for a worktree whose only repo rows predate owner projection — the exact
+ * condition `resolveExplicitWorktreeOperationRouteResult` already routed above if it applied to
+ * any row. Reaching this function means every row for `repoId` is unstamped, so
+ * `getRepoExecutionHostId`'s own fallback resolves each of them to `local`; a row only has to
+ * exist.
  */
 function resolveUnstampedLocalWorktreeRoute(
   state: WorktreeOperationRouteState,
   repoId: string
 ): WorktreeOperationRoute | null {
-  const repos = state.repos?.filter((repo) => repo.id === repoId) ?? []
-  // Why: a worktree row alone carries no host evidence; without a repo record keep failing closed.
-  if (repos.length === 0) {
-    return null
-  }
-  // Why: rows that disagree are a contradiction, not a default — refuse, as findExactRepoOwner does.
-  for (const repo of repos) {
-    if (getRepoExecutionHostId(repo) !== LOCAL_EXECUTION_HOST_ID) {
-      return null
-    }
-  }
-  return { executionHostId: LOCAL_EXECUTION_HOST_ID, runtimeEnvironmentId: null }
+  const hasUnstampedRepoRow = state.repos?.some((repo) => repo.id === repoId) ?? false
+  return hasUnstampedRepoRow
+    ? { executionHostId: LOCAL_EXECUTION_HOST_ID, runtimeEnvironmentId: null }
+    : null
 }
 
 /**
