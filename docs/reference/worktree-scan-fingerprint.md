@@ -5,8 +5,10 @@
 Adopted for the main-process worktree resolution cache
 (`OrcaRuntimeService.listRepoWorktreesForResolution`). It keeps the existing
 30-second freshness contract for externally created, removed, moved, locked, and
-re-checked-out worktrees while removing the `git worktree list` subprocess that
-previously ran for every registered repository every 30 seconds.
+re-checked-out worktrees — whenever the probe answers, with the reconciliation
+interval as the ceiling when it does not — while removing the
+`git worktree list` subprocess that previously ran for every registered
+repository every 30 seconds.
 
 ## Context
 
@@ -60,7 +62,10 @@ subprocess.
   converges.
 - Change nothing for SSH repos, WSL-routed repos, folder workspaces, bare repos,
   or hosts where the probe cannot resolve Git's admin layout.
-- Fail open: any probe error must behave exactly like today (run the real scan).
+- Fail open: any probe that answers something the fingerprint cannot vouch for —
+  a read error, an unresolvable Git layout — must behave exactly like today (run
+  the real scan). A probe that never answers is a separate case; see
+  "Probe expiry is not a mismatch".
 
 ## Non-goals
 
@@ -197,19 +202,26 @@ the TTL alone would have refreshed.
 
 ## Freshness budget
 
-| Change                                                                | Before            | After             |
-| --------------------------------------------------------------------- | ----------------- | ----------------- |
-| Orca-initiated create/remove/rename/sparse/repo edit                  | immediate (event) | immediate (event) |
-| SSH reconnect / provider generation bump                              | immediate (event) | immediate (event) |
-| External `worktree add/remove/move/prune/lock`                        | ≤ 30 s            | ≤ 30 s            |
-| External `git checkout` / `commit` / `reset` in any worktree          | ≤ 30 s            | ≤ 30 s            |
-| External `rm -rf <worktree>`                                          | ≤ 30 s            | ≤ 30 s            |
-| External sparse-checkout pattern edit                                 | ≤ 30 s            | ≤ 5 min           |
-| Packed/reftable tip moved within one mtime tick at an equal file size | ≤ 30 s            | ≤ 5 min           |
-| SSH / WSL repos, folder workspaces                                    | unchanged         | unchanged         |
+| Change                                                                | Before            | After                     |
+| --------------------------------------------------------------------- | ----------------- | ------------------------- |
+| Orca-initiated create/remove/rename/sparse/repo edit                  | immediate (event) | immediate (event)         |
+| SSH reconnect / provider generation bump                              | immediate (event) | immediate (event)         |
+| External `worktree add/remove/move/prune/lock`                        | ≤ 30 s            | ≤ 30 s (see note)         |
+| External `git checkout` / `commit` / `reset` in any worktree          | ≤ 30 s            | ≤ 30 s (see note)         |
+| External `rm -rf <worktree>`                                          | ≤ 30 s            | ≤ 30 s (see note)         |
+| External sparse-checkout pattern edit                                 | ≤ 30 s            | ≤ 5 min                   |
+| Packed/reftable tip moved within one mtime tick at an equal file size | ≤ 30 s            | ≤ 5 min                   |
+| SSH / WSL repos, folder workspaces                                    | unchanged         | unchanged                 |
 
-The two regressions are bounded by the reconciliation interval and are both
-changes Orca does not make itself.
+The two unconditional regressions — sparse-checkout pattern edits and a tip
+moved within one mtime tick at an equal file size — are bounded by the
+reconciliation interval and are both changes Orca does not make itself.
+
+The "see note" rows are changes the probe *does* observe, so 30 s is their bound
+whenever it answers. Only a host slow enough to blow the probe deadline delays
+them, and then by the same ceiling: age is measured from the last real scan, so
+a run of expiries stretches detection toward 5 min and no further, and the first
+probe that answers restores the 30 s bound.
 
 ### Main-thread cost
 
@@ -301,6 +313,11 @@ gain no longer justifies the risk. Tracked as follow-up, not in this change.
 - the 5-minute reconciliation forces a rescan while the fingerprint is unchanged
 - `notifyBranchRenamed` (event invalidation) still forces an immediate rescan
 - a `null` fingerprint (probe failure) falls back to scanning
+- an expired probe serves the reusable cache within the caller's budget instead
+  of rescanning, and its late answer is never adopted as the confirmed
+  fingerprint
+- a run of expiries still reconciles on schedule, because age keeps being
+  measured from the last real scan
 - SSH repos never consult the probe
 - a failed scan is never extended
 - concurrent callers share one probe and one scan

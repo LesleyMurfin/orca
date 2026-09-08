@@ -35,9 +35,11 @@ export const RESOLVED_WORKTREE_CACHE_TTL_MS = 1000
 // stamp, so a real scan still runs on this interval even while the probe reports "unchanged".
 export const WORKTREE_SCAN_ADMIN_RECONCILE_INTERVAL_MS = 5 * 60_000
 
-// Why reserved rather than spent on the probe: when the probe expires the caller still has to run
-// `git worktree list` and answer inside the same budget, so the fallback needs its own room. Sized
-// for a healthy Git on a busy host, well above the tens of milliseconds a warm list costs.
+// Why reserved rather than spent on the probe: a probe that answers "unavailable" or "different"
+// just before the deadline still leaves `git worktree list` to run and answer inside the same
+// caller budget, so the fallback needs its own room. An expiry no longer costs a scan — the
+// reusable cache is served as-is — but every answering path still can. Sized for a healthy Git on
+// a busy host, well above the tens of milliseconds a warm list costs.
 export const WORKTREE_SCAN_FALLBACK_ALLOWANCE_MS = 1500
 
 // Why derived from the caller's budget instead of a generous absolute: this wait runs *inside*

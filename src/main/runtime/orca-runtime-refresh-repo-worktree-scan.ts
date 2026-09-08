@@ -52,7 +52,8 @@ export class OrcaRuntimeWithRefreshRepoWorktreeScan extends OrcaRuntimeWithListK
       // caller must never wait on it, or every cold read pays filesystem latency it cannot use.
       const probed = await withTimeoutResult(probe, WORKTREE_SCAN_ADMIN_FINGERPRINT_TIMEOUT_MS)
       if (!probed.ok) {
-        // Timeout proves no change; avoid adding scan load and preserve the last confirmed baseline.
+        // Timeout proves nothing, so it is no evidence the repo changed: serve the cache without
+        // adding scan load, and preserve the last confirmed baseline.
         // Ignore the late probe: it could describe a mutation these cached rows predate.
         console.warn('[worktree-scan] admin fingerprint probe expired; serving the cached scan', {
           repoId: repo.id,
