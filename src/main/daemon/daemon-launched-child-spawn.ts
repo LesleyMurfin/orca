@@ -1,4 +1,4 @@
-import { fork, spawn, type ChildProcess } from 'node:child_process'
+import { fork, spawn, type ChildProcess, type StdioOptions } from 'node:child_process'
 import { getAppEnvironment } from '../../shared/app-environment'
 import { buildDurableDaemonScopeCommand } from './daemon-cgroup-scope'
 import { daemonLogArgs } from './daemon-launch-paths'
@@ -38,16 +38,13 @@ function buildDaemonScriptArgs(options: DaemonChildSpawnOptions): string[] {
 }
 
 /**
- * The two ways the daemon's actual OS process comes into being. `useDurableScope: false` is the
- * long-standing direct `fork()` (own POSIX process group, same systemd cgroup as the caller).
- * `useDurableScope: true` wraps the identical command line in `systemd-run --user --scope` (see
- * daemon-cgroup-scope.ts) so the resulting process lands in a cgroup that is a sibling of the
- * caller's, not a descendant — spawned via `spawn()` rather than `fork()` because the launched
- * binary is `systemd-run`, not a Node script; `spawn()` supports the same `'ipc'` stdio contract
- * `fork()` does, and the process the wrapper execs into inherits it and completes the daemon's
- * normal readiness handshake unchanged. Do not read the daemon's PID off this child: it is only
- * the daemon's because systemd-run happens to `exec` in scope mode — the daemon reports its own
- * PID in that handshake (see daemon-ready-identity.ts).
+ * The two ways the daemon's OS process comes into being: the long-standing direct `fork()`, and
+ * (`useDurableScope`) the identical command line wrapped in `systemd-run --user --scope` so the
+ * daemon lands in a sibling cgroup instead of the caller's — see daemon-cgroup-scope.ts. The
+ * wrapper needs `spawn()` because it is not a Node script, but it takes the same `'ipc'` stdio
+ * contract and the process it execs into inherits the channel, so the readiness handshake is
+ * unchanged. Do not read the daemon's PID off the returned child; the daemon reports its own
+ * (see daemon-ready-identity.ts).
  */
 export function spawnDaemonChildProcess(
   options: DaemonChildSpawnOptions,
@@ -55,8 +52,6 @@ export function spawnDaemonChildProcess(
 ): ChildProcess {
   const { forkEntryPath, relocatedExecPath, userDataPath, launchNonce } = options
   const scriptArgs = buildDaemonScriptArgs(options)
-  // Why: detached daemons outlive dev worktrees; userData keeps process.cwd() valid after a repo/worktree is deleted.
-  // Why: detached+unref outlives Electron; stdout 'ignore' (else blocks exit), stderr 'pipe' captures startup crashes lost in v1.4.129-rc.1.
   // Why: run as plain Node so Electron's GPU/display init can't interfere with node-pty's posix_spawn of the spawn-helper.
   const daemonEnv = {
     ...process.env,
@@ -64,11 +59,16 @@ export function spawnDaemonChildProcess(
     // Why: the detached plain-Node daemon has no AppEnvironment, but shell rcfiles must live outside swept tmp.
     ORCA_USER_DATA_PATH: userDataPath
   }
+  // Why cwd: detached daemons outlive dev worktrees; userData keeps process.cwd() valid after a repo/worktree is deleted.
+  // Why detached/stdio: detached+unref outlives Electron; stdout 'ignore' (else blocks exit), stderr 'pipe' captures startup crashes lost in v1.4.129-rc.1.
+  const childOptions = {
+    cwd: userDataPath,
+    detached: true,
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc'] as StdioOptions
+  }
   if (!useDurableScope) {
     return fork(forkEntryPath, scriptArgs, {
-      cwd: userDataPath,
-      detached: true,
-      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+      ...childOptions,
       // Why: run the byte-identical relocated Orca.exe so the image path sits outside the updater's kill zone.
       ...(relocatedExecPath ? { execPath: relocatedExecPath } : {}),
       env: daemonEnv
@@ -80,10 +80,5 @@ export function spawnDaemonChildProcess(
     launchNonce,
     daemonEnv
   )
-  return spawn(scoped.command, scoped.args, {
-    cwd: userDataPath,
-    detached: true,
-    stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
-    env: scoped.env
-  })
+  return spawn(scoped.command, scoped.args, { ...childOptions, env: scoped.env })
 }
