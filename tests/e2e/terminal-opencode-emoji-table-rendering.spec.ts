@@ -193,7 +193,13 @@ async function readActiveTerminalRasterTarget(page: Page): Promise<TerminalRaste
       throw new Error('No active terminal pane')
     }
     const screen = pane.container.querySelector<HTMLElement>('.xterm-screen')
-    const dimensions = pane.terminal._core?._renderService?.dimensions?.css?.cell
+    // Why: the measured CSS cell size only exists on xterm's untyped internals.
+    const terminal = pane.terminal as {
+      _core?: {
+        _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } }
+      }
+    }
+    const dimensions = terminal._core?._renderService?.dimensions?.css?.cell
     if (!screen || !dimensions) {
       throw new Error('Active terminal has no measurable xterm screen')
     }

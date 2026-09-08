@@ -186,6 +186,9 @@ test.describe('Tabs', () => {
     const orderedTabs = await getWorktreeTabs(orcaPage, worktreeId)
     const secondTabId = orderedTabs.find((tab) => tab.id !== firstTabId)?.id
     expect(secondTabId).toBeTruthy()
+    if (!firstTabId || !secondTabId) {
+      throw new Error('Expected an active tab and a distinct second tab')
+    }
 
     await orcaPage.evaluate((tabId) => {
       window.__store?.getState().setActiveTab(tabId)
@@ -246,12 +249,9 @@ test.describe('Tabs', () => {
         ? groups.find((group) => group.id === activeGroupId)
         : groups[0]
 
-      if (activeGroup?.tabOrder?.length >= 2) {
-        const nextOrder = [
-          activeGroup.tabOrder[1],
-          activeGroup.tabOrder[0],
-          ...activeGroup.tabOrder.slice(2)
-        ]
+      const tabOrder = activeGroup?.tabOrder
+      if (activeGroup && tabOrder && tabOrder.length >= 2) {
+        const nextOrder = [tabOrder[1], tabOrder[0], ...tabOrder.slice(2)]
         state.reorderUnifiedTabs(activeGroup.id, nextOrder)
         return
       }

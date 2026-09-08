@@ -22,7 +22,8 @@ async function createWorkspace(page: Page, name: string): Promise<void> {
 
 async function removeCreatedWorktree(page: Page, worktreeId: string): Promise<void> {
   await page.evaluate(async (id) => {
-    await window.__store?.getState().removeWorktree(id, true)
+    // Why: removeWorktree takes a host-qualified target; this golden worktree is local.
+    await window.__store?.getState().removeWorktree({ id, executionHostId: null }, true)
   }, worktreeId)
 }
 

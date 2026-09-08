@@ -116,13 +116,20 @@ export async function seedPRCommentsSidebarFixture(page: Page): Promise<PRCommen
       settings: current.settings
         ? {
             ...current.settings,
+            // Why: settings.sourceControlAi is optional, so the spread alone cannot
+            // satisfy its required fields.
             sourceControlAi: {
+              agentId: null,
+              selectedModelByAgent: {},
+              selectedThinkingByModel: {},
+              customAgentCommand: '',
+              instructionsByOperation: {},
               ...current.settings.sourceControlAi,
               enabled: true
             }
           }
         : current.settings,
-      fetchPRForBranch: async (repoPath: string, targetBranch: string) => {
+      fetchPRForBranch: async (_repoPath: string, targetBranch: string) => {
         if (targetBranch !== branch) {
           return null
         }
@@ -137,7 +144,7 @@ export async function seedPRCommentsSidebarFixture(page: Page): Promise<PRCommen
       fetchPRChecks: async () => [],
       fetchPRComments: async () => comments,
       setPRCommentReaction: async () => true,
-      fetchUpstreamStatus: async () => undefined,
+      fetchUpstreamStatus: async () => null,
       setUpstreamStatus: () => undefined
     }))
 

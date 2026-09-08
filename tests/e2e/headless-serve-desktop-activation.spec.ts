@@ -128,7 +128,14 @@ test('promotes the headless owner without replacing its daemon terminal', async 
   const mainPath = path.join(process.cwd(), 'out', 'main', 'index.js')
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'orca-e2e-serve-promotion-'))
   const homeIsolation = createHeadlessLaunchIsolation(userDataDir)
-  const env = homeIsolation.env
+  // Why: electron.launch() takes fully-defined string values while
+  // NodeJS.ProcessEnv admits undefined, so drop unset vars instead of
+  // forwarding them.
+  const env = Object.fromEntries(
+    Object.entries(homeIsolation.env).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined
+    )
+  )
   let serveApp: ElectronApplication | null = null
   let activatingProcess: ChildProcess | null = null
 

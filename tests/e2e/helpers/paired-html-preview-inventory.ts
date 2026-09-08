@@ -1,4 +1,5 @@
 import type { Page } from '@stablyai/playwright-test'
+import type { RuntimeMobileSessionTabsResult } from '../../../src/shared/runtime-types'
 
 export type PairedHtmlPreviewInventory = {
   clientRemotePageIds: string[]
@@ -40,9 +41,15 @@ export async function readPairedHtmlPreviewInventory(
           params: { worktree: `id:${worktreeId}` },
           timeoutMs: 15_000
         })
+    // Why: the RPC method is a runtime string, so the response result carries no
+    // static shape — validate session.tabs.list once here instead of trusting it
+    // at every read below.
+    const isTabsResult = (value: unknown): value is RuntimeMobileSessionTabsResult =>
+      typeof value === 'object' && value !== null && 'tabs' in value && Array.isArray(value.tabs)
     const state = window.__store?.getState()
     const hostResponseOk = response.ok
     const hostResponseError = response.ok ? null : JSON.stringify(response.error)
+    const hostResult = response.ok && isTabsResult(response.result) ? response.result : null
     const clientWorkspaces = (state?.browserTabsByWorktree[worktreeId] ?? []).filter((tab) =>
       tab.url.endsWith(`/${fixtureName}`)
     )
@@ -50,11 +57,9 @@ export async function readPairedHtmlPreviewInventory(
     const clientPages = clientWorkspaces.flatMap(
       (workspace) => state?.browserPagesByWorkspace[workspace.id] ?? []
     )
-    const hostTabs = hostResponseOk
-      ? response.result.tabs.filter(
-          (tab) => tab.type === 'browser' && tab.url.endsWith(`/${fixtureName}`)
-        )
-      : []
+    const hostTabs = (hostResult?.tabs ?? []).filter(
+      (tab) => tab.type === 'browser' && tab.url.endsWith(`/${fixtureName}`)
+    )
     return {
       clientRemotePageIds: clientPages.flatMap((browserPage) => {
         const remotePageId = state?.remoteBrowserPageHandlesByPageId[browserPage.id]?.remotePageId
@@ -73,15 +78,13 @@ export async function readPairedHtmlPreviewInventory(
       })),
       hostResponseError,
       hostResponseOk,
-      hostTabGroups: hostResponseOk ? (response.result.tabGroups ?? []) : [],
+      hostTabGroups: hostResult?.tabGroups ?? [],
       hostTabIds: hostTabs.map((tab) => tab.id),
       totalClientUnified: (state?.unifiedTabsByWorktree[worktreeId] ?? []).filter(
         (tab) => tab.contentType === 'browser'
       ).length,
       totalClientWorkspaces: (state?.browserTabsByWorktree[worktreeId] ?? []).length,
-      totalHost: hostResponseOk
-        ? response.result.tabs.filter((tab) => tab.type === 'browser').length
-        : -1
+      totalHost: hostResult ? hostResult.tabs.filter((tab) => tab.type === 'browser').length : -1
     }
   }, args)
 }

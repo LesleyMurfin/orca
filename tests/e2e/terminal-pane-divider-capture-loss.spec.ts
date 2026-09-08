@@ -96,7 +96,7 @@ async function readDividerGeometry(page: Page): Promise<DividerGeometry> {
             .flatMap((manager) => manager.getPanes())
             .find((candidate) => candidate.container.dataset.ptyId === ptyId)
         : null
-      let proposed = null
+      let proposed: PaneGeometry['proposed'] = null
       try {
         proposed = pane?.fitAddon.proposeDimensions() ?? null
       } catch {
@@ -139,7 +139,7 @@ test('@headful keeps resizing after the divider loses pointer capture', async ({
   if (!box) {
     throw new Error('Divider has no bounding box')
   }
-  await divider.evaluate((element) => {
+  await divider.evaluate((element: HTMLElement) => {
     element.dataset.captureLossCount = '0'
     element.addEventListener('pointerdown', (event) => {
       element.dataset.captureLossPointerId = String(event.pointerId)

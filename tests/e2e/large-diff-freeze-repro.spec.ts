@@ -1,5 +1,6 @@
 import { rmSync, writeFileSync } from 'node:fs'
 import type { Page } from '@stablyai/playwright-test'
+import type { GitUncommittedEntry } from '../../src/shared/git-status-types'
 import { test, expect } from './helpers/orca-app'
 import { waitForSessionReady } from './helpers/store'
 import { getLargeDiffRenderLimit } from '../../src/shared/large-diff-render-limit'
@@ -186,7 +187,10 @@ test.describe('Large diff freeze repro', () => {
 
           // Why: reproduce stale snapshot behavior by opening combined diffs
           // as "unstaged" using entries captured from the staged status snapshot.
-          const staleUnstagedEntries = entries.map((entry) => ({ ...entry, area: 'unstaged' }))
+          const staleUnstagedEntries: GitUncommittedEntry[] = entries.map((entry) => ({
+            ...entry,
+            area: 'unstaged'
+          }))
           const intervalMs = 50
           const samples: number[] = []
           let last = performance.now()

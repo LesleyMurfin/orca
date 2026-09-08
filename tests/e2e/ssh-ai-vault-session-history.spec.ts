@@ -9,6 +9,7 @@ import {
 import { connectDockerRemote } from './ssh-codex-reconnect-replay-driver'
 import { dockerExec, dockerWriteFile } from './ssh-codex-repro-remote-fixtures'
 import { waitForActiveWorktree, waitForSessionReady } from './helpers/store'
+import { toSshExecutionHostId } from '../../src/shared/execution-host'
 
 const RUN_DOCKER_SSH = process.env.ORCA_E2E_SSH_DOCKER === '1'
 
@@ -43,7 +44,7 @@ test.describe('SSH Agent Session History', () => {
       await waitForSessionReady(orcaPage)
       await waitForActiveWorktree(orcaPage)
       const remote = await connectDockerRemote(orcaPage, target)
-      const sshScope = `ssh:${encodeURIComponent(remote.targetId)}`
+      const sshScope = toSshExecutionHostId(remote.targetId)
 
       const scan = await orcaPage.evaluate(
         async ({ sshScope, defaultTitle, runtimeTitle, claudeTitle }) => {

@@ -215,6 +215,7 @@ async function readPaneDiagnostics(
       const pane = manager?.getActivePane?.() ?? manager?.getPanes?.()[0] ?? null
       const state = window.__store?.getState()
       const tab = (state?.tabsByWorktree[worktreeId] ?? []).find((entry) => entry.id === webTabId)
+      const storeTabLayout = state?.terminalLayoutsByTabId[webTabId] ?? null
       return {
         mounted: Boolean(manager),
         ptyId: pane?.container?.dataset?.ptyId ?? null,
@@ -224,7 +225,7 @@ async function readPaneDiagnostics(
         bufferLength: pane?.serializeAddon?.serialize?.()?.length ?? null,
         paneLeafIds: manager?.getPanes?.().map((entry) => entry.leafId ?? null) ?? null,
         storeTabPtyId: tab?.ptyId ?? null,
-        storeTabLayout: tab?.paneLayout ? JSON.stringify(tab.paneLayout) : null,
+        storeTabLayout: storeTabLayout ? JSON.stringify(storeTabLayout) : null,
         storePtyIdsByTab: state?.ptyIdsByTabId?.[webTabId] ?? null
       }
     },

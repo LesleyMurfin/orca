@@ -112,7 +112,10 @@ test('adopts a recipe-provisioned SSH root without creating a linked worktree', 
         { timeout: 30_000 }
       )
       .toBe(false)
-    expect(() => execDockerSshRelayTargetCommand(target, 'true')).toThrow()
+    // Why: the closure below reopens `target`'s `| null` type, so capture the
+    // already-narrowed value in a const first.
+    const startedTarget = target
+    expect(() => execDockerSshRelayTargetCommand(startedTarget, 'true')).toThrow()
   } finally {
     cleanupDockerSshRelayTarget(target)
     rmSync(sourceRepo, { recursive: true, force: true })

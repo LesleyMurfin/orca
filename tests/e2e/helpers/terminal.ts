@@ -37,7 +37,7 @@ export async function focusActiveTerminalInput(page: Page): Promise<void> {
           : null
     const manager = tabId ? window.__paneManagers?.get(tabId) : null
     const pane = manager?.getActivePane?.() ?? manager?.getPanes?.()[0] ?? null
-    if (!pane) {
+    if (!tabId || !pane) {
       throw new Error('No active terminal pane to focus')
     }
     state?.setActiveTab(tabId)

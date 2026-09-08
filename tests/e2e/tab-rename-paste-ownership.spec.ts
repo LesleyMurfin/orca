@@ -36,7 +36,9 @@ async function getActiveTabTitle(page: Page, worktreeId: string): Promise<string
   const tabs = await getWorktreeTabs(page, worktreeId)
   const tab = tabs.find((entry) => entry.id === activeId)
   expect(tab).toBeDefined()
-  return tab!.customTitle ?? tab!.title ?? ''
+  // Why: getWorktreeTabs already collapses customTitle over title, so the
+  // helper's `title` is the rendered label this spec matches against.
+  return tab!.title ?? ''
 }
 
 function tabLocatorByTitle(page: Page, title: string): ReturnType<Page['locator']> {

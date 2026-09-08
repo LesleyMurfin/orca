@@ -88,7 +88,7 @@ export async function setTerminalPtyWriteDelay(
   app: ElectronApplication,
   delayMs: number
 ): Promise<void> {
-  await app.evaluate((nextDelayMs) => {
+  await app.evaluate((_electron, nextDelayMs) => {
     const global = globalThis as unknown as { __terminalPtyWriteDelayMs?: number }
     global.__terminalPtyWriteDelayMs = Math.max(0, nextDelayMs)
   }, delayMs)

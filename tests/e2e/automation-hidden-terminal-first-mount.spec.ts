@@ -96,7 +96,11 @@ test.describe('Automation hidden terminal first mount', () => {
         state.queueTabStartupCommand(tab.id, {
           command: `node -e "console.log('${marker}')"`,
           telemetry: {
-            launch_source: 'automation_hidden_first_mount_e2e',
+            // Why: launch_source is a closed telemetry enum (shared/telemetry-events.ts);
+            // a synthetic e2e source has no surface, so it reports as unknown.
+            // 'other': this startup command is a plain shell command, not an agent CLI.
+            agent_kind: 'other',
+            launch_source: 'unknown',
             request_kind: 'new'
           }
         })

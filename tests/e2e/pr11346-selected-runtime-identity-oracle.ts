@@ -5,6 +5,11 @@ import os from 'node:os'
 import path from 'node:path'
 import type { Page } from '@stablyai/playwright-test'
 import type { AppState } from '../../src/renderer/src/store/types'
+import type {
+  DirectSshWorktreeFetchOptions,
+  WorktreeFetchOptions
+} from '../../src/renderer/src/store/slices/worktree-helpers'
+import type { HostQualifiedDetectedWorktreeResult } from '../../src/shared/detected-worktree-provider-contract'
 import { expect } from './helpers/orca-app'
 
 export function configureIsolatedGitIdentity(homePath: string): void {
@@ -99,6 +104,9 @@ export async function installFinalActivationGate(page: Page, targetPath: string)
     if (!store) {
       throw new Error('Renderer store unavailable')
     }
+    // Why: narrowing does not reach the hoisted gate declaration below, which needs
+    // to be a declaration to carry fetchWorktrees' overload signatures.
+    const gatedStore = store
     const originalFetchWorktrees = store.getState().fetchWorktrees
     let release!: () => void
     const released = new Promise<void>((resolve) => {
@@ -116,22 +124,35 @@ export async function installFinalActivationGate(page: Page, targetPath: string)
       release,
       waiting: false
     }
-    store.setState({
-      fetchWorktrees: async (...args: Parameters<typeof originalFetchWorktrees>) => {
-        const result = await originalFetchWorktrees(...args)
-        const targetRepo = store
-          .getState()
-          .repos.find(
-            (repo) =>
-              repo.path === pathToGate && repo.executionHostId?.startsWith('runtime:') === true
-          )
-        if (targetRepo?.id === args[0]) {
-          gateWindow.__pr11346ActivationGate!.waiting = true
-          await released
-        }
-        return result
+    // Why: fetchWorktrees is overloaded — a direct-SSH fetch answers with a
+    // host-qualified result, every other fetch with a boolean — so the gate has to
+    // re-declare both shapes to stay assignable to the store's own signature.
+    async function gatedFetchWorktrees(
+      repoId: string,
+      options: DirectSshWorktreeFetchOptions
+    ): Promise<HostQualifiedDetectedWorktreeResult>
+    async function gatedFetchWorktrees(
+      repoId: string,
+      options?: WorktreeFetchOptions
+    ): Promise<boolean>
+    async function gatedFetchWorktrees(
+      repoId: string,
+      options?: WorktreeFetchOptions
+    ): Promise<boolean | HostQualifiedDetectedWorktreeResult> {
+      const result = await originalFetchWorktrees(repoId, options)
+      const targetRepo = gatedStore
+        .getState()
+        .repos.find(
+          (repo) =>
+            repo.path === pathToGate && repo.executionHostId?.startsWith('runtime:') === true
+        )
+      if (targetRepo?.id === repoId) {
+        gateWindow.__pr11346ActivationGate!.waiting = true
+        await released
       }
-    })
+      return result
+    }
+    store.setState({ fetchWorktrees: gatedFetchWorktrees })
   }, targetPath)
 }
 
@@ -189,7 +210,8 @@ export async function injectSameIdLocalActivationCollision(
         repoId: localRepoId,
         path: localCollisionPath,
         hostId: 'local' as const,
-        runtimeOwnerEnvironmentId: null
+        // Why: absence of a paired runtime owner is `undefined` on Worktree, not null.
+        runtimeOwnerEnvironmentId: undefined
       }
       store.setState({
         repos: [

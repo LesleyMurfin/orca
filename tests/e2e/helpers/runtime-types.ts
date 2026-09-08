@@ -1,6 +1,7 @@
 import type { AppState } from '../../../src/renderer/src/store/types'
 import type { OpenFile, RightSidebarTab } from '../../../src/renderer/src/store/slices/editor'
 import type {
+  DropZone,
   ManagedPane,
   ManagedPaneInternal,
   PaneRenderingDiagnostics
@@ -39,6 +40,9 @@ export type PaneManagerLike = {
   resetWebglTextureAtlases(): void
   hasWebglRenderer(paneId: number): boolean
   getNumericIdForLeaf(leafId: string): number | null
+  movePane(sourcePaneId: number, targetPaneId: number, zone: DropZone): void
+  scheduleRevealRepaint(): void
+  scheduleRevealPresent(): void
 }
 
 export type ExplorerFileSummary = Pick<OpenFile, 'id' | 'filePath' | 'relativePath'>

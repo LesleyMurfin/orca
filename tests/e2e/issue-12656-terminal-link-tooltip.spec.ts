@@ -130,16 +130,15 @@ test.describe('Issue #12656 terminal link tooltip', () => {
     )
     await waitForTerminalOutput(orcaPage, url)
 
-    let probe: LinkProbe | null = null
     await expect
-      .poll(
-        async () => {
-          probe = await locateUrl(orcaPage, url)
-          return probe
-        },
-        { timeout: 5_000, message: 'URL did not become visible in the terminal viewport' }
-      )
+      .poll(() => locateUrl(orcaPage, url), {
+        timeout: 5_000,
+        message: 'URL did not become visible in the terminal viewport'
+      })
       .not.toBeNull()
+    // Why: expect.poll drops the polled value, so read the probe once the URL is
+    // known to be painted rather than capturing it from inside the poll closure.
+    const probe = await locateUrl(orcaPage, url)
     if (!probe) {
       throw new Error('URL probe disappeared before hover')
     }

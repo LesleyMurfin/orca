@@ -1,5 +1,6 @@
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'
+import type { RuntimeMobileSessionTabsResult } from '../../src/shared/runtime-types'
 import { expect, test } from './helpers/orca-app'
 import { openFileExplorer } from './helpers/file-explorer'
 import {
@@ -84,22 +85,26 @@ test('keeps remote HTML preview placement and focuses it only after a click', as
       throw new Error('paired client editor had no source identity before side preview')
     }
     const sourceGroupId = sourceEditor.groupId
-    let browserBaseline: PairedHtmlPreviewInventory | null = null
+    // Why: expect.poll assigns each snapshot inside its callback, so a plain `let` keeps its
+    // initializer's `null` flow type at every later read; a holder keeps the declared type.
+    const baselineObservation: { latest: PairedHtmlPreviewInventory | null } = { latest: null }
     await expect
       .poll(
         async () => {
-          browserBaseline = await readPairedHtmlPreviewInventory(page, {
+          const snapshot = await readPairedHtmlPreviewInventory(page, {
             environmentId: client!.environmentId,
             fixtureName: FIXTURE_NAME,
             worktreeId
           })
-          return browserBaseline
+          baselineObservation.latest = snapshot
+          return snapshot
         },
         { timeout: 30_000, message: 'host browser baseline was never successfully observed' }
       )
       .toMatchObject({ hostResponseError: null, hostResponseOk: true })
+    const browserBaseline = baselineObservation.latest
     if (!browserBaseline?.hostResponseOk) {
-      throw new Error(`host browser baseline failed: ${browserBaseline.hostResponseError}`)
+      throw new Error(`host browser baseline failed: ${browserBaseline?.hostResponseError}`)
     }
     await armPairedHtmlPreviewCreationObservation(page)
     await openPreviewToSide.click()
@@ -129,11 +134,13 @@ test('keeps remote HTML preview placement and focuses it only after a click', as
                 params: { worktree: `id:${worktreeId}` },
                 timeoutMs: 15_000
               })
+              const hostSnapshot = response.ok
+                ? (response.result as RuntimeMobileSessionTabsResult)
+                : null
               const hostHasHtml =
-                response.ok &&
-                response.result.tabs.some(
+                hostSnapshot?.tabs.some(
                   (tab) => tab.type === 'browser' && tab.url.endsWith(`/${fixtureName}`)
-                )
+                ) === true
               return {
                 browserRuntimeEnvironmentId: browserPage?.browserRuntimeEnvironmentId ?? null,
                 handleEnvironmentId: handle?.environmentId ?? null,
@@ -150,7 +157,7 @@ test('keeps remote HTML preview placement and focuses it only after a click', as
         handleEnvironmentId: client.environmentId,
         hostHasHtml: true
       })
-    let htmlTabInventory: PairedHtmlPreviewInventory | null = null
+    const inventoryObservation: { latest: PairedHtmlPreviewInventory | null } = { latest: null }
     let injectedInventoryErrorObserved = false
     let inventoryFailureArmed = false
     let previousSuccessfulInventory: string | null = null
@@ -158,15 +165,15 @@ test('keeps remote HTML preview placement and focuses it only after a click', as
     await expect
       .poll(
         async () => {
-          htmlTabInventory = await readPairedHtmlPreviewInventory(page, {
+          const snapshot = await readPairedHtmlPreviewInventory(page, {
             environmentId: client!.environmentId,
             fixtureName: FIXTURE_NAME,
             worktreeId
           })
-          if (!htmlTabInventory.hostResponseOk) {
+          inventoryObservation.latest = snapshot
+          if (!snapshot.hostResponseOk) {
             injectedInventoryErrorObserved ||=
-              htmlTabInventory.hostResponseError?.includes('e2e_forced_inventory_rpc_failure') ===
-              true
+              snapshot.hostResponseError?.includes('e2e_forced_inventory_rpc_failure') === true
             previousSuccessfulInventory = null
             stableSuccessfulSnapshots = 0
           } else {
@@ -175,15 +182,15 @@ test('keeps remote HTML preview placement and focuses it only after a click', as
               inventoryFailureArmed = true
             }
             const fingerprint = JSON.stringify([
-              htmlTabInventory.hostPageIds,
-              htmlTabInventory.hostTabIds,
-              htmlTabInventory.totalHost
+              snapshot.hostPageIds,
+              snapshot.hostTabIds,
+              snapshot.totalHost
             ])
             stableSuccessfulSnapshots =
               fingerprint === previousSuccessfulInventory ? stableSuccessfulSnapshots + 1 : 1
             previousSuccessfulInventory = fingerprint
           }
-          return { ...htmlTabInventory, stableSuccessfulSnapshots }
+          return { ...snapshot, stableSuccessfulSnapshots }
         },
         { timeout: 60_000, message: 'host HTML inventory did not settle successfully' }
       )
@@ -193,6 +200,7 @@ test('keeps remote HTML preview placement and focuses it only after a click', as
         stableSuccessfulSnapshots: 2
       })
     expect(injectedInventoryErrorObserved).toBe(true)
+    const htmlTabInventory = inventoryObservation.latest
     if (!htmlTabInventory) {
       throw new Error('host HTML inventory disappeared after successful settlement')
     }
@@ -285,12 +293,12 @@ test('keeps remote HTML preview placement and focuses it only after a click', as
               if (!response.ok) {
                 return false
               }
+              const snapshot = response.result as RuntimeMobileSessionTabsResult
               return (
-                response.result.tabs.find((tab) => tab.id === response.result.activeTabId)?.type ===
-                'terminal'
+                snapshot.tabs.find((tab) => tab.id === snapshot.activeTabId)?.type === 'terminal'
               )
             },
-            { environmentId: client.environmentId, worktreeId }
+            { environmentId: client!.environmentId, worktreeId }
           ),
         { timeout: 30_000, message: 'host never accepted terminal activation' }
       )
@@ -348,7 +356,7 @@ test('keeps remote HTML preview placement and focuses it only after a click', as
                 )
               })
             },
-            { browserTabId: tabIds.browserId, environmentId: client.environmentId }
+            { browserTabId: tabIds.browserId, environmentId: client!.environmentId }
           ),
         { timeout: 30_000, message: 'client lost remote browser ownership before activation' }
       )
@@ -376,8 +384,11 @@ test('keeps remote HTML preview placement and focuses it only after a click', as
               const activeUnified = (state.unifiedTabsByWorktree[worktreeId] ?? []).find(
                 (tab) => tab.id === activeGroup?.activeTabId
               )
-              const hostActive = response.ok
-                ? response.result.tabs.find((tab) => tab.id === response.result.activeTabId)
+              const hostSnapshot = response.ok
+                ? (response.result as RuntimeMobileSessionTabsResult)
+                : null
+              const hostActive = hostSnapshot
+                ? hostSnapshot.tabs.find((tab) => tab.id === hostSnapshot.activeTabId)
                 : null
               return {
                 activeGroupType: activeUnified?.contentType ?? null,
@@ -423,7 +434,9 @@ test('keeps remote HTML preview placement and focuses it only after a click', as
                   (tab) => tab.id === workspaceId
                 ),
                 hostTabPresent: response.ok
-                  ? response.result.tabs.some((tab) => tab.id === hostTabId)
+                  ? (response.result as RuntimeMobileSessionTabsResult).tabs.some(
+                      (tab) => tab.id === hostTabId
+                    )
                   : true,
                 sourceGroupPresent: (state?.groupsByWorktree[worktreeId] ?? []).some(
                   (group) => group.id === sourceGroupId

@@ -124,6 +124,9 @@ async function addRealOrcaRepo(page: Page, repoPath: string): Promise<string> {
       throw new Error(`Real Orca repo did not load: ${repoPath}`)
     }
 
+    if (!repo.hookSettings) {
+      throw new Error(`Real Orca repo loaded without hook settings: ${repoPath}`)
+    }
     await store.getState().updateRepo(repo.id, {
       externalWorktreeVisibility: 'show',
       hookSettings: {
@@ -553,7 +556,9 @@ async function captureClickEvidence(
   })
 
   return {
-    ...diff,
+    diffRatio: diff.diffRatio,
+    changedPixels: diff.diffPixels,
+    totalPixels: diff.width * diff.height,
     leftPane: pane,
     beforeContent,
     afterContent

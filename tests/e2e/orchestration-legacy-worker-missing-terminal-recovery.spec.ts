@@ -332,9 +332,13 @@ test('a missing legacy worker cannot spawn a replacement during restart recovery
 
     await session.close(firstApp)
     firstApp = null
-    await removeDetachedDaemonSession(session.userDataDir, worker!.ptyId)
+    const workerPtyId = worker!.ptyId
+    if (!workerPtyId) {
+      throw new Error('Expected the legacy worker terminal to report a daemon ptyId')
+    }
+    await removeDetachedDaemonSession(session.userDataDir, workerPtyId)
     await expect
-      .poll(() => detachedDaemonSessionExists(session.userDataDir, worker!.ptyId))
+      .poll(() => detachedDaemonSessionExists(session.userDataDir, workerPtyId))
       .toBe(false)
     await expect.poll(() => isProcessAlive(initialSpawn.pid)).toBe(false)
     rmSync(interruptionLedgerPath, { force: true })

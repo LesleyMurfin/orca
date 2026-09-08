@@ -12,6 +12,16 @@ import { waitForSessionReady } from './helpers/store'
 
 const QUICK_OPEN_SEARCH_DEBOUNCE_MS = 120
 
+// Why: runtimeEnvironments.call() is untyped (RuntimeRpcResponse<unknown>), so each
+// oracle declares the payload shape it asserts against.
+type SearchPathsResult = {
+  files: { relativePath: string }[]
+  totalCount: number
+  truncated: boolean
+}
+type FileStatResult = { isDirectory: boolean; size: number }
+type WorktreeListResult = { worktrees: { id: string }[] }
+
 async function activateWorktree(page: Page, repoPath: string, timeout = 60_000): Promise<string> {
   await expect
     .poll(
@@ -73,10 +83,11 @@ async function expectQuickOpenAndRuntimeHealthy(
         if (!response.ok) {
           throw new Error(`files.searchPaths oracle failed: ${JSON.stringify(response)}`)
         }
+        const searchResult = response.result as SearchPathsResult
         const oracle = {
-          files: response.result.files.map((file) => file.relativePath),
-          totalCount: response.result.totalCount,
-          truncated: response.result.truncated
+          files: searchResult.files.map((file) => file.relativePath),
+          totalCount: searchResult.totalCount,
+          truncated: searchResult.truncated
         }
         const encodedOracle = new TextEncoder().encode(JSON.stringify(oracle))
         const digest = await crypto.subtle.digest('SHA-256', encodedOracle)
@@ -103,7 +114,7 @@ async function expectQuickOpenAndRuntimeHealthy(
         if (!response.ok) {
           throw new Error(`files.stat oracle failed: ${JSON.stringify(response)}`)
         }
-        return response.result
+        return response.result as FileStatResult
       },
       { environmentId: client.environmentId, worktreeId, targetPath }
     )
@@ -160,7 +171,11 @@ async function expectQuickOpenAndRuntimeHealthy(
   )
   expect(response.ok).toBe(true)
   if (response.ok) {
-    expect(response.result.worktrees.some((worktree) => worktree.id === worktreeId)).toBe(true)
+    expect(
+      (response.result as WorktreeListResult).worktrees.some(
+        (worktree) => worktree.id === worktreeId
+      )
+    ).toBe(true)
   }
 }
 

@@ -145,7 +145,7 @@ export async function runPairedTerminalColdActivationOracle(
             },
             {
               tabIds: pendingTabs.map((tab) => tab.tabId),
-              targetWorktreeId: worktreeId
+              targetWorktreeId: created.worktree.id
             }
           )
           return originalPtyIds
@@ -156,9 +156,10 @@ export async function runPairedTerminalColdActivationOracle(
     if (originalPtyIds === null) {
       throw new Error('Paired cold-activation PTY ids were not captured')
     }
+    const capturedPtyIds = originalPtyIds
     const tabs: ColdTab[] = pendingTabs.map((tab, index) => ({
       ...tab,
-      originalPtyId: originalPtyIds[index]!
+      originalPtyId: capturedPtyIds[index]!
     }))
     const tabIds = tabs.map((tab) => tab.tabId)
     expect(await readColdActivationMountState(page, tabIds)).toEqual({ mounted: 0, parked: 0 })

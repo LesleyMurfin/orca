@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Page } from '@stablyai/playwright-test'
-import { LOCAL_EXECUTION_HOST_ID } from '../../src/shared/execution-host'
+import { LOCAL_EXECUTION_HOST_ID, type ExecutionHostId } from '../../src/shared/execution-host'
 import {
   launchHeadlessPairedRuntimeHost,
   type HeadlessPairedRuntimeHost
@@ -270,11 +270,13 @@ test('opens a remote pane link on the pane runtime and refuses to fall back to t
     // Act 2: the user moves this workspace onto their own machine while the runtime's page is
     // still on screen. Opening the link must fail in the pane, not load the runtime's dev server
     // here — the client has no business serving a page for a workspace it does not run.
+    // Why: an object property widens the const's literal type, so the host id is annotated here.
+    const localHostId: ExecutionHostId = LOCAL_EXECUTION_HOST_ID
     await page.evaluate(
       ({ localHostId, worktreeId }) => {
         window.__store?.getState().setActiveWorktree(worktreeId, localHostId)
       },
-      { localHostId: LOCAL_EXECUTION_HOST_ID, worktreeId }
+      { localHostId, worktreeId }
     )
     await focusMirroredPage(page, worktreeId, pane.pageId)
     const hostUrlsBefore = await readHostBrowserUrls(host, worktreeId)
