@@ -65,7 +65,7 @@ export function parseDaemonReadyIdentity(message: unknown): DaemonReadyIdentity 
     linuxStartTicks?: unknown
     bootId?: unknown
   }
-  if (!Number.isSafeInteger(value.pid) || (value.pid as number) <= 0) {
+  if (typeof value.pid !== 'number' || !Number.isSafeInteger(value.pid) || value.pid <= 0) {
     return null
   }
   if (
@@ -75,7 +75,7 @@ export function parseDaemonReadyIdentity(message: unknown): DaemonReadyIdentity 
   ) {
     return null
   }
-  const identity = { pid: value.pid as number, startedAtMs: value.startedAtMs }
+  const identity = { pid: value.pid, startedAtMs: value.startedAtMs }
   const hasLinuxStartTicks = value.linuxStartTicks !== undefined
   const hasBootId = value.bootId !== undefined
   if (hasLinuxStartTicks !== hasBootId) {
