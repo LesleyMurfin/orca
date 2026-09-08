@@ -28,6 +28,7 @@ export type WorkerReleaseBulkReceipt = {
   alreadyReleased: number
   retained: number
   failed: number
+  releasePending: number
   outcomes: WorkerReleaseBulkOutcome[]
 }
 
@@ -120,9 +121,15 @@ export const ORCHESTRATION_WORKER_RELEASE_METHODS: RpcMethod[] = [
       const outcomes: WorkerReleaseBulkOutcome[] = []
       let cursor: string | undefined
       do {
+        // `paginate: true` is what makes ORCHESTRATION_WORKER_LIST_METHOD take its paginated
+        // branch at all; without it, every call — including this loop's later cursor-bearing
+        // calls — falls into the legacy branch capped at ORCHESTRATION_WORKER_LIST_SNAPSHOT_MAX_ROWS
+        // and throws `worker_list_snapshot_too_large` above that, so a reclaimable set larger than
+        // one page never got released at all.
         const listParams = WorkerListParams.parse({
           run: params.run,
           terminalState: params.terminalState,
+          paginate: true,
           ...(cursor ? { cursor } : {})
         })
         const page = (await ORCHESTRATION_WORKER_LIST_METHOD.handler(listParams, ctx)) as {
@@ -154,6 +161,7 @@ export const ORCHESTRATION_WORKER_RELEASE_METHODS: RpcMethod[] = [
         alreadyReleased: outcomes.filter((o) => o.ok && o.state === 'already_released').length,
         retained: outcomes.filter((o) => o.ok && o.state === 'retained').length,
         failed: outcomes.filter((o) => !o.ok || o.state === 'release_unknown').length,
+        releasePending: outcomes.filter((o) => o.ok && o.state === 'release_pending').length,
         outcomes
       }
     }

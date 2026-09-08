@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createOrchestrationWorkerReleaseHarness } from './worker-release.test-support'
+import { ORCHESTRATION_WORKER_LIST_METHOD } from './worker-list-method'
 
 type BulkOutcome =
   | { dispatchId: string; ok: true; state: string }
@@ -12,6 +13,7 @@ type BulkReceipt = {
   alreadyReleased: number
   retained: number
   failed: number
+  releasePending: number
   outcomes: BulkOutcome[]
 }
 
@@ -168,6 +170,47 @@ describe('orchestration worker release bulk', () => {
     expect(bOutcome).toMatchObject({ ok: true, state: 'release_unknown' })
   })
 
+  it('counts a transient release_pending outcome in its own bucket, keeping the receipt total-preserving', async () => {
+    h.setup()
+    armIndependentWorkerTerminals()
+    const a = await h.startSettledWorker('succeeded')
+    const b = await h.startSettledWorker('succeeded')
+    const c = await h.startSettledWorker('failed')
+    const bResource = h.db.getWorkerTerminalResourceByOwner(b.dispatchId)
+
+    // A transient close failure (endpoint temporarily unreachable) is `release_pending`, not
+    // `release_unknown`: recovery retries it without another coordinator decision, so it must
+    // never land in `failed` alongside genuinely unprovable closes.
+    vi.mocked(h.runtime.closeTerminal).mockImplementation(async (handle) => {
+      if (handle === bResource?.terminal_handle) {
+        throw new Error('endpoint is not connected')
+      }
+      return { handle, tabId: 'tab-worker', ptyKilled: true } as never
+    })
+
+    const receipt = (await h.call('orchestration.workerReleaseBulk', {
+      terminalState: 'reclaimable'
+    })) as BulkReceipt
+
+    expect(receipt.requested).toBe(3)
+    expect(receipt.released).toBe(2)
+    expect(receipt.failed).toBe(0)
+    expect(receipt.releasePending).toBe(1)
+    expect(
+      receipt.released +
+        receipt.alreadyReleased +
+        receipt.retained +
+        receipt.failed +
+        receipt.releasePending
+    ).toBe(receipt.requested)
+    const bOutcome = receipt.outcomes.find((outcome) => outcome.dispatchId === b.dispatchId)
+    expect(bOutcome).toMatchObject({ ok: true, state: 'release_pending' })
+    expect(h.db.getWorkerTerminalResourceByOwner(a.dispatchId)?.release_state).toBe('released')
+    expect(h.db.getWorkerTerminalResourceByOwner(c.dispatchId)?.release_state).toBe('released')
+    // Left `releasing`, not `not_requested`: durable intent to release exists, waiting on retry.
+    expect(h.db.getWorkerTerminalResourceByOwner(b.dispatchId)?.release_state).toBe('releasing')
+  })
+
   it('scopes enumeration to --run the same way worker-list does', async () => {
     h.setup()
     armIndependentWorkerTerminals()
@@ -195,5 +238,54 @@ describe('orchestration worker release bulk', () => {
     expect(h.db.getWorkerTerminalResourceByOwner(outOfScopeStart.dispatchId)?.release_state).toBe(
       'not_requested'
     )
+  })
+
+  it('paginates the reclaimable enumeration instead of stopping at the first page', async () => {
+    h.setup()
+    armIndependentWorkerTerminals()
+    const a = await h.startSettledWorker('succeeded')
+    const b = await h.startSettledWorker('succeeded')
+    const c = await h.startSettledWorker('succeeded')
+
+    // Simulates a reclaimable set larger than one worker-list page: the enumeration call
+    // returns dispatches `a`/`b` with `hasMore`, then dispatch `c` on a second call keyed by
+    // the cursor the first call handed back. Without `paginate: true` on the listParams the
+    // handler builds, `orchestration.workerList` never returns `page.hasMore` at all, so a
+    // reclaimable set spanning multiple pages would silently stop after the first one (or throw
+    // above the legacy 5000-row cap) instead of releasing every reclaimable dispatch.
+    const listSpy = vi.spyOn(ORCHESTRATION_WORKER_LIST_METHOD, 'handler')
+    listSpy.mockImplementationOnce(
+      async () =>
+        ({
+          workers: [{ dispatchId: a.dispatchId }, { dispatchId: b.dispatchId }],
+          page: { hasMore: true, nextCursor: 'page-2-cursor' }
+        }) as never
+    )
+    listSpy.mockImplementationOnce(
+      async () =>
+        ({
+          workers: [{ dispatchId: c.dispatchId }],
+          page: { hasMore: false, nextCursor: null }
+        }) as never
+    )
+
+    const receipt = (await h.call('orchestration.workerReleaseBulk', {
+      terminalState: 'reclaimable'
+    })) as BulkReceipt
+
+    expect(listSpy).toHaveBeenCalledTimes(2)
+    expect(listSpy.mock.calls[0]?.[0]).toMatchObject({ paginate: true })
+    expect(listSpy.mock.calls[0]?.[0]).not.toHaveProperty('cursor')
+    expect(listSpy.mock.calls[1]?.[0]).toMatchObject({ paginate: true, cursor: 'page-2-cursor' })
+
+    // The batch accumulated dispatches from BOTH pages, not just the first page's two.
+    expect(receipt.requested).toBe(3)
+    expect(receipt.released).toBe(3)
+    expect(receipt.outcomes.map((outcome) => outcome.dispatchId).sort()).toEqual(
+      [a.dispatchId, b.dispatchId, c.dispatchId].sort()
+    )
+    for (const dispatchId of [a.dispatchId, b.dispatchId, c.dispatchId]) {
+      expect(h.db.getWorkerTerminalResourceByOwner(dispatchId)?.release_state).toBe('released')
+    }
   })
 })

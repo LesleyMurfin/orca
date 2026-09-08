@@ -18,6 +18,7 @@ import {
   resolveWorkerListRunScope,
   type WorkerListRunScope
 } from './worker-list-run-scope'
+import { WORKER_RELEASE_BULK_TERMINAL_STATES } from '../../../shared/orchestration-worker-output'
 
 const WORKER_TERMINAL_LIST_STATES = [
   'active',
@@ -27,6 +28,13 @@ const WORKER_TERMINAL_LIST_STATES = [
   'release_unknown',
   'released'
 ] as const
+
+// Why: a bulk reclaim can iterate hundreds of dispatches, each releasing and closing its own
+// terminal; RuntimeClient's default 60s socket timeout (client.ts) would abort the whole call
+// long before that finishes. Match the client-timeout convention orchestration already uses for
+// its other genuinely long-running call, `orchestration ask` (shared/orchestration-ask-timeout.ts:
+// a multi-minute work budget plus a short transport grace) rather than inventing a new number.
+const WORKER_RELEASE_BULK_CLIENT_TIMEOUT_MS = 605_000
 
 export const ORCHESTRATION_WORKER_TERMINAL_HANDLERS: Record<string, CommandHandler> = {
   'orchestration worker-stop': async ({ flags, client, json }) => {
@@ -74,10 +82,14 @@ export const ORCHESTRATION_WORKER_TERMINAL_HANDLERS: Record<string, CommandHandl
           'worker-release accepts either --dispatch or --terminal-state, not both'
         )
       }
-      if (terminalState !== 'reclaimable') {
+      if (
+        !WORKER_RELEASE_BULK_TERMINAL_STATES.includes(
+          terminalState as (typeof WORKER_RELEASE_BULK_TERMINAL_STATES)[number]
+        )
+      ) {
         throw new RuntimeClientError(
           'invalid_argument',
-          `invalid --terminal-state '${terminalState}' for worker-release, expected: reclaimable`
+          `invalid --terminal-state '${terminalState}', expected one of: ${WORKER_RELEASE_BULK_TERMINAL_STATES.join(', ')}`
         )
       }
       const scope = await resolveWorkerListRunScope(flags, cwd, client)
@@ -85,15 +97,21 @@ export const ORCHESTRATION_WORKER_TERMINAL_HANDLERS: Record<string, CommandHandl
         client,
         flags,
         'orchestration.workerReleaseBulk',
-        { terminalState: 'reclaimable', run: scope.run }
+        { terminalState: 'reclaimable', run: scope.run },
+        { timeoutMs: WORKER_RELEASE_BULK_CLIENT_TIMEOUT_MS }
       )
       // Why: individual dispatch errors are recorded, not thrown; a nonzero `failed` count is the
       // only signal that some releases in the batch need a human to look at them.
       if (result.result.failed > 0) {
         process.exitCode = 1
       }
-      printResult(result, json, formatWorkerReleaseBulk)
+      // Why: this write can release across every Run in the database from a non-coordinator
+      // terminal, same blast radius `worker-list` reports scope for and for the same reason.
+      printResult({ ...result, result: { ...result.result, scope } }, json, formatWorkerReleaseBulk)
       return
+    }
+    if (flags.has('run')) {
+      throw new RuntimeClientError('invalid_argument', '--run is only valid with --terminal-state.')
     }
     const result = await callOrchestrationMutation<WorkerReleaseReceipt>(
       client,
