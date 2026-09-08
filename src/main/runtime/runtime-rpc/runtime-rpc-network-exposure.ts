@@ -61,6 +61,9 @@ export class RuntimeRpcNetworkExposure extends RuntimeRpcLifecycle {
       // loopback listener on the same port (wsBoundHost stays loopback so a later offer retries), then
       // propagate — the caller must not advertise a LAN endpoint with no LAN listener behind it (STA-2370).
       console.error('[runtime] Failed to widen WebSocket transport for pairing:', error)
+      // Why: clear here too — if current.stop() itself rejected, line 53 never ran, and a failed
+      // recovery below leaves no live listener; serve stats must not report a dead port (CodeRabbit).
+      this.runtime.setServePort?.(null)
       await this.recoverWebSocketBindAfterFailedWiden(index, previousPort)
       throw error
     }
