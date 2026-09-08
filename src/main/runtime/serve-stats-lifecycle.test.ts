@@ -105,6 +105,71 @@ describe('serve stats lifecycle', () => {
     }
   })
 
+  it('keeps a proven exit in the counts across an inventory refresh that omits the pty', async () => {
+    const { runtime, db } = runtimeWithDb()
+    const internals = runtime as unknown as {
+      refreshPtyWorktreeRecordsWithControllerInventory: (
+        resolvedWorktrees: unknown[],
+        targetWorktreeId?: string | null
+      ) => Promise<unknown>
+    }
+    try {
+      await createHeadlessTerminal(runtime)
+      runtime.onPtyExit('pty-review', 0)
+      expect((await runtime.getServeStats()).counts).toMatchObject({
+        terminalsExited: 1,
+        terminalsUnverifiable: 0
+      })
+
+      // Every `terminal list` / `worktree ps` runs this sweep, and a controller answers "not mine"
+      // for an id it no longer holds. That answer used to erase the certificate, so from the next
+      // call onwards a host-delivered exit was reported as merely unverifiable — the field whose
+      // whole meaning is that cleanup is NOT authorized.
+      runtime.setPtyController({
+        write: () => true,
+        kill: () => true,
+        hasPty: () => false,
+        listProcesses: async () => [],
+        getForegroundProcess: async () => null
+      })
+      await internals.refreshPtyWorktreeRecordsWithControllerInventory([], null)
+
+      expect((await runtime.getServeStats()).counts).toMatchObject({
+        terminals: 0,
+        terminalsExited: 1,
+        terminalsUnverifiable: 0
+      })
+    } finally {
+      db.close()
+    }
+  })
+
+  it('stops counting a proven exit once the pty record itself is disposed', async () => {
+    const { runtime, db } = runtimeWithDb()
+    const internals = runtime as unknown as {
+      dropDisconnectedPtyRecord: (ptyId: string) => void
+    }
+    try {
+      await createHeadlessTerminal(runtime)
+      runtime.onPtyExit('pty-review', 0)
+      expect((await runtime.getServeStats()).counts.terminalsExited).toBe(1)
+
+      // Certificates outlive the records they describe (the register is pruned by its own orphan
+      // ratchet, not by disposal), so the counts must follow the registry and not the register —
+      // otherwise every retired terminal would keep reporting itself forever.
+      internals.dropDisconnectedPtyRecord('pty-review')
+
+      expect(runtime.getPtyLivenessVerdict('pty-review')).toEqual({ status: 'exited' })
+      expect((await runtime.getServeStats()).counts).toMatchObject({
+        terminals: 0,
+        terminalsExited: 0,
+        terminalsUnverifiable: 0
+      })
+    } finally {
+      db.close()
+    }
+  })
+
   it('moves an agent between turn-state buckets, and admits when it cannot prove one', async () => {
     const { runtime, db } = runtimeWithDb()
     const internals = runtime as unknown as {
