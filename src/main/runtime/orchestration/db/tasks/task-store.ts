@@ -159,8 +159,15 @@ export function listTasks(
     .all() as TaskRow[]
 }
 
+// Why: `orca serve stats` publishes live current-state counts, and task rows persist after they
+// settle (only an explicit reset deletes them), so terminal statuses are excluded. `blocked` stays
+// counted — it is resumable work (gate resolution / retry), not a settled outcome.
 export function countTasks(this: OrchestrationDb): number {
-  return Number(this.db.prepare('SELECT COUNT(*) AS count FROM tasks').get()?.count ?? 0)
+  return Number(
+    this.db
+      .prepare("SELECT COUNT(*) AS count FROM tasks WHERE status NOT IN ('completed', 'failed')")
+      .get()?.count ?? 0
+  )
 }
 
 // Why: the correlated indexed lookup avoids materializing every retained Dispatch before filtering Tasks.
