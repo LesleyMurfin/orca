@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer, type Server } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -21,6 +22,39 @@ describe('daemonScopeUnitName', () => {
   })
 })
 
+// Real, connectable AF_UNIX sockets rather than plain files at "bus" — the fix under test
+// distinguishes a genuinely reachable bus from a stale file/directory left at that path, so a
+// fixture that only `existsSync`-passes would not exercise it.
+const fakeBusServers: Server[] = []
+const fakeBusDirs: string[] = []
+
+function fakeRuntimeDirWithBus(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'xdg-runtime-with-bus-'))
+  const server = createServer()
+  server.listen(join(dir, 'bus'))
+  fakeBusServers.push(server)
+  fakeBusDirs.push(dir)
+  return dir
+}
+
+function fakeRuntimeDirWithoutBus(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'xdg-runtime-no-bus-'))
+  fakeBusDirs.push(dir)
+  return dir
+}
+
+afterEach(() => {
+  while (fakeBusServers.length > 0) {
+    fakeBusServers.pop()?.close()
+  }
+  while (fakeBusDirs.length > 0) {
+    const dir = fakeBusDirs.pop()
+    if (dir) {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
+
 describe('isDurableDaemonScopeSupported', () => {
   it('is false on non-Linux platforms regardless of environment', () => {
     expect(isDurableDaemonScopeSupported({ XDG_RUNTIME_DIR: '/run/user/1000' }, 'darwin')).toBe(
@@ -32,18 +66,55 @@ describe('isDurableDaemonScopeSupported', () => {
   })
 
   it('never throws when XDG_RUNTIME_DIR is absent and the conventional path cannot resolve', () => {
-    expect(() => isDurableDaemonScopeSupported({}, 'linux')).not.toThrow()
-    expect(typeof isDurableDaemonScopeSupported({}, 'linux')).toBe('boolean')
+    expect(() => isDurableDaemonScopeSupported({}, 'linux', null)).not.toThrow()
+    expect(typeof isDurableDaemonScopeSupported({}, 'linux', null)).toBe('boolean')
   })
 
-  it('is false pointed at a runtime dir with no reachable user bus', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'xdg-runtime-'))
-    try {
-      // No `bus` socket written under this fake runtime dir — the probe must fail closed.
-      expect(isDurableDaemonScopeSupported({ XDG_RUNTIME_DIR: dir }, 'linux')).toBe(false)
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
+  it('is false when neither the canonical per-UID path nor the env path has a reachable bus', () => {
+    const canonical = fakeRuntimeDirWithoutBus()
+    const envDir = fakeRuntimeDirWithoutBus()
+    // Neither fixture has a `bus` socket written — the probe must fail closed regardless of
+    // which path it looks at first.
+    expect(isDurableDaemonScopeSupported({ XDG_RUNTIME_DIR: envDir }, 'linux', canonical)).toBe(
+      false
+    )
+  })
+
+  it('is true when the process env XDG_RUNTIME_DIR is a hardened unit override, but the real per-UID dir has a reachable bus (mtl-02 regression)', () => {
+    // Simulates orca-serve@factory.service's RuntimeDirectory=factory hardening directive:
+    // the process's own XDG_RUNTIME_DIR points at a private scratch dir that is NOT the user
+    // session bus location, while the real per-UID runtime dir (injected here in place of the
+    // real /run/user/<uid>) has a genuinely reachable bus the whole time.
+    const hardenedOverrideDir = fakeRuntimeDirWithoutBus()
+    const realPerUidDir = fakeRuntimeDirWithBus()
+    expect(
+      isDurableDaemonScopeSupported(
+        { XDG_RUNTIME_DIR: hardenedOverrideDir },
+        'linux',
+        realPerUidDir
+      )
+    ).toBe(true)
+  })
+
+  it('is true when the caller env XDG_RUNTIME_DIR already points at the correct, reachable per-UID bus', () => {
+    const perUidDir = fakeRuntimeDirWithBus()
+    expect(isDurableDaemonScopeSupported({ XDG_RUNTIME_DIR: perUidDir }, 'linux', perUidDir)).toBe(
+      true
+    )
+  })
+
+  it('falls back to the process env XDG_RUNTIME_DIR when the canonical per-UID path has no reachable bus', () => {
+    // Some hosts legitimately have no /run/user/<uid> at all but do have a working bus
+    // wherever their own environment points — the probe must still support that host.
+    const canonicalWithoutBus = fakeRuntimeDirWithoutBus()
+    const envDirWithBus = fakeRuntimeDirWithBus()
+    expect(
+      isDurableDaemonScopeSupported(
+        { XDG_RUNTIME_DIR: envDirWithBus },
+        'linux',
+        canonicalWithoutBus
+      )
+    ).toBe(true)
   })
 })
 
@@ -53,7 +124,8 @@ describe('buildDurableDaemonScopeCommand', () => {
       '/usr/bin/node',
       ['/opt/orca/daemon-entry.js', '--socket', '/tmp/x.sock'],
       'nonce-1',
-      { PATH: '/usr/bin' }
+      { PATH: '/usr/bin' },
+      null
     )
     expect(result.command).toBe('systemd-run')
     expect(result.args).toEqual([
@@ -70,17 +142,43 @@ describe('buildDurableDaemonScopeCommand', () => {
     ])
   })
 
-  it('preserves an explicit XDG_RUNTIME_DIR from the caller env', () => {
-    const result = buildDurableDaemonScopeCommand('/usr/bin/node', [], 'n', {
-      PATH: '/bin',
-      XDG_RUNTIME_DIR: '/run/user/9999'
-    })
-    expect(result.env.XDG_RUNTIME_DIR).toBe('/run/user/9999')
+  it('prefers the canonical per-UID runtime dir over a hardened unit-overridden XDG_RUNTIME_DIR (mtl-02 regression)', () => {
+    const hardenedOverrideDir = fakeRuntimeDirWithoutBus()
+    const realPerUidDir = fakeRuntimeDirWithBus()
+    const result = buildDurableDaemonScopeCommand(
+      '/usr/bin/node',
+      [],
+      'n',
+      { PATH: '/bin', XDG_RUNTIME_DIR: hardenedOverrideDir },
+      realPerUidDir
+    )
+    // Explicitly the real per-UID dir, not inherited from the spread env's overridden value.
+    expect(result.env.XDG_RUNTIME_DIR).toBe(realPerUidDir)
+  })
+
+  it('falls back to the caller XDG_RUNTIME_DIR when the canonical per-UID path has no reachable bus', () => {
+    const canonicalWithoutBus = fakeRuntimeDirWithoutBus()
+    const envDirWithBus = fakeRuntimeDirWithBus()
+    const result = buildDurableDaemonScopeCommand(
+      '/usr/bin/node',
+      [],
+      'n',
+      { PATH: '/bin', XDG_RUNTIME_DIR: envDirWithBus },
+      canonicalWithoutBus
+    )
+    expect(result.env.XDG_RUNTIME_DIR).toBe(envDirWithBus)
   })
 
   it('computes the conventional /run/user/<uid> runtime dir when the caller env omits it', () => {
-    const result = buildDurableDaemonScopeCommand('/usr/bin/node', [], 'n', { PATH: '/bin' })
-    expect(result.env.XDG_RUNTIME_DIR).toBe(`/run/user/${process.getuid?.() ?? ''}`)
+    const perUidDir = fakeRuntimeDirWithBus()
+    const result = buildDurableDaemonScopeCommand(
+      '/usr/bin/node',
+      [],
+      'n',
+      { PATH: '/bin' },
+      perUidDir
+    )
+    expect(result.env.XDG_RUNTIME_DIR).toBe(perUidDir)
   })
 })
 

@@ -28,7 +28,7 @@
  * fails closed to "not supported" rather than guessing.
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 const SYSTEMD_RUN_BINARY = 'systemd-run'
@@ -40,16 +40,11 @@ export function daemonScopeUnitName(launchNonce: string): string {
   return `${UNIT_NAME_PREFIX}${launchNonce.replace(/[^A-Za-z0-9:_.-]/g, '-')}`
 }
 
-function resolveUserRuntimeDir(env: NodeJS.ProcessEnv): string | null {
-  if (env.XDG_RUNTIME_DIR) {
-    return env.XDG_RUNTIME_DIR
-  }
-  // Why not just trust the env: a service unit does not automatically inherit
-  // XDG_RUNTIME_DIR from logind unless the unit file sets it explicitly. The conventional
-  // path below is what `loginctl enable-linger <user>` provisions regardless, and this
-  // codebase already has direct operational precedent for computing it by hand (see the
-  // mtl-02 restart-recovery record: "XDG_RUNTIME_DIR wasn't exported ... retried with
-  // export XDG_RUNTIME_DIR=/run/user/$(id -u)").
+/** The conventional per-UID runtime dir that `loginctl enable-linger <user>` (and every normal
+ *  login session) provisions, computed independently of any environment variable. `canonicalDir`
+ *  parameters elsewhere default to calling this so production always uses the real value; tests
+ *  inject a fake path instead. */
+function canonicalUserRuntimeDir(): string | null {
   if (typeof process.getuid !== 'function') {
     return null
   }
@@ -60,13 +55,58 @@ function resolveUserRuntimeDir(env: NodeJS.ProcessEnv): string | null {
   }
 }
 
+/** Why `statSync(...).isSocket()` instead of `existsSync`: a stale regular file or leftover
+ *  directory left behind at `bus` would pass an `existsSync` check but can never be dialed as a
+ *  D-Bus socket. This is the cheapest side-effect-free approximation of "connectable" available
+ *  without actually opening a D-Bus connection (this probe must stay side-effect-free). */
+function hasReachableBus(runtimeDir: string): boolean {
+  try {
+    return statSync(join(runtimeDir, 'bus')).isSocket()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Resolves the `XDG_RUNTIME_DIR` that actually hosts this OS user's systemd `--user` bus.
+ *
+ * Deliberately does NOT start from the current process's own `XDG_RUNTIME_DIR` env var. Ground
+ * truth from mtl-02: `orca-serve@factory.service` sets `RuntimeDirectory=factory`, a hardening
+ * directive that makes systemd export `XDG_RUNTIME_DIR=/run/orca_serve/factory` into the unit's
+ * own process — a private scratch directory that shares the env var's name but has nothing to do
+ * with the user session bus. `/proc/<pid>/environ` on that host showed exactly that path and
+ * `DBUS_SESSION_BUS_ADDRESS=disabled:`, while the real bus was reachable the whole time under
+ * `/run/user/985` (confirmed via `systemctl --user is-system-running` with that dir exported by
+ * hand). Trusting the process's own env var here made the probe report "unsupported" on every
+ * host hardened this way, even though a real per-UID bus was one directory away. So the
+ * conventional per-UID path is always tried first; the process's own `XDG_RUNTIME_DIR` is only a
+ * fallback for hosts that legitimately have no `/run/user/<uid>` at all (non-standard runtime
+ * layouts) but do have a working bus wherever their own environment happens to point.
+ *
+ * `canonicalDir` is injectable for tests; production callers let it default to the real
+ * `/run/user/<uid>` computed from this process's own `getuid()`.
+ */
+function resolveUserRuntimeDir(
+  env: NodeJS.ProcessEnv,
+  canonicalDir: string | null = canonicalUserRuntimeDir()
+): string | null {
+  if (canonicalDir && hasReachableBus(canonicalDir)) {
+    return canonicalDir
+  }
+  if (env.XDG_RUNTIME_DIR && hasReachableBus(env.XDG_RUNTIME_DIR)) {
+    return env.XDG_RUNTIME_DIR
+  }
+  return null
+}
+
 /**
  * Best-effort, side-effect-free capability probe. Never throws; any uncertainty resolves to
  * "not supported" so the caller falls back to the existing, already-proven direct-fork launch.
  */
 export function isDurableDaemonScopeSupported(
   env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  canonicalRuntimeDir: string | null = canonicalUserRuntimeDir()
 ): boolean {
   if (platform !== 'linux') {
     return false
@@ -76,9 +116,9 @@ export function isDurableDaemonScopeSupported(
     // restart isn't the failure mode there, and systemd-run has nothing to talk to anyway.
     return false
   }
-  const runtimeDir = resolveUserRuntimeDir(env)
-  if (!runtimeDir || !existsSync(join(runtimeDir, 'bus'))) {
-    // No reachable user bus/session — systemd-run --user would just fail to connect.
+  if (!resolveUserRuntimeDir(env, canonicalRuntimeDir)) {
+    // No reachable user bus/session at the real per-UID path or the process's own env var —
+    // systemd-run --user would just fail to connect.
     return false
   }
   try {
@@ -104,9 +144,10 @@ export function buildDurableDaemonScopeCommand(
   execPath: string,
   scriptArgs: string[],
   launchNonce: string,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  canonicalRuntimeDir: string | null = canonicalUserRuntimeDir()
 ): DurableDaemonScopeCommand {
-  const runtimeDir = resolveUserRuntimeDir(env)
+  const runtimeDir = resolveUserRuntimeDir(env, canonicalRuntimeDir)
   return {
     command: SYSTEMD_RUN_BINARY,
     args: [
@@ -119,6 +160,9 @@ export function buildDurableDaemonScopeCommand(
       execPath,
       ...scriptArgs
     ],
+    // Explicit, not inherited: the daemon must land in the same user manager the resolution
+    // above just confirmed is reachable, regardless of what this spread `env`'s own
+    // `XDG_RUNTIME_DIR` says (see `resolveUserRuntimeDir` for why that value can be wrong).
     env: runtimeDir ? { ...env, XDG_RUNTIME_DIR: runtimeDir } : { ...env }
   }
 }
