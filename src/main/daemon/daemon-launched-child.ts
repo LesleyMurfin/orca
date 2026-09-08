@@ -121,6 +121,9 @@ async function launchDaemonChildAttempt(
         )
         return
       }
+      // Best-effort by design: the launch failed before any self-report, so `child.pid` is the
+      // only PID available here. `unlinkOwnedDaemonPidFile` matches on both PID and launch
+      // nonce, so a mismatch removes nothing rather than clobbering another daemon's record.
       if (Number.isSafeInteger(child.pid) && (child.pid as number) > 0) {
         unlinkOwnedDaemonPidFile(pidPath, child.pid as number, launchNonce)
       }
@@ -142,13 +145,16 @@ async function launchDaemonChildAttempt(
         if (settled) {
           return
         }
+        // Why the daemon's self-reported PID rather than `child.pid`: on the durable-scope path
+        // the immediate child is `systemd-run`, and only its `execvpe()` into the daemon makes
+        // the two PIDs coincide. Adoption compares this identity against the daemon's own
+        // hello-response identity, so both sides must come from inside the daemon process.
         const readyIdentity = parseDaemonReadyIdentity(msg)
-        if (!Number.isSafeInteger(child.pid) || (child.pid as number) <= 0 || !readyIdentity) {
+        if (!readyIdentity) {
           void fail(new Error('Daemon readiness identity is incomplete'))
           return
         }
         launchedIdentity = {
-          pid: child.pid as number,
           ...readyIdentity,
           launchNonce
         }
@@ -199,6 +205,14 @@ async function launchDaemonChildAttempt(
   return { child, identity: launchedIdentity }
 }
 
+/**
+ * Startup-failure cleanup only — a successful launch detaches instead (see `onReadyMessage`).
+ *
+ * Signalling `child.pid` stays correct on the durable-scope path: in `--scope` mode systemd-run
+ * registers its *own* PID with the transient unit and then `execvpe()`s the daemon, so that PID
+ * is either still systemd-run (scope setup not finished, and killing it aborts the launch) or
+ * already the daemon itself. There is never an intermediate process left holding the daemon.
+ */
 export async function terminateLaunchedDaemonChild(child: ChildProcess): Promise<void> {
   try {
     if (

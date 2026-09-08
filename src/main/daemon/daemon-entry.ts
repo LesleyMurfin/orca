@@ -269,7 +269,6 @@ async function main(): Promise<void> {
       ? {
           publishEndpointOwnership: () =>
             publishDaemonPidFile(pidPath, {
-              pid: process.pid,
               ...readyIdentity,
               ...(entryPath ? { entryPath } : {}),
               ...(appVersion ? { appVersion } : {}),

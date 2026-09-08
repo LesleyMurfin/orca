@@ -42,10 +42,12 @@ function buildDaemonScriptArgs(options: DaemonChildSpawnOptions): string[] {
  * long-standing direct `fork()` (own POSIX process group, same systemd cgroup as the caller).
  * `useDurableScope: true` wraps the identical command line in `systemd-run --user --scope` (see
  * daemon-cgroup-scope.ts) so the resulting process lands in a cgroup that is a sibling of the
- * caller's, not a descendant — spawned via `spawn()` rather than `fork()` because the immediate
- * child is `systemd-run`, not the daemon itself; `spawn()` supports the same `'ipc'` stdio
- * contract `fork()` does; whichever process the wrapper execs into inherits it and completes the
- * daemon's normal readiness handshake unchanged.
+ * caller's, not a descendant — spawned via `spawn()` rather than `fork()` because the launched
+ * binary is `systemd-run`, not a Node script; `spawn()` supports the same `'ipc'` stdio contract
+ * `fork()` does, and the process the wrapper execs into inherits it and completes the daemon's
+ * normal readiness handshake unchanged. Do not read the daemon's PID off this child: it is only
+ * the daemon's because systemd-run happens to `exec` in scope mode — the daemon reports its own
+ * PID in that handshake (see daemon-ready-identity.ts).
  */
 export function spawnDaemonChildProcess(
   options: DaemonChildSpawnOptions,
