@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import {
   isDurableMutation,
+  isResumablePendingMutation,
   isTerminalPromptMutation
 } from '../../../shared/orchestration-rpc-contract'
 import type { OrcaRuntimeService } from '../orca-runtime'
@@ -135,7 +136,7 @@ export class OrchestrationMutationExecutor {
       isResumablePendingWorkerDone(request.method, params, begun.row.receipt)
     const resumedPendingMutation =
       begun.disposition === 'pending' &&
-      (request.method === 'orchestration.workerRelease' || resumedPendingWorkerDone)
+      (isResumablePendingMutation(request.method) || resumedPendingWorkerDone)
 
     if (begun.disposition === 'completed') {
       const active = this.inFlight.get(key)
@@ -193,7 +194,7 @@ export class OrchestrationMutationExecutor {
           { requestId }
         )
       }
-      if (request.method !== 'orchestration.workerRelease' && !resumedPendingWorkerDone) {
+      if (!isResumablePendingMutation(request.method) && !resumedPendingWorkerDone) {
         const recovery = getPendingWorkerStartRecovery(request.method, begun.row.receipt)
         throw new OrchestrationError(
           'operation_unknown',

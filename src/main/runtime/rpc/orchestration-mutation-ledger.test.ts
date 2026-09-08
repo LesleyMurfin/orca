@@ -295,6 +295,53 @@ describe('durable orchestration mutation ledger', () => {
     db.close()
   })
 
+  it('resumes a pending idempotent bulk worker release after restart', async () => {
+    const db = new OrchestrationDb(':memory:')
+    const runtime = new OrcaRuntimeService()
+    runtime.setOrchestrationDb(db)
+    const params = { terminalState: 'reclaimable' }
+    const callerFingerprint = db.getOrCreateLocalMutationCallerFingerprint()
+    const payloadHash = createHash('sha256')
+      .update(JSON.stringify({ method: 'orchestration.workerReleaseBulk', params }))
+      .digest('hex')
+    db.beginMutationReceipt({
+      callerFingerprint,
+      requestId: 'mutation_release_bulk',
+      method: 'orchestration.workerReleaseBulk',
+      payloadHash
+    })
+    const effect = vi.fn().mockReturnValue({ requested: 0, released: 0, failed: 0, outcomes: [] })
+    const dispatcher = new RpcDispatcher({
+      runtime,
+      methods: [
+        defineMethod({
+          name: 'orchestration.workerReleaseBulk',
+          params: z.object({ terminalState: z.literal('reclaimable') }),
+          handler: effect
+        })
+      ]
+    })
+
+    const result = await dispatcher.dispatch({
+      id: 'rpc_release_bulk_retry',
+      authToken: 'caller-token',
+      method: 'orchestration.workerReleaseBulk',
+      params,
+      orchestrationContractVersion: ORCHESTRATION_CONTRACT_VERSION,
+      orchestrationRequestId: 'mutation_release_bulk'
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      result: { released: 0, mutation: { requestId: 'mutation_release_bulk', replayed: true } }
+    })
+    expect(effect).toHaveBeenCalledTimes(1)
+    expect(db.getMutationReceipt(callerFingerprint, 'mutation_release_bulk')?.state).toBe(
+      'completed'
+    )
+    db.close()
+  })
+
   it('returns the accepted Dispatch when worker-start was interrupted by restart', async () => {
     const db = new OrchestrationDb(':memory:')
     const runtime = new OrcaRuntimeService()

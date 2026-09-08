@@ -17,6 +17,8 @@ describe('orchestration RPC contract', () => {
     ['orchestration.workerStart', {}],
     ['orchestration.workerStop', {}],
     ['orchestration.workerAbandon', {}],
+    ['orchestration.workerRelease', {}],
+    ['orchestration.workerReleaseBulk', {}],
     ['orchestration.ask', {}],
     ['orchestration.gateCreate', {}],
     ['orchestration.gateResolve', {}],

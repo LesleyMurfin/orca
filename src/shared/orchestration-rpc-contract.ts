@@ -27,6 +27,7 @@ const ORCHESTRATION_MUTATION_METHODS = new Set([
   'orchestration.workerStop',
   'orchestration.workerAbandon',
   'orchestration.workerRelease',
+  'orchestration.workerReleaseBulk',
   'orchestration.workerRetain',
   'orchestration.ask',
   'orchestration.gateCreate',
@@ -43,6 +44,18 @@ const RETIRED_ORCHESTRATION_METHODS = new Set(['orchestration.run', 'orchestrati
 
 export function isRetiredOrchestrationMethod(method: string): boolean {
   return RETIRED_ORCHESTRATION_METHODS.has(method)
+}
+
+// Why: release is idempotent by construction, so a receipt left pending by a crash is safe to
+// re-run instead of being answered with `operation_unknown`. Bulk release is a loop over that
+// same per-Dispatch handler, so it inherits the property.
+const RESUMABLE_PENDING_MUTATION_METHODS = new Set([
+  'orchestration.workerRelease',
+  'orchestration.workerReleaseBulk'
+])
+
+export function isResumablePendingMutation(method: string): boolean {
+  return RESUMABLE_PENDING_MUTATION_METHODS.has(method)
 }
 
 export function isOrchestrationMutation(method: string, params: unknown): boolean {
