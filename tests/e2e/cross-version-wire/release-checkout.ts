@@ -21,7 +21,6 @@ const CHECKOUT_FORMAT = 1
 const ARCHIVE_PATHS = ['src/main', 'src/shared', 'src/preload', 'src/renderer', 'src/types']
 
 const BASELINE_REF_ENV = 'ORCA_CROSS_VERSION_BASELINE_REF'
-const STABLE_DESKTOP_RELEASE_TAG = /^v\d+\.\d+\.\d+$/
 
 export type ReleaseCheckout = {
   /** The ref as requested, e.g. `v1.4.169`. */
@@ -42,63 +41,217 @@ function git(args: string[]): string {
   }).trim()
 }
 
-function compareReleaseTags(a: string, b: string): number {
-  const parts = (tag: string): number[] =>
-    tag
-      .replace(/^v/, '')
-      .split('.')
-      .map((part) => Number.parseInt(part, 10))
-      .map((value) => (Number.isFinite(value) ? value : 0))
-  const left = parts(a)
-  const right = parts(b)
-  for (let index = 0; index < Math.max(left.length, right.length); index++) {
-    const diff = (left[index] ?? 0) - (right[index] ?? 0)
-    if (diff !== 0) {
-      return diff
-    }
-  }
-  return 0
+/**
+ * How far back the selector walks looking for a release this checkout can run.
+ * A tree that can run none of its last {@link BASELINE_SCAN_DEPTH} releases is
+ * stale enough to say so, instead of quietly pairing against a months-old build.
+ */
+const BASELINE_SCAN_DEPTH = 20
+
+export type BaselineRelease = {
+  /** The released version, e.g. `v1.4.163`. */
+  version: string
+  /** The commit the release was cut from; the ref the checkout is extracted at. */
+  commit: string
 }
 
 /**
+ * Release points come from commit subjects, not tags. Why: a fork's clone only
+ * carries the tags that existed when it was forked — `LesleyMurfin/orca` stops at
+ * v1.4.35 — so tag selection paired a 1.4.178 checkout against a wire from 160
+ * releases earlier. That pairing fails for reasons that say nothing about today's
+ * protocol (`terminal.serializeBuffer` did not exist yet), and no dependency rule
+ * can rescue it. Release commits are part of the history every clone already
+ * fetches with `fetch-depth: 0`.
+ *
+ * Walking from HEAD also means only releases this commit descends from are
+ * eligible, which is what keeps a verdict independent of releases published after
+ * it: v1.4.197 bumped `zod` past what this tree installs, so its extracted host
+ * threw inside `terminal.multiplex` before `emit({ type: 'ready' })` and the lane
+ * burned the whole suite timeout without reporting anything about the wire.
+ */
+const RELEASE_COMMIT_SUBJECT = '^release: (v[0-9]+\\.[0-9]+\\.[0-9]+)$'
+
+/**
  * The version point the harness pairs current code against. An explicit
- * {@link BASELINE_REF_ENV} wins; otherwise the newest stable desktop release tag.
+ * {@link BASELINE_REF_ENV} wins; otherwise the newest release this commit
+ * descends from whose runtime dependencies this checkout installed (see
+ * {@link unsatisfiedRuntimeDependencies}).
  *
  * Throws rather than skipping: a cross-version lane that quietly runs nothing is
  * the exact failure this harness exists to prevent.
  */
-export function resolveBaselineReleaseRef(): string {
+export function resolveBaselineRelease(): BaselineRelease {
   const override = process.env[BASELINE_REF_ENV]?.trim()
   if (override) {
-    return override
+    return { version: override, commit: resolveCommit(override) }
   }
-  let tags: string[]
+  let log: string
   try {
-    tags = git(['tag', '--list', 'v[0-9]*']).split('\n').filter(Boolean)
+    log = git([
+      'log',
+      `--max-count=${BASELINE_SCAN_DEPTH}`,
+      '--extended-regexp',
+      `--grep=${RELEASE_COMMIT_SUBJECT}`,
+      '--format=%H%x09%s',
+      'HEAD'
+    ])
   } catch (error) {
     throw new Error(
-      `Cross-version harness could not list git tags in ${REPO_ROOT}: ${String(error)}. ` +
+      `Cross-version harness could not read git history in ${REPO_ROOT}: ${String(error)}. ` +
         `Run it inside a git checkout, or pin a ref with ${BASELINE_REF_ENV}.`
     )
   }
-  const latest = selectLatestStableReleaseTag(tags)
-  if (!latest) {
+  const candidates = parseReleaseCommits(log)
+  if (candidates.length === 0) {
     throw new Error(
-      `Cross-version harness found no stable desktop release tags matching vX.Y.Z (saw ${tags.length} tag(s) total). ` +
-        'CI checkouts default to a shallow clone with no tags: use `actions/checkout` with `fetch-depth: 0`, ' +
-        `or pin a ref with ${BASELINE_REF_ENV}.`
+      'Cross-version harness found no `release: vX.Y.Z` commit reachable from HEAD. ' +
+        'CI checkouts default to a shallow clone that stops short of the last release: use ' +
+        `\`actions/checkout\` with \`fetch-depth: 0\`, or pin a ref with ${BASELINE_REF_ENV}.`
     )
   }
-  return latest
+  const rejected: string[] = []
+  for (const candidate of candidates) {
+    let manifest: ReleaseManifest
+    try {
+      manifest = readManifest(git(['show', `${candidate.commit}:package.json`]))
+    } catch (error) {
+      rejected.push(`${candidate.version} (unreadable package.json: ${String(error)})`)
+      continue
+    }
+    if (`v${manifest.version}` !== candidate.version) {
+      // A reverted or cherry-picked release subject is not a release point: the
+      // manifest at that commit is the only thing that says what was published.
+      rejected.push(`${candidate.version} (manifest declares ${manifest.version})`)
+      continue
+    }
+    const unsatisfied = unsatisfiedRuntimeDependencies(
+      manifest.dependencies,
+      installedPackageVersion
+    )
+    if (unsatisfied.length === 0) {
+      return candidate
+    }
+    rejected.push(`${candidate.version} (${unsatisfied.join(', ')})`)
+  }
+  throw new Error(
+    'Cross-version harness found no release this checkout can execute, so no baseline could be ' +
+      `imported without resolving the release's imports against packages it never installed. ` +
+      `Rejected: ${rejected.join('; ')}. Reinstall dependencies from the lockfile, rebase onto a ` +
+      `newer main, or pin a ref with ${BASELINE_REF_ENV}.`
+  )
 }
 
-export function selectLatestStableReleaseTag(tags: string[]): string | null {
-  return (
-    tags
-      .filter((tag) => STABLE_DESKTOP_RELEASE_TAG.test(tag))
-      .sort(compareReleaseTags)
-      .at(-1) ?? null
-  )
+/** Parse `git log --format=%H%x09%s` output into release points, newest first. */
+export function parseReleaseCommits(log: string): BaselineRelease[] {
+  const subject = new RegExp(RELEASE_COMMIT_SUBJECT)
+  const releases: BaselineRelease[] = []
+  for (const line of log.split('\n')) {
+    const separator = line.indexOf('\t')
+    if (separator === -1) {
+      continue
+    }
+    const version = subject.exec(line.slice(separator + 1))?.[1]
+    if (version) {
+      releases.push({ version, commit: line.slice(0, separator) })
+    }
+  }
+  return releases
+}
+
+type ReleaseManifest = { version: string; dependencies: Record<string, string> }
+
+function readManifest(manifest: string): ReleaseManifest {
+  const parsed: unknown = JSON.parse(manifest)
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('package.json did not parse to an object')
+  }
+  const version = 'version' in parsed && typeof parsed.version === 'string' ? parsed.version : ''
+  const dependencies: Record<string, string> = {}
+  if ('dependencies' in parsed && parsed.dependencies && typeof parsed.dependencies === 'object') {
+    for (const [name, range] of Object.entries(parsed.dependencies)) {
+      if (typeof range === 'string') {
+        dependencies[name] = range
+      }
+    }
+  }
+  return { version, dependencies }
+}
+
+/**
+ * Why baseline selection is gated on this: the harness imports a release's `src/`
+ * but resolves that source's imports against THIS checkout's installed
+ * `node_modules`. A package the release needs and this tree does not install — or
+ * installs at a major the release predates — makes the extracted host throw
+ * inside `terminal.multiplex` before `emit({ type: 'ready' })`, and the journey
+ * hangs to the suite timeout instead of reporting anything about the wire.
+ *
+ * Why installed reality and not declared ranges: the check this replaces compared
+ * the union of both manifests and rejected a candidate when any range string
+ * differed, a bar no two releases of this repo clear. `dependencies` gained `psl`
+ * after v1.4.163 — a release cut before it is not thereby unrunnable — and
+ * releases that still listed today's dev-only UI packages as runtime dependencies
+ * (v1.4.35: @tiptap/*, @dnd-kit/*, mermaid, katex, …) were rejected over packages
+ * the wire path never imports. CI failed with "no release whose runtime
+ * dependencies match this checkout" on every candidate it scanned (#28). What
+ * decides whether the release can execute here is narrower: each package it
+ * declares has to be on disk, at a version its own range would have accepted.
+ */
+export function unsatisfiedRuntimeDependencies(
+  released: Record<string, string>,
+  installedVersion: (name: string) => string | null
+): string[] {
+  const unsatisfied: string[] = []
+  for (const [name, range] of Object.entries(released)) {
+    const installed = installedVersion(name)
+    if (installed === null) {
+      unsatisfied.push(`${name} (declared ${range}, not installed)`)
+      continue
+    }
+    if (!sameBreakingVersionLine(range, installed)) {
+      unsatisfied.push(`${name} (declared ${range}, installed ${installed})`)
+    }
+  }
+  return unsatisfied.sort()
+}
+
+/**
+ * Semver's breaking boundary: the major, or the minor while the major is 0. Drift
+ * inside one line is what a range like `^8.21.0` already accepts, so it is not
+ * evidence the release cannot run against what is installed.
+ */
+function sameBreakingVersionLine(range: string, installed: string): boolean {
+  const declared = versionLine(range)
+  const present = versionLine(installed)
+  if (!declared || !present) {
+    // An exotic range (`*`, a disjunction, a git URL) says nothing about breakage;
+    // let the import decide rather than reject a release over an unparsed string.
+    return true
+  }
+  return declared[0] === present[0] && (declared[0] !== 0 || declared[1] === present[1])
+}
+
+function versionLine(value: string): [number, number] | null {
+  const match = /(\d+)\.(\d+)/.exec(value)
+  if (!match) {
+    return null
+  }
+  return [Number.parseInt(match[1], 10), Number.parseInt(match[2], 10)]
+}
+
+function installedPackageVersion(name: string): string | null {
+  let manifest: unknown
+  try {
+    manifest = JSON.parse(
+      readFileSync(join(REPO_ROOT, 'node_modules', name, 'package.json'), 'utf8')
+    )
+  } catch {
+    return null
+  }
+  if (manifest && typeof manifest === 'object' && 'version' in manifest) {
+    return typeof manifest.version === 'string' ? manifest.version : null
+  }
+  return null
 }
 
 function resolveCommit(ref: string): string {

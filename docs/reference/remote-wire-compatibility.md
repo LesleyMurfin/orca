@@ -79,9 +79,13 @@ runtime capability the same way Rule 2 gates an opcode.
 
 `tests/e2e/cross-version-wire/cross-version-terminal-wire.unit.test.ts` runs the real
 host RPC methods and the real renderer multiplexer from two builds against each
-other — current working tree against the newest release tag, in both skew
-directions — over one scripted terminal journey (subscribe, input, hide/reveal
-snapshot, drop, reconnect).
+other — current working tree against the newest release this commit descends
+from, in both skew directions — over one scripted terminal journey (subscribe,
+input, hide/reveal snapshot, drop, reconnect). The baseline is found by walking
+`release: vX.Y.Z` commits back from `HEAD`, so it is the same release in a fork's
+clone (which carries only the tags that existed when it was forked) and does not
+move when a newer version is published. Pin another with
+`ORCA_CROSS_VERSION_BASELINE_REF`.
 
 Run it with:
 
