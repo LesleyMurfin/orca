@@ -27,18 +27,16 @@ export type LaunchedDaemonChild = {
   identity: DaemonEndpointIdentity
 }
 
-type LaunchDaemonChildOptions = DaemonChildSpawnOptions
-
 /**
  * Why a wrapper instead of one code path: a durable cgroup scope (see `daemon-cgroup-scope.ts`)
  * is what lets the daemon survive a combined-unit `systemctl restart`, but the pre-flight
  * capability probe can still race a real environment fact (a torn-down user session, a polkit
- * policy rejection at the actual `StartTransientUnit` D-Bus call). Any failure of the scoped
- * attempt retries once, unscoped, so an environment that cannot support isolation degrades to
- * today's already-proven behavior instead of failing the daemon launch outright.
+ * policy rejection at the actual `StartTransientUnit` D-Bus call). A scoped attempt that fails
+ * for any reason but a lost endpoint race retries once, unscoped, so an environment that cannot
+ * support isolation degrades to today's proven behavior instead of failing the launch outright.
  */
 export async function launchDaemonChild(
-  options: LaunchDaemonChildOptions
+  options: DaemonChildSpawnOptions
 ): Promise<LaunchedDaemonChild> {
   if (!isDurableDaemonScopeSupported()) {
     return launchDaemonChildAttempt(options, false)
@@ -46,6 +44,11 @@ export async function launchDaemonChild(
   try {
     return await launchDaemonChildAttempt(options, true)
   } catch (error) {
+    if (error instanceof DaemonEndpointUnavailableError) {
+      // Not a scope problem: another daemon owns the endpoint and the caller adopts it, so a
+      // retry would only fork a second child to lose the same race.
+      throw error
+    }
     console.warn(
       '[daemon] durable cgroup-scope launch failed, retrying without cgroup isolation:',
       (error as Error).message
@@ -55,7 +58,7 @@ export async function launchDaemonChild(
 }
 
 async function launchDaemonChildAttempt(
-  options: LaunchDaemonChildOptions,
+  options: DaemonChildSpawnOptions,
   useDurableScope: boolean
 ): Promise<LaunchedDaemonChild> {
   const { pidPath, launchNonce } = options
@@ -124,8 +127,9 @@ async function launchDaemonChildAttempt(
       // Best-effort by design: the launch failed before any self-report, so `child.pid` is the
       // only PID available here. `unlinkOwnedDaemonPidFile` matches on both PID and launch
       // nonce, so a mismatch removes nothing rather than clobbering another daemon's record.
-      if (Number.isSafeInteger(child.pid) && (child.pid as number) > 0) {
-        unlinkOwnedDaemonPidFile(pidPath, child.pid as number, launchNonce)
+      const childPid = child.pid
+      if (childPid !== undefined && childPid > 0) {
+        unlinkOwnedDaemonPidFile(pidPath, childPid, launchNonce)
       }
       reject(startupError)
     }
@@ -145,10 +149,9 @@ async function launchDaemonChildAttempt(
         if (settled) {
           return
         }
-        // Why the daemon's self-reported PID rather than `child.pid`: on the durable-scope path
-        // the immediate child is `systemd-run`, and only its `execvpe()` into the daemon makes
-        // the two PIDs coincide. Adoption compares this identity against the daemon's own
-        // hello-response identity, so both sides must come from inside the daemon process.
+        // Why not `child.pid`: on the durable-scope path the immediate child is `systemd-run`
+        // (see daemon-ready-identity.ts); adoption compares this identity against the daemon's
+        // own hello-response identity, so both sides must come from inside the daemon process.
         const readyIdentity = parseDaemonReadyIdentity(msg)
         if (!readyIdentity) {
           void fail(new Error('Daemon readiness identity is incomplete'))

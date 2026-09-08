@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { DAEMON_EXIT_ENDPOINT_OCCUPIED } from './daemon-endpoint-ownership'
 import { launchDaemonChild } from './daemon-launched-child'
 import type { DaemonChildSpawnOptions } from './daemon-launched-child-spawn'
 
@@ -17,7 +18,12 @@ vi.mock('./daemon-cgroup-scope', () => ({
 }))
 vi.mock('./daemon-spawner', () => ({ unlinkOwnedDaemonPidFile: vi.fn(() => true) }))
 
-type FakeDaemonChild = ChildProcess & { disconnect: Mock; unref: Mock }
+// exitCode is writable here: the launcher reads it to decide whether the child is already gone.
+type FakeDaemonChild = Omit<ChildProcess, 'exitCode'> & {
+  exitCode: number | null
+  disconnect: Mock
+  unref: Mock
+}
 
 const LAUNCH_OPTIONS: DaemonChildSpawnOptions = {
   entryPath: '/fake/app/out/main/daemon-entry.js',
@@ -43,6 +49,7 @@ function fakeDaemonChild(pid: number): FakeDaemonChild {
 
 afterEach(() => {
   vi.clearAllMocks()
+  spawnDaemonChildProcessMock.mockReset()
   isDurableDaemonScopeSupportedMock.mockReturnValue(false)
 })
 
@@ -92,5 +99,59 @@ describe('launchDaemonChild identity', () => {
     } finally {
       kill.mockRestore()
     }
+  })
+})
+
+describe('launchDaemonChild durable-scope fallback', () => {
+  it('retries once without cgroup isolation when the scoped attempt fails', async () => {
+    isDurableDaemonScopeSupportedMock.mockReturnValue(true)
+    const scoped = fakeDaemonChild(4242)
+    const unscoped = fakeDaemonChild(4343)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    spawnDaemonChildProcessMock.mockImplementation((_options, useDurableScope: boolean) => {
+      if (useDurableScope) {
+        // Whatever the pre-flight probe promised, the real StartTransientUnit call can still fail.
+        queueMicrotask(() => {
+          scoped.exitCode = 1
+          scoped.emit('exit', 1)
+        })
+        return scoped
+      }
+      queueMicrotask(() =>
+        unscoped.emit('message', { type: 'ready', pid: 4343, startedAtMs: 1_000_000 })
+      )
+      return unscoped
+    })
+
+    try {
+      const launched = await launchDaemonChild(LAUNCH_OPTIONS)
+
+      expect(spawnDaemonChildProcessMock.mock.calls.map(([, scope]) => scope)).toEqual([
+        true,
+        false
+      ])
+      expect(launched.identity.pid).toBe(4343)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('does not retry when another daemon already owns the endpoint', async () => {
+    // A lost endpoint race is not a scope failure: the caller adopts the winner, and a second
+    // child would only lose the same race.
+    isDurableDaemonScopeSupportedMock.mockReturnValue(true)
+    const scoped = fakeDaemonChild(4242)
+    spawnDaemonChildProcessMock.mockImplementation(() => {
+      queueMicrotask(() => {
+        scoped.exitCode = DAEMON_EXIT_ENDPOINT_OCCUPIED
+        scoped.emit('exit', DAEMON_EXIT_ENDPOINT_OCCUPIED)
+      })
+      return scoped
+    })
+
+    await expect(launchDaemonChild(LAUNCH_OPTIONS)).rejects.toThrow(
+      'Daemon could not take the endpoint: occupied'
+    )
+    expect(spawnDaemonChildProcessMock).toHaveBeenCalledOnce()
   })
 })
