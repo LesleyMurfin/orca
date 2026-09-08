@@ -9,6 +9,7 @@ vi.mock('electron', () => ({
 }))
 
 import { ArtifactCloudService } from './artifact-cloud-service'
+import { unexpiredArtifactExpiry } from './artifact-cloud-expiry-test-fixtures'
 
 const createdPaths: string[] = []
 const apiUrl = 'http://localhost:3000'
@@ -336,7 +337,7 @@ function createResponseBody(slug: string): object {
       renderedContentType: 'text/html',
       createdAt: '2026-08-06T00:00:00.000Z',
       updatedAt: '2026-08-06T00:00:00.000Z',
-      expiresAt: '2026-09-06T00:00:00.000Z',
+      expiresAt: unexpiredArtifactExpiry(),
       byteSize: 17,
       deletedAt: null
     },

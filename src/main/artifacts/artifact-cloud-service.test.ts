@@ -27,6 +27,7 @@ import {
 } from '../../shared/artifact-sharing-gate'
 import { getDefaultSettings } from '../../shared/constants'
 import { ArtifactCloudService } from './artifact-cloud-service'
+import { unexpiredArtifactExpiry } from './artifact-cloud-expiry-test-fixtures'
 
 const createdPaths: string[] = []
 const apiUrl = 'http://localhost:3000'
@@ -43,7 +44,7 @@ const cloudB: OrcaProfileCloudSummary = {
   linkedAt: 2
 }
 
-function createResponse(slug = 'artifact-a', expiresAt = '2026-09-06T00:00:00.000Z'): Response {
+function createResponse(slug = 'artifact-a', expiresAt = unexpiredArtifactExpiry()): Response {
   return new Response(
     JSON.stringify({
       artifact: {
