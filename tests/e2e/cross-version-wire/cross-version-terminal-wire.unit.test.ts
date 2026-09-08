@@ -1,5 +1,9 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { resolveBaselineReleaseRef, selectLatestStableReleaseTag } from './release-checkout'
+import {
+  resolveBaselineReleaseRef,
+  runtimeDependencyMismatches,
+  selectLatestStableReleaseTag
+} from './release-checkout'
 import {
   JOURNEY_INPUTS,
   JOURNEY_STEPS,
@@ -102,6 +106,22 @@ describe('cross-version remote terminal wire', () => {
         'v1.4.176'
       ])
     ).toBe('v1.4.176')
+  })
+
+  it('rejects a release that pins runtime dependencies this checkout did not install', () => {
+    // v1.4.197 is the real case: it bumped zod past what this tree installs, so its
+    // extracted source called an export that does not exist here and hung the lane.
+    expect(
+      runtimeDependencyMismatches(
+        { zod: '~4.4.3', ws: '^8.21.0' },
+        { zod: '~4.5.4', ws: '^8.21.0' }
+      )
+    ).toEqual(['zod'])
+    // A dependency added or dropped by the release counts too; only one side has it.
+    expect(runtimeDependencyMismatches({}, { 'proper-lockfile': '4.1.2' })).toEqual([
+      'proper-lockfile'
+    ])
+    expect(runtimeDependencyMismatches({ zod: '~4.4.3' }, { zod: '~4.4.3' })).toEqual([])
   })
 
   it(

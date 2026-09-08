@@ -61,8 +61,16 @@ function compareReleaseTags(a: string, b: string): number {
 }
 
 /**
+ * How far back the selector walks looking for a release this checkout can run. A
+ * tree that matches none of the last {@link BASELINE_SCAN_DEPTH} releases is stale
+ * enough to say so, instead of quietly pairing against a months-old build.
+ */
+const BASELINE_SCAN_DEPTH = 20
+
+/**
  * The version point the harness pairs current code against. An explicit
- * {@link BASELINE_REF_ENV} wins; otherwise the newest stable desktop release tag.
+ * {@link BASELINE_REF_ENV} wins; otherwise the newest stable desktop release whose
+ * source this checkout can actually execute (see {@link runtimeDependencyMismatches}).
  *
  * Throws rather than skipping: a cross-version lane that quietly runs nothing is
  * the exact failure this harness exists to prevent.
@@ -81,24 +89,87 @@ export function resolveBaselineReleaseRef(): string {
         `Run it inside a git checkout, or pin a ref with ${BASELINE_REF_ENV}.`
     )
   }
-  const latest = selectLatestStableReleaseTag(tags)
-  if (!latest) {
+  const candidates = stableReleaseTagsNewestFirst(tags)
+  if (candidates.length === 0) {
     throw new Error(
       `Cross-version harness found no stable desktop release tags matching vX.Y.Z (saw ${tags.length} tag(s) total). ` +
         'CI checkouts default to a shallow clone with no tags: use `actions/checkout` with `fetch-depth: 0`, ' +
         `or pin a ref with ${BASELINE_REF_ENV}.`
     )
   }
-  return latest
+  const installed = declaredRuntimeDependencies(
+    readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')
+  )
+  const rejected: string[] = []
+  for (const tag of candidates.slice(0, BASELINE_SCAN_DEPTH)) {
+    let released: Record<string, string>
+    try {
+      released = declaredRuntimeDependencies(git(['show', `${tag}:package.json`]))
+    } catch (error) {
+      rejected.push(`${tag} (unreadable package.json: ${String(error)})`)
+      continue
+    }
+    const mismatches = runtimeDependencyMismatches(installed, released)
+    if (mismatches.length === 0) {
+      return tag
+    }
+    rejected.push(`${tag} (${mismatches.join(', ')})`)
+  }
+  throw new Error(
+    'Cross-version harness found no release whose runtime dependencies match this checkout, so no ' +
+      `baseline could be imported without resolving the release's imports against packages it never ` +
+      `declared. Rejected: ${rejected.join('; ')}. Rebase onto a newer main, or pin a ref with ` +
+      `${BASELINE_REF_ENV}.`
+  )
 }
 
 export function selectLatestStableReleaseTag(tags: string[]): string | null {
-  return (
-    tags
-      .filter((tag) => STABLE_DESKTOP_RELEASE_TAG.test(tag))
-      .sort(compareReleaseTags)
-      .at(-1) ?? null
-  )
+  return stableReleaseTagsNewestFirst(tags)[0] ?? null
+}
+
+function stableReleaseTagsNewestFirst(tags: string[]): string[] {
+  return tags
+    .filter((tag) => STABLE_DESKTOP_RELEASE_TAG.test(tag))
+    .sort((a, b) => compareReleaseTags(b, a))
+}
+
+function declaredRuntimeDependencies(manifest: string): Record<string, string> {
+  const parsed: unknown = JSON.parse(manifest)
+  if (!parsed || typeof parsed !== 'object' || !('dependencies' in parsed)) {
+    return {}
+  }
+  const dependencies = parsed.dependencies
+  if (!dependencies || typeof dependencies !== 'object') {
+    return {}
+  }
+  const ranges: Record<string, string> = {}
+  for (const [name, range] of Object.entries(dependencies)) {
+    if (typeof range === 'string') {
+      ranges[name] = range
+    }
+  }
+  return ranges
+}
+
+/**
+ * Why baseline selection is gated on this: the harness imports a release's `src/`
+ * but resolves that source's imports against THIS checkout's installed
+ * `node_modules`. A release cut after the commit under test can pin a newer runtime
+ * dependency and call an API this tree never installed — v1.4.197 moved to
+ * `zod@~4.5.4` and started calling `zod.compile`, so the extracted host threw
+ * before `emit({ type: 'ready' })` and every journey hung to the suite timeout
+ * instead of reporting anything about the wire.
+ *
+ * Declared ranges are the comparison, not resolved versions: the installed tree
+ * comes from this checkout's lockfile, so an identical range is the only evidence
+ * available here that the release would have resolved to what is on disk.
+ */
+export function runtimeDependencyMismatches(
+  installed: Record<string, string>,
+  released: Record<string, string>
+): string[] {
+  const names = new Set([...Object.keys(installed), ...Object.keys(released)])
+  return [...names].filter((name) => installed[name] !== released[name]).sort()
 }
 
 function resolveCommit(ref: string): string {
