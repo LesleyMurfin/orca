@@ -20,6 +20,7 @@
  *   pnpm run test:e2e:remote-bulk-open-freeze
  */
 import path from 'node:path'
+import type { Page } from '@stablyai/playwright-test'
 import { expect, test } from './helpers/orca-app'
 import { launchHeadlessPairedRuntimeHost } from './helpers/headless-paired-runtime-host'
 import {
@@ -135,16 +136,16 @@ test('R1 paired remote bulk-open freeze oracle @freeze-repro', async ({
       .toBeGreaterThan(0)
 
     // Prefer full desktop pair when web-client store hydration is flaky in this env.
-    const page = await (async () => {
-      if (USE_DESKTOP_PAIR) {
-        desktopClient = await launchPairedElectronClient(host.offer, testInfo, 'freeze-r1')
-        return desktopClient.page
-      }
+    let page: Page
+    if (USE_DESKTOP_PAIR) {
+      desktopClient = await launchPairedElectronClient(host.offer, testInfo, 'freeze-r1')
+      page = desktopClient.page
+    } else {
       webClient = await launchPairedWebClient(host.app, host.offer, {
         terminalParkingDelayMs: 500
       })
-      return webClient.page
-    })()
+      page = webClient.page
+    }
 
     await page.waitForFunction(() => Boolean(window.__store), null, { timeout: 60_000 })
     await expect

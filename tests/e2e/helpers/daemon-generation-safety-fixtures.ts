@@ -1,4 +1,4 @@
-import { fork, type ChildProcess } from 'node:child_process'
+import { fork, type ChildProcess, type ForkOptions, type SpawnOptions } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -73,6 +73,19 @@ export async function launchDaemonGeneration(options: {
   const tokenPath = getDaemonTokenPath(runtime.daemonDir, protocolVersion)
   const logPath = path.join(runtime.rootDir, `${label}.daemon.log`)
   let startupLog = ''
+  // Why: fork() forwards options to spawn(), which honors windowsHide; @types/node omits it from ForkOptions.
+  const forkOptions: ForkOptions & Pick<SpawnOptions, 'windowsHide'> = {
+    cwd: runtime.userDataDir,
+    execPath: runtime.electronPath,
+    windowsHide: true,
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: '1',
+      NODE_PATH: path.join(process.cwd(), 'node_modules'),
+      ORCA_USER_DATA_PATH: runtime.userDataDir
+    },
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc']
+  }
   const child = fork(
     runtime.entryPath,
     [
@@ -87,18 +100,7 @@ export async function launchDaemonGeneration(options: {
       '--refuse-dispose',
       String(refuseDispose)
     ],
-    {
-      cwd: runtime.userDataDir,
-      execPath: runtime.electronPath,
-      windowsHide: true,
-      env: {
-        ...process.env,
-        ELECTRON_RUN_AS_NODE: '1',
-        NODE_PATH: path.join(process.cwd(), 'node_modules'),
-        ORCA_USER_DATA_PATH: runtime.userDataDir
-      },
-      stdio: ['ignore', 'ignore', 'pipe', 'ipc']
-    }
+    forkOptions
   )
   child.stderr?.on('data', (chunk: Buffer) => {
     startupLog = `${startupLog}${chunk.toString('utf8')}`.slice(-MAX_CAPTURED_CHARS)

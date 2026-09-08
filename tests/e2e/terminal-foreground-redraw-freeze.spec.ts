@@ -173,7 +173,10 @@ async function installActivePaneRefreshProbe(page: Page): Promise<void> {
           ? (state?.activeTabIdByWorktree?.[worktreeId] ?? null)
           : null
     const manager = tabId ? window.__paneManagers?.get(tabId) : null
-    const pane = manager?.getActivePane?.() ?? manager?.getPanes?.()[0] ?? null
+    if (!manager) {
+      throw new Error('Active terminal pane manager is unavailable')
+    }
+    const pane = manager.getActivePane?.() ?? manager.getPanes?.()[0] ?? null
     if (!pane) {
       throw new Error('Active terminal pane is unavailable')
     }

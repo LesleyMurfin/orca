@@ -1,4 +1,5 @@
 import type { Page } from '@stablyai/playwright-test'
+import type { ExecutionHostId } from '../../src/shared/execution-host'
 import { expect, test } from './helpers/orca-app'
 import { waitForActiveWorktree, waitForSessionReady } from './helpers/store'
 
@@ -29,6 +30,9 @@ async function seedPaletteFilterFixture(page: Page): Promise<PaletteFilterFixtur
 
       const token = crypto.randomUUID()
       const remoteConnectionId = `e2e-palette-host-${token}`
+      // Why: annotate so the template literal keeps its `ssh:` host type instead of widening.
+      const remoteExecutionHostId: ExecutionHostId = `ssh:${remoteConnectionId}`
+      const localExecutionHostId: ExecutionHostId = 'local'
       const remoteRepoId = `e2e-palette-remote-repo-${token}`
       const remoteWorktreeId = `e2e-palette-remote-worktree-${token}`
       const remoteRepo = {
@@ -37,7 +41,7 @@ async function seedPaletteFilterFixture(page: Page): Promise<PaletteFilterFixtur
         path: `${sourceRepo.path}-e2e-palette-remote-${token}`,
         displayName: remoteProject,
         connectionId: remoteConnectionId,
-        executionHostId: `ssh:${remoteConnectionId}`
+        executionHostId: remoteExecutionHostId
       }
       const remoteWorktree = {
         ...sourceWorktree,
@@ -49,7 +53,7 @@ async function seedPaletteFilterFixture(page: Page): Promise<PaletteFilterFixtur
         branch: 'refs/heads/e2e-palette-remote',
         isMainWorktree: false,
         isArchived: false,
-        hostId: `ssh:${remoteConnectionId}`
+        hostId: remoteExecutionHostId
       }
 
       const sshTargetLabels = new Map(state.sshTargetLabels)
@@ -73,7 +77,9 @@ async function seedPaletteFilterFixture(page: Page): Promise<PaletteFilterFixtur
         worktreesByRepo: {
           ...state.worktreesByRepo,
           [sourceRepo.id]: (state.worktreesByRepo[sourceRepo.id] ?? []).map((worktree) =>
-            worktree.id === sourceWorktree.id ? { ...worktree, hostId: 'local' } : worktree
+            worktree.id === sourceWorktree.id
+              ? { ...worktree, hostId: localExecutionHostId }
+              : worktree
           ),
           [remoteRepoId]: [remoteWorktree]
         }

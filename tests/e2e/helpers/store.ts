@@ -49,7 +49,7 @@ export async function getActiveTabType(page: Page): Promise<string | null> {
 export async function getWorktreeTabs(
   page: Page,
   worktreeId: string
-): Promise<{ id: string; title?: string }[]> {
+): Promise<TerminalTabSummary[]> {
   return page.evaluate((worktreeId) => {
     const store = window.__store
     if (!store) {
@@ -60,7 +60,8 @@ export async function getWorktreeTabs(
     return (state.tabsByWorktree[worktreeId] ?? []).map(
       (tab): TerminalTabSummary => ({
         id: tab.id,
-        title: tab.customTitle || tab.title
+        title: tab.customTitle || tab.title,
+        customTitle: tab.customTitle
       })
     )
   }, worktreeId)
@@ -88,9 +89,10 @@ export async function getTabBarOrder(page: Page, worktreeId: string): Promise<st
     const activeGroup = activeGroupId
       ? groups.find((g: { id: string }) => g.id === activeGroupId)
       : groups[0]
-    if (activeGroup?.tabOrder?.length > 0) {
+    const activeTabOrder = activeGroup?.tabOrder ?? []
+    if (activeTabOrder.length > 0) {
       const unifiedTabs = state.unifiedTabsByWorktree?.[worktreeId] ?? []
-      return activeGroup.tabOrder.map((itemId: string) => {
+      return activeTabOrder.map((itemId: string) => {
         const tab = unifiedTabs.find((t: { id: string }) => t.id === itemId)
         if (!tab) {
           return itemId

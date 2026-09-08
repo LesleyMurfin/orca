@@ -289,7 +289,9 @@ async function moveHostAwayFromWorktree(page: Page, targetWorktreeId: string): P
     if (!state || !alternate) {
       return null
     }
-    state.setActiveView('editor')
+    // Why: the 'editor' top-level view was folded into the terminal workspace; 'tasks' is
+    // how the rest of the suite leaves the workspace view so panes go inactive.
+    state.setActiveView('tasks')
     state.setActiveWorktree(alternate.id)
     return alternate.id
   }, targetWorktreeId)

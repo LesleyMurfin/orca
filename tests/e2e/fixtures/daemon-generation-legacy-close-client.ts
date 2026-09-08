@@ -4,7 +4,10 @@ import { OrcaRuntimeService } from '../../../src/main/runtime/orca-runtime'
 import { RpcDispatcher } from '../../../src/main/runtime/rpc/dispatcher'
 import { SESSION_TAB_METHODS } from '../../../src/main/runtime/rpc/methods/session-tabs'
 import { SESSION_TAB_CLOSE_INTENT_RUNTIME_CAPABILITY } from '../../../src/shared/protocol-version'
-import type { RuntimeMobileSessionTabsSnapshot } from '../../../src/shared/runtime-types'
+import type {
+  RuntimeMobileSessionTabsSnapshot,
+  RuntimeMobileSessionTerminalTab
+} from '../../../src/shared/runtime-types'
 import { createDesktopDiscoveredDaemonRouter } from './daemon-generation-desktop-discovery'
 
 type FixtureSession = {
@@ -158,7 +161,7 @@ async function main(): Promise<void> {
         return true
       },
       kill: () => false,
-      listProcesses: (options) => router.listProcesses(options),
+      listProcesses: (_connectionId, opts) => router.listProcesses(opts),
       hasPty: (ptyId) => router.hasPty(ptyId),
       getForegroundProcess: (ptyId) => router.getForegroundProcess(ptyId)
     })
@@ -183,43 +186,42 @@ async function main(): Promise<void> {
     } as never)
     runtime.attachWindow(1)
 
-    const snapshots: RuntimeMobileSessionTabsSnapshot[] = config.sessions.map((session, index) => {
+    const leafTabs: RuntimeMobileSessionTerminalTab[] = config.sessions.map((session, index) => {
       const leafId = `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`
       return {
-        worktree: session.worktreeId,
-        publicationEpoch: `legacy-viewer-${index + 1}`,
-        snapshotVersion: 1,
-        activeGroupId: null,
-        activeTabId: `${session.tabId}::${leafId}`,
-        activeTabType: 'terminal',
-        tabs: [
-          {
-            type: 'terminal',
-            id: `${session.tabId}::${leafId}`,
-            parentTabId: session.tabId,
-            leafId,
-            ptyId: session.sessionId,
-            title: session.tabId,
-            isActive: true
-          }
-        ]
+        type: 'terminal',
+        id: `${session.tabId}::${leafId}`,
+        parentTabId: session.tabId,
+        leafId,
+        ptyId: session.sessionId,
+        title: session.tabId,
+        isActive: true
       }
     })
+    const snapshots: RuntimeMobileSessionTabsSnapshot[] = leafTabs.map((tab, index) => ({
+      worktree: config.sessions[index]!.worktreeId,
+      publicationEpoch: `legacy-viewer-${index + 1}`,
+      snapshotVersion: 1,
+      activeGroupId: null,
+      activeTabId: tab.id,
+      activeTabType: 'terminal',
+      tabs: [tab]
+    }))
     runtime.syncWindowGraph(1, {
-      tabs: snapshots.map((snapshot) => ({
-        tabId: snapshot.tabs[0]!.parentTabId,
-        worktreeId: snapshot.worktree,
-        title: snapshot.tabs[0]!.title,
-        activeLeafId: snapshot.tabs[0]!.leafId,
+      tabs: leafTabs.map((tab, index) => ({
+        tabId: tab.parentTabId,
+        worktreeId: config.sessions[index]!.worktreeId,
+        title: tab.title,
+        activeLeafId: tab.leafId,
         layout: null
       })),
-      leaves: snapshots.map((snapshot, index) => ({
-        tabId: snapshot.tabs[0]!.parentTabId,
-        worktreeId: snapshot.worktree,
-        leafId: snapshot.tabs[0]!.leafId,
+      leaves: leafTabs.map((tab, index) => ({
+        tabId: tab.parentTabId,
+        worktreeId: config.sessions[index]!.worktreeId,
+        leafId: tab.leafId,
         paneRuntimeId: index + 1,
         ptyId: config.sessions[index]!.sessionId,
-        paneTitle: snapshot.tabs[0]!.title
+        paneTitle: tab.title
       })),
       mobileSessionTabs: snapshots
     })

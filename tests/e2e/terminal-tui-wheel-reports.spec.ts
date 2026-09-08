@@ -18,6 +18,11 @@ type TimedWheelReportSample = WheelReportSample & {
   elapsedMs: number
 }
 
+// Why: xterm publishes the measured cell geometry only on its private `_core` handle.
+type XtermCellGeometryCore = {
+  _renderService?: { dimensions?: { css?: { cell?: { height: number } } } }
+}
+
 const PHYSICAL_MOUSE_WHEEL_DELTA = -120
 const VISIBLE_TUI_FIXTURE_PATH = path.join(
   process.cwd(),
@@ -59,8 +64,11 @@ async function probeSmallMouseWheelReports(
         }
 
         const rect = screen.getBoundingClientRect()
+        const terminalCore = (
+          pane.terminal as typeof pane.terminal & { _core?: XtermCellGeometryCore }
+        )._core
         const cellHeight =
-          pane.terminal._core?._renderService?.dimensions?.css?.cell?.height ??
+          terminalCore?._renderService?.dimensions?.css?.cell?.height ??
           rect.height / pane.terminal.rows
         const scrollSensitivity = Number(pane.terminal.options.scrollSensitivity ?? 1)
         // Why: this is a notched mouse wheel event that Chromium can surface as a
@@ -151,8 +159,11 @@ async function probeTimedSmallMouseWheelReports(
         }
 
         const rect = screen.getBoundingClientRect()
+        const terminalCore = (
+          pane.terminal as typeof pane.terminal & { _core?: XtermCellGeometryCore }
+        )._core
         const cellHeight =
-          pane.terminal._core?._renderService?.dimensions?.css?.cell?.height ??
+          terminalCore?._renderService?.dimensions?.css?.cell?.height ??
           rect.height / pane.terminal.rows
         const scrollSensitivity = Number(pane.terminal.options.scrollSensitivity ?? 1)
         // Why: this is a notched mouse wheel event that Chromium can surface as a

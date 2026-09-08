@@ -168,10 +168,13 @@ test.describe('Terminal Panes', () => {
         const titleBar = Array.from(document.querySelectorAll<HTMLElement>('.pane-title-bar')).find(
           (element) => element.textContent?.includes(title)
         )
+        if (!titleBar) {
+          return null
+        }
         const titleDragHandle =
           titleBar.querySelector<HTMLElement>('.pane-title-drag-handle') ?? null
         const pane = document.querySelector<HTMLElement>(`.pane[data-leaf-id="${titledLeafId}"]`)
-        if (!titleBar || !pane || !titleDragHandle) {
+        if (!pane || !titleDragHandle) {
           return null
         }
         const titleRect = titleBar.getBoundingClientRect()

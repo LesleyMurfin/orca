@@ -126,7 +126,10 @@ export async function createAndActivateWorktreeWithSetup(
 export async function removeWorktreeViaStore(page: TestPage, worktreeId: string): Promise<void> {
   await page.evaluate(async (id) => {
     try {
-      await window.__store?.getState().removeWorktree(id, true)
+      const state = window.__store?.getState()
+      const worktree = state?.allWorktrees().find((candidate) => candidate.id === id)
+      // Why: removal is host-qualified (STA-4343), so the id alone cannot address a checkout.
+      await state?.removeWorktree({ id, executionHostId: worktree?.hostId ?? null }, true)
     } catch {
       /* best-effort */
     }

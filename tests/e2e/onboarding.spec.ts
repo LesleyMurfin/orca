@@ -504,9 +504,11 @@ test.describe('Onboarding flow', () => {
 
     await orcaPage.evaluate(() => {
       localStorage.removeItem('orca.e2e.notificationPermissionRequested')
-      window.api.notifications.requestPermission = async () => {
+      // Why: `notifications.requestPermission` was replaced 1:1 by `probeDelivery`
+      // (25ea2bbfd1) — firing a probe is what raises the OS permission dialog.
+      window.api.notifications.probeDelivery = async () => {
         localStorage.setItem('orca.e2e.notificationPermissionRequested', '1')
-        return { supported: true, platform: 'darwin', requested: true }
+        return { state: 'delivered', authoritative: true }
       }
     })
     await expectOnboardingNotificationSound(orcaPage, /System Default/i)

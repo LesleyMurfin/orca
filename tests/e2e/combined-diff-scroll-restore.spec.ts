@@ -355,48 +355,48 @@ function getLargestBackwardScrollJump(samples: readonly ScrollProbeSample[]): nu
   return largestBackwardJump
 }
 
+async function findVisibleDiffLinePoint(page: Page): Promise<{ x: number; y: number } | null> {
+  return page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>('.combined-diff-scroll-container')
+    if (!container) {
+      return null
+    }
+    const containerRect = container.getBoundingClientRect()
+    const visibleLine = Array.from(
+      container.querySelectorAll<HTMLElement>('.monaco-diff-editor .view-line')
+    ).find((line) => {
+      const rect = line.getBoundingClientRect()
+      return (
+        rect.height > 0 &&
+        rect.bottom > containerRect.top &&
+        rect.top < containerRect.bottom &&
+        rect.right > containerRect.left &&
+        rect.left < containerRect.right
+      )
+    })
+    if (!visibleLine) {
+      return null
+    }
+    const rect = visibleLine.getBoundingClientRect()
+    return {
+      x: rect.left + Math.min(12, Math.max(1, rect.width / 2)),
+      y: rect.top + rect.height / 2
+    }
+  })
+}
+
 async function clickVisibleDiffLine(page: Page): Promise<void> {
   // Why: after a tab switch Monaco re-lays-out its virtualized diff lines
   // asynchronously, so the visible .view-line set is briefly empty on a loaded
   // CI runner. Poll until a line is painted in the viewport instead of reading
   // it once and throwing on the first miss.
-  let linePoint: { x: number; y: number } | null = null
   await expect
-    .poll(
-      async () => {
-        linePoint = await page.evaluate(() => {
-          const container = document.querySelector<HTMLElement>('.combined-diff-scroll-container')
-          if (!container) {
-            return null
-          }
-          const containerRect = container.getBoundingClientRect()
-          const visibleLine = Array.from(
-            container.querySelectorAll<HTMLElement>('.monaco-diff-editor .view-line')
-          ).find((line) => {
-            const rect = line.getBoundingClientRect()
-            return (
-              rect.height > 0 &&
-              rect.bottom > containerRect.top &&
-              rect.top < containerRect.bottom &&
-              rect.right > containerRect.left &&
-              rect.left < containerRect.right
-            )
-          })
-          if (!visibleLine) {
-            return null
-          }
-          const rect = visibleLine.getBoundingClientRect()
-          return {
-            x: rect.left + Math.min(12, Math.max(1, rect.width / 2)),
-            y: rect.top + rect.height / 2
-          }
-        })
-        return linePoint !== null
-      },
-      { timeout: 10_000, message: 'visible combined diff line not found' }
-    )
-    .toBe(true)
-
+    .poll(() => findVisibleDiffLinePoint(page), {
+      timeout: 10_000,
+      message: 'visible combined diff line not found'
+    })
+    .not.toBeNull()
+  const linePoint = await findVisibleDiffLinePoint(page)
   if (!linePoint) {
     throw new Error('visible combined diff line not found')
   }

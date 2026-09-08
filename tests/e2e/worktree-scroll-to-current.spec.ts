@@ -1,4 +1,5 @@
 import type { Page } from '@stablyai/playwright-test'
+import type { WorkspaceKey } from '../../src/shared/folder-workspace-types'
 import { test, expect } from './helpers/orca-app'
 import { waitForActiveWorktree, waitForSessionReady } from './helpers/store'
 
@@ -258,7 +259,7 @@ test.describe('Reveal active workspace button', () => {
       if (!targetFolder) {
         throw new Error('Expected a target folder workspace')
       }
-      const folderWorktreeId = `folder:${targetFolder.id}`
+      const folderWorktreeId: WorkspaceKey = `folder:${targetFolder.id}`
       store.setState({
         activeRepoId: null,
         activeWorktreeId: null,

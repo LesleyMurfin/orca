@@ -71,16 +71,13 @@ if (process.platform === 'win32') {
 }
 
 const test = base.extend({
-  launchEnv: [
-    {
-      PATH: `${fakeCliDir}${path.delimiter}${process.env.PATH ?? ''}`,
-      ORCA_E2E_CODEX_SPAWN_LEDGER: spawnLedgerPath,
-      ORCA_E2E_SETUP_LEDGER: setupLedgerPath,
-      ORCA_E2E_CANARY_LEDGER: canaryLedgerPath,
-      ORCA_E2E_SIGNAL_LEDGER: signalLedgerPath
-    },
-    { option: true }
-  ]
+  launchEnv: {
+    PATH: `${fakeCliDir}${path.delimiter}${process.env.PATH ?? ''}`,
+    ORCA_E2E_CODEX_SPAWN_LEDGER: spawnLedgerPath,
+    ORCA_E2E_SETUP_LEDGER: setupLedgerPath,
+    ORCA_E2E_CANARY_LEDGER: canaryLedgerPath,
+    ORCA_E2E_SIGNAL_LEDGER: signalLedgerPath
+  }
 })
 
 function readSpawnLedger(): SpawnEvent[] {
@@ -539,7 +536,7 @@ test('adopts runtime-owned agent and Setup PTYs on first mount', async ({
         const state = window.__store?.getState()
         await state?.fetchRepos()
         const repo = window.__store?.getState().repos.find((candidate) => candidate.id === repoId)
-        if (!repo) {
+        if (!repo?.hookSettings) {
           return false
         }
         await window.__store?.getState().updateRepo(repoId, {
@@ -601,6 +598,11 @@ test('adopts runtime-owned agent and Setup PTYs on first mount', async ({
   expect(agent).toBeTruthy()
   expect(setup).toBeTruthy()
   expect(canary).toBeTruthy()
+  const agentPtyId = agent!.ptyId
+  const setupPtyId = setup!.ptyId
+  if (!agentPtyId || !setupPtyId) {
+    throw new Error('expected the agent and setup terminals to report pty ids')
+  }
   await expect.poll(readSpawnLedger).toHaveLength(1)
   await expect.poll(() => readJsonLines<{ pid: number }>(setupLedgerPath)).toHaveLength(1)
   await expect.poll(() => readJsonLines<{ pid: number }>(canaryLedgerPath)).toHaveLength(1)
@@ -652,7 +654,7 @@ test('adopts runtime-owned agent and Setup PTYs on first mount', async ({
   const agentMarker = `AGENT_KB_${randomUUID().slice(0, 8)}`
   await clearTerminalPtyWriteLog(electronApp)
   await typeIntoTerminal(orcaPage, agent!.tabId, agentMarker)
-  await assertExactPtyReceivedMarker(electronApp, agent!.ptyId, agentMarker)
+  await assertExactPtyReceivedMarker(electronApp, agentPtyId, agentMarker)
   await expect(terminalAccessibility(orcaPage, agent!.tabId)).toContainText(
     `AGENT_INPUT:${agentPid}:${agentMarker}`
   )
@@ -670,7 +672,7 @@ test('adopts runtime-owned agent and Setup PTYs on first mount', async ({
   const setupMarker = `SETUP_KB_${randomUUID().slice(0, 8)}`
   await clearTerminalPtyWriteLog(electronApp)
   await typeIntoTerminal(orcaPage, setup!.tabId, setupMarker)
-  await assertExactPtyReceivedMarker(electronApp, setup!.ptyId, setupMarker)
+  await assertExactPtyReceivedMarker(electronApp, setupPtyId, setupMarker)
   await expect(terminalAccessibility(orcaPage, setup!.tabId)).toContainText(
     `SETUP_INPUT:${setupPid}:${setupMarker}`
   )
@@ -761,7 +763,7 @@ test('adopts runtime-owned agent and Setup PTYs on first mount', async ({
   expect(
     await orcaPage.evaluate(
       ({ marker, ptyId }) => window.api.pty.writeAccepted(ptyId, `${marker}\r`),
-      { marker: remountAgentAcceptedMarker, ptyId: agent!.ptyId }
+      { marker: remountAgentAcceptedMarker, ptyId: agentPtyId }
     )
   ).toBe(true)
   const remountAgentAcceptedOutput = `AGENT_INPUT:${agentPid}:${remountAgentAcceptedMarker}`
@@ -774,7 +776,7 @@ test('adopts runtime-owned agent and Setup PTYs on first mount', async ({
   const remountAgentMarker = `AGENT_REMOUNT_${randomUUID().slice(0, 8)}`
   await clearTerminalPtyWriteLog(electronApp)
   await typeIntoTerminal(orcaPage, agent!.tabId, remountAgentMarker)
-  await assertExactPtyReceivedMarker(electronApp, agent!.ptyId, remountAgentMarker)
+  await assertExactPtyReceivedMarker(electronApp, agentPtyId, remountAgentMarker)
   const remountAgentOutput = `AGENT_INPUT:${agentPid}:${remountAgentMarker}`
   await expect.poll(() => terminalOutput(client, agent!.handle)).toContain(remountAgentOutput)
   await expect
@@ -801,7 +803,7 @@ test('adopts runtime-owned agent and Setup PTYs on first mount', async ({
   const remountSetupMarker = `SETUP_REMOUNT_${randomUUID().slice(0, 8)}`
   await clearTerminalPtyWriteLog(electronApp)
   await typeIntoTerminal(orcaPage, setup!.tabId, remountSetupMarker)
-  await assertExactPtyReceivedMarker(electronApp, setup!.ptyId, remountSetupMarker)
+  await assertExactPtyReceivedMarker(electronApp, setupPtyId, remountSetupMarker)
   const remountSetupOutput = `SETUP_INPUT:${setupPid}:${remountSetupMarker}`
   await expect.poll(() => terminalOutput(client, setup!.handle)).toContain(remountSetupOutput)
   await expect

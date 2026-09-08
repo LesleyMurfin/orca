@@ -1,7 +1,10 @@
 import type { Locator, Page } from '@stablyai/playwright-test'
 import { test, expect } from './helpers/orca-app'
 import { waitForActiveWorktree, waitForSessionReady } from './helpers/store'
-import type { CreateHostedReviewResult } from '../../src/shared/hosted-review'
+import type {
+  CreateHostedReviewResult,
+  HostedReviewCreationEligibility
+} from '../../src/shared/hosted-review'
 
 type CreatePRPayload = {
   repoPath: string
@@ -28,16 +31,17 @@ async function openSourceControl(page: Page, expectedWorktreeId: string): Promis
     .poll(
       async () =>
         page.evaluate((expectedWorktreeId) => {
-          const state = window.__store?.getState()
-          if (!state) {
+          const store = window.__store
+          if (!store) {
             return false
           }
+          const state = store.getState()
           if (state.activeWorktreeId !== expectedWorktreeId) {
             state.setActiveWorktree(expectedWorktreeId)
           }
           state.setRightSidebarOpen(true)
           state.setRightSidebarTab('source-control')
-          const current = window.__store.getState()
+          const current = store.getState()
           const activeWorktree = Object.values(current.worktreesByRepo)
             .flat()
             .some((entry) => entry.id === expectedWorktreeId)
@@ -132,12 +136,13 @@ async function seedCreatePREligibleBranch(
       updatedAt: '2026-05-15T00:00:00.000Z',
       mergeable: 'UNKNOWN' as const
     }
-    const eligibility = {
-      provider: 'github' as const,
+    const eligibility: HostedReviewCreationEligibility = {
+      provider: 'github',
       review: null,
       canCreate: true,
       blockedReason: null,
       nextAction: null,
+      reviewLookupOutcome: 'not_found',
       defaultBaseRef: 'origin/main',
       head: branch
     }
@@ -163,7 +168,7 @@ async function seedCreatePREligibleBranch(
       getHostedReviewCreationEligibility: async () => eligibility,
       fetchHostedReviewForBranch: async () => null,
       setUpstreamStatus: () => undefined,
-      fetchUpstreamStatus: async () => undefined,
+      fetchUpstreamStatus: async () => null,
       fetchPRForBranch: async (repoPath: string, targetBranch: string) => {
         store.setState((next) => ({
           prCache: {

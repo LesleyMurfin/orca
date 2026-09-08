@@ -195,7 +195,14 @@ async function readTerminalRightEdgeOverpaint(page: Page): Promise<{
       }
     }
 
-    const cellWidth = pane.terminal._core?._renderService?.dimensions?.css?.cell?.width ?? 0
+    // Why: cell width only exists on xterm's private render service; keep the
+    // untyped boundary explicit so an xterm upgrade is audited here.
+    const cellWidth =
+      (
+        pane.terminal as typeof pane.terminal & {
+          _core?: { _renderService?: { dimensions?: { css?: { cell?: { width?: number } } } } }
+        }
+      )._core?._renderService?.dimensions?.css?.cell?.width ?? 0
     const maxRight = screenRect.right + Math.max(1, cellWidth * 0.5)
     const offenders = Array.from(rows.querySelectorAll<HTMLElement>('span'))
       .map((span) => {

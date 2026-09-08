@@ -6,6 +6,7 @@ import path from 'node:path'
 import { test, expect } from './helpers/orca-app'
 import { waitForSessionReady } from './helpers/store'
 import type { Page } from '@stablyai/playwright-test'
+import type { ProjectGroup } from '../../src/shared/project-group-types'
 
 const GROUP_NAMES = [
   'E2E Manual Group Alpha',
@@ -134,7 +135,7 @@ async function seedDuplicateTabOrderProjectGroups(
     state.setGroupBy('repo')
     state.setProjectOrderBy('manual')
 
-    const groups = []
+    const groups: ProjectGroup[] = []
     for (const name of groupNames) {
       const created = await state.createProjectGroup(name)
       if (!created) {

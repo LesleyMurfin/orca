@@ -214,7 +214,13 @@ export async function launchHeadlessPairedRuntimeHost(): Promise<HeadlessPairedR
         '--serve-pairing-address',
         '127.0.0.1'
       ],
-      env: isolation.env
+      // Why: Electron's launch env rejects undefined values; a spawned process
+      // never receives them anyway, so drop the unset keys before launching.
+      env: Object.fromEntries(
+        Object.entries(isolation.env).filter(
+          (entry): entry is [string, string] => entry[1] !== undefined
+        )
+      )
     })
     const [offer] = await Promise.all([
       readPairingOffer(app),
@@ -222,12 +228,13 @@ export async function launchHeadlessPairedRuntimeHost(): Promise<HeadlessPairedR
         .evaluate(({ app: electronApp }) => electronApp.getPath('home'))
         .then((home) => assertElectronResolvedIsolatedHome(home, isolation))
     ])
+    const launchedApp = app
     return {
-      app,
+      app: launchedApp,
       client: new RuntimeClient(userDataDir, 5_000),
       offer,
       dispose: async () => {
-        await closeElectronAppForE2E(app)
+        await closeElectronAppForE2E(launchedApp)
         await cleanupE2EDaemons(userDataDir)
         rmSync(userDataDir, { recursive: true, force: true })
       }

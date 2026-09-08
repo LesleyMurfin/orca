@@ -26,7 +26,7 @@ import { splitWorktreeIdForFilesystem } from '../../src/shared/worktree/id'
 const PROVIDER_SESSION_ID = '019feb51-2269-71c2-89c6-faa8dc65c8dc'
 
 const test = base.extend({
-  launchEnv: [completedWorkerLaunchEnv, { option: true }]
+  launchEnv: completedWorkerLaunchEnv
 })
 
 test.describe.configure({ mode: 'serial' })

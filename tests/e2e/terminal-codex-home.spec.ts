@@ -38,11 +38,14 @@ test.describe('Terminal Codex runtime home', () => {
 
     await execInTerminal(orcaPage, ptyId, command)
 
-    let probe: CodexHomeProbe | null = null
+    // Why: the poll records each read so the final assertion can use the last
+    // probe — an outer `let` assigned only inside the callback stays typed null.
+    const probeReads: (CodexHomeProbe | null)[] = []
     await expect
       .poll(
         async () => {
-          probe = readCodexHomeProbe(await getTerminalContent(orcaPage), marker)
+          const probe = readCodexHomeProbe(await getTerminalContent(orcaPage), marker)
+          probeReads.push(probe)
           return Boolean(
             probe?.codexHome &&
             probe.orcaCodexHome &&
@@ -54,6 +57,7 @@ test.describe('Terminal Codex runtime home', () => {
       )
       .toBe(true)
 
+    const probe = probeReads.at(-1) ?? null
     expect(probe?.codexHome).toBe(probe?.orcaCodexHome)
   })
 })

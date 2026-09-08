@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Page } from '@stablyai/playwright-test'
+import type { RuntimeMobileSessionTabsResult } from '../../src/shared/runtime-types'
 import { expect, test } from './helpers/orca-app'
 import {
   createRuntimeDesktopPairingOffer,
@@ -43,18 +44,16 @@ async function readTabInventory(
         params: { worktree: `id:${worktreeId}` },
         timeoutMs: 15_000
       })
+      // Why: the RPC bridge returns an untyped payload; session.tabs.list answers with this shape.
+      const hostTabs = response.ok ? (response.result as RuntimeMobileSessionTabsResult).tabs : null
       return {
         clientBrowserWorkspaces: (state?.browserTabsByWorktree[worktreeId] ?? []).length,
         clientBrowserTabs: (state?.unifiedTabsByWorktree[worktreeId] ?? []).filter(
           (tab) => tab.contentType === 'browser'
         ).length,
         clientTerminalTabs: (state?.tabsByWorktree[worktreeId] ?? []).length,
-        hostBrowserTabs: response.ok
-          ? response.result.tabs.filter((tab) => tab.type === 'browser').length
-          : -1,
-        hostTerminalTabs: response.ok
-          ? response.result.tabs.filter((tab) => tab.type === 'terminal').length
-          : -1
+        hostBrowserTabs: hostTabs ? hostTabs.filter((tab) => tab.type === 'browser').length : -1,
+        hostTerminalTabs: hostTabs ? hostTabs.filter((tab) => tab.type === 'terminal').length : -1
       }
     },
     { environmentId, worktreeId }
@@ -219,7 +218,9 @@ test('opens a paired-runtime terminal link on its owning host', async ({
                 timeoutMs: 15_000
               })
               const hostTab = response.ok
-                ? response.result.tabs.find((tab) => tab.type === 'browser' && tab.url === url)
+                ? (response.result as RuntimeMobileSessionTabsResult).tabs.find(
+                    (tab) => tab.type === 'browser' && tab.url === url
+                  )
                 : null
               return workspace && browserPage && handle && hostTab?.type === 'browser'
                 ? {
@@ -256,7 +257,7 @@ test('opens a paired-runtime terminal link on its owning host', async ({
             if (!response.ok) {
               throw new Error('host tab inventory unavailable')
             }
-            const hostTab = response.result.tabs.find(
+            const hostTab = (response.result as RuntimeMobileSessionTabsResult).tabs.find(
               (tab) => tab.type === 'browser' && tab.url === url
             )!
             return {

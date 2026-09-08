@@ -5,6 +5,11 @@ import { ensureTerminalVisible, waitForActiveWorktree, waitForSessionReady } fro
 
 const modifier = process.platform === 'darwin' ? 'Meta' : 'Control'
 
+// Why: webview.sendInputEvent only accepts Electron's lowercase modifier
+// union, which a `modifier.toLowerCase()` call would widen to `string`.
+type ElectronInputModifier = NonNullable<Electron.InputEvent['modifiers']>[number]
+const inputEventModifier: ElectronInputModifier = process.platform === 'darwin' ? 'meta' : 'control'
+
 type SplitFindFixture = {
   browserGroupId: string
   browserTabId: string
@@ -76,8 +81,12 @@ async function createBrowserSplit(page: Page): Promise<BrowserSplitFixture> {
       focusAddressBar: false,
       targetGroupId: secondBrowserGroupId
     })
+    const firstBrowserPageId = firstBrowserTab.activePageId
+    if (!firstBrowserPageId) {
+      throw new Error('First browser page unavailable')
+    }
     return {
-      firstBrowserPageId: firstBrowserTab.activePageId,
+      firstBrowserPageId,
       firstBrowserTabId: firstBrowserTab.id,
       secondBrowserTabId: secondBrowserTab.id
     }
@@ -159,7 +168,7 @@ async function pressFindInBrowserGuest(
         {
           targetBrowserPageId: browserPageId,
           targetBrowserTabId: browserTabId,
-          inputModifier: modifier.toLowerCase()
+          inputModifier: inputEventModifier
         }
       )
     )

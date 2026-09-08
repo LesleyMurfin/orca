@@ -104,6 +104,7 @@ export async function seedCreatePrComposer(page: Page): Promise<{
       canCreate: true,
       blockedReason: null,
       nextAction: null,
+      reviewLookupOutcome: 'not_found' as const,
       defaultBaseRef: primaryBranch,
       head: branch
     }
@@ -130,7 +131,7 @@ export async function seedCreatePrComposer(page: Page): Promise<{
         args.branch === branch ? eligibility : { ...eligibility, canCreate: false },
       fetchHostedReviewForBranch: async () => null,
       fetchPRForBranch: async () => null,
-      fetchUpstreamStatus: async () => undefined,
+      fetchUpstreamStatus: async () => null,
       setUpstreamStatus: () => undefined
     }))
 
@@ -212,8 +213,8 @@ export async function seedCommitMessageComposer(page: Page): Promise<{
           status: 'ready' as const
         }
       },
-      gitBranchCompareEntriesByWorktree: {
-        ...current.gitBranchCompareEntriesByWorktree,
+      gitBranchChangesByWorktree: {
+        ...current.gitBranchChangesByWorktree,
         [primaryWorktree.id]: []
       }
     }))
@@ -280,8 +281,8 @@ export async function seedCleanBranchEmptyState(
           status: 'ready' as const
         }
       },
-      gitBranchCompareEntriesByWorktree: {
-        ...current.gitBranchCompareEntriesByWorktree,
+      gitBranchChangesByWorktree: {
+        ...current.gitBranchChangesByWorktree,
         [primaryWorktree.id]: []
       }
     }))

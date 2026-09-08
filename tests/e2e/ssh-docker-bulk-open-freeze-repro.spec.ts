@@ -55,11 +55,11 @@ test.describe('R2 Docker SSH bulk-open freeze', () => {
   test('bulk-open many flooding SSH terminals and measure renderer lag @freeze-repro', async ({
     orcaPage,
     registerPostElectronShutdownCleanup
-  }) => {
+  }, testInfo) => {
     test.setTimeout(420_000)
     let target: DockerSshRelayTarget | null = null
     try {
-      target = startDockerSshRelayTarget()
+      target = startDockerSshRelayTarget(testInfo)
       registerPostElectronShutdownCleanup(async () => {
         if (target) {
           cleanupDockerSshRelayTarget(target)
@@ -72,17 +72,27 @@ test.describe('R2 Docker SSH bulk-open freeze', () => {
       await waitForSessionReady(orcaPage)
       await waitForActiveWorktree(orcaPage)
 
+      // Why these two argument choices, since neither follows from the types alone and both
+      // change what this repro measures (see stablyai/orca#16764):
+      //   1. Each flood command targets the ptyId of its OWN newly-split pane, captured after
+      //      focusLastTerminalPane. Targeting whatever pane happened to be active would flood
+      //      one pane SESSION_SPLITS times instead of SESSION_SPLITS panes concurrently, and
+      //      concurrent panes are the load this oracle exists to measure.
+      //   2. Splits are all 'vertical', so the panes form one column. A uniform direction keeps
+      //      renderer layout cost comparable between runs; an alternating grid would vary the
+      //      measured cost with SESSION_SPLITS.
       const runId = `${Date.now()}`
       // First terminal on the SSH worktree.
       await waitForActiveTerminalManager(orcaPage)
-      await execInTerminal(orcaPage, continuousFloodCommand(runId, 0))
+      const firstPtyId = await waitForActivePanePtyId(orcaPage, 30_000)
+      await execInTerminal(orcaPage, firstPtyId, continuousFloodCommand(runId, 0))
       await waitForTerminalOutput(orcaPage, `READY:SSH_BULK_${runId}_0`, 60_000)
 
       for (let i = 1; i < SESSION_SPLITS; i += 1) {
-        await splitActiveTerminalPane(orcaPage)
+        await splitActiveTerminalPane(orcaPage, 'vertical')
         await focusLastTerminalPane(orcaPage)
-        await waitForActivePanePtyId(orcaPage, 30_000)
-        await execInTerminal(orcaPage, continuousFloodCommand(runId, i))
+        const panePtyId = await waitForActivePanePtyId(orcaPage, 30_000)
+        await execInTerminal(orcaPage, panePtyId, continuousFloodCommand(runId, i))
         await waitForTerminalOutput(orcaPage, `READY:SSH_BULK_${runId}_${i}`, 60_000)
       }
 

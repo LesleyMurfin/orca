@@ -315,7 +315,9 @@ test.describe('Tasks page', () => {
     )
     const restoredList = orcaPage.locator('[data-task-list-scroll="github"]')
     await expect.poll(() => restoredList.evaluate((element) => element.scrollTop)).toBe(0)
-    await clampedRowsStyle.evaluate((element) => element.remove())
+    await clampedRowsStyle.evaluate((element) => {
+      element.parentNode?.removeChild(element)
+    })
     await expect(orcaPage.getByText('Issue page 28 item 1', { exact: true })).toBeVisible()
     await expect
       .poll(() => restoredList.evaluate((element) => element.scrollTop))
@@ -346,7 +348,9 @@ test.describe('Tasks page', () => {
       'page'
     )
     await orcaPage.getByRole('button', { name: 'Page 1', exact: true }).click()
-    await pendingRestoreStyle.evaluate((element) => element.remove())
+    await pendingRestoreStyle.evaluate((element) => {
+      element.parentNode?.removeChild(element)
+    })
     await expect(orcaPage.getByRole('button', { name: 'Page 1', exact: true })).toHaveAttribute(
       'aria-current',
       'page'
@@ -387,7 +391,9 @@ test.describe('Tasks page', () => {
         return position.scrollTop
       })
       .toBe(0)
-    await permanentlyClampedRowsStyle.evaluate((element) => element.remove())
+    await permanentlyClampedRowsStyle.evaluate((element) => {
+      element.parentNode?.removeChild(element)
+    })
   })
 
   test('GitHub search waits for idle, keeps rows visible, and Enter does not double-fetch', async ({

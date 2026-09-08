@@ -19,7 +19,7 @@ const execFileAsync = promisify(execFile)
 type MarketplaceFixture = {
   root: string
   home: string
-  gitEnvironment: NodeJS.ProcessEnv
+  gitEnvironment: Record<string, string>
 }
 
 function isolatedGitProcessEnv(gitEnvironment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -74,11 +74,14 @@ async function copyLaunchPlugin(
   await commitRepository(repository, gitEnvironment)
 }
 
-async function configureFixtureGit(home: string, repositories: string): Promise<NodeJS.ProcessEnv> {
+async function configureFixtureGit(
+  home: string,
+  repositories: string
+): Promise<Record<string, string>> {
   const hooksDirectory = join(home, 'hooks')
   const configPath = join(home, '.gitconfig')
   await mkdir(hooksDirectory, { recursive: true })
-  const gitEnvironment: NodeJS.ProcessEnv = {
+  const gitEnvironment: Record<string, string> = {
     GIT_CONFIG_GLOBAL: configPath,
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_TERMINAL_PROMPT: '0'
