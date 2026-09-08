@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { inspectWorkerTerminal } from './worker-observation'
 import { createOrchestrationWorkerReleaseHarness } from './worker-release.test-support'
+import { makePaneKey } from '../../../../../../shared/stable-pane-id'
 
 const PTY_ID = 'runtime_test:term_worker'
 const LEAF_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -47,9 +48,17 @@ describe('worker release through runtime incarnation recovery', () => {
         return
       }
       if (scenario === 'read') {
-        await expect(
-          harness.call('orchestration.workerRead', { dispatch: dispatchId })
-        ).resolves.toBeDefined()
+        const readTerminal = vi.spyOn(runtime, 'readTerminal')
+        const output = await harness.call('orchestration.workerRead', { dispatch: dispatchId })
+        // Pins the read to the reminted terminal: the handle it reached must resolve to the
+        // registered pane and incarnation, which the stale durable handle never does.
+        const [[readHandle]] = readTerminal.mock.calls
+        expect(runtime.getTerminalPaneKey(readHandle)).toBe(makePaneKey('tab_worker', LEAF_ID))
+        expect(runtime.getTerminalProcessIncarnation(readHandle)).toBe(`${PTY_ID}:1`)
+        expect(output).toMatchObject({
+          source: 'terminal',
+          fallbackReason: 'session_not_reported'
+        })
         expect(kill).not.toHaveBeenCalled()
         return
       }
