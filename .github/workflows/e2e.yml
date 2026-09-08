@@ -252,12 +252,19 @@ jobs:
         env:
           TEST_FILES_JSON: ${{ inputs.test_files }}
         run: |
+          # Third exclusion: ssh-docker-bulk-open-freeze-repro is a perf oracle, not a
+          # correctness one — SOFT/HARD_FREEZE_LAG_MS are wall-clock thresholds on a 420s
+          # budget, which do not hold on a shared runner. It is owned by the dedicated
+          # `test:e2e:ssh-docker-bulk-open-freeze` harness. It only became reachable here
+          # when #31 made it compile for the first time; before that it died on its first
+          # call. See stablyai/orca#16764, which applies this same rule to its perf sibling.
           mapfile -t TEST_FILES < <(jq -r '.[] | select(
             . != "tests/e2e/ssh-startup-exec-readiness.spec.ts" and
-            . != "tests/e2e/paired-startup-exec-readiness.spec.ts"
+            . != "tests/e2e/paired-startup-exec-readiness.spec.ts" and
+            . != "tests/e2e/ssh-docker-bulk-open-freeze-repro.spec.ts"
           )' <<<"$TEST_FILES_JSON")
           if [ "${#TEST_FILES[@]}" -eq 0 ]; then
-            echo "Changed startup-readiness specs are owned by the dedicated live lane."
+            echo "Changed specs are all owned by dedicated lanes."
             exit 0
           fi
           E2E_ENV=(SKIP_BUILD=1 ORCA_E2E_FORWARD_APP_LOGS=1 ORCA_E2E_WEB_CLIENT=1 ORCA_RELAY_PATH="$GITHUB_WORKSPACE/out/relay")

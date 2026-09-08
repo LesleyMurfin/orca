@@ -72,6 +72,15 @@ test.describe('R2 Docker SSH bulk-open freeze', () => {
       await waitForSessionReady(orcaPage)
       await waitForActiveWorktree(orcaPage)
 
+      // Why these two argument choices, since neither follows from the types alone and both
+      // change what this repro measures (see stablyai/orca#16764):
+      //   1. Each flood command targets the ptyId of its OWN newly-split pane, captured after
+      //      focusLastTerminalPane. Targeting whatever pane happened to be active would flood
+      //      one pane SESSION_SPLITS times instead of SESSION_SPLITS panes concurrently, and
+      //      concurrent panes are the load this oracle exists to measure.
+      //   2. Splits are all 'vertical', so the panes form one column. A uniform direction keeps
+      //      renderer layout cost comparable between runs; an alternating grid would vary the
+      //      measured cost with SESSION_SPLITS.
       const runId = `${Date.now()}`
       // First terminal on the SSH worktree.
       await waitForActiveTerminalManager(orcaPage)
