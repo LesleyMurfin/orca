@@ -150,6 +150,26 @@ A `worker-start` that failed before its agent was ready still owns the terminal
 it created. Its receipt names `worker-release`, and `worker-list` reports that
 row as `reclaimable`; release it there rather than closing the terminal by hand.
 
+Sweeping many reclaimable rows one `--dispatch` call at a time is wasteful —
+prefer the bulk form:
+
+```text
+ORCA orchestration worker-release --terminal-state reclaimable --run <run_id> --json
+```
+
+It runs the identical per-dispatch release logic against every currently
+reclaimable Dispatch in scope — never active, retained, release_pending, or
+already-released terminals — and one Dispatch erroring never aborts the rest.
+Mutually exclusive with `--dispatch`. `--run` scopes it exactly like
+`worker-list`; omit it only to sweep every Run this runtime holds, and check
+the receipt's `scope` field for which resolution (explicit `--run`,
+terminal-bound Run, or all Runs) was actually used. The receipt totals
+`released`, `alreadyReleased`, `retained`, `failed`, and `releasePending`
+against `requested`, plus a per-dispatch `outcomes` list. Exit is 1 only when
+`failed` is nonzero — a thrown error or an unprovable `release_unknown`
+outcome; `releasePending` alone still exits 0, since it is a settled
+non-failing answer, not a failure.
+
 Never release because of timeout, TUI idle, heartbeat, status, question,
 escalation, or stale/rejected completion. If the receipt says `release_pending`
 or `release_unknown`, follow its exact recovery action. Never substitute

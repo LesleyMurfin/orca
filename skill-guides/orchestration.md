@@ -177,6 +177,31 @@ it with `task-update --status completed`. Enumerate the terminals still owing a
 decision with `worker-list --run <run_id> --terminal-state reclaimable --json`,
 and do not end the coordinator turn until it returns none.
 
+Releasing a large fan-out one Dispatch at a time wastes calls. When cleaning up
+many settled workers at once — end-of-session sweep, or the enumeration above
+returns more than a couple of rows — prefer the bulk form over looping
+`--dispatch`:
+
+```text
+ORCA orchestration worker-release --terminal-state reclaimable --run <run_id> --json
+```
+
+It applies the identical per-dispatch release logic to every currently
+reclaimable Dispatch in that scope, so it never touches active, retained,
+release_pending, or already-released terminals; one Dispatch erroring never
+aborts the rest, and every outcome is reported in the receipt's `outcomes`
+alongside `released`, `alreadyReleased`, `retained`, `failed`, and
+`releasePending` counts (`requested` always equals their sum). `--run` scopes
+the sweep the same way it scopes `worker-list`; omit it only to act across
+every Run this runtime holds, and read the receipt's own `scope` field (or the
+printed "Scope: …" line) for which resolution — explicit `--run`,
+terminal-bound Run, or all Runs — was actually used. The call exits 1 only
+when `failed` is nonzero (a thrown error or unprovable `release_unknown`
+outcome); a nonzero `releasePending` is a settled non-failing answer and still
+exits 0. `--dispatch` and `--terminal-state reclaimable` are mutually
+exclusive — use `--dispatch` for a single settled worker just decided on, and
+the bulk form for the sweep at the end.
+
 ## Conditional references
 
 This compact guide is sufficient for the normal local loop. At an action gate

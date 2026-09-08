@@ -78,6 +78,10 @@ orca orchestration worker-stop --dispatch <dispatchId> --json
 # After an accepted worker_done: reuse the same terminal for a follow-up Dispatch, or release it
 # (archives inspectable output, then closes only that coordinator-owned agent terminal):
 orca orchestration worker-release --dispatch <dispatchId> --json
+# Cleaning up many settled workers at once (end-of-session sweep)? Release every
+# currently reclaimable Dispatch in one call instead of looping --dispatch; --run
+# scopes it like worker-list, and it's mutually exclusive with --dispatch:
+orca orchestration worker-release --terminal-state reclaimable --run <runId> --json
 # Keep a settled worker live for debugging when the user asked to retain it:
 orca orchestration worker-retain --dispatch <dispatchId> --json
 # retry placement is explicit — --retry-of does not inherit --on/worktree:
@@ -85,6 +89,8 @@ orca orchestration worker-start --task <taskId> --retry-of <dispatchId> --worktr
 ```
 
 Do not leave completed worker terminals open just to re-read output — use `worker-read` after `worker-release`. Do not substitute a broad `terminal close` when release returns `release_pending` or `release_unknown`; follow the receipt's recovery action.
+
+Bulk release applies the same per-dispatch logic to every reclaimable Dispatch in scope — it never touches active, retained, release_pending, or already-released terminals, and one Dispatch erroring never aborts the rest. The JSON receipt totals `released`, `alreadyReleased`, `retained`, `failed`, and `releasePending` against `requested`, reports which Run scope resolved (`scope`: explicit `--run`, terminal-bound Run, or all Runs), and lists each outcome. Exit code is 1 only when `failed` is nonzero.
 
 ## Federated workers (optional)
 
