@@ -233,10 +233,30 @@ clients should use.
 `KillMode=mixed` sends the graceful stop signal only to Orca's main process,
 then retains systemd's cgroup-wide `SIGKILL` fallback if shutdown times out.
 This lets Orca keep its owned Xvfb alive until Electron disconnects cleanly.
-It does **not** preserve the detached terminal daemon: the daemon and its PTYs
-remain in `orca-serve.service`'s cgroup and are killed when the stop completes.
-Every `systemctl stop` or `restart` therefore ends live terminals and agent
-processes, even though their persisted layout and terminal history remain.
+
+The detached terminal daemon is preserved by a different mechanism: it is
+launched through `systemd-run --user --scope`, so it and its PTYs live in their
+own transient `orca-daemon-<launch-nonce>.scope` unit rather than in
+`orca-serve.service`'s cgroup. A `systemctl stop` or `restart` of this unit
+leaves that scope running, so live terminals and agent processes survive the
+restart and the successor adopts them.
+
+That requires a reachable systemd **user** manager for the service account.
+With `User=orca` and no interactive login there is none by default, so enable
+lingering once:
+
+```bash
+sudo loginctl enable-linger orca
+```
+
+Without it — or on a host without systemd as PID 1, or without `systemd-run`
+on `PATH` — the daemon falls back to launching directly inside
+`orca-serve.service`'s cgroup, and is then killed when the stop completes:
+every `systemctl stop` or `restart` ends live terminals and agent processes,
+even though their persisted layout and terminal history remain. Check which
+case a running host is in with the `cgroupUnit` field of the daemon health
+payload: a `orca-daemon-*.scope` value means isolated, `null` means the
+unscoped fallback.
 
 Exit status `3` means another process already owns this userData profile, so
 `RestartPreventExitStatus=3` stops the unit instead of retrying a launch that
