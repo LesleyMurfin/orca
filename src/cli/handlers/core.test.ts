@@ -158,6 +158,7 @@ describe('orca serve stats CLI handler', () => {
           tasks: 2,
           terminals: 3,
           terminalsUnverifiable: 2,
+          terminalsExited: 5,
           worktrees: 4,
           browserPages: 9,
           browserPagesRetained: 6,
@@ -212,6 +213,7 @@ describe('orca serve stats CLI handler', () => {
     expect(out).toContain('terminals: 3')
     expect(out).toContain('worktrees: 4')
     expect(out).toContain('terminalsUnverifiable: 2')
+    expect(out).toContain('terminalsExited: 5')
     expect(out).toContain('browserPages: 9')
     expect(out).toContain('browserPagesRetained: 6')
     expect(out).toContain('runtimeId: rt-boot-1')
@@ -247,6 +249,7 @@ describe('orca serve stats CLI handler', () => {
           tasks: 0,
           terminals: 0,
           terminalsUnverifiable: 0,
+          terminalsExited: 0,
           worktrees: 0,
           browserPages: 0,
           browserPagesRetained: 0,

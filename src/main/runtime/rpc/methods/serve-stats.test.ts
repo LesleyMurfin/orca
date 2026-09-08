@@ -20,6 +20,7 @@ describe('serve.stats RPC method', () => {
         tasks: 2,
         terminals: 3,
         terminalsUnverifiable: 1,
+        terminalsExited: 6,
         worktrees: 4,
         browserPages: 5,
         browserPagesRetained: 2,

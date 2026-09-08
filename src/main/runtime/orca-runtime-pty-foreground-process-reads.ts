@@ -196,6 +196,7 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
     const workerTerminals = db.countWorkerTerminalInventory()
     let terminals = 0
     let terminalsUnverifiable = 0
+    let terminalsExited = 0
     let agents = 0
     const agentsByState: Record<RuntimeServeStatsAgentState, number> = {
       working: 0,
@@ -205,10 +206,16 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
     }
     // Hoisted: the hook snapshot is one process-wide array, not a per-pty read.
     const hookRows = this.getAgentStatusSnapshotFn?.() ?? []
-    for (const pty of this.ptysById.values()) {
+    for (const [ptyId, pty] of this.ptysById) {
       if (!pty.connected) {
-        // Registered, but the owning host says nothing about it: unverifiable, not dead.
-        terminalsUnverifiable++
+        // Registered, but not connected. Only a host-delivered exit frame reaches the liveness
+        // register, so an `exited` verdict there is a death certificate; anything weaker is loss
+        // of contact, which is never proof of death and must stay on the conservative side.
+        if (this.getPtyLivenessVerdict(ptyId)?.status === 'exited') {
+          terminalsExited++
+        } else {
+          terminalsUnverifiable++
+        }
         continue
       }
       terminals++
@@ -233,9 +240,23 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
       }
     }
     const leases = getBrowserHostLeaseRegistry(this)
-    const browserPages = getRuntimeBrowserPageRegistry(this).countPages(
+    const pageRegistry = getRuntimeBrowserPageRegistry(this)
+    const clientPages = pageRegistry.countPages(
       (browserPageId) => leases.getPlacement(browserPageId) !== undefined
     )
+    // Why: the registry only ever holds client-hosted pages, so counting it alone reported 0 for
+    // every page a headless serve opens — the offscreen population #14552 is actually about. Those
+    // pages are keyed by id in the WebContents registration map the bridge reads, so add the ones
+    // the registry does not already hold. `getRegisteredTabs` and not `tabList`: listing sweeps
+    // dead guests out of BrowserManager, and a stats read must deregister nothing.
+    let hostBackedPages = 0
+    // Optional-called like every other bridge read in this runtime: the bridge is injected, so a
+    // caller may hold one that predates this method.
+    for (const browserPageId of this.agentBrowserBridge?.getRegisteredTabs?.().keys() ?? []) {
+      if (!pageRegistry.getPage(browserPageId)) {
+        hostBackedPages++
+      }
+    }
     return {
       version: getAppEnvironment().getVersion(),
       runtimeId: this.getRuntimeId(),
@@ -246,9 +267,11 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
         tasks,
         terminals,
         terminalsUnverifiable,
+        terminalsExited,
         worktrees: worktrees.totalCount,
-        browserPages: browserPages.total,
-        browserPagesRetained: browserPages.retained,
+        browserPages: clientPages.total + hostBackedPages,
+        // Retention is a client-hosted notion only (see RuntimeServeStatsResult.counts).
+        browserPagesRetained: clientPages.retained,
         tasksByStatus,
         agentsByState,
         workersByTerminalState: Object.fromEntries(

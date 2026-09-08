@@ -223,17 +223,42 @@ export type RuntimeServeStatsResult = {
     tasks: number
     terminals: number
     /**
-     * Registered ptys that are not currently connected: registered but with no
-     * evidence from the owning host. Loss of contact is never proof of death
+     * Registered ptys that are not connected and that this runtime cannot prove exited: no
+     * host-delivered exit frame ever reached the liveness register for them (a dropped relay, an
+     * SSH provider that unregistered, an exit the owning host never confirmed).
+     *
+     * Loss of contact is never proof of death
      * (docs/reference/ssh-execution-boundary.md), so this count MUST NOT
-     * authorize cleanup — it exists so leaked ptys stop being invisible.
+     * authorize cleanup — it exists so leaked ptys stop being invisible. A pty
+     * whose evidence fits neither bucket is counted here, the conservative side.
      */
     terminalsUnverifiable: number
+    /**
+     * Registered ptys that are not connected and that the owning host positively reported gone:
+     * the liveness register holds an `exited` verdict (see PtyLivenessVerdict), whose only writer
+     * is a host-delivered exit frame. These are proven dead, and separating them is what keeps
+     * `terminalsUnverifiable`'s no-cleanup warning meaningful instead of routine.
+     */
+    terminalsExited: number
     worktrees: number
-    // Why: agent-opened tabs grow unobserved (#14552); every registry-held page.
+    /**
+     * Every browser page this runtime holds, of both kinds: client-hosted pages in
+     * RuntimeBrowserPageRegistry, plus the pages backed by a WebContents this process registered —
+     * the renderer `<webview>` pages and the offscreen pages a headless serve creates. Counting
+     * only the registry reported 0 for exactly the agent-opened headless tabs #14552 is about.
+     * De-duplicated by page id, so a page known to both is counted once.
+     */
     browserPages: number
-    // Why: the subset whose host is gone. Each still pins one of the runtime's
-    // 256 page slots for the runtime's life — no TTL, no reaper.
+    /**
+     * The client-hosted subset whose host is gone. Each still pins one of the runtime's 256
+     * registry page slots for the runtime's life — no TTL, no reaper.
+     *
+     * Scoped to client-hosted pages deliberately: retention here means "the host that could drive
+     * this page left, and the slot stayed". A WebContents-backed page has no such host — this
+     * process is its host — so it can never be retained in that sense, and inflating this number
+     * with offscreen pages would misreport a leak. It is therefore a subset of `browserPages`,
+     * never a partition of it.
+     */
     browserPagesRetained: number
     /**
      * Every task row grouped by status, with all six statuses always present (0, never omitted).

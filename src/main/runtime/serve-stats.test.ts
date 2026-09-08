@@ -6,7 +6,9 @@ import { installFakeAppEnvironment } from '../../../config/scripts/vitest-host-p
 // construction (src/main/stats/collector.ts), so it needs this mock even though
 // the runtime itself reads version through the AppEnvironment port. liveAgents
 // (the agents count source) is never persisted, so a temp path reads nothing back.
-vi.mock('electron', () => ({ app: { getPath: () => tmpdir() } }))
+// `getAppPath` is for AgentBrowserBridge: it resolves the agent-browser binary at construction,
+// and the offscreen-page case below builds a real bridge over a mocked BrowserManager.
+vi.mock('electron', () => ({ app: { getPath: () => tmpdir(), getAppPath: () => tmpdir() } }))
 
 import { OrchestrationDb } from './orchestration/db'
 import { OrcaRuntimeService } from './orca-runtime'
@@ -14,6 +16,8 @@ import { StatsCollector } from '../stats/collector'
 import { getBrowserHostLeaseRegistry } from './browser-host-lease-registry-instance'
 import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
 import type { RuntimeBrowserPlacement } from '../../shared/runtime-browser-placement'
+import { AgentBrowserBridge } from '../browser/agent-browser-bridge'
+import { mockBrowserManager } from '../browser/agent-browser-bridge-test-harness'
 
 const ZERO_TASK_STATUS_COUNTS = {
   pending: 0,
@@ -82,6 +86,7 @@ describe('getServeStats', () => {
         tasks: 2,
         terminals: 0,
         terminalsUnverifiable: 0,
+        terminalsExited: 0,
         worktrees: 3,
         browserPages: 0,
         browserPagesRetained: 0,
@@ -153,6 +158,7 @@ describe('getServeStats', () => {
       tasks: 0,
       terminals: 0,
       terminalsUnverifiable: 0,
+      terminalsExited: 0,
       worktrees: 0,
       browserPages: 0,
       browserPagesRetained: 0,
@@ -176,7 +182,8 @@ describe('getServeStats', () => {
 
     expect((await runtime.getServeStats()).counts).toMatchObject({
       terminals: 1,
-      terminalsUnverifiable: 0
+      terminalsUnverifiable: 0,
+      terminalsExited: 0
     })
 
     internals.recordPtyWorktree('pty-a', 'wt-a', { connected: false })
@@ -184,11 +191,41 @@ describe('getServeStats', () => {
     // The pty is still registered; only the evidence for it is gone.
     expect((await runtime.getServeStats()).counts).toMatchObject({
       terminals: 0,
+      terminalsUnverifiable: 1,
+      terminalsExited: 0
+    })
+  })
+
+  it('separates a pty the host reported exited from one that merely lost contact', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = runtimeWithStubbedWorktrees(db)
+    const internals = runtime as unknown as {
+      recordPtyWorktree: (
+        ptyId: string,
+        worktreeId: string,
+        state?: { connected?: boolean }
+      ) => unknown
+    }
+    internals.recordPtyWorktree('pty-exited', 'wt-a')
+    internals.recordPtyWorktree('pty-silent', 'wt-a')
+
+    // A host-delivered exit frame, the only writer of an `exited` liveness verdict.
+    runtime.onPtyExit('pty-exited', 0)
+    // Contact loss carrying no exit evidence at all — what a dropped relay leaves behind.
+    internals.recordPtyWorktree('pty-silent', 'wt-a', { connected: false })
+
+    // Both are registered and disconnected, but only one is proven dead. Reporting the proven one
+    // as unverifiable is what emptied that field's no-cleanup warning of meaning.
+    expect(runtime.getPtyLivenessVerdict('pty-exited')).toEqual({ status: 'exited' })
+    expect(runtime.getPtyLivenessVerdict('pty-silent')).toBeNull()
+    expect((await runtime.getServeStats()).counts).toMatchObject({
+      terminals: 0,
+      terminalsExited: 1,
       terminalsUnverifiable: 1
     })
   })
 
-  it('counts every registered browser page, and the retained subset with no live host', async () => {
+  it('counts every client-hosted page, and the retained subset with no live host', async () => {
     db = new OrchestrationDb(':memory:')
     const runtime = runtimeWithStubbedWorktrees(db)
     const leases = getBrowserHostLeaseRegistry(runtime)
@@ -209,6 +246,47 @@ describe('getServeStats', () => {
       browserPages: 2,
       browserPagesRetained: 1
     })
+  })
+
+  it('counts a page opened on the headless offscreen path, which holds no registry slot', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = runtimeWithStubbedWorktrees(db)
+    // The map BrowserManager keys by page id: `registerOffscreenGuest` writes the id a headless
+    // `tab create` returns into exactly this map, and into nothing else — a headless serve has no
+    // renderer, so those pages never reach the client-hosted page registry.
+    const registeredPages = new Map<string, number>()
+    installBrowserBridge(runtime, registeredPages)
+
+    expect((await runtime.getServeStats()).counts).toMatchObject({ browserPages: 0 })
+
+    registeredPages.set('offscreen-page-a', 501)
+    registeredPages.set('offscreen-page-b', 502)
+
+    // #14552: agent-opened headless tabs are the population this field exists to expose.
+    expect((await runtime.getServeStats()).counts).toMatchObject({
+      browserPages: 2,
+      // Offscreen pages have no separate host to lose, so retention stays a client-hosted notion.
+      browserPagesRetained: 0
+    })
+
+    registeredPages.delete('offscreen-page-a')
+
+    expect((await runtime.getServeStats()).counts).toMatchObject({ browserPages: 1 })
+  })
+
+  it('counts a page known to both populations once', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = runtimeWithStubbedWorktrees(db)
+    const leases = getBrowserHostLeaseRegistry(runtime)
+    attachBrowserHost(runtime, 'host-a')
+    publishClientPage(runtime, 'page-a', leases.placeClientPage('page-a', 'host-a'))
+    const registeredPages = new Map<string, number>([
+      ['page-a', 501],
+      ['offscreen-page-b', 502]
+    ])
+    installBrowserBridge(runtime, registeredPages)
+
+    expect((await runtime.getServeStats()).counts).toMatchObject({ browserPages: 2 })
   })
 
   it('publishes every task status, including the settled rows counts.tasks drops', async () => {
@@ -344,6 +422,20 @@ function attachBrowserHost(runtime: OrcaRuntimeService, browserHostClientId: str
     pairedDeviceId: `device-${browserHostClientId}`,
     hostCapabilities: ['webview']
   })
+}
+
+/**
+ * Gives the runtime a real AgentBrowserBridge over a BrowserManager whose page-id registration map
+ * is `registeredPages` — the map both browser backends write through, and the runtime's only view
+ * of the pages a WebContents in this process backs.
+ */
+function installBrowserBridge(
+  runtime: OrcaRuntimeService,
+  registeredPages: Map<string, number>
+): void {
+  // The field is protected on the runtime; tests here already reach internals the same way.
+  const internals = runtime as unknown as { agentBrowserBridge: AgentBrowserBridge }
+  internals.agentBrowserBridge = new AgentBrowserBridge(mockBrowserManager(registeredPages))
 }
 
 function publishClientPage(

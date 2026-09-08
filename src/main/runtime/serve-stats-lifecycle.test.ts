@@ -93,7 +93,13 @@ describe('serve stats lifecycle', () => {
       recorder.onStatus({ ...event, payload: { state: 'waiting' } })
       expect((await runtime.getServeStats()).counts.agents).toBe(1)
       runtime.onPtyExit('pty-review', 0)
-      expect((await runtime.getServeStats()).counts.terminals).toBe(0)
+      // The host reported this one gone, so it is a proven exit — never an unverifiable one, whose
+      // whole point is that cleanup is not authorized (see RuntimeServeStatsResult.counts).
+      expect((await runtime.getServeStats()).counts).toMatchObject({
+        terminals: 0,
+        terminalsExited: 1,
+        terminalsUnverifiable: 0
+      })
     } finally {
       db.close()
     }

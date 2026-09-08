@@ -143,6 +143,7 @@ export function formatServeStats(stats: RuntimeServeStatsResult): string {
     `tasks: ${stats.counts.tasks}`,
     `terminals: ${stats.counts.terminals}`,
     `terminalsUnverifiable: ${stats.counts.terminalsUnverifiable}`,
+    `terminalsExited: ${stats.counts.terminalsExited}`,
     `worktrees: ${stats.counts.worktrees}`,
     `browserPages: ${stats.counts.browserPages}`,
     `browserPagesRetained: ${stats.counts.browserPagesRetained}`,
