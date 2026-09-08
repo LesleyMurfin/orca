@@ -22,7 +22,24 @@ describe('serve.stats RPC method', () => {
         terminalsUnverifiable: 1,
         worktrees: 4,
         browserPages: 5,
-        browserPagesRetained: 2
+        browserPagesRetained: 2,
+        tasksByStatus: {
+          pending: 1,
+          ready: 0,
+          dispatched: 1,
+          completed: 3,
+          failed: 2,
+          blocked: 0
+        },
+        agentsByState: { working: 1, permission: 0, idle: 0, unknown: 0 },
+        workersByTerminalState: {
+          active: 1,
+          reclaimable: 4,
+          retained: 2,
+          release_pending: 0,
+          release_unknown: 3,
+          released: 5
+        }
       }
     }
     const runtime = {

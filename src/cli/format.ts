@@ -145,6 +145,17 @@ export function formatServeStats(stats: RuntimeServeStatsResult): string {
     `terminalsUnverifiable: ${stats.counts.terminalsUnverifiable}`,
     `worktrees: ${stats.counts.worktrees}`,
     `browserPages: ${stats.counts.browserPages}`,
-    `browserPagesRetained: ${stats.counts.browserPagesRetained}`
+    `browserPagesRetained: ${stats.counts.browserPagesRetained}`,
+    `tasksByStatus: ${formatServeStatsHistogram(stats.counts.tasksByStatus)}`,
+    `agentsByState: ${formatServeStatsHistogram(stats.counts.agentsByState)}`,
+    `workersByTerminalState: ${formatServeStatsHistogram(stats.counts.workersByTerminalState)}`
   ].join('\n')
+}
+
+// Why: one line per breakdown keeps `serve stats` scannable in a terminal, and the fixed key
+// order (every key emitted, zeros included) means two runs diff cleanly.
+function formatServeStatsHistogram(counts: Record<string, number>): string {
+  return Object.entries(counts)
+    .map(([key, count]) => `${key}=${count}`)
+    .join(' ')
 }

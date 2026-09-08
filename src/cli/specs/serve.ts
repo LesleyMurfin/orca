@@ -33,13 +33,15 @@ export const SERVE_COMMAND_SPECS: CommandSpec[] = [
   },
   {
     path: ['serve', 'stats'],
-    summary: 'Show live runtime counts (agents, tasks, terminals, worktrees, browser pages)',
+    summary:
+      'Show live runtime counts plus task-status, agent-state and worker-terminal-state breakdowns',
     usage: 'orca serve stats [--json]',
     allowedFlags: [...GLOBAL_FLAGS],
     notes: [
       'Queries a running runtime (local or --environment / pairing). Does not start a server.',
-      'JSON shape is a stable contract: version, runtimeId, uptimeSeconds, port, counts.{agents,tasks,terminals,terminalsUnverifiable,worktrees,browserPages,browserPagesRetained}.',
-      'terminalsUnverifiable counts registered ptys with no current host contact — unverifiable, not proof they exited; it does not authorize cleanup.'
+      'JSON shape is a stable contract: version, runtimeId, uptimeSeconds, port, counts.{agents,tasks,terminals,terminalsUnverifiable,worktrees,browserPages,browserPagesRetained,tasksByStatus,agentsByState,workersByTerminalState}. The three breakdowns are objects with every key always present (0, never omitted).',
+      'terminalsUnverifiable counts registered ptys with no current host contact — unverifiable, not proof they exited; it does not authorize cleanup.',
+      'tasksByStatus does not sum to counts.tasks: it includes the completed/failed rows that counts.tasks excludes. agentsByState reports unknown for any agent whose turn state is not currently provable (all structured sessions, plus ptys with no live status) — unknown is never idle. workersByTerminalState covers every retained dispatch, so reclaimable/release_unknown pileups are visible without worker-list.'
     ],
     examples: ['orca serve stats', 'orca serve stats --json']
   }

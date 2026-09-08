@@ -9,6 +9,8 @@ import type {
 } from './runtime-capability-degradation'
 import type { TabGroupLayoutNode } from './tab-types'
 import type { TerminalPaneLayoutNode } from './terminal-tab-types'
+import type { OrchestrationTaskStatus } from './orchestration-task-status'
+import type { WorkerTerminalListState } from './worker-terminal-list-state'
 import type {
   RuntimeMobileSessionClientTab,
   RuntimeMobileSessionSnapshotTab,
@@ -127,6 +129,14 @@ export type CliStatusResult = {
   }
 }
 
+/**
+ * What one counted agent's turn is doing, as far as the runtime can prove it in a single
+ * in-memory pass. `permission` is the established runtime name for "parked on a prompt that needs
+ * a human"; `unknown` means an agent is present but no current turn evidence exists for it — it
+ * is never a stand-in for idle.
+ */
+export type RuntimeServeStatsAgentState = 'working' | 'permission' | 'idle' | 'unknown'
+
 // Why: live current-state counts for `orca serve stats --json`. Deliberately
 // NOT StatsSummary (that is lifetime-cumulative "fun stats"). This shape is a
 // stable contract once shipped — scripts/MOPs parse it, so version it if it
@@ -157,6 +167,39 @@ export type RuntimeServeStatsResult = {
     // Why: the subset whose host is gone. Each still pins one of the runtime's
     // 256 page slots for the runtime's life — no TTL, no reaper.
     browserPagesRetained: number
+    /**
+     * Every task row grouped by status, with all six statuses always present (0, never omitted).
+     *
+     * Deliberately does NOT sum to `counts.tasks`: that field counts live/resumable work only
+     * (it excludes `completed` and `failed`, which persist in the table until an explicit reset).
+     * The terminal statuses are exactly what #13047's operator had to hand-tabulate, so the
+     * histogram keeps them.
+     */
+    tasksByStatus: Record<OrchestrationTaskStatus, number>
+    /**
+     * The `agents` count split by turn state. Sums to `counts.agents`.
+     *
+     * What each bucket can speak for depends on the population:
+     * - Connected ptys with a resolved agent identity: `working` / `permission` / `idle` come
+     *   from that pty's own current-incarnation evidence (retained hook status, then the prompt
+     *   lifecycle tracker, then a title status observed live). A pty whose only status was
+     *   observed in a previous incarnation, or which never reported one, counts as `unknown` —
+     *   an identity resolving on a pane proves an agent is there, never what it is doing
+     *   (#19548).
+     * - Structured (native) agent sessions: always `unknown`. The session host proves liveness
+     *   (live / unverifiable / exited), not turn state, and reading turn state would mean
+     *   projecting each session's journal.
+     */
+    agentsByState: Record<RuntimeServeStatsAgentState, number>
+    /**
+     * Worker terminals grouped by process-accounting state, all six keys always present.
+     *
+     * This is the histogram #19388 and #18737 were hand-counted from: `reclaimable` is settled
+     * work still holding a terminal, `release_unknown` is a release that could not be proven.
+     * Scoped to every dispatch the DB retains, so it does not sum to `counts.tasks` or
+     * `counts.terminals`; dispatches with no worker terminal at all are not counted here.
+     */
+    workersByTerminalState: Record<WorkerTerminalListState, number>
   }
 }
 

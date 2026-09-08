@@ -160,7 +160,24 @@ describe('orca serve stats CLI handler', () => {
           terminalsUnverifiable: 2,
           worktrees: 4,
           browserPages: 9,
-          browserPagesRetained: 6
+          browserPagesRetained: 6,
+          tasksByStatus: {
+            pending: 0,
+            ready: 1,
+            dispatched: 1,
+            completed: 14,
+            failed: 6,
+            blocked: 0
+          },
+          agentsByState: { working: 1, permission: 0, idle: 0, unknown: 0 },
+          workersByTerminalState: {
+            active: 1,
+            reclaimable: 271,
+            retained: 370,
+            release_pending: 0,
+            release_unknown: 13,
+            released: 16
+          }
         }
       },
       _meta: { runtimeId: 'rt-1' }
@@ -187,6 +204,14 @@ describe('orca serve stats CLI handler', () => {
     expect(out).toContain('browserPages: 9')
     expect(out).toContain('browserPagesRetained: 6')
     expect(out).toContain('runtimeId: rt-boot-1')
+    // The breakdowns render as one scannable line each, every key present.
+    expect(out).toContain(
+      'tasksByStatus: pending=0 ready=1 dispatched=1 completed=14 failed=6 blocked=0'
+    )
+    expect(out).toContain('agentsByState: working=1 permission=0 idle=0 unknown=0')
+    expect(out).toContain(
+      'workersByTerminalState: active=1 reclaimable=271 retained=370 release_pending=0 release_unknown=13 released=16'
+    )
   })
 
   it('prints JSON when --json is set and renders null port as none in human mode', async () => {
@@ -205,7 +230,24 @@ describe('orca serve stats CLI handler', () => {
           terminalsUnverifiable: 0,
           worktrees: 0,
           browserPages: 0,
-          browserPagesRetained: 0
+          browserPagesRetained: 0,
+          tasksByStatus: {
+            pending: 0,
+            ready: 0,
+            dispatched: 0,
+            completed: 0,
+            failed: 0,
+            blocked: 0
+          },
+          agentsByState: { working: 0, permission: 0, idle: 0, unknown: 0 },
+          workersByTerminalState: {
+            active: 0,
+            reclaimable: 0,
+            retained: 0,
+            release_pending: 0,
+            release_unknown: 0,
+            released: 0
+          }
         }
       },
       _meta: { runtimeId: 'rt-1' }

@@ -14,9 +14,18 @@ import type { IPtyProvider } from '../providers/types'
 import { killAllProcessesForWorktree } from './worktree-teardown'
 import type { RuntimeCommandSurfaceHost } from './orca-runtime-core'
 import type { MemorySnapshot, StatsSummary } from '../../shared/process-stats-types'
-import type { RuntimeServeStatsResult } from '../../shared/runtime-types'
+import type {
+  RuntimeServeStatsAgentState,
+  RuntimeServeStatsResult
+} from '../../shared/runtime-types'
+import {
+  WORKER_TERMINAL_LIST_STATES,
+  type WorkerTerminalListState
+} from '../../shared/worker-terminal-list-state'
+import type { AgentStatus } from '../../shared/agent-detection'
+import type { AgentStatusIpcPayload } from '../../shared/agent-status-types'
 import { getAppEnvironment } from '../../shared/app-environment'
-import { getLatestPtyTitle } from './runtime-worktree-status-projection'
+import { deriveServeStatsAgentState, getLatestPtyTitle } from './runtime-worktree-status-projection'
 import { getStructuredAgentSessionHost } from '../native-chat/agent-session-wire/structured-agent-session-registry'
 import { observeStructuredWorker } from './structured-worker-authority'
 import { collectMemorySnapshot } from '../memory/collector'
@@ -177,10 +186,23 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
   // Occupancy follows runtime PTYs; turn-duration statistics exclude waiting agents.
   async getServeStats(): Promise<RuntimeServeStatsResult> {
     const worktrees = await this.listManagedWorktrees()
-    const tasks = this.getOrchestrationDb().countTasks()
+    const db = this.getOrchestrationDb()
+    const tasks = db.countTasks()
+    const tasksByStatus = db.countTasksByStatus()
+    // Why: derives one state per retained dispatch row in TS (the same scan `worker-list` runs),
+    // so it grows with dispatch history rather than with live work.
+    const workerTerminals = db.countWorkerTerminalInventory()
     let terminals = 0
     let terminalsUnverifiable = 0
     let agents = 0
+    const agentsByState: Record<RuntimeServeStatsAgentState, number> = {
+      working: 0,
+      permission: 0,
+      idle: 0,
+      unknown: 0
+    }
+    // Hoisted: the hook snapshot is one process-wide array, not a per-pty read.
+    const hookRows = this.getAgentStatusSnapshotFn?.() ?? []
     for (const pty of this.ptysById.values()) {
       if (!pty.connected) {
         // Registered, but the owning host says nothing about it: unverifiable, not dead.
@@ -197,11 +219,15 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
         ).agentIdentity
       ) {
         agents++
+        agentsByState[this.resolveServeStatsPtyAgentState(pty, hookRows)]++
       }
     }
     for (const session of getStructuredAgentSessionHost()?.listSessionTabs() ?? []) {
       if (observeStructuredWorker(session).status === 'live') {
         agents++
+        // The session host proves liveness, never turn state: reporting anything else here would
+        // be a guess (see RuntimeServeStatsResult.counts.agentsByState).
+        agentsByState.unknown++
       }
     }
     const leases = getBrowserHostLeaseRegistry(this)
@@ -220,9 +246,47 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
         terminalsUnverifiable,
         worktrees: worktrees.totalCount,
         browserPages: browserPages.total,
-        browserPagesRetained: browserPages.retained
+        browserPagesRetained: browserPages.retained,
+        tasksByStatus,
+        agentsByState,
+        workersByTerminalState: Object.fromEntries(
+          WORKER_TERMINAL_LIST_STATES.map((state) => [state, workerTerminals.counts[state] ?? 0])
+        ) as Record<WorkerTerminalListState, number>
       }
     }
+  }
+
+  /**
+   * One connected pty's turn state, from maps this process already holds.
+   *
+   * The explicit hook status is keyed by pane, and the lifecycle tracker by pty id, so neither
+   * needs a terminal handle, a syscall, or a DB read; a pty with no current evidence stays
+   * `unknown` rather than borrowing a plausible state.
+   */
+  protected resolveServeStatsPtyAgentState(
+    pty: {
+      ptyId: string
+      paneKey: string | null
+      lastAgentStatus: AgentStatus | null
+      lastAgentStatusObservedLive: boolean
+    },
+    hookRows: readonly AgentStatusIpcPayload[]
+  ): RuntimeServeStatsAgentState {
+    const explicit = pty.paneKey
+      ? this.agentRows.getFreshExplicit({
+          handle: this.handleByPtyId.get(pty.ptyId) ?? null,
+          paneKey: pty.paneKey,
+          hookRows
+        })
+      : null
+    const floor = this.agentPromptExplicitStatusFloorByPtyId.get(pty.ptyId)
+    return deriveServeStatsAgentState({
+      // Why: a status recorded before the last prompt submission is superseded evidence.
+      explicit: explicit && (floor === undefined || explicit.updatedAt > floor) ? explicit : null,
+      lifecycle: this.agentPromptLifecycleByPtyId.get(pty.ptyId),
+      titleStatus: pty.lastAgentStatus,
+      titleStatusObservedLive: pty.lastAgentStatusObservedLive
+    })
   }
 
   getMemorySnapshot(): Promise<MemorySnapshot> {

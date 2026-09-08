@@ -15,6 +15,24 @@ import { getBrowserHostLeaseRegistry } from './browser-host-lease-registry-insta
 import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
 import type { RuntimeBrowserPlacement } from '../../shared/runtime-browser-placement'
 
+const ZERO_TASK_STATUS_COUNTS = {
+  pending: 0,
+  ready: 0,
+  dispatched: 0,
+  completed: 0,
+  failed: 0,
+  blocked: 0
+}
+const ZERO_AGENT_STATE_COUNTS = { working: 0, permission: 0, idle: 0, unknown: 0 }
+const ZERO_WORKER_TERMINAL_STATE_COUNTS = {
+  active: 0,
+  reclaimable: 0,
+  retained: 0,
+  release_pending: 0,
+  release_unknown: 0,
+  released: 0
+}
+
 describe('getServeStats', () => {
   let db: OrchestrationDb | null = null
 
@@ -65,7 +83,11 @@ describe('getServeStats', () => {
         terminalsUnverifiable: 0,
         worktrees: 3,
         browserPages: 0,
-        browserPagesRetained: 0
+        browserPagesRetained: 0,
+        // Dependency-free tasks are admitted straight to `ready`.
+        tasksByStatus: { ...ZERO_TASK_STATUS_COUNTS, ready: 2 },
+        agentsByState: ZERO_AGENT_STATE_COUNTS,
+        workersByTerminalState: ZERO_WORKER_TERMINAL_STATE_COUNTS
       }
     })
     expect(result.uptimeSeconds).toBeGreaterThanOrEqual(0)
@@ -91,7 +113,10 @@ describe('getServeStats', () => {
       terminalsUnverifiable: 0,
       worktrees: 0,
       browserPages: 0,
-      browserPagesRetained: 0
+      browserPagesRetained: 0,
+      tasksByStatus: ZERO_TASK_STATUS_COUNTS,
+      agentsByState: ZERO_AGENT_STATE_COUNTS,
+      workersByTerminalState: ZERO_WORKER_TERMINAL_STATE_COUNTS
     })
   })
 
@@ -143,6 +168,62 @@ describe('getServeStats', () => {
       browserPagesRetained: 1
     })
   })
+
+  it('publishes every task status, including the settled rows counts.tasks drops', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = runtimeWithStubbedWorktrees(db)
+    const ready = db.createTask({ spec: 'ready work' })
+    const dispatched = db.createTask({ spec: 'dispatched work' })
+    const completed = db.createTask({ spec: 'finished work' })
+    const failed = db.createTask({ spec: 'broken work' })
+    // `dispatched` is gated on an active Dispatch; the histogram only reads the column.
+    db.db.prepare('UPDATE tasks SET status = ? WHERE id = ?').run('dispatched', dispatched.id)
+    db.updateTaskStatus(completed.id, 'completed')
+    db.updateTaskStatus(failed.id, 'failed')
+
+    const counts = (await runtime.getServeStats()).counts
+
+    expect(counts.tasksByStatus).toEqual({
+      ...ZERO_TASK_STATUS_COUNTS,
+      ready: 1,
+      dispatched: 1,
+      completed: 1,
+      failed: 1
+    })
+    // The histogram is the only place the settled pile is visible: counts.tasks excludes it.
+    expect(counts.tasks).toBe(2)
+    expect(ready.status).toBe('ready')
+  })
+
+  it('groups worker terminals by the state their release actually reached', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = runtimeWithStubbedWorktrees(db)
+    const reclaimable = seedFailedWorkerTerminal(db, 'term_reclaimable', true)
+    const handleOnly = seedFailedWorkerTerminal(db, 'term_retained', false)
+    const releasing = seedFailedWorkerTerminal(db, 'term_releasing', true)
+    db.requestWorkerTerminalRelease(releasing)
+
+    expect((await runtime.getServeStats()).counts.workersByTerminalState).toEqual({
+      ...ZERO_WORKER_TERMINAL_STATE_COUNTS,
+      // Settled work still holding an owned terminal — the #19388 pileup.
+      reclaimable: 1,
+      // A handle with no owned resource behind it can only be retained.
+      retained: 1,
+      release_pending: 1
+    })
+
+    const resource = db.getWorkerTerminalResourceByOwner(releasing)
+    db.markWorkerTerminalReleaseUnknown(resource!.id, 'tab_not_found')
+
+    // #18737: an unprovable release must read as release_unknown, never as released.
+    expect((await runtime.getServeStats()).counts.workersByTerminalState).toEqual({
+      ...ZERO_WORKER_TERMINAL_STATE_COUNTS,
+      reclaimable: 1,
+      retained: 1,
+      release_unknown: 1
+    })
+    expect(handleOnly).not.toBe(reclaimable)
+  })
 })
 
 function runtimeWithStubbedWorktrees(db: OrchestrationDb): OrcaRuntimeService {
@@ -154,6 +235,48 @@ function runtimeWithStubbedWorktrees(db: OrchestrationDb): OrcaRuntimeService {
     truncated: false
   })
   return runtime
+}
+
+/**
+ * Replays a start that created a terminal and then failed: with `adopt`, the dispatch keeps an
+ * owned resource (reclaimable); without it, only the handle survives (retained).
+ */
+function seedFailedWorkerTerminal(db: OrchestrationDb, handle: string, adopt: boolean): string {
+  const task = db.createTask({ spec: `worker for ${handle}` })
+  const started = db.createStartingWorkerDispatch({
+    creator: { kind: 'system' },
+    maxDepth: Number.MAX_SAFE_INTEGER,
+    taskId: task.id,
+    startOptions: {}
+  })
+  const effects = [
+    { kind: 'terminal', role: 'agent', action: 'created', id: handle, surface: 'visible' }
+  ]
+  db.recordWorkerStage({
+    dispatchId: started.dispatch.id,
+    stage: 'terminal_readying',
+    worktreeId: 'repo::worktree',
+    terminalHandle: handle,
+    effects,
+    residualResources: effects
+  })
+  db.failWorkerStart(
+    started.dispatch.id,
+    'agent_readiness',
+    'Agent startup blocked',
+    adopt
+      ? {
+          adoptResidualTerminal: {
+            terminalHandle: handle,
+            worktreeId: 'repo::worktree',
+            paneKey: `tab_${handle}:leaf_${handle}`,
+            processIncarnation: `runtime:pty-${handle}:1`,
+            hostScope: null
+          }
+        }
+      : undefined
+  )
+  return started.dispatch.id
 }
 
 function attachBrowserHost(runtime: OrcaRuntimeService, browserHostClientId: string) {

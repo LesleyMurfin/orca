@@ -28,4 +28,27 @@ describe('countTasks', () => {
 
     expect(db.countTasks()).toBe(0)
   })
+
+  // Why: `serve stats` publishes this histogram as a fixed-key object, so a status with no rows
+  // has to read as 0 rather than disappear, and the terminal statuses `countTasks` drops have to
+  // still be here — that pile is what operators were tabulating by hand (#13047).
+  it('groups every task row by status, keeping statuses with no rows at zero', () => {
+    db = new OrchestrationDb(':memory:')
+    for (const status of ['dispatched', 'dispatched', 'completed', 'blocked'] as const) {
+      const task = db.createTask({ spec: `task ${status}` })
+      db.db.prepare('UPDATE tasks SET status = ? WHERE id = ?').run(status, task.id)
+    }
+    db.createTask({ spec: 'still ready' })
+
+    expect(db.countTasksByStatus()).toEqual({
+      pending: 0,
+      ready: 1,
+      dispatched: 2,
+      completed: 1,
+      failed: 0,
+      blocked: 1
+    })
+    // Deliberately larger than countTasks: that field excludes the settled row.
+    expect(db.countTasks()).toBe(4)
+  })
 })

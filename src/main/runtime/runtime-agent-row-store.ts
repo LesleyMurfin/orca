@@ -77,7 +77,8 @@ export class RuntimeAgentRowStore {
   }
 
   getFreshExplicit(args: {
-    handle: string
+    /** Null when the caller has a pane but no issued terminal handle: pane matching only. */
+    handle: string | null
     paneKey: string | null
     hookRows: readonly AgentStatusIpcPayload[]
   }): {
@@ -113,7 +114,10 @@ export class RuntimeAgentRowStore {
       consider(retained?.payload.state, retained?.updatedAt, false, retained?.stateStartedAt)
     }
     for (const row of args.hookRows) {
-      if (row.terminalHandle !== args.handle && (!args.paneKey || row.paneKey !== args.paneKey)) {
+      if (
+        (args.handle === null || row.terminalHandle !== args.handle) &&
+        (!args.paneKey || row.paneKey !== args.paneKey)
+      ) {
         continue
       }
       consider(row.state, row.receivedAt, row.restoredUnconfirmed, row.stateStartedAt)
