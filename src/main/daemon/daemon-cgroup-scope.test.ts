@@ -44,14 +44,11 @@ function fakeRuntimeDirWithoutBus(): string {
 }
 
 afterEach(() => {
-  while (fakeBusServers.length > 0) {
-    fakeBusServers.pop()?.close()
+  for (const server of fakeBusServers.splice(0)) {
+    server.close()
   }
-  while (fakeBusDirs.length > 0) {
-    const dir = fakeBusDirs.pop()
-    if (dir) {
-      rmSync(dir, { recursive: true, force: true })
-    }
+  for (const dir of fakeBusDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true })
   }
 })
 
@@ -65,9 +62,8 @@ describe('isDurableDaemonScopeSupported', () => {
     )
   })
 
-  it('never throws when XDG_RUNTIME_DIR is absent and the conventional path cannot resolve', () => {
-    expect(() => isDurableDaemonScopeSupported({}, 'linux', null)).not.toThrow()
-    expect(typeof isDurableDaemonScopeSupported({}, 'linux', null)).toBe('boolean')
+  it('is false when there is no runtime dir to resolve at all', () => {
+    expect(isDurableDaemonScopeSupported({}, 'linux', null)).toBe(false)
   })
 
   it('is false when neither the canonical per-UID path nor the env path has a reachable bus', () => {
@@ -183,14 +179,11 @@ describe('buildDurableDaemonScopeCommand', () => {
 })
 
 describe('detectOwnCgroupScopeUnit', () => {
-  const tempFiles: string[] = []
+  const tempDirs: string[] = []
 
   afterEach(() => {
-    while (tempFiles.length > 0) {
-      const path = tempFiles.pop()
-      if (path) {
-        rmSync(path, { force: true })
-      }
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 
@@ -198,7 +191,7 @@ describe('detectOwnCgroupScopeUnit', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cgroup-scope-'))
     const path = join(dir, 'cgroup')
     writeFileSync(path, contents)
-    tempFiles.push(path)
+    tempDirs.push(dir)
     return path
   }
 
