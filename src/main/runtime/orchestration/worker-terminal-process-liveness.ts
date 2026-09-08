@@ -6,10 +6,10 @@ export type { WorkerTerminalHostScope } from '../../../shared/worker-terminal-ho
 export { parseWorkerTerminalHostScope } from '../../../shared/worker-terminal-host-scope'
 
 /**
- * Does `processIncarnation` name exactly this pty's live incarnation? Anchors on the pty id as a
- * prefix and then requires exact `${ptyId}:${incarnationId}` equality, so it is immune to colons
- * on either side (relay/SSH ptyIds, colon-bearing relay incarnationIds). A pty with no (or a
- * whitespace-dirty) incarnationId can never match — the exact-incarnation fence stays intact.
+ * Does `processIncarnation` name exactly this pty's live incarnation? Requires exact
+ * `${ptyId}:${incarnationId}` equality, so it is immune to colons on either side (relay/SSH
+ * ptyIds, colon-bearing relay incarnationIds). A pty with no (or a whitespace-dirty)
+ * incarnationId can never match — the exact-incarnation fence stays intact.
  */
 export function matchesProcessIncarnation(
   ptyId: string,
@@ -17,9 +17,6 @@ export function matchesProcessIncarnation(
   processIncarnation: string
 ): boolean {
   if (!incarnationId || incarnationId !== incarnationId.trim()) {
-    return false
-  }
-  if (!processIncarnation.startsWith(`${ptyId}:`)) {
     return false
   }
   return `${ptyId}:${incarnationId}` === processIncarnation
