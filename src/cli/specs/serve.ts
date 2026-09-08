@@ -33,12 +33,13 @@ export const SERVE_COMMAND_SPECS: CommandSpec[] = [
   },
   {
     path: ['serve', 'stats'],
-    summary: 'Show live runtime counts (agents, tasks, terminals, worktrees)',
+    summary: 'Show live runtime counts (agents, tasks, terminals, worktrees, browser pages)',
     usage: 'orca serve stats [--json]',
     allowedFlags: [...GLOBAL_FLAGS],
     notes: [
       'Queries a running runtime (local or --environment / pairing). Does not start a server.',
-      'JSON shape is a stable contract: version, uptimeSeconds, port, counts.{agents,tasks,terminals,worktrees}.'
+      'JSON shape is a stable contract: version, runtimeId, uptimeSeconds, port, counts.{agents,tasks,terminals,terminalsUnverifiable,worktrees,browserPages,browserPagesRetained}.',
+      'terminalsUnverifiable counts registered ptys with no current host contact — unverifiable, not proof they exited; it does not authorize cleanup.'
     ],
     examples: ['orca serve stats', 'orca serve stats --json']
   }

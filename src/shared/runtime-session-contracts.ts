@@ -133,6 +133,9 @@ export type CliStatusResult = {
 // must change.
 export type RuntimeServeStatsResult = {
   version: string
+  // Why: distinguishes "same runtime generation" from "restarted under me" — a
+  // silent restart issues a new id and orphans the caller's pty handles (#9585).
+  runtimeId: string
   uptimeSeconds: number
   // Why: the bound WebSocket serve port, or null when no WS listener is active
   // (WS disabled, or it failed to bind — e.g. a Unix-socket-only serve).
@@ -141,7 +144,19 @@ export type RuntimeServeStatsResult = {
     agents: number
     tasks: number
     terminals: number
+    /**
+     * Registered ptys that are not currently connected: registered but with no
+     * evidence from the owning host. Loss of contact is never proof of death
+     * (docs/reference/ssh-execution-boundary.md), so this count MUST NOT
+     * authorize cleanup — it exists so leaked ptys stop being invisible.
+     */
+    terminalsUnverifiable: number
     worktrees: number
+    // Why: agent-opened tabs grow unobserved (#14552); every registry-held page.
+    browserPages: number
+    // Why: the subset whose host is gone. Each still pins one of the runtime's
+    // 256 page slots for the runtime's life — no TTL, no reaper.
+    browserPagesRetained: number
   }
 }
 

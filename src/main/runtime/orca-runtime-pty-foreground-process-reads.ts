@@ -5,6 +5,7 @@ import {
   rehydrateClientHostedBrowserPages
 } from './client-hosted-browser-page-persistence'
 import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
+import { getBrowserHostLeaseRegistry } from './browser-host-lease-registry-instance'
 import { splitWorktreeIdForFilesystem } from '../../shared/worktree/id'
 import type { WorkspaceSessionState } from '../../shared/workspace-session-state-types'
 import type { ExecutionHostId } from '../../shared/execution-host'
@@ -178,9 +179,12 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
     const worktrees = await this.listManagedWorktrees()
     const tasks = this.getOrchestrationDb().countTasks()
     let terminals = 0
+    let terminalsUnverifiable = 0
     let agents = 0
     for (const pty of this.ptysById.values()) {
       if (!pty.connected) {
+        // Registered, but the owning host says nothing about it: unverifiable, not dead.
+        terminalsUnverifiable++
         continue
       }
       terminals++
@@ -200,15 +204,23 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
         agents++
       }
     }
+    const leases = getBrowserHostLeaseRegistry(this)
+    const browserPages = getRuntimeBrowserPageRegistry(this).countPages(
+      (browserPageId) => leases.getPlacement(browserPageId) !== undefined
+    )
     return {
       version: getAppEnvironment().getVersion(),
+      runtimeId: this.getRuntimeId(),
       uptimeSeconds: Math.floor((Date.now() - this.startedAt) / 1000),
       port: this.servePort,
       counts: {
         agents,
         tasks,
         terminals,
-        worktrees: worktrees.totalCount
+        terminalsUnverifiable,
+        worktrees: worktrees.totalCount,
+        browserPages: browserPages.total,
+        browserPagesRetained: browserPages.retained
       }
     }
   }

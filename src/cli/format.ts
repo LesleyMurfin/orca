@@ -136,11 +136,15 @@ export function formatStatus(status: CliStatusResult): string {
 export function formatServeStats(stats: RuntimeServeStatsResult): string {
   return [
     `version: ${stats.version}`,
+    `runtimeId: ${stats.runtimeId}`,
     `uptimeSeconds: ${stats.uptimeSeconds}`,
     `port: ${stats.port ?? 'none'}`,
     `agents: ${stats.counts.agents}`,
     `tasks: ${stats.counts.tasks}`,
     `terminals: ${stats.counts.terminals}`,
-    `worktrees: ${stats.counts.worktrees}`
+    `terminalsUnverifiable: ${stats.counts.terminalsUnverifiable}`,
+    `worktrees: ${stats.counts.worktrees}`,
+    `browserPages: ${stats.counts.browserPages}`,
+    `browserPagesRetained: ${stats.counts.browserPagesRetained}`
   ].join('\n')
 }

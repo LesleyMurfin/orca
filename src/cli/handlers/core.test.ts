@@ -150,9 +150,18 @@ describe('orca serve stats CLI handler', () => {
       ok: true,
       result: {
         version: '1.4.156-test',
+        runtimeId: 'rt-boot-1',
         uptimeSeconds: 99,
         port: 6768,
-        counts: { agents: 1, tasks: 2, terminals: 3, worktrees: 4 }
+        counts: {
+          agents: 1,
+          tasks: 2,
+          terminals: 3,
+          terminalsUnverifiable: 2,
+          worktrees: 4,
+          browserPages: 9,
+          browserPagesRetained: 6
+        }
       },
       _meta: { runtimeId: 'rt-1' }
     })
@@ -174,6 +183,10 @@ describe('orca serve stats CLI handler', () => {
     expect(out).toContain('tasks: 2')
     expect(out).toContain('terminals: 3')
     expect(out).toContain('worktrees: 4')
+    expect(out).toContain('terminalsUnverifiable: 2')
+    expect(out).toContain('browserPages: 9')
+    expect(out).toContain('browserPagesRetained: 6')
+    expect(out).toContain('runtimeId: rt-boot-1')
   })
 
   it('prints JSON when --json is set and renders null port as none in human mode', async () => {
@@ -182,9 +195,18 @@ describe('orca serve stats CLI handler', () => {
       ok: true,
       result: {
         version: '1.4.156-test',
+        runtimeId: 'rt-1',
         uptimeSeconds: 1,
         port: null,
-        counts: { agents: 0, tasks: 0, terminals: 0, worktrees: 0 }
+        counts: {
+          agents: 0,
+          tasks: 0,
+          terminals: 0,
+          terminalsUnverifiable: 0,
+          worktrees: 0,
+          browserPages: 0,
+          browserPagesRetained: 0
+        }
       },
       _meta: { runtimeId: 'rt-1' }
     })

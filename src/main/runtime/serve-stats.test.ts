@@ -11,6 +11,9 @@ vi.mock('electron', () => ({ app: { getPath: () => tmpdir() } }))
 import { OrchestrationDb } from './orchestration/db'
 import { OrcaRuntimeService } from './orca-runtime'
 import { StatsCollector } from '../stats/collector'
+import { getBrowserHostLeaseRegistry } from './browser-host-lease-registry-instance'
+import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
+import type { RuntimeBrowserPlacement } from '../../shared/runtime-browser-placement'
 
 describe('getServeStats', () => {
   let db: OrchestrationDb | null = null
@@ -52,13 +55,17 @@ describe('getServeStats', () => {
 
     expect(result).toEqual({
       version: '9.9.9-test',
+      runtimeId: runtime.getRuntimeId(),
       uptimeSeconds: expect.any(Number),
       port: 6970,
       counts: {
         agents: 0,
         tasks: 2,
         terminals: 0,
-        worktrees: 3
+        terminalsUnverifiable: 0,
+        worktrees: 3,
+        browserPages: 0,
+        browserPagesRetained: 0
       }
     })
     expect(result.uptimeSeconds).toBeGreaterThanOrEqual(0)
@@ -77,6 +84,103 @@ describe('getServeStats', () => {
     const result = await runtime.getServeStats()
 
     expect(result.port).toBeNull()
-    expect(result.counts).toEqual({ agents: 0, tasks: 0, terminals: 0, worktrees: 0 })
+    expect(result.counts).toEqual({
+      agents: 0,
+      tasks: 0,
+      terminals: 0,
+      terminalsUnverifiable: 0,
+      worktrees: 0,
+      browserPages: 0,
+      browserPagesRetained: 0
+    })
+  })
+
+  it('counts a pty that lost host contact as unverifiable, never as a terminal', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = runtimeWithStubbedWorktrees(db)
+    const internals = runtime as unknown as {
+      recordPtyWorktree: (
+        ptyId: string,
+        worktreeId: string,
+        state?: { connected?: boolean }
+      ) => unknown
+    }
+    internals.recordPtyWorktree('pty-a', 'wt-a')
+
+    expect((await runtime.getServeStats()).counts).toMatchObject({
+      terminals: 1,
+      terminalsUnverifiable: 0
+    })
+
+    internals.recordPtyWorktree('pty-a', 'wt-a', { connected: false })
+
+    // The pty is still registered; only the evidence for it is gone.
+    expect((await runtime.getServeStats()).counts).toMatchObject({
+      terminals: 0,
+      terminalsUnverifiable: 1
+    })
+  })
+
+  it('counts every registered browser page, and the retained subset with no live host', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = runtimeWithStubbedWorktrees(db)
+    const leases = getBrowserHostLeaseRegistry(runtime)
+    const quitting = attachBrowserHost(runtime, 'host-a')
+    attachBrowserHost(runtime, 'host-b')
+    publishClientPage(runtime, 'page-a', leases.placeClientPage('page-a', 'host-a'))
+    publishClientPage(runtime, 'page-b', leases.placeClientPage('page-b', 'host-b'))
+
+    expect((await runtime.getServeStats()).counts).toMatchObject({
+      browserPages: 2,
+      browserPagesRetained: 0
+    })
+
+    quitting.release()
+
+    // The fenced page keeps its registry slot with no placement left to drive it.
+    expect((await runtime.getServeStats()).counts).toMatchObject({
+      browserPages: 2,
+      browserPagesRetained: 1
+    })
   })
 })
+
+function runtimeWithStubbedWorktrees(db: OrchestrationDb): OrcaRuntimeService {
+  const runtime = new OrcaRuntimeService(null)
+  runtime.setOrchestrationDb(db)
+  vi.spyOn(runtime, 'listManagedWorktrees').mockResolvedValue({
+    worktrees: [],
+    totalCount: 0,
+    truncated: false
+  })
+  return runtime
+}
+
+function attachBrowserHost(runtime: OrcaRuntimeService, browserHostClientId: string) {
+  return getBrowserHostLeaseRegistry(runtime).attach({
+    browserHostClientId,
+    connectionId: `connection-${browserHostClientId}`,
+    pairedDeviceId: `device-${browserHostClientId}`,
+    hostCapabilities: ['webview']
+  })
+}
+
+function publishClientPage(
+  runtime: OrcaRuntimeService,
+  browserPageId: string,
+  placement: RuntimeBrowserPlacement
+): void {
+  if (placement.kind !== 'client') {
+    throw new Error('expected client placement')
+  }
+  getRuntimeBrowserPageRegistry(runtime).publishClientPage({
+    browserPageId,
+    workspaceId: 'workspace-a',
+    browserProfileId: 'profile-a',
+    executionHostKey: 'native:runtime-a:1',
+    placement,
+    url: 'https://example.internal/',
+    loading: false,
+    active: false
+  })
+}
