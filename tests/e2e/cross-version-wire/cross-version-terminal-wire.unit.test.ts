@@ -1,8 +1,8 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import {
-  resolveBaselineReleaseRef,
-  runtimeDependencyMismatches,
-  selectLatestStableReleaseTag
+  parseReleaseCommits,
+  resolveBaselineRelease,
+  unsatisfiedRuntimeDependencies
 } from './release-checkout'
 import {
   JOURNEY_INPUTS,
@@ -43,14 +43,17 @@ const EXPECTED_JOURNEY_FRAMES = [
   'C>H Unsubscribe'
 ]
 
-let baselineRef: string
+let baselineVersion: string
 let current: TerminalWireBuild
 let baseline: TerminalWireBuild
 
 beforeAll(async () => {
-  baselineRef = resolveBaselineReleaseRef()
+  const release = resolveBaselineRelease()
+  baselineVersion = release.version
   current = await loadTerminalWireBuild(WORKING_TREE)
-  baseline = await loadTerminalWireBuild(baselineRef)
+  // The commit, not the version: a fork's clone has the release commit in its
+  // history but not the tag that names it.
+  baseline = await loadTerminalWireBuild(release.commit)
 }, SUITE_TIMEOUT_MS)
 
 afterEach(() => {
@@ -96,38 +99,49 @@ function expectWireCompatible(record: JourneyRecord): void {
 }
 
 describe('cross-version remote terminal wire', () => {
-  it('ignores legacy, mobile, and prerelease tags when selecting the baseline', () => {
+  it('reads release points from release commits, ignoring prereleases', () => {
     expect(
-      selectLatestStableReleaseTag([
-        'v799',
-        'mobile-v9.0.0',
-        'v1.4.177-rc.3',
-        'v1.4.175',
-        'v1.4.176'
-      ])
-    ).toBe('v1.4.176')
+      parseReleaseCommits(
+        [
+          '5e258a94476edef897526c9e648bef34915f6be4\trelease: v1.4.163',
+          '00f0c44a23c84f19975fe73fa172bd8ef81f5903\trelease: v1.4.178-rc.2',
+          'b11bfe207c30d38bba0a6b4b6b422b56b12d890c\trelease: v1.4.141',
+          'bc98655a39e0d1e5f8ba6e0f4bb3d1cf5a09bb11\tfix(remote): stop an empty host inventory'
+        ].join('\n')
+      )
+    ).toEqual([
+      { version: 'v1.4.163', commit: '5e258a94476edef897526c9e648bef34915f6be4' },
+      { version: 'v1.4.141', commit: 'b11bfe207c30d38bba0a6b4b6b422b56b12d890c' }
+    ])
   })
 
-  it('rejects a release that pins runtime dependencies this checkout did not install', () => {
-    // v1.4.197 is the real case: it bumped zod past what this tree installs, so its
-    // extracted source called an export that does not exist here and hung the lane.
+  it('rejects a release whose runtime dependencies this checkout cannot resolve', () => {
+    const installed = { zod: '4.4.3', ws: '8.21.0', 'agent-browser': '0.27.4' }
+    // Patch and minor drift inside the range's own line is not a reason to reject:
+    // rejecting on any range difference is what left CI with no baseline at all.
     expect(
-      runtimeDependencyMismatches(
-        { zod: '~4.4.3', ws: '^8.21.0' },
-        { zod: '~4.5.4', ws: '^8.21.0' }
+      unsatisfiedRuntimeDependencies(
+        { zod: '~4.4.0', ws: '^8.18.0', 'agent-browser': '~0.27.0' },
+        (name) => installed[name as keyof typeof installed] ?? null
       )
-    ).toEqual(['zod'])
-    // A dependency added or dropped by the release counts too; only one side has it.
-    expect(runtimeDependencyMismatches({}, { 'proper-lockfile': '4.1.2' })).toEqual([
-      'proper-lockfile'
+    ).toEqual([])
+    // A package the release needs and this tree never installed cannot resolve.
+    expect(unsatisfiedRuntimeDependencies({ 'proper-lockfile': '4.1.2' }, () => null)).toEqual([
+      'proper-lockfile (declared 4.1.2, not installed)'
     ])
-    expect(runtimeDependencyMismatches({ zod: '~4.4.3' }, { zod: '~4.4.3' })).toEqual([])
+    // Across a major — or a 0.x minor — the release calls an API that moved.
+    expect(unsatisfiedRuntimeDependencies({ zod: '~3.24.1' }, () => '4.4.3')).toEqual([
+      'zod (declared ~3.24.1, installed 4.4.3)'
+    ])
+    expect(unsatisfiedRuntimeDependencies({ 'agent-browser': '~0.26.0' }, () => '0.27.4')).toEqual([
+      'agent-browser (declared ~0.26.0, installed 0.27.4)'
+    ])
   })
 
   it(
     'skews current code against a real published release',
     () => {
-      expect(baselineRef).toMatch(/^v?\d/)
+      expect(baselineVersion).toMatch(/^v\d+\.\d+\.\d+$/)
       expect(baseline.revision).toMatch(/^[0-9a-f]{40}$/)
       expect(baseline.revision).not.toBe(current.revision)
     },
