@@ -4,8 +4,9 @@
  * `detached: true` buys the daemon its own POSIX process group, not its own cgroup: under a
  * combined unit (`orca-serve.service` / `orca-serve@<slot>`) it and its PTYs stay in the unit's
  * cgroup, and `systemctl stop`/`restart` SIGKILLs whatever is left there — immediately under
- * `KillMode=control-group`, at the stop timeout under `mixed`. Either way every live terminal
- * dies, however well the daemon otherwise survives its parent.
+ * `KillMode=control-group`, and the instant the main process exits under `KillMode=mixed`
+ * (`TimeoutStopSec` only applies while that main process is still alive). Either way every
+ * live terminal dies, however well the daemon otherwise survives its parent.
  *
  * `systemd-run --user --scope` registers a transient scope under the invoking user's own systemd
  * manager and execs the command into it, so the daemon's cgroup becomes a *sibling* of the
@@ -17,10 +18,13 @@
  */
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { runProcessSync } from '../../shared/child-process/run-process'
+import { runProcessSync, type ProcessResult } from '../../shared/child-process/run-process'
 
 const SYSTEMD_RUN_BINARY = 'systemd-run'
 const UNIT_NAME_PREFIX = 'orca-daemon-'
+/** The marker that distinguishes "booted under systemd" from a plain container. A test seam so
+ *  the capability tests stay hermetic off a systemd host. */
+const SYSTEMD_BOOT_PATH = '/run/systemd/system'
 /** Long enough for a local binary to print its version, short enough that a wedged systemd
  *  cannot stall the launch lane. */
 const SYSTEMD_RUN_PROBE_TIMEOUT_MS = 2_000
@@ -77,16 +81,43 @@ function resolveUserRuntimeDir(env: NodeJS.ProcessEnv, canonicalDir: string | nu
  * called, and an await here would move the spawn past that tick. The child-process chokepoint
  * covers this shape with `runProcessSync` (as `isPwshAvailable` does) so the probe still gets
  * the shared spawn decisions instead of re-deciding them with `execFileSync`.
+ *
+ * `systemdBootPath` and `runVersionProbe` are test seams: they default to the real boot marker
+ * and `systemd-run --version` probe, and a test injects fakes so the capability probe never
+ * consults the host's own systemd.
  */
+
+/** The slice of `ProcessResult` the capability probe consumes; narrow so a test stub carries no
+ *  stdout/stderr/signal baggage. */
+type SystemdRunVersionProbe = (
+  binary: string,
+  timeoutMs: number
+) => Pick<ProcessResult, 'code' | 'timedOut'>
+
+function runSystemdRunVersionProbe(
+  binary: string,
+  timeoutMs: number
+): Pick<ProcessResult, 'code' | 'timedOut'> {
+  const { code, timedOut } = runProcessSync({
+    program: binary,
+    args: ['--version'],
+    stdio: 'ignore',
+    timeoutMs
+  })
+  return { code, timedOut }
+}
+
 export function isDurableDaemonScopeSupported(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
-  canonicalRuntimeDir: string | null = CANONICAL_USER_RUNTIME_DIR
+  canonicalRuntimeDir: string | null = CANONICAL_USER_RUNTIME_DIR,
+  systemdBootPath: string = SYSTEMD_BOOT_PATH,
+  runVersionProbe: SystemdRunVersionProbe = runSystemdRunVersionProbe
 ): boolean {
   if (platform !== 'linux') {
     return false
   }
-  if (!existsSync('/run/systemd/system')) {
+  if (!existsSync(systemdBootPath)) {
     // Not booted under systemd (e.g. a plain container without systemd as PID 1) — a unit
     // restart isn't the failure mode there, and systemd-run has nothing to talk to anyway.
     return false
@@ -97,12 +128,7 @@ export function isDurableDaemonScopeSupported(
     return false
   }
   try {
-    const probe = runProcessSync({
-      program: SYSTEMD_RUN_BINARY,
-      args: ['--version'],
-      stdio: 'ignore',
-      timeoutMs: SYSTEMD_RUN_PROBE_TIMEOUT_MS
-    })
+    const probe = runVersionProbe(SYSTEMD_RUN_BINARY, SYSTEMD_RUN_PROBE_TIMEOUT_MS)
     // A non-zero exit is data here rather than a throw, and a timeout kill leaves an exit behind
     // that answers nothing — both mean "cannot be trusted to place the daemon in a scope".
     return probe.code === 0 && !probe.timedOut
