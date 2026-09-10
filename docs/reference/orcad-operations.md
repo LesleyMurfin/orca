@@ -24,9 +24,9 @@ non-destructive to live work.
 Process detachment is not service isolation. A daemon that orcad launches directly, and every
 PTY it owns, remain in the same systemd service cgroup. `KillMode=mixed` does **not** preserve
 them: it sends the graceful stop signal only to the main process, then sends `SIGKILL` to every
-process remaining in the cgroup when the stop timeout expires. `KillMode=control-group` is
-destructive too. `KillMode=process` leaves service-owned processes unmanaged and is not a
-supported preservation mechanism.
+process remaining in the cgroup the moment that main process exits — `TimeoutStopSec` never gets
+the chance to apply. `KillMode=control-group` is destructive too. `KillMode=process` leaves
+service-owned processes unmanaged and is not a supported preservation mechanism.
 
 Service-restart survival therefore requires a separately supervised cgroup, and orcad now asks
 for one: on Linux it launches the daemon through `systemd-run --user --scope`, which places the

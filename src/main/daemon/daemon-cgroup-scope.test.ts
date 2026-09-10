@@ -27,6 +27,7 @@ describe('daemonScopeUnitName', () => {
 // fixture that only `existsSync`-passes would not exercise it.
 const fakeBusServers: Server[] = []
 const fakeBusDirs: string[] = []
+const fakeSystemdBootDirs: string[] = []
 
 function fakeRuntimeDirWithBus(): string {
   const dir = mkdtempSync(join(tmpdir(), 'xdg-runtime-with-bus-'))
@@ -43,11 +44,22 @@ function fakeRuntimeDirWithoutBus(): string {
   return dir
 }
 
+// A directory that reliably exists on every dev host, standing in for the real
+// `/run/systemd/system` boot marker that only exists on a systemd host.
+function fakeSystemdBootPath(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'systemd-boot-marker-'))
+  fakeSystemdBootDirs.push(dir)
+  return dir
+}
+
 afterEach(() => {
   for (const server of fakeBusServers.splice(0)) {
     server.close()
   }
   for (const dir of fakeBusDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true })
+  }
+  for (const dir of fakeSystemdBootDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true })
   }
 })
@@ -62,8 +74,26 @@ describe('isDurableDaemonScopeSupported', () => {
     )
   })
 
+  it('is false when not booted under systemd, even with a reachable bus and a working binary', () => {
+    const perUidDir = fakeRuntimeDirWithBus()
+    expect(
+      isDurableDaemonScopeSupported(
+        { XDG_RUNTIME_DIR: perUidDir },
+        'linux',
+        perUidDir,
+        '/definitely/not/systemd-boot',
+        () => ({ code: 0, timedOut: false })
+      )
+    ).toBe(false)
+  })
+
   it('is false when there is no runtime dir to resolve at all', () => {
-    expect(isDurableDaemonScopeSupported({}, 'linux', null)).toBe(false)
+    expect(
+      isDurableDaemonScopeSupported({}, 'linux', null, fakeSystemdBootPath(), () => ({
+        code: 0,
+        timedOut: false
+      }))
+    ).toBe(false)
   })
 
   it('is false when neither the canonical per-UID path nor the env path has a reachable bus', () => {
@@ -71,9 +101,38 @@ describe('isDurableDaemonScopeSupported', () => {
     const envDir = fakeRuntimeDirWithoutBus()
     // Neither fixture has a `bus` socket written — the probe must fail closed regardless of
     // which path it looks at first.
-    expect(isDurableDaemonScopeSupported({ XDG_RUNTIME_DIR: envDir }, 'linux', canonical)).toBe(
-      false
-    )
+    expect(
+      isDurableDaemonScopeSupported(
+        { XDG_RUNTIME_DIR: envDir },
+        'linux',
+        canonical,
+        fakeSystemdBootPath(),
+        () => ({ code: 0, timedOut: false })
+      )
+    ).toBe(false)
+  })
+
+  it('is false when systemd-run --version cannot answer: non-zero exit or a timeout kill', () => {
+    const perUidDir = fakeRuntimeDirWithBus()
+    const bootPath = fakeSystemdBootPath()
+    expect(
+      isDurableDaemonScopeSupported(
+        { XDG_RUNTIME_DIR: perUidDir },
+        'linux',
+        perUidDir,
+        bootPath,
+        () => ({ code: 1, timedOut: false })
+      )
+    ).toBe(false)
+    expect(
+      isDurableDaemonScopeSupported(
+        { XDG_RUNTIME_DIR: perUidDir },
+        'linux',
+        perUidDir,
+        bootPath,
+        () => ({ code: null, timedOut: true })
+      )
+    ).toBe(false)
   })
 
   it('is true when the process env XDG_RUNTIME_DIR is a hardened unit override, but the real per-UID dir has a reachable bus (mtl-02 regression)', () => {
@@ -87,16 +146,24 @@ describe('isDurableDaemonScopeSupported', () => {
       isDurableDaemonScopeSupported(
         { XDG_RUNTIME_DIR: hardenedOverrideDir },
         'linux',
-        realPerUidDir
+        realPerUidDir,
+        fakeSystemdBootPath(),
+        () => ({ code: 0, timedOut: false })
       )
     ).toBe(true)
   })
 
   it('is true when the caller env XDG_RUNTIME_DIR already points at the correct, reachable per-UID bus', () => {
     const perUidDir = fakeRuntimeDirWithBus()
-    expect(isDurableDaemonScopeSupported({ XDG_RUNTIME_DIR: perUidDir }, 'linux', perUidDir)).toBe(
-      true
-    )
+    expect(
+      isDurableDaemonScopeSupported(
+        { XDG_RUNTIME_DIR: perUidDir },
+        'linux',
+        perUidDir,
+        fakeSystemdBootPath(),
+        () => ({ code: 0, timedOut: false })
+      )
+    ).toBe(true)
   })
 
   it('falls back to the process env XDG_RUNTIME_DIR when the canonical per-UID path has no reachable bus', () => {
@@ -108,7 +175,9 @@ describe('isDurableDaemonScopeSupported', () => {
       isDurableDaemonScopeSupported(
         { XDG_RUNTIME_DIR: envDirWithBus },
         'linux',
-        canonicalWithoutBus
+        canonicalWithoutBus,
+        fakeSystemdBootPath(),
+        () => ({ code: 0, timedOut: false })
       )
     ).toBe(true)
   })
