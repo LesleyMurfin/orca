@@ -161,11 +161,13 @@ describe('offscreen browser tab cap', () => {
   it('resolves the cap from the environment and ignores unusable overrides', () => {
     expect(resolveOffscreenBrowserTabCap({ [MAX_OFFSCREEN_BROWSER_TABS_ENV]: '8' })).toBe(8)
     expect(resolveOffscreenBrowserTabCap({})).toBe(DEFAULT_MAX_OFFSCREEN_BROWSER_TABS)
-    for (const override of ['0', '-1', '2.5', 'many', '', '65']) {
+    for (const override of ['0', '-1', '2.5', 'many', '']) {
       expect(resolveOffscreenBrowserTabCap({ [MAX_OFFSCREEN_BROWSER_TABS_ENV]: override })).toBe(
         DEFAULT_MAX_OFFSCREEN_BROWSER_TABS
       )
     }
+    expect(resolveOffscreenBrowserTabCap({ [MAX_OFFSCREEN_BROWSER_TABS_ENV]: '65' })).toBe(64)
+    expect(resolveOffscreenBrowserTabCap({ [MAX_OFFSCREEN_BROWSER_TABS_ENV]: '100' })).toBe(64)
   })
 })
 
