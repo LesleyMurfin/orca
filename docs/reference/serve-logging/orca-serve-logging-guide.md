@@ -1,125 +1,146 @@
 # Orca Serve Logging Guide
 
 Reference for the headless `orca serve` runtime's logging architecture, client log
-locations, and diagnostic bundle integration. This is the operational companion to the
-systemd unit (`templates/orca-serve/orca-serve@.service.template`), the config layer
+locations, and operational triage. This is the operational companion to the systemd
+unit (`templates/orca-serve@.service.template`), the config layer
 (`orca-serve.conf.template` / `orca-serve-instance.env.template`), and the troubleshooting
 matrix (`orca-serve-troubleshooting-matrix.md`).
 
-The runtime is **config-driven**: every value below that changes by host or instance lives in
-the config layer, never in a script or a rebuilt unit. "Everything is configuration" is the
-governing principle (see `orca/orca-serve/design/iac-drafts/serve-runtime/CONTRACT.md`).
+The runtime is **flag-driven**: every value below that changes by host or instance is
+passed on the `orca serve` command line (or in the unit's `ExecStart=`), never baked into a
+wrapper script.
 
 ---
 
 ## 1. Architecture
 
-Every serve process writes to **two independent sinks**, so a failure of either still leaves a
-usable record:
+`orca serve` runs in the foreground and writes its startup and runtime output to
+**stdout/stderr**. Under systemd the unit captures both to the journal, and the journal is
+made durable with persistent storage. Operators who prefer a plain file can switch the unit
+to an append file sink that logrotate manages.
 
-```text
-                               orca-serve@.service (systemd)
-                                        │
-                             ExecStart=orca-serve-fg
-                                        │
-                     stdout ────────────┼──────────── stderr
-                        │               │                │
-                        │     exec > >(tee -a serve-fg.log) 2>&1
-                        │               │                │
-                        ▼               ▼                ▼
-                   ┌─────────┐   ┌──────────────────┐
-                   │ journald │◄──│ passthrough (fd1)│
-                   │ (system) │   └──────────────────┘
-                   └─────────┘           │ file append (tee)
-                        │                ▼
-                        │      $ORCA_SERVE_LOGDIR/serve-fg.log   (rotated at 10 MiB)
-                        ▼
-          journalctl -u orca-serve@<slot>.service
+| Sink | Accessor | Survives | Rotates |
+|------|----------|----------|---------|
+| **journald** (default) | `journalctl -u orca-serve@<instance>.service` | system restart (`Storage=persistent` drop-in) | journald vacuum policy (`MaxRetentionSec`, `SystemMaxUse`) |
+| **serve.log** (optional) | `<logdir>/serve.log` via `StandardOutput=append:` | log dir on a data volume (never `/tmp`) | logrotate `daily` / `rotate 7` / `maxsize 10M` |
+
+**One stream, one sink.** systemd's `StandardOutput=`/`StandardError=` each point a single
+stream at one target, so pick the sink per unit. The default unit uses
+`StandardOutput=journal` / `StandardError=journal`, which makes
+`journalctl -u orca-serve@<instance>` a complete record of the serve's own words — the
+pinned-port fallback notice, the bound endpoint, pairing status, and any
+fuse/sandbox/GPU errors. The installer's journald drop-in sets `Storage=persistent` so that
+record survives a reboot and is bounded by journald's retention caps.
+
+To keep a durable **plain-file** sink instead (or in addition to the journal, on hosts that
+mirror the journal elsewhere), set `StandardOutput=append:<logdir>/serve.log` and
+`StandardError=append:<logdir>/serve.log` in the unit. The installer ships a logrotate
+drop-in for `<prefix>/state/*/logs/*.log`, so the append target stays bounded and compressed
+without any launcher-side rotation.
+
+### Rotation (logrotate-owned)
+
+The file sink is rotated by logrotate, not by the serve process:
+
+```
+<prefix>/state/*/logs/*.log {
+    daily
+    rotate 7
+    maxsize 10M
+    missingok
+    notifempty
+    copytruncate
+    compress
+    delaycompress
+}
 ```
 
-**Two sinks, one stream.** The launcher rewires the shell's fd1/fd2 through `tee` so the
-serve's *own words* — pinned-port fallback notices, single-instance relaunch, fuse/sandbox/GPU
-errors — are captured both to the journal and to a durable file. This is deliberate: on
-`--user` units the journal can drop output and gets flooded by the AppImage extract listing; the
-file always survives. `tee` passes the stream through to the original stdout, so journald still
-receives it.
-
-| Sink | Path / accessor | Survives | Rotates |
-|------|-----------------|----------|---------|
-| **journald** | `journalctl -u orca-serve@<slot>.service` | system restart (persistent journal) | journald's own vacuum policy |
-| **serve-fg.log** | `$ORCA_SERVE_LOGDIR/serve-fg.log` (`state/<slot>/logs/serve-fg.log`) | log-dir on `/data` (never `/tmp`) | 10 MiB threshold → `serve-fg.log.1` |
-| **poststart.log** | `$ORCA_SERVE_LOGDIR/poststart.log` | same dir | unbounded (small volume) |
-| **diag bundles** | `$DIAG_DIR/*.json` (`state/<slot>/diagnostics/`) | persistent, `/data` | rolling, newest N kept |
-
-### Rotation (single-file, launcher-owned)
-
-`orca-serve-fg` performs a tiny inline rotation before it execs:
-
-```bash
-LOGFILE="$LOGDIR/serve-fg.log"
-if [ -f "$LOGFILE" ] && [ "$(stat -c%s "$LOGFILE" 2>/dev/null || echo 0)" -gt 10485760 ]; then
-  mv -f "$LOGFILE" "$LOGFILE.1"
-fi
-```
-
-- Threshold: **10 MiB**. One prior copy (`serve-fg.log.1`) is kept; a second trigger overwrites it.
-- This is *not* logrotate — it is fast, has no external dependency, and cannot race a restart.
-  For long-term retention, rely on the **diag bundles** (snapshot JSON) and the **journal**, not
-  on `serve-fg.log` longevity.
-- The unit sets `ORCA_SERVE_LOGDIR=<PREFIX>/state/%i/logs` (`%i` = slot), so each instance has
-  its own log dir pre-created 0700 by the instance-tree provisioner.
+- Threshold: **10 MiB** (`maxsize`) with up to **7** daily copies retained.
+- `copytruncate` keeps the open append fd valid across rotation (no reopen race).
+- For long-term retention rely on the persistent journal, not on the file sink's longevity.
 
 ---
 
-## 2. Environment variables
+## 2. Command surface
 
-All of these are **config-layer values** (host-wide in `orca-serve.conf`, per-instance in
-`<slot>.env`) or structural env set by the unit. They are never baked into the launcher.
-
-| Variable | Typical value | Scope | Effect |
-|----------|---------------|-------|--------|
-| `ELECTRON_ENABLE_LOGGING=1` | `1` | host | Turn on Electron/Chromium internal logging (GPU, renderer, IPC channels) to stderr→ journal + serve-fg.log. Use when chasing a WebGL/GPU/SIGTRAP fault. |
-| `ORCA_LOG_LEVEL=debug` | `debug` (also `info`, `warn`, `error`) | instance | Raise the serve's own app-level log verbosity. `debug` floods; set per-slot on the suspect instance only. |
-| `--verbose` | (CLI flag) | instance | Equivalent front-door to `ORCA_LOG_LEVEL=debug`; passed on the `orca serve` command line. |
-| `LIBGL_ALWAYS_SOFTWARE=1` | `1` | host | Force software GL for GPU-less hosts (mtl-02). Missing on a GPU-less host ⇒ WebGL2 blocklisted ⇒ SIGTRAP / renderer crash. |
-| `ORCA_DEBUG=1` | `1` | client | Client-side debug mode — timestamps every client request, dumps transport handshakes, and enables the `--json` machine-readable output path. |
-| `--json` | (CLI flag) | client / serve | Emit structured JSON output instead of human text. `orca-serve-fg` already appends `--json` to the serve invocation so tooling can parse the serve stream. |
-| `ORCA_ENVIRONMENT` | `mtl-02` \| `pc` | host | Host's Orca environment id. Also a **client selector** for CLI calls — must exactly match a `name` in the environment registry. |
-| `ORCA_SERVE_LOGDIR` | `<PREFIX>/state/%i/logs` | unit (structural) | Where the tee writes `serve-fg.log`/`poststart.log`. |
-| `OSV_DIAG_DIR` | `<PREFIX>/state/%i/logs` | unit | Legacy alias for the log/diag dir; diag tooling keys off it. |
-| `ORCA_INSTANCE` | `factory` \| `lesley` \| `jessica` \| `canary` | unit | Slot name (`%i`) — keys every per-instance path and the scope-dispatched service name. |
-| `OSV_SYSTEMD_SCOPE` | `system` | unit | Scope dispatch: `systemctl`/`journalctl` vs `--user` variants. `system` under the `--system` model. |
-
-> **Set debug where it bites, not everywhere.** `ORCA_LOG_LEVEL=debug` + `ELECTRON_ENABLE_LOGGING=1`
-> on an always-on slot can multiply journald volume and mask the failure you are chasing. Prefer:
-> (1) reproduce on the `canary` slot, (2) snapshot with the diag tool first, (3) raise verbosity last.
-
----
-
-## 3. Client log locations
-
-The **client** (desktop Orca app / CLI) is a different process from the headless **serve**.
-Its userData/log layout follows the platform's Electron convention. `$USERDATA` here is the Orca
-Electron userData dir; the serve-side equivalent is `$XDG_CONFIG_HOME/orca` (the unit exports
-`ORCA_CONFIG_DIR=<PREFIX>/state/%i/config/orca`).
-
-| Platform | Client logs / state | Notes |
-|----------|---------------------|-------|
-| **macOS** | `~/Library/Logs/orca/` (main process + renderer logs) · `~/Library/Application Support/orca/` (userData, `crash-reports.json`, `Crashpad/`, `orca-e2ee-keypair.json`) | Console.app `Orca` filter mirrors stderr; `--enable-logging --v=1` exposes Chromium verbosity via `ORCA_DEBUG`. |
-| **Windows** | `%USERPROFILE%\AppData\Roaming\orca\logs\` · `%USERPROFILE%\AppData\Roaming\orca\` (userData, `crash-reports.json`, `orca-e2ee-keypair.json`) | Pairing keypair and `activeEnvironmentId`/runtime bindings live under the same userData tree — do not lose `orca-e2ee-keypair.json`. |
-| **Linux** | `~/.local/share/orca/logs/` (serve-side default log dir) · `~/.config/orca/` (userData, `profiles/local-default/orca-data.json`, `orca-runtime.json`, `crash-reports.json`, `Crashpad/`) | The headless serve uses `$ORCA_SERVE_LOGDIR` (state/<slot>/logs) instead of the `~/.local/share` default. |
-
-### Client CLI flags
+`orca serve` accepts these flags (see `src/cli/specs/serve.ts` plus the global flags):
 
 | Flag | Effect |
 |------|--------|
-| `ORCA_DEBUG=1` | Full request/response tracing, transport handshake dumps, redacted-secrets logger. Sets `--json` behavior on by default in most paths. |
-| `--json` | Structured JSON on stdout for every subcommand — pipe to `jq`, capture to file, or feed the diag tool. |
-| `--environment <id>` | Pin the CLI to a specific environment id (local unix-socket vs remote WebSocket/E2EE dispatch). A mismatch here is the "Unknown environment" failure signature. |
+| `--port <port>` | Pin the listener to a specific port. Pinned ports are preferred over any persisted fallback port (see §5). |
+| `--pairing-address <host>` | Change only the **client-advertised** address. Use a reachable LAN, Tailscale, SSH-forward, or reverse-proxy endpoint. Does not change the listener bind. |
+| `--mobile-pairing` | Print a mobile-scoped pairing QR/link instead of the default runtime-environment pairing link. |
+| `--no-pairing` | Start without minting a pairing offer. |
+| `--project-root <path>` | Root of the project the serve should host (used with `--recipe-json`). |
+| `--recipe-json` | With `--project-root`, print the recipe result JSON and leave the server running. |
+| `--json` | Emit the versioned single-line `orca_server_ready` JSON contract instead of human text. |
+| `--environment <id>` | Pin the client to a specific environment id (global flag; see §3). |
+| `--pairing-code <code>` | Supply the remote pairing code (global flag; see §3). |
+
+Read the ready block from the journal and require the readiness type before treating the
+service as healthy:
+
+```bash
+journalctl -u orca-serve@<instance>.service -o cat \
+  | jq -Rrc 'fromjson? | select(.type == "orca_server_ready" and .schemaVersion == 1)'
+```
+
+Client-side readiness and identity:
+
+```bash
+orca status --json                    # local runtime: .runtime.reachable, .runtime.runtimeId
+orca --environment <id> status --json # remote runtime the client is pinned to
+orca --version                        # client build version
+```
+
+The status payload lives at `.runtime.runtimeId`, `.runtime.appVersion`, and
+`.runtime.reachable`; the resolved environment selector is `.target.environment` (for remote
+targets).
 
 ---
 
-## 4. Transport layer
+## 3. Environment variables
+
+Only these Orca variables are read anywhere in the runtime; everything else from the old
+serve wrappers was config that upstream now takes as flags.
+
+| Variable | Effect |
+|----------|--------|
+| `ORCA_ENVIRONMENT` | Ambient environment selector — the same value `--environment <id>` takes. Must match a `name` in the environment registry. |
+| `ORCA_PAIRING_CODE` | Ambient remote pairing code — the same value `--pairing-code <code>` takes. |
+| `ORCA_REMOTE_PAIRING` | Fallback alias for `ORCA_PAIRING_CODE` (checked only when `ORCA_PAIRING_CODE` is unset). |
+| `ORCA_VERSION` | The version the launch command exports; used for version-skew identity (orcad remote launch hashes it). |
+| `ORCA_USER_DATA_PATH` | Override the userData directory — how parallel Orca instances avoid clobbering one profile (see §4). |
+
+`ORCA_WORKSPACE_ID` and `ORCA_WORKTREE_ID` are set by Orca inside agent processes to carry
+the current worktree/workspace identity; they are not host configuration.
+
+> **Reproduce at the source, not with a verbosity knob.** Upstream `orca serve` has no
+> separate log-level switch — it writes what it writes to stdout/stderr. To reproduce a
+> fault, pin the build you are chasing (`ORCA_VERSION`), capture the journal for the failing
+> instance, and reproduce on a spare instance before changing the one under load.
+
+---
+
+## 4. Client log locations
+
+The **client** (desktop Orca app / CLI) is a different process from the headless **serve**.
+Its userData/log layout follows the platform's Electron convention; `ORCA_USER_DATA_PATH`
+overrides the userData root on any platform.
+
+| Platform | Client logs / state | Notes |
+|----------|---------------------|-------|
+| **macOS** | `~/Library/Logs/orca/` (main process + renderer logs) · `~/Library/Application Support/orca/` (userData: `orca-runtime.json`, `orca-environments.json`, `orca-e2ee-keypair.json`, `crash-reports.json`, `Crashpad/`) | Console.app's `Orca` filter mirrors stderr. |
+| **Windows** | `%USERPROFILE%\AppData\Roaming\orca\logs\` · `%APPDATA%\orca\` (userData, same files as macOS) | Pairing keypair and environment bindings live under the same tree — do not lose `orca-e2ee-keypair.json`. |
+| **Linux** | `~/.local/share/orca/logs/` (serve log dir) · `~/.config/orca/` (userData: `profiles/local-default/orca-data.json`, `orca-runtime.json`, `orca-environments.json`, `crash-reports.json`, `Crashpad/`) | The headless serve run under a unit writes to the journal (or the configured append file), not to `~/.local/share`. |
+
+`ORCA_USER_DATA_PATH` is how a systemd unit isolates parallel instances: point it at the
+instance's state directory and the runtime metadata, environment registry, and keypair all
+live there instead of the user's default profile.
+
+---
+
+## 5. Transport layer
 
 Two transports serve the same runtime, dispatched by the client based on `--environment` /
 `ORCA_ENVIRONMENT`:
@@ -127,90 +148,47 @@ Two transports serve the same runtime, dispatched by the client based on `--envi
 ```text
  Remote client ── ws://<addr>:6768 ──► [ WebSocketTransport  +  TLS  +  E2EE ]  ──► orca serve
                        (paired)
- Local CLI / agent ─► unix socket o-*.sock ─► [ UnixSocketTransport ]           ──► orca serve
+ Local CLI / agent ─► unix socket runtime.sock ─► [ UnixSocketTransport ]           ──► orca serve
                        (same host)
 ```
 
 | Transport | Endpoint | When used | Security |
 |-----------|----------|-----------|----------|
-| **WebSocket** | `ws://<pairing-address>:6768` (forwarded / overlay IP, e.g. WireGuard `10.200.0.1`) | Remote desktops/CLIs pair to the serve over the network | TLS on top of the hop when proxied (`wss://`); payload is **E2EE** — the client/server keypair minted at first pair encrypts traffic end-to-end so an intermediary cannot read commands. |
-| **Unix domain socket** | `o-*.sock` under the runtime dir (`$XDG_RUNTIME_DIR/orca_serve/<slot>/`) | Local CLI/agents on the serve host (fast path, no network) | File-system permissioning (`0700`, svc_orca-owned) — no network exposure. |
+| **WebSocket** | `ws://<pairing-address>:<port>` (forwarded / overlay IP, or `wss://` through a proxy) | Remote desktops/CLIs pair to the serve over the network | TLS on the hop when proxied (`wss://`); payload is **E2EE** — the client/server keypair minted at first pair encrypts traffic end-to-end so an intermediary cannot read commands. |
+| **Unix domain socket** | `runtime.sock` under the userData dir (`$ORCA_USER_DATA_PATH/runtime.sock`) | Local CLI/agents on the serve host (fast path, no network) | File-system permissioning (userData dir) — no network exposure. |
 
-**Port pinning & the fallback-port trap.** The serve is pinned to `--port 6768`
-(per-instance ports 6769/6770/6771 for lesley/jessica/canary). Orca's headless serve persists a
-"fallback WS port" to `<userData>/mobile-ws-fallback-port.json` and, on start, binds that
-remembered port **before** the pinned `--port` (`candidatePorts = [fallback, pinned]`). A stale
-file (`{"port":45175}`) makes serve bind the fallback and *never* try 6768, silently breaking
-already-paired clients. `orca-serve-fg` therefore deletes
-`$USERDATA/mobile-ws-fallback-port.json` before every start so the pin is authoritative
-(STA-1511).
+**Port pinning & the fallback-port trap.** When the preferred port is taken (a second Orca
+instance), the OS assigns a random port, and paired mobile devices store the `ws://ip:port`
+endpoint. Orca persists that assigned fallback to `<userData>/mobile-ws-fallback-port.json`
+so the same instance re-binds the same port next launch (`candidatePorts = [fallback,
+pinned]`, STA-1511). The trap: a **stale** fallback file can make serve bind the remembered
+port and never the port you asked for. Upstream resolves this at the flag level — with
+`serve --port`, the pinned port is preferred *first* (`preferPinnedPort`, issue #8535), so a
+stale fallback cannot steal the pin. Only when the pinned port is genuinely unavailable does
+the fallback persist and win again, which is what keeps existing pairings working.
 
 **Pairing & key material.** On first pair the client and serve mint an E2EE keypair
 (`orca-e2ee-keypair.json`) and a device token. These **survive version swaps and restarts** —
 a version-swap or restart is a session rebuild, not a re-pair — but a restart mints a **new
-runtimeId**, which a stale client pins to (the "stale pairing id / stale `activeEnvironmentId`"
-failure class, covered in the matrix).
-
----
-
-## 5. Integration with `orca-serve-diag`
-
-`orca-serve-diag` captures the full post-upgrade / crash / restart field set into a
-timestamped JSON bundle under a persistent diagnostics dir (never `/tmp`), and can diff two
-bundles into a plain-English "what changed / what's now inconsistent" verdict.
-
-```bash
-# Snapshot before a change, and again after (or on crash) — scope-dispatched, %i-aware.
-orca-serve-diag --phase before
-orca-serve-diag --phase after
-# systemctl restart orca-serve@factory.service   # …then capture the after state
-
-# Human + machine verdict between two bundles (exit 2 on a critical finding).
-orca-serve-diag --delta "$(orca-serve-diag --latest --phase before)" \
-                        "$(orca-serve-diag --latest --phase after)"
-
-# Change gate: newest before vs after; exit 2 on dual-serve/port/SIGKILL flags.
-orca-serve-diag --change-gate
-```
-
-Bundle layout (`schema: 2`, atomic `.tmp`→`.json` publish, rolling retention of newest N under
-`$DIAG_DIR`):
-
-```jsonc
-{
-  "schema": 2, "ts": "2026-09-09T00:00:00Z", "phase": "after",
-  "host": "mtl-02-dev-001", "orca_environment": "mtl-02",
-  "runtime_identity":  { /* live :6768 listener pid, runtimeId, ports, serve_inventory */ },
-  "serve_inventory":   { /* dual-serve probe, SIGKILL/EADDRINUSE signatures */ },
-  "config_state":      { /* orca-runtime.json vs live listener, phantom-pid check */ },
-  "sessions":          { /* /data sessions, orphan vs preserve set */ },
-  "dispatch_health":   { /* environment_error_count, resolveEnvironment signatures */ },
-  "crash_evidence":    { /* journal_signatures (SIGTRAP/SIGSEGV/SIGKILL), serve_fg_log,
-                            crashpad_minidumps, app_crash_reports, restart_count, start_limit_burst */ },
-  "resources":         { /* loadavg, nproc, meminfo, disk free (/ /tmp /data),
-                            system_fd_count, serve_rss_kb */ }
-}
-```
-
-The bundle is read-only w.r.t. the runtime: every external probe is timeout-bounded and
-best-effort, a failed probe records `{"error": …}` and collection continues, and the whole
-`collect()` pass is budgeted (`DIAG_TOTAL_BUDGET`, default 45 s) so it always returns inside
-systemd's stop budget. Point the diag at the same `ORCA_CONFIG_DIR`/`ORCA_SERVE_LOGDIR` the serve
-uses, or its runtime-identity and crash-evidence probes go blind.
+runtimeId**, which a stale client pins to (the "stale pairing id / stale
+`activeRuntimeEnvironmentId`" failure class, covered in the matrix).
 
 ---
 
 ## 6. Quick references
 
 ```bash
-# Serve's own words, newest first
-tail -n 200 "$(systemctl show -p Environment --value orca-serve@factory.service \
-  | tr ' ' '\n' | sed -n 's/^ORCA_SERVE_LOGDIR=//p')/serve-fg.log"
-
-# Journal for one instance
-journalctl -u orca-serve@factory.service -b --no-pager -n 200
+# Journal for one instance (serve's own words)
+journalctl -u orca-serve@<instance>.service -b --no-pager -n 200
 
 # Latest crash signatures since yesterday
-journalctl -u orca-serve@factory.service --since "24 hours ago" -o cat \
+journalctl -u orca-serve@<instance>.service --since "24 hours ago" -o cat \
   | grep -iE 'SIGTRAP|SIGSEGV|SIGKILL|Unhandled|uncaught'
+
+# Optional file sink (only if the unit uses StandardOutput=append:)
+tail -n 200 <prefix>/state/<instance>/logs/serve.log
+
+# Client-side identity against the serve truth
+orca --environment <id> status --json | jq '.runtime | {runtimeId, appVersion, reachable}'
+cat "$ORCA_USER_DATA_PATH/orca-runtime.json" 2>/dev/null || cat ~/.config/orca/orca-runtime.json
 ```
