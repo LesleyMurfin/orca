@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs'
 import os from 'node:os'
-import path from 'node:path'
 import type { HostAvailableMemorySource } from '../../shared/process-stats-types'
 import type { RuntimeServeStatsHost, RuntimeServeStatsHostPids } from '../../shared/runtime-types'
 import { parseLinuxAvailableMemory } from '../memory/host-memory'
@@ -131,7 +130,7 @@ export function resolveCgroupV2Directories(selfCgroup: string): string[] {
   if (line === undefined) {
     return []
   }
-  const root = path.join(path.sep, 'sys', 'fs', 'cgroup')
+  const root = '/sys/fs/cgroup'
   const segments = line.slice('0::'.length).split('/').filter(Boolean)
   const directories = [root]
   let current = root
@@ -171,7 +170,7 @@ function readCgroupFile(filePath: string): string | null {
 
 function readSelfCgroup(): string | null {
   try {
-    return readFileSync(path.join(path.sep, 'proc', 'self', 'cgroup'), 'utf8')
+    return readFileSync('/proc/self/cgroup', 'utf8')
   } catch {
     return null
   }
@@ -195,7 +194,7 @@ function readMeminfo(reader: (() => string | null) | undefined): string | null {
     return reader()
   }
   try {
-    return readFileSync(path.join(path.sep, 'proc', 'meminfo'), 'utf8')
+    return readFileSync('/proc/meminfo', 'utf8')
   } catch {
     // A container without procfs must yield nulls, never fail `serve stats`.
     return null

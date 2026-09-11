@@ -15,6 +15,7 @@ import {
   seedSupervisedAskWorkers
 } from './runtime-rpc-test-harness'
 import { createRootDispatch } from './orchestration/db/root-dispatch-test-fixture'
+import { UnixSocketTransport } from './rpc/unix-socket-transport'
 
 vi.mock('../git/worktree', () => {
   const worktrees = [
@@ -374,6 +375,29 @@ describe('OrcaRuntimeRpcServer', () => {
       // here would read as capacity a caller can still spend.
       expect((await runtime.getServeStats()).health.longPolls).toBeNull()
       db.close()
+    })
+
+    it('clears the long-poll provider when the Unix socket fails to start', async () => {
+      const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-rpc-'))
+      const runtime = new OrcaRuntimeService()
+      const server = new OrcaRuntimeRpcServer({
+        runtime,
+        userDataPath,
+        keepaliveIntervalMs: 30
+      })
+
+      // Force the listener bind to fail: a failed start must not advertise long-poll
+      // capacity, because the caps belong to a serving runtime, not this one.
+      const spy = vi
+        .spyOn(UnixSocketTransport.prototype, 'start')
+        .mockRejectedValueOnce(new Error('socket bind failed'))
+      try {
+        await expect(server.start()).rejects.toThrow('socket bind failed')
+      } finally {
+        spy.mockRestore()
+      }
+
+      expect((await runtime.getServeStats()).health.longPolls).toBeNull()
     })
 
     it('emits keepalive frames while agent-prompt verification blocks', async () => {

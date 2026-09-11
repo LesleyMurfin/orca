@@ -75,7 +75,14 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
         })
     })
 
-    await socketTransport.start()
+    try {
+      await socketTransport.start()
+    } catch (error) {
+      // Why: no listener is bound, so `serve stats` must not advertise long-poll capacity —
+      // the caps belong to a serving runtime, not this one.
+      this.runtime.setLongPollStatsProvider?.(null)
+      throw error
+    }
 
     const activeTransports: RpcTransport[] = [socketTransport]
     const transportsMeta: RuntimeTransportMetadata[] = [transportMeta]
