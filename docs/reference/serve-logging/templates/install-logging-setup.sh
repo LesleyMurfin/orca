@@ -167,7 +167,16 @@ preflight() {
 # replacement string, so it is safe for /, &, | characters in a path).
 render_unit() {
   awk -v p="$INSTALL_PREFIX" -v port="$SERVE_PORT" -v addr="$PAIRING_ADDRESS" \
-    '{ gsub(/@PREFIX@/, p); gsub(/@PORT@/, port); gsub(/@PAIRING_ADDRESS@/, addr); print }' "$UNIT_TEMPLATE"
+    -v user="$SERVICE_USER" -v group="$SERVICE_GROUP" \
+    '{ gsub(/@PREFIX@/, p); gsub(/@PORT@/, port); gsub(/@PAIRING_ADDRESS@/, addr); gsub(/@USER@/, user); gsub(/@GROUP@/, group); print }' "$UNIT_TEMPLATE"
+}
+
+# Substitute placeholders in a copied template (conf/env carry @PREFIX@ in
+# comments). Same substitution as the unit so no @..@ survives install.
+render_template() { # <src>
+  awk -v p="$INSTALL_PREFIX" -v port="$SERVE_PORT" -v addr="$PAIRING_ADDRESS" \
+    -v user="$SERVICE_USER" -v group="$SERVICE_GROUP" \
+    '{ gsub(/@PREFIX@/, p); gsub(/@PORT@/, port); gsub(/@PAIRING_ADDRESS@/, addr); gsub(/@USER@/, user); gsub(/@GROUP@/, group); print }' "$1"
 }
 
 render_logrotate() {
@@ -227,7 +236,8 @@ copy_if_absent() { # <src> <dest>
   elif [ "$DRY_RUN" -eq 1 ]; then
     log "  [dry-run] would create: $dest  (from $(basename "$src"))"
   else
-    install -m 0644 "$src" "$dest"
+    render_template "$src" > "$dest"
+    chmod 0644 "$dest"
     log "  created: $dest  (from $(basename "$src"))"
   fi
 }

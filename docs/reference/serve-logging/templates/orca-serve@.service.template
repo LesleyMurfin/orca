@@ -41,8 +41,8 @@ RequiresMountsFor=@PREFIX@
 [Service]
 # One service identity for ALL instances. Isolation is at the userData + port
 # layer (ORCA_USER_DATA_PATH + --port), not the OS-user layer.
-User=orca
-Group=orca
+User=@USER@
+Group=@GROUP@
 WorkingDirectory=@PREFIX@
 Type=simple
 
