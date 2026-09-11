@@ -36,12 +36,12 @@ else
 fi
 
 # 4. every installed artifact is placeholder-free
-leftover=""
+missing=""; leftover=""
 for f in "$SYSD/orca-serve@.service" "$PREFIX/etc/orca-serve.conf" "$PREFIX/etc/instances/test.env" "$LR/orca-serve" "$JD/orca-serve.conf"; do
-  if [ -f "$f" ] && grep -Eq '@(PREFIX|PORT|PAIRING_ADDRESS|USER|GROUP)@' "$f"; then
-    leftover="$leftover $f"
-  fi
+  if [ ! -f "$f" ]; then missing="$missing $f"; continue; fi
+  if grep -Eq '@(PREFIX|PORT|PAIRING_ADDRESS|USER|GROUP)@' "$f"; then leftover="$leftover $f"; fi
 done
+if [ -z "$missing" ]; then ok "all expected artifacts present"; else bad "missing artifacts:$missing"; fi
 if [ -z "$leftover" ]; then ok "no leftover @..@ placeholders"; else bad "leftover placeholders:$leftover"; fi
 
 # 5. idempotency — re-run reports 'keep (already present)' (capture, avoid pipe+SIGPIPE)

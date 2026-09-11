@@ -66,7 +66,7 @@ sandbox install (all destinations under a temp dir), placeholder substitution,
 idempotency, `logrotate -d`, and `systemd-analyze verify`:
 
 ```bash
-bash test-logging-setup.sh
+bash docs/reference/serve-logging/templates/test-logging-setup.sh
 ```
 
 Exit 0 = all checks pass. Safe to run anywhere; it never writes outside a temp dir.
