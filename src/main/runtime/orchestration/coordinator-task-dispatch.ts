@@ -1,6 +1,6 @@
 /** Picking worker terminals, sending a task's dispatch preamble, and warning about hung dispatches. */
 import type { OrchestrationDb } from './db'
-import type { TaskRow } from './types'
+import type { DispatchContextRow, TaskRow } from './types'
 import { buildDispatchPreamble } from './preamble'
 import type { CoordinatorRuntime, WorktreeDrift } from './coordinator-runtime-contract'
 import {
@@ -15,14 +15,64 @@ export type TaskDispatchResult = 'dispatched' | 'dispatched-unobserved' | 'stale
 // Why: 10 min = documented heartbeat cadence (5 min) × 2, so one missed heartbeat is the earliest a dispatch can look stale.
 const HUNG_THRESHOLD_MS = 10 * 60 * 1000
 
-// Why: warn only, never auto-fail — a false positive (slow but correct worker) costs more than a false negative (hung worker holding a slot); see R6 of DESIGN_DOC_PREAMBLE_FIX.md.
-export function warnStaleDispatches(db: OrchestrationDb, onLog: (msg: string) => void): void {
+// Why: warn only by DEFAULT, never auto-fail — a false positive (slow but correct worker) costs more than a false negative (hung worker holding a slot); see R6 of DESIGN_DOC_PREAMBLE_FIX.md.
+// `reclaim` opts into acting on the same signal, for coordinators where "until a human notices" is not a real backstop; see reclaimStaleDispatches for why the false positive cannot fire.
+export function warnStaleDispatches(
+  db: OrchestrationDb,
+  onLog: (msg: string) => void,
+  reclaim: boolean
+): void {
   const thresholdIso = new Date(Date.now() - HUNG_THRESHOLD_MS).toISOString()
   const stale = db.getStaleDispatches(thresholdIso)
+  const minutes = Math.round(HUNG_THRESHOLD_MS / 60000)
   for (const ctx of stale) {
-    const minutes = Math.round(HUNG_THRESHOLD_MS / 60000)
     onLog(
       `Warning: worker ${ctx.assignee_handle ?? '<unknown>'} on task ${ctx.task_id} has not sent a heartbeat in ~${minutes} min (dispatch ${ctx.id})`
+    )
+  }
+  if (!reclaim) {
+    return
+  }
+  reclaimStaleDispatches(db, onLog, stale, minutes)
+}
+
+/**
+ * Fail a dispatch that has gone silent, freeing its terminal slot.
+ *
+ * WHY THIS IS SAFE — the R6 false positive ("a slow worker producing correct
+ * output") cannot be triggered by this detector. getStaleDispatches is not
+ * age-based: it requires status = 'dispatched' (finished work excluded), a
+ * dispatched_at past the grace window, and silence for 2x the heartbeat cadence.
+ * A slow-but-live worker heartbeats and is never selected — the preamble requires
+ * it ("Send heartbeat messages during long active work") and HUNG_THRESHOLD_MS is
+ * already 2x that cadence, so a single missed beat is not enough. Selection means
+ * the worker has said nothing for two full heartbeat intervals, not that it is slow.
+ *
+ * WHY IT MATTERS — without reclaim, a worker that ends its turn without worker_done
+ * holds its slot forever, and dispatchReadyTasks stops dispatching once
+ * maxConcurrent - dispatched.length <= 0. Leaked slots accumulate one per silent
+ * worker until the coordinator starves PERMANENTLY while reporting healthy. Observed
+ * on an unsupervised host: 19 leaked -> 3 - 19 = -16 -> 29 tasks ready, 0 dispatched,
+ * indefinitely. Clearing them by hand restored dispatch on the next poll. "Until a
+ * human notices" is a sound backstop for a supervised session and no backstop at all
+ * for a scheduled or headless one.
+ *
+ * The task is failed, not re-queued: re-dispatching a task whose worker may still be
+ * alive risks duplicate side effects. Freeing the slot is reversible and observable;
+ * silent starvation is neither.
+ */
+function reclaimStaleDispatches(
+  db: OrchestrationDb,
+  onLog: (msg: string) => void,
+  stale: DispatchContextRow[],
+  minutes: number
+): void {
+  for (const ctx of stale) {
+    const reason = `stale dispatch reclaimed: no heartbeat in ~${minutes} min`
+    db.failDispatch(ctx.id, reason)
+    db.updateTaskStatus(ctx.task_id, 'failed', JSON.stringify({ error: reason }))
+    onLog(
+      `Reclaimed slot from ${ctx.assignee_handle ?? '<unknown>'} on task ${ctx.task_id} (dispatch ${ctx.id}) — ${reason}`
     )
   }
 }
