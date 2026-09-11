@@ -21,6 +21,7 @@ sudo bash install-logging-setup.sh             # then install
 | `orca-serve.conf.template` | Host-wide config (shared, loaded first) |
 | `orca-serve-instance.env.template` | Per-instance config (loaded second, overrides host) |
 | `orca-client-diagnostics.md` | Client-side reachability/pairing runbook (Bucket 4) |
+| `test-logging-setup.sh` | Sandbox self-test (install → verify → idempotency; never touches production) |
 
 **`docs/reference/serve-logging/`** — the operational docs:
 
@@ -57,3 +58,15 @@ logrotate -d /etc/logrotate.d/orca-serve                          # rotation val
 
 > Not sure which failure you have? Open `../orca-serve-troubleshooting-matrix.md`
 > and run the ≤5-command cheat sheet for the matching bucket first.
+
+## 4. Test (without touching production)
+
+A self-contained sandbox test verifies the installer end-to-end — syntax, dry-run,
+sandbox install (all destinations under a temp dir), placeholder substitution,
+idempotency, `logrotate -d`, and `systemd-analyze verify`:
+
+```bash
+bash test-logging-setup.sh
+```
+
+Exit 0 = all checks pass. Safe to run anywhere; it never writes outside a temp dir.
