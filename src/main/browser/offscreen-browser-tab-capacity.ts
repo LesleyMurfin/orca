@@ -29,11 +29,10 @@ const MAX_CONFIGURABLE_OFFSCREEN_BROWSER_TABS = 64
 /** Reads the per-host override, falling back to the default for anything unusable. */
 export function resolveOffscreenBrowserTabCap(env: NodeJS.ProcessEnv = process.env): number {
   const configured = Number(env[MAX_OFFSCREEN_BROWSER_TABS_ENV])
-  return Number.isInteger(configured) &&
-    configured >= 1 &&
-    configured <= MAX_CONFIGURABLE_OFFSCREEN_BROWSER_TABS
-    ? configured
-    : DEFAULT_MAX_OFFSCREEN_BROWSER_TABS
+  if (!Number.isInteger(configured) || configured < 1) {
+    return DEFAULT_MAX_OFFSCREEN_BROWSER_TABS
+  }
+  return Math.min(configured, MAX_CONFIGURABLE_OFFSCREEN_BROWSER_TABS)
 }
 
 /** Names the cap and the way out, because the agent that hit it is the one that must close a tab. */

@@ -1,5 +1,8 @@
 import { BrowserWindow } from 'electron'
-
+import {
+  PROCESS_START_TIME_TOLERANCE_MS,
+  readProcessStartTimeMs
+} from '../runtime/agent-session-process-identity-probe'
 /**
  * Last-resort reclamation of the OS process behind a closed offscreen browser page.
  *
@@ -19,6 +22,7 @@ const RENDERER_EXIT_POLL_MS = 25
 export type RendererProcessControl = {
   isAlive: (osProcessId: number) => boolean
   kill: (osProcessId: number) => void
+  readStartTimeMs?: (osProcessId: number) => Promise<number | null>
 }
 
 export const nodeRendererProcessControl: RendererProcessControl = {
@@ -51,7 +55,7 @@ function rendererProcessIsShared(osProcessId: number): boolean {
   )
 }
 
-export type RendererReclaimOutcome = 'exited' | 'killed' | 'shared'
+export type RendererReclaimOutcome = 'exited' | 'killed' | 'shared' | 'pid_reused'
 
 /** Waits out the renderer's own exit, then forces it if it never came. */
 export async function reclaimRendererProcess(
@@ -59,6 +63,8 @@ export async function reclaimRendererProcess(
   options: {
     control?: RendererProcessControl
     isShared?: (osProcessId: number) => boolean
+    readStartTimeMs?: (osProcessId: number) => Promise<number | null>
+    expectedStartTimeMs?: number | null
     graceMs?: number
     pollMs?: number
   } = {}
@@ -67,11 +73,27 @@ export async function reclaimRendererProcess(
   const isShared = options.isShared ?? rendererProcessIsShared
   const pollMs = options.pollMs ?? RENDERER_EXIT_POLL_MS
   const deadline = Date.now() + (options.graceMs ?? RENDERER_EXIT_GRACE_MS)
+  const readStartTime = options.readStartTimeMs ?? control.readStartTimeMs ?? readProcessStartTimeMs
+  const expectedStartTime =
+    options.expectedStartTimeMs !== undefined
+      ? options.expectedStartTimeMs
+      : await readStartTime(osProcessId).catch(() => null)
+
   while (control.isAlive(osProcessId)) {
     if (isShared(osProcessId)) {
       return 'shared'
     }
     if (Date.now() >= deadline) {
+      if (expectedStartTime !== null) {
+        const currentStartTime = await readStartTime(osProcessId).catch(() => null)
+        if (
+          currentStartTime === null ||
+          Math.abs(currentStartTime - expectedStartTime) > PROCESS_START_TIME_TOLERANCE_MS
+        ) {
+          // The original process exited and its PID was reused or is no longer verifiable.
+          return 'pid_reused'
+        }
+      }
       control.kill(osProcessId)
       return 'killed'
     }
