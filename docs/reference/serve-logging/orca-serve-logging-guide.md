@@ -120,6 +120,12 @@ the current worktree/workspace identity; they are not host configuration.
 > fault, pin the build you are chasing (`ORCA_VERSION`), capture the journal for the failing
 > instance, and reproduce on a spare instance before changing the one under load.
 
+> **Verbose Chromium logging is available today via Electron.** Upstream has no first-class
+> `--verbose` flag, but the serve runtime is Chromium under the hood, so Electron's standard
+> verbose switch surfaces renderer/GPU/network stderr for crash capture (matrix Buckets 1–2):
+> run `ELECTRON_ENABLE_LOGGING=1 orca serve`. On an Electron-direct launch,
+> `--enable-logging=stderr --v=1` passes the same switches through.
+
 ---
 
 ## 4. Client log locations
