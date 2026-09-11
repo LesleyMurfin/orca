@@ -380,6 +380,8 @@ describe('OrcaRuntimeRpcServer', () => {
     it('clears the long-poll provider when the Unix socket fails to start', async () => {
       const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-rpc-'))
       const runtime = new OrcaRuntimeService()
+      const db = new OrchestrationDb(':memory:')
+      runtime.setOrchestrationDb(db)
       const server = new OrcaRuntimeRpcServer({
         runtime,
         userDataPath,
@@ -398,6 +400,7 @@ describe('OrcaRuntimeRpcServer', () => {
       }
 
       expect((await runtime.getServeStats()).health.longPolls).toBeNull()
+      db.close()
     })
 
     it('emits keepalive frames while agent-prompt verification blocks', async () => {
