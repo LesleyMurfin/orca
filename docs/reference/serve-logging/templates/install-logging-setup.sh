@@ -239,6 +239,7 @@ apply() {
   if [ "$DRY_RUN" -eq 1 ]; then
     log "  [dry-run] would install unit -> $UNIT_DEST (@PREFIX@=$INSTALL_PREFIX @PORT@=$SERVE_PORT @PAIRING_ADDRESS@=$PAIRING_ADDRESS)"
   else
+    mkdir -p "$SYSTEMD_DIR"
     render_unit > "$UNIT_DEST.tmp"
     chmod 0644 "$UNIT_DEST.tmp"
     mv -f "$UNIT_DEST.tmp" "$UNIT_DEST"
