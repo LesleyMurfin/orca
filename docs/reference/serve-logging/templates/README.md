@@ -292,7 +292,7 @@ For full triage recipes and detailed fix procedures, consult [`../orca-serve-tro
 ## 7. Official Documentation & References
 
 ### External & Platform Documentation
-- **Orca Official Website & Docs:** [https://useorca.com](https://useorca.com)
+- **Orca Official Website & Docs:** [https://www.onorca.dev/docs/remote-servers](https://www.onorca.dev/docs/remote-servers)
 - **systemd Service & Unit Documentation:** [systemd.service(5)](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html) and [systemd.exec(5)](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)
 - **systemd Journald Configuration:** [journald.conf(5)](https://www.freedesktop.org/software/systemd/man/latest/journald.conf.html)
 - **Logrotate Utility Documentation:** [logrotate(8) Manual](https://man7.org/linux/man-pages/man8/logrotate.8.html)
