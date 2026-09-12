@@ -16,6 +16,8 @@ chmod 0755 "$TMP"
 trap 'sudo rm -rf "$TMP"' EXIT
 
 PREFIX="$TMP/prefix"; SYSD="$TMP/systemd"; LR="$TMP/logrotate.d"; JD="$TMP/journald.conf.d"
+FAKE_HOME="$TMP/userhome"
+sudo mkdir -p "$FAKE_HOME/.agents"
 PASS=0; FAIL=0
 ok()  { printf 'PASS  %s\n' "$*"; PASS=$((PASS+1)); }
 bad() { printf 'FAIL  %s\n' "$*"; FAIL=$((FAIL+1)); }
@@ -25,11 +27,16 @@ echo "== test-logging-setup (sandbox: $TMP) =="
 # 1. syntax
 if bash -n "$INSTALLER"; then ok "bash -n"; else bad "bash -n"; fi
 
-# 2. dry-run audit (default dirs, read-only)
-if sudo bash "$INSTALLER" --dry-run >/dev/null 2>&1; then ok "--dry-run audit"; else bad "--dry-run audit"; fi
+# 2. dry-run audit (read-only) + reports skill target
+dry_out="$(sudo env TARGET_HOME="$FAKE_HOME" HOME="$FAKE_HOME" SUDO_USER="" bash "$INSTALLER" --dry-run 2>&1)"
+if printf '%s' "$dry_out" | grep -q "would install agent skill -> $FAKE_HOME/.claude/skills/orca-serve-troubleshoot/SKILL.md"; then
+  ok "--dry-run audit (reports skill target)"
+else
+  bad "--dry-run audit (reports skill target)"
+fi
 
 # 3. sandbox install — NO pre-created dirs (proves SYSTEMD_DIR is mkdir'd)
-if sudo env INSTALL_PREFIX="$PREFIX" SYSTEMD_DIR="$SYSD" LOGROTATE_DIR="$LR" JOURNALD_DIR="$JD" \
+if sudo env TARGET_HOME="$FAKE_HOME" HOME="$FAKE_HOME" SUDO_USER="" INSTALL_PREFIX="$PREFIX" SYSTEMD_DIR="$SYSD" LOGROTATE_DIR="$LR" JOURNALD_DIR="$JD" \
      bash "$INSTALLER" --instance test --port 6771 --pairing-address 10.0.0.5 >/dev/null 2>&1; then
   ok "sandbox install (no pre-created dirs)"
 else
@@ -38,15 +45,24 @@ fi
 
 # 4. every installed artifact is placeholder-free
 missing=""; leftover=""
-for f in "$SYSD/orca-serve@.service" "$PREFIX/etc/orca-serve.conf" "$PREFIX/etc/instances/test.env" "$LR/orca-serve" "$JD/orca-serve.conf"; do
+for f in "$SYSD/orca-serve@.service" "$PREFIX/etc/orca-serve.conf" "$PREFIX/etc/instances/test.env" "$LR/orca-serve" "$JD/orca-serve.conf" \
+         "$FAKE_HOME/.claude/skills/orca-serve-troubleshoot/SKILL.md" "$FAKE_HOME/.agents/skills/orca-serve-troubleshoot/SKILL.md"; do
   if [ ! -f "$f" ]; then missing="$missing $f"; continue; fi
   if grep -Eq '@(PREFIX|PORT|PAIRING_ADDRESS|USER|GROUP)@' "$f"; then leftover="$leftover $f"; fi
 done
-if [ -z "$missing" ]; then ok "all expected artifacts present"; else bad "missing artifacts:$missing"; fi
+if [ -z "$missing" ]; then ok "all expected artifacts present (including agent skills)"; else bad "missing artifacts:$missing"; fi
 if [ -z "$leftover" ]; then ok "no leftover @..@ placeholders"; else bad "leftover placeholders:$leftover"; fi
 
+# 4b. verify skill content is valid and matches orca-serve-troubleshoot
+if grep -q 'name: orca-serve-troubleshoot' "$FAKE_HOME/.claude/skills/orca-serve-troubleshoot/SKILL.md" \
+   && grep -q 'name: orca-serve-troubleshoot' "$FAKE_HOME/.agents/skills/orca-serve-troubleshoot/SKILL.md"; then
+  ok "skill installation content verified"
+else
+  bad "skill installation content verified"
+fi
+
 # 5. idempotency — re-run reports 'keep (already present)' (capture, avoid pipe+SIGPIPE)
-idem_out="$(sudo env INSTALL_PREFIX="$PREFIX" SYSTEMD_DIR="$SYSD" LOGROTATE_DIR="$LR" JOURNALD_DIR="$JD" \
+idem_out="$(sudo env TARGET_HOME="$FAKE_HOME" HOME="$FAKE_HOME" SUDO_USER="" INSTALL_PREFIX="$PREFIX" SYSTEMD_DIR="$SYSD" LOGROTATE_DIR="$LR" JOURNALD_DIR="$JD" \
      bash "$INSTALLER" --instance test --port 6771 --pairing-address 10.0.0.5 2>&1)"
 if printf '%s' "$idem_out" | grep -q 'keep (already present)'; then
   ok "idempotency (keep already present)"

@@ -54,6 +54,24 @@ ENV_DEST="$INSTALL_PREFIX/etc/instances/$DEFAULT_INSTANCE.env"
 LOG_SNIPPET_DEST="$LOGROTATE_DIR/orca-serve"
 JOURNAL_DROPIN="$JOURNALD_DIR/orca-serve.conf"
 
+# Resolve target user home for user-scoped configurations (skills, etc.)
+# TARGET_HOME or TARGET_USER can be overridden via environment or flags.
+if [ -z "${TARGET_HOME:-}" ]; then
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    TARGET_USER="${TARGET_USER:-$SUDO_USER}"
+    TARGET_HOME="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || echo "")"
+    [ -z "$TARGET_HOME" ] && TARGET_HOME="${HOME:-/root}"
+  else
+    TARGET_USER="${TARGET_USER:-$(id -un)}"
+    TARGET_HOME="${HOME:-/root}"
+  fi
+else
+  TARGET_USER="${TARGET_USER:-${SUDO_USER:-$(id -un)}}"
+fi
+
+SKILL_LOCAL_SOURCE="$SCRIPT_DIR/../../../../skills/orca-serve-troubleshoot/SKILL.md"
+SKILL_RAW_URL="https://raw.githubusercontent.com/LesleyMurfin/orca/feature/serve-logging-setup/skills/orca-serve-troubleshoot/SKILL.md"
+
 DRY_RUN=0
 INSTANCE="$DEFAULT_INSTANCE"
 
@@ -127,6 +145,11 @@ preflight() {
   if [ -f "$UNIT_TEMPLATE" ]; then pass "unit template readable"; else fail "missing $UNIT_TEMPLATE"; fi
   if [ -f "$CONF_TEMPLATE" ]; then pass "conf template readable"; else fail "missing $CONF_TEMPLATE"; fi
   if [ -f "$INSTANCE_ENV_TEMPLATE" ]; then pass "instance env template readable"; else fail "missing $INSTANCE_ENV_TEMPLATE"; fi
+  if [ -f "$SKILL_LOCAL_SOURCE" ] || command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+    pass "skill source available (local file, curl, or embedded fallback)"
+  else
+    warn "skill source not locally found and neither curl nor wget available (embedded fallback will be used)"
+  fi
 
   # Identity (soft — the full serve installer provisions these)
   if command -v getent >/dev/null 2>&1; then
@@ -314,6 +337,147 @@ apply() {
       log "  skipped: systemctl daemon-reload (systemd bus not connected / container environment)"
     fi
   fi
+
+  # 5. agent skill installation (orca-serve-troubleshoot)
+  install_agent_skills
+}
+
+get_skill_destinations() {
+  local dests=()
+  dests+=("$TARGET_HOME/.claude/skills/orca-serve-troubleshoot/SKILL.md")
+  if [ -d "$TARGET_HOME/.agents" ]; then
+    dests+=("$TARGET_HOME/.agents/skills/orca-serve-troubleshoot/SKILL.md")
+  fi
+  printf '%s\n' "${dests[@]}"
+}
+
+get_skill_content() {
+  if [ -f "$SKILL_LOCAL_SOURCE" ]; then
+    cat "$SKILL_LOCAL_SOURCE"
+    return 0
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fsSL "$SKILL_RAW_URL" 2>/dev/null; then
+      return 0
+    fi
+  elif command -v wget >/dev/null 2>&1; then
+    if wget -qO- "$SKILL_RAW_URL" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  cat <<'EMBEDDED_SKILL_EOF'
+---
+name: orca-serve-troubleshoot
+description: >-
+  Automate Orca Serve logging installation, connectivity verification, and root-cause
+  diagnostic triage across the 4 buckets (Orca Bug, Server Resource, Server Config,
+  Client Config). Triggers: diagnose orca serve, orca serve down, orca serve troubleshooting,
+  install orca serve logging, orca connection refused, orca serve status, orca unknown
+  environment. Not for orca-cli, orchestration, or generic server health.
+---
+
+# Orca Serve Troubleshoot
+
+## Purpose
+
+Two-mode router for the headless `orca serve` runtime. **Install / preflight mode** provisions
+the logging + diagnostics surface idempotently. **Triage mode** runs a non-destructive
+5-command sequence and classifies the failure into exactly one of four root-cause buckets.
+
+## Action 1 — Install / Preflight mode
+
+Triggered by: "install orca serve logging", "setup orca serve logging".
+
+1. Locate `docs/reference/serve-logging/templates/install-logging-setup.sh`.
+2. Always dry-run first — it audits and changes nothing:
+   ```bash
+   sudo bash docs/reference/serve-logging/templates/install-logging-setup.sh --dry-run
+   ```
+3. Check the exit code and read every `FAIL` line:
+   - Exit `0` with only `WARN` lines → safe to apply.
+   - Any `FAIL` line → resolve the hard-fail from the `preflight` output before installing.
+4. Apply only when authorized:
+   ```bash
+   sudo bash docs/reference/serve-logging/templates/install-logging-setup.sh \
+     [--instance <instance>] [--prefix <prefix>] [--port <port>] [--pairing-address <addr>]
+   ```
+5. Verify the unit registers: `systemctl is-enabled orca-serve@<instance>.service`.
+
+## Action 2 — Triage mode (5-command sequence, non-destructive)
+
+Triggered by: "diagnose orca serve", "orca serve down", "orca serve status",
+"orca connection refused", "orca unknown environment".
+
+Run all five over the failing instance and keep the output for Action 3.
+
+```bash
+systemctl status orca-serve@<instance>.service --no-pager   # active vs status=137 / 203
+journalctl -u orca-serve@<instance>.service -n 50 --no-pager
+ss -ltnp | grep -E ':(6768|6769|6770|6771)'                  # who LISTENs, fallback port?
+orca --environment <id> status --json | jq '.runtime'        # env resolves + live runtime?
+cat "${ORCA_USER_DATA_PATH:-$HOME/.config/orca}/orca-runtime.json" | jq '{runtimeId, pid}'
+```
+
+Read the journal for `SIGSEGV`, `SIGTRAP`, or unhandled rejections. Compare the client
+registry's `activeRuntimeEnvironmentId` against the known environments and the serve-side
+runtime id in `orca-runtime.json`.
+
+## Action 3 — Root-Cause Classification
+
+Map the evidence to one bucket, then apply the exact fix from
+`docs/reference/serve-logging/orca-serve-troubleshooting-matrix.md`.
+
+| Evidence | Bucket | Recommended fix |
+|----------|--------|-----------------|
+| `SIGSEGV` / `SIGTRAP` / unhandled rejection in the journal | **1 — Orca Bug** | reproduce on a spare instance, pin/roll back `ORCA_VERSION` |
+| `status=137` (OOM/SIGKILL), `ENOSPC`, `EMFILE`, CPU starvation | **2 — Server Resource** | raise unit `MemoryHigh`/`MemoryMax`/`LimitNOFILE`, free the resource |
+| `status=203` (EXEC), port collision, stale fallback-port override, missing path | **3 — Server Config** | fix `ExecStart`/`WorkingDirectory`/permissions, remove stale fallback file, free/pin the port |
+| env-id mismatch / stale `activeRuntimeEnvironmentId` / connection refused | **4 — Client Config** | reconcile env id + pairing address, relaunch the client, align versions |
+
+Never hand-edit `orca-runtime.json` to clear a phantom pid — that masks the crash, not the
+cause.
+
+## References
+
+- Troubleshooting matrix: `docs/reference/serve-logging/orca-serve-troubleshooting-matrix.md`
+- Logging guide: `docs/reference/serve-logging/orca-serve-logging-guide.md`
+- Install script: `docs/reference/serve-logging/templates/install-logging-setup.sh`
+EMBEDDED_SKILL_EOF
+}
+
+install_agent_skills() {
+  local skill_dests=()
+  while IFS= read -r dest; do
+    [ -n "$dest" ] && skill_dests+=("$dest")
+  done < <(get_skill_destinations)
+
+  local skill_content=""
+  local skill_loaded=0
+
+  for dest in "${skill_dests[@]}"; do
+    local skill_dir
+    skill_dir="$(dirname "$dest")"
+    if [ "$DRY_RUN" -eq 1 ]; then
+      log "  [dry-run] would install agent skill -> $dest"
+    else
+      if [ ! -d "$skill_dir" ]; then
+        mkdir -p "$skill_dir"
+        if [ -n "${TARGET_USER:-}" ] && [ "$(id -u)" -eq 0 ]; then
+          chown -R "$TARGET_USER:" "$skill_dir" 2>/dev/null || true
+        fi
+      fi
+      if [ "$skill_loaded" -eq 0 ]; then
+        skill_content="$(get_skill_content)"
+        skill_loaded=1
+      fi
+      printf '%s\n' "$skill_content" > "$dest"
+      chmod 0644 "$dest"
+      if [ -n "${TARGET_USER:-}" ] && [ "$(id -u)" -eq 0 ]; then
+        chown "$TARGET_USER:" "$dest" 2>/dev/null || true
+      fi
+      log "  installed agent skill: $dest"
+    fi
+  done
 }
 
 print_verification() {
@@ -329,7 +493,9 @@ systemctl cat orca-serve@$I.service | grep -E '^ExecStart='
 ls -la $P/state/$I/{logs,} $P/etc/ 2>/dev/null
 # 4. logrotate config is valid (dry-run = no rotation performed)
 logrotate -d $LOG_SNIPPET_DEST
-# 5. start the instance, then watch the journal sink
+# 5. agent skill installed for fast AI diagnostic triage
+test -f "$TARGET_HOME/.claude/skills/orca-serve-troubleshoot/SKILL.md" && echo "skill present"
+# 6. start the instance, then watch the journal sink
 systemctl enable --now orca-serve@$I.service
 journalctl -u orca-serve@$I.service -n 50 --no-pager
 ==============================================================================
