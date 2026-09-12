@@ -11,6 +11,7 @@ export type ServeOptions = {
   mobilePairing: boolean
   recipeJson: boolean
   projectRoot: string | null
+  verbose: boolean
 }
 
 function optionsBeforeTerminator(argv: readonly string[]): readonly string[] {
@@ -119,6 +120,7 @@ export function getServeOptions(argv: readonly string[]): ServeOptions {
     noPairing: lastBooleanValue(optionsArgv, ['--serve-no-pairing', '--no-pairing']),
     mobilePairing: lastBooleanValue(optionsArgv, ['--serve-mobile-pairing', '--mobile-pairing']),
     recipeJson: lastBooleanValue(optionsArgv, ['--serve-recipe-json', '--recipe-json']),
+    verbose: hasFlag(optionsArgv, ['--serve-verbose', '--verbose']),
     projectRoot: valueAfter(
       optionsArgv,
       ['--serve-project-root', '--project-root'],

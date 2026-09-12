@@ -1,0 +1,137 @@
+# ============================================================================
+# orca-serve@.service.template — systemd template unit for headless `orca serve`
+#
+# `@PREFIX@`, `@PORT@`, and `@PAIRING_ADDRESS@` placeholders are substituted by
+# install-logging-setup.sh at install time. The unit is host-neutral and
+# instance-neutral: it carries ONLY structural env, plus the two EnvironmentFile=
+# lines that pull in the real config layer. Every per-host / per-instance value
+# lives in config (orca-serve.conf / instances/<instance>.env) — edit config,
+# never rebuild this unit. Installs to /etc/systemd/system/orca-serve@.service.
+#
+# `%i` = a generic instance name (e.g. `default`). Control per instance:
+#   systemctl enable --now orca-serve@default.service
+#   systemctl restart          orca-serve@default.service
+#
+# This converges with docs/reference/headless-linux-server.md ("Systemd Service"):
+# the real entrypoint is `orca serve`, the default account is `orca`, and the
+# ready contract is the `orca_server_ready` JSON line on stdout.
+# ============================================================================
+
+[Unit]
+Description=Orca headless runtime (%i)
+Documentation=https://github.com/stablyai/orca
+After=network-online.target
+Wants=network-online.target
+
+# ---------------------------------------------------------------------------
+# RESTART CIRCUIT BREAKER (unit-level, before [Service])
+#
+# Counts starts in a rolling window; if the instance restarts >= StartLimitBurst
+# times within StartLimitIntervalSec, systemd stops trying and leaves the unit in
+# a "failed" (rate-limited) state instead of restart-looping forever. This is the
+# backstop that converts an infinite crash-loop into a diagnosable, contained outage.
+# ---------------------------------------------------------------------------
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Refuse to start if the data volume is not mounted — a clean mount error, not a
+# cascade of ENOENT/silent-defaults deeper in the start path.
+RequiresMountsFor=@PREFIX@
+
+[Service]
+# One service identity for ALL instances. Isolation is at the userData + port
+# layer (ORCA_USER_DATA_PATH + --port), not the OS-user layer.
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@PREFIX@
+Type=simple
+
+# ---------------------------------------------------------------------------
+# LOGGING — stdio is captured by journald (the systemd default). This makes
+# `journalctl -u orca-serve@<instance>` a complete record of the serve's own
+# words — the pinned/fallback port decision, the bound + advertised endpoints,
+# and pairing status. SyslogIdentifier pairs log lines with the instance name.
+#
+# The journal is durable when the installer's journald drop-in sets
+# Storage=persistent. To keep a plain-file sink instead, replace both lines with:
+#     StandardOutput=append:@PREFIX@/state/%i/logs/serve.log
+#     StandardError=append:@PREFIX@/state/%i/logs/serve.log
+# (rotated by /etc/logrotate.d/orca-serve). A single stream can only go to one
+# target, so pick journal OR file — do not try to tee inside a wrapper.
+# ---------------------------------------------------------------------------
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=orca-serve@%i
+
+# ---------------------------------------------------------------------------
+# CONFIG LAYER — shared host conf, then per-instance (last wins).
+# NO leading `-`: a missing file MUST fail loudly (misconfig, not a silent default).
+# ---------------------------------------------------------------------------
+EnvironmentFile=@PREFIX@/etc/orca-serve.conf
+EnvironmentFile=@PREFIX@/etc/instances/%i.env
+
+# ---------------------------------------------------------------------------
+# STRUCTURAL env — computed paths, not chosen values; they never move to config.
+# ---------------------------------------------------------------------------
+Environment=HOME=@PREFIX@/state/%i
+Environment=PATH=@PREFIX@/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Isolate parallel instances: ORCA_USER_DATA_PATH redirects the runtime metadata,
+# environment registry, and E2EE keypair into the instance's state tree instead of
+# the service account's default profile (~/.config/orca). %i-keyed so instances
+# never cross-contaminate.
+Environment=ORCA_USER_DATA_PATH=@PREFIX@/state/%i
+
+# Runtime dir is per-instance (orca_serve/%i) so concurrent instances never share
+# /run/orca_serve/<instance>. %t = /run under the system manager (tmpfs, never the
+# boot drive). Auto-created 0700 orca-owned, auto-removed on stop. Note: the local
+# CLI↔runtime unix socket is `runtime.sock` under the userData dir
+# ($ORCA_USER_DATA_PATH/runtime.sock), not in this runtime dir.
+RuntimeDirectory=orca_serve/%i
+Environment=XDG_RUNTIME_DIR=%t/orca_serve/%i
+
+# ---------------------------------------------------------------------------
+# RESOURCE LIMITS — bound a run-away renderer/pty leak instead of letting it OOM
+# the host. systemd applies these to the instance cgroup; when breached the unit
+# is killed (MemoryMax) or throttled (MemoryHigh) with a clean result code instead
+# of a kernel OOM kill.
+#
+# * MemoryHigh — soft ceiling: reclaim pressure before OOM. Set ~75% of MemoryMax.
+# * MemoryMax  — hard ceiling: exceed and the cgroup is OOM-killed (a *systemd*
+#                 result code, distinguishable from a bare kernel exit-137).
+# * LimitNOFILE — fd ceiling; EMFILE exhaustion is Bucket-2 in the matrix.
+# * TasksMax   — bound thread/process fan-out (renderer + zygote + Xvfb + helpers).
+# ---------------------------------------------------------------------------
+MemoryHigh=6G
+MemoryMax=8G
+LimitNOFILE=16384
+TasksMax=512
+
+# ---------------------------------------------------------------------------
+# LAUNCH
+#
+# Truly headless: DISPLAY/WAYLAND_DISPLAY intentionally UNSET — `orca serve`
+# spawns its own private Xvfb and disables GPU acceleration itself. The managed
+# Xvfb variant supplies DISPLAY via a *.d/ drop-in; never set it here.
+# ---------------------------------------------------------------------------
+UnsetEnvironment=DISPLAY WAYLAND_DISPLAY
+
+ExecStart=@PREFIX@/bin/orca serve --port @PORT@ --pairing-address @PAIRING_ADDRESS@
+
+# ---------------------------------------------------------------------------
+# RESTART POLICY — always-on. The StartLimit block in [Unit] is the circuit
+# breaker for this; RestartSec means a single failure retries after 5s, while a
+# storm trips the StartLimit and lands the unit "failed" rather than looping.
+# RestartPreventExitStatus=3 stops the unit instead of retrying a launch that
+# cannot succeed (another process already owns this userData profile).
+# TimeoutStartSec gives Electron time to come up. KillMode=mixed: SIGTERM the main
+# serve, SIGKILL stragglers so stop completes.
+# ---------------------------------------------------------------------------
+Restart=on-failure
+RestartPreventExitStatus=3
+RestartSec=5
+TimeoutStartSec=120
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

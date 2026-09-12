@@ -19,6 +19,22 @@ current Debian stable — anything with glibc 2.31 or newer (see
 [Linux glibc compatibility](./linux-glibc-compatibility.md)). Package names can
 differ on other Debian-derived releases.
 
+## Table of contents
+
+- [Ubuntu and Debian prerequisites](#ubuntu-and-debian-prerequisites)
+- [Run In The Foreground](#run-in-the-foreground)
+- [Systemd Service](#systemd-service)
+- [Managed Xvfb Service](#managed-xvfb-service)
+- [CLI Install Note](#cli-install-note)
+- [Pairing troubleshooting](#pairing-troubleshooting)
+- [Upgrade](#upgrade)
+  - [Record the version you deploy](#record-the-version-you-deploy)
+  - [Upgrade steps](#upgrade-steps)
+  - [Verify](#verify)
+  - [Roll back](#roll-back)
+- [Installing Agent Skills Without A Desktop](#installing-agent-skills-without-a-desktop)
+- [Troubleshooting](#troubleshooting)
+
 ## Ubuntu and Debian prerequisites
 
 Install the CLI tools, Xvfb, and the shared libraries Electron links against.
@@ -930,6 +946,13 @@ or the WSL bridge the `orca` shim forwards commands to the Orca host, so they
 refuse to run there and print the command to run on the machine you want.
 
 ## Troubleshooting
+
+For dedicated logging setup, log sinks, and systematic triage across failure
+buckets, see the
+[Orca Serve Logging Guide](./serve-logging/orca-serve-logging-guide.md) and
+[Orca Serve Troubleshooting Matrix](./serve-logging/orca-serve-troubleshooting-matrix.md).
+For orcad supervisor and terminal daemon operations, see
+[Running orcad](./orcad-operations.md).
 
 - `dlopen(): error loading libfuse.so.2`: install `libfuse2`.
 - `Missing X server or $DISPLAY`: install `xvfb`, or start the managed Xvfb

@@ -4,6 +4,15 @@
 whatever supervises it: what it binds, what it owns on disk, who restarts what, and what its
 readiness payload actually proves.
 
+## Table of contents
+
+- [Two long-lived processes, not one](#two-long-lived-processes-not-one)
+- [Bind policy](#bind-policy)
+- [Data root and the instance lock](#data-root-and-the-instance-lock)
+- [Supervision](#supervision)
+- [Health](#health)
+- [What is not covered](#what-is-not-covered)
+
 ## Two long-lived processes, not one
 
 A deployment is **orcad** plus **the terminal daemon**.
@@ -125,7 +134,11 @@ An external supervisor (systemd, launchd, a process manager). orcad conforms to 
   to **stdout**; the supervisor owns capture and rotation. The daemon, being detached, writes
   its own NDJSON lifecycle log to `<data-root>/logs/daemon.log` (suppressed by
   `ORCA_DIAGNOSTICS_DISABLED=1`). Rotation of that file is not implemented — see
-  [What is not covered](#what-is-not-covered).
+  [What is not covered](#what-is-not-covered). For host-level systemd logging
+  architecture, dual journald/file capture, and the diagnostic triage matrix,
+  see [Headless Linux Server](./headless-linux-server.md), the
+  [Orca Serve Logging Guide](./serve-logging/orca-serve-logging-guide.md), and
+  the [Troubleshooting Matrix](./serve-logging/orca-serve-troubleshooting-matrix.md).
 
 ### orcad supervising the daemon
 

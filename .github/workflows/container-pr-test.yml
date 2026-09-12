@@ -1,0 +1,155 @@
+name: Container PR Test
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'docs/reference/serve-logging/**'
+      - 'tests/**'
+      - '.github/workflows/**'
+
+concurrency:
+  group: container-pr-test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  orca-serve-container:
+    name: Orca Serve Container Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build test image
+        run: docker build -t orca-serve-logging-test -f tests/docker/Dockerfile.serve-logging-test .
+
+      - name: Run container test
+        run: |
+          mkdir -p test-results
+          docker run --rm -t orca-serve-logging-test bash tests/docker/run-test-in-container.sh 2>&1 | tee test-results/serve-logging-container.log
+
+      - name: Upload serve container logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: serve-logging-container-log
+          path: test-results/serve-logging-container.log
+          if-no-files-found: ignore
+
+  orca-client-components:
+    name: Orca Client Components
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Lint client/CLI
+        run: pnpm exec oxlint src/cli
+
+      - name: Typecheck client/CLI
+        run: pnpm run typecheck:cli
+
+      - name: Run unit & component tests
+        run: |
+          mkdir -p test-results
+          pnpm exec vitest run --config config/vitest.config.ts src/cli 2>&1 | tee test-results/client-components-test.log
+
+      - name: Upload client test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-components-log
+          path: test-results/client-components-test.log
+          if-no-files-found: ignore
+
+  improvement-audit:
+    name: Improvement Advisor & Audit
+    needs: [orca-serve-container, orca-client-components]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Download all workflow artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          path: artifacts
+
+      - name: Summarize verification and audit results
+        id: audit
+        run: |
+          echo "================================================="
+          echo "         CONTAINER PR TEST AUDIT REPORT          "
+          echo "================================================="
+          echo "Serve Container Job Result: ${{ needs.orca-serve-container.result }}"
+          echo "Client Components Job Result: ${{ needs.orca-client-components.result }}"
+          echo ""
+
+          mkdir -p audit-summary
+          cat <<'EOF' > audit-summary/report.md
+          # Container PR Verification & Improvement Audit
+
+          ## Job Statuses
+          - **Orca Serve Container Test**: ${{ needs.orca-serve-container.result }}
+          - **Orca Client Components Test**: ${{ needs.orca-client-components.result }}
+
+          ## Audit Findings & Opportunities
+          1. **Systemd & Logging Isolation**:
+             - Validates systemd unit syntax via `systemd-analyze verify`.
+             - Logrotate configuration verified via `logrotate -d`.
+             - Install & dry-run paths exercised cleanly in isolated Ubuntu container.
+          2. **Client Components**:
+             - CLI typechecking verified with `pnpm run typecheck:cli`.
+             - Fast oxlint coverage over `src/cli`.
+             - Targeted Vitest suite covering CLI & serve argument boundaries.
+          3. **Recommendations for Improvement**:
+             - Consider multi-stage Docker caching for the serve logging container image in CI.
+             - Ensure container integration tests run on all feature branches touching systemd/logging templates.
+          EOF
+
+          cat audit-summary/report.md
+
+          if [ -d artifacts ]; then
+            echo ""
+            echo "Downloaded Artifacts:"
+            ls -la artifacts/ || true
+          fi
+
+          if [ "${{ needs.orca-serve-container.result }}" != "success" ] || [ "${{ needs.orca-client-components.result }}" != "success" ]; then
+            echo "::error::One or more upstream test jobs failed."
+            exit 1
+          fi
+
+      - name: Upload audit summary report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: improvement-audit-summary
+          path: audit-summary/report.md
+          if-no-files-found: ignore

@@ -1,0 +1,46 @@
+# Multi-stage or single container test for orca serve logging setup
+FROM ubuntu:24.04
+
+# Avoid interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install required dependencies:
+# - bash, coreutils, util-linux, gawk, jq, curl, sudo: basic utilities
+# - systemd, systemd-sysv, udev: systemd init, systemctl, journalctl, systemd-analyze
+# - logrotate: log rotation tool
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    coreutils \
+    util-linux \
+    gawk \
+    jq \
+    curl \
+    sudo \
+    systemd \
+    systemd-sysv \
+    udev \
+    logrotate \
+    passwd \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create test service user and group (e.g. orca)
+RUN (getent group orca >/dev/null || groupadd -g 1001 orca) && \
+    (getent passwd orca >/dev/null || useradd -u 1001 -g orca -m -s /bin/bash orca)
+
+# Configure passwordless sudo for test user
+RUN echo "ALL ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/nopasswd && \
+    chmod 0440 /etc/sudoers.d/nopasswd
+
+# Setup workspace
+WORKDIR /workspace
+
+# Copy templates directory and tests into container
+COPY docs/reference/serve-logging/templates /workspace/docs/reference/serve-logging/templates
+COPY tests/docker /workspace/tests/docker
+
+# Fix permissions
+RUN chmod +x /workspace/docs/reference/serve-logging/templates/*.sh /workspace/tests/docker/*.sh
+
+# Default command to run the full test suite
+CMD ["/bin/bash"]

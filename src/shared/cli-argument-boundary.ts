@@ -44,6 +44,7 @@ export const CLI_BOOLEAN_FLAGS = new Set([
   'text-stdin',
   'unread',
   'value-stdin',
+  'verbose',
   'wait'
 ])
 

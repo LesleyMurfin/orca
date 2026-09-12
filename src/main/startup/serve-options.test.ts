@@ -13,7 +13,8 @@ describe('getServeOptions', () => {
       noPairing: true,
       mobilePairing: false,
       recipeJson: false,
-      projectRoot: null
+      projectRoot: null,
+      verbose: false
     })
   })
 
@@ -88,6 +89,12 @@ describe('getServeOptions', () => {
     expect(getServeOptions(['/AppRun', '--serve', '--json=false']).json).toBe(true)
   })
 
+  it('parses the verbose flag in both serve and CLI forms', () => {
+    expect(getServeOptions(['/AppRun', '--serve', '--serve-verbose']).verbose).toBe(true)
+    expect(getServeOptions(['/AppRun', '--serve', '--verbose']).verbose).toBe(true)
+    expect(getServeOptions(['/AppRun', '--serve']).verbose).toBe(false)
+  })
+
   it('accepts an equals-form value that resembles a pairing flag', () => {
     const argv = normalizeServeModeArgv(['/AppRun', 'serve', '--pairing-address=--no-pairng'])
     expect(getServeOptions(argv).pairingAddress).toBe('--no-pairng')
@@ -143,7 +150,8 @@ describe('getServeOptions', () => {
       noPairing: false,
       mobilePairing: false,
       recipeJson: false,
-      projectRoot: null
+      projectRoot: null,
+      verbose: false
     })
   })
 

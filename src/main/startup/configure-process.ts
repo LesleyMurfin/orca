@@ -78,6 +78,15 @@ export function disableUnsupportedChromiumFeatures(): void {
   appendDisabledChromiumFeatures([...DISABLED_CHROMIUM_FEATURES])
 }
 
+// Why: `appendSwitch` freezes at Electron `ready`, so serve's opt-in verbose logging must be
+// installed in the same pre-ready block as the other Chromium switches (main-process-preflight).
+// `enable-logging` + `v=1` mirror `ELECTRON_ENABLE_LOGGING=1`, surfacing renderer/GPU/network
+// stderr for headless troubleshooting.
+export function enableVerboseElectronLogging(): void {
+  app.commandLine.appendSwitch('enable-logging')
+  app.commandLine.appendSwitch('v', '1')
+}
+
 // Why: Chromium clamps hidden-page timers to 1/min after 5min on every desktop platform,
 // delaying agent-done/bell notifications ~60s. Call site is unconditional (see index.ts).
 export function optOutOfHiddenPageWakeUpThrottling(): void {
