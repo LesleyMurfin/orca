@@ -308,8 +308,11 @@ apply() {
     render_journald > "$JOURNAL_DROPIN"
     chmod 0644 "$JOURNAL_DROPIN"
     log "  installed journald drop-in: $JOURNAL_DROPIN"
-    systemctl daemon-reload
-    log "  ran: systemctl daemon-reload"
+    if systemctl is-system-running --quiet 2>/dev/null || systemctl daemon-reload 2>/dev/null; then
+      log "  ran: systemctl daemon-reload"
+    else
+      log "  skipped: systemctl daemon-reload (systemd bus not connected / container environment)"
+    fi
   fi
 }
 

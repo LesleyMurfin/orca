@@ -12,6 +12,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALLER="$HERE/install-logging-setup.sh"
 TMP="$(mktemp -d /tmp/orca-serve-test.XXXXXX)"
+chmod 0755 "$TMP"
 trap 'sudo rm -rf "$TMP"' EXIT
 
 PREFIX="$TMP/prefix"; SYSD="$TMP/systemd"; LR="$TMP/logrotate.d"; JD="$TMP/journald.conf.d"
