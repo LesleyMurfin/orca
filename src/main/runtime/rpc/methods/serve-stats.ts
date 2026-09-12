@@ -1,6 +1,6 @@
-import { defineMethod, type RpcMethod } from '../core'
+import { defineMethod } from '../core'
 
-export const SERVE_STATS_METHODS: RpcMethod[] = [
+export const SERVE_STATS_METHODS = [
   defineMethod({
     name: 'serve.stats',
     params: null,

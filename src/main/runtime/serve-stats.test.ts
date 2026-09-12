@@ -442,22 +442,18 @@ function seedFailedWorkerTerminal(
     effects,
     residualResources: effects
   })
-  db.failWorkerStart(
-    started.dispatch.id,
-    'agent_readiness',
-    'Agent startup blocked',
-    adopt
-      ? {
-          adoptResidualTerminal: {
-            terminalHandle: handle,
-            worktreeId: 'repo::worktree',
-            paneKey: `tab_${handle}:leaf_${handle}`,
-            processIncarnation: `runtime:pty-${handle}:1`,
-            hostScope: null
-          }
-        }
-      : undefined
-  )
+  if (adopt) {
+    db.createWorkerTerminalResourceStatement({
+      dispatchId: started.dispatch.id,
+      terminalHandle: handle,
+      worktreeId: 'repo::worktree',
+      paneKey: `tab_${handle}:leaf_${handle}`,
+      processIncarnation: `runtime:pty-${handle}:1`,
+      hostScope: null,
+      ownership: 'owned'
+    })
+  }
+  db.failWorkerStart(started.dispatch.id, 'agent_readiness', 'Agent startup blocked')
   return started.dispatch.id
 }
 
