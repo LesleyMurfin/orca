@@ -16,6 +16,32 @@ sudo bash install-logging-setup.sh             # provision observability surface
 
 ---
 
+## Table of Contents
+
+- [1. Quick Start](#1-quick-start)
+  - [Option A: From a Cloned Repository](#option-a-from-a-cloned-repository)
+  - [Option B: Standalone / Remote Curl Execution](#option-b-standalone--remote-curl-execution)
+- [2. Architecture & Process Flow](#2-architecture--process-flow)
+  - [System & Observability Architecture](#system--observability-architecture)
+  - [Script Execution Lifecycle (3 Phases)](#script-execution-lifecycle-3-phases)
+- [3. Step-by-Step Breakdown](#3-step-by-step-breakdown)
+  - [1. Preflight Environment Check](#1-preflight-environment-check)
+  - [2. Systemd Unit Installation](#2-systemd-unit-installation)
+  - [3. Config Hierarchy Provisioning](#3-config-hierarchy-provisioning)
+  - [4. Log Directory & Retention Policies](#4-log-directory--retention-policies)
+  - [5. Automatic AI Agent Skill Installation](#5-automatic-ai-agent-skill-installation)
+- [4. Configuration & Knobs](#4-configuration--knobs)
+- [5. Verification & Dry-Run Instructions](#5-verification--dry-run-instructions)
+  - [Step 1: Preflight Audit (Dry Run)](#step-1-preflight-audit-dry-run)
+  - [Step 2: Post-Installation Verification](#step-2-post-installation-verification)
+  - [Step 3: Run the Non-Destructive Test Suite](#step-3-run-the-non-destructive-test-suite)
+- [6. Five-Command Diagnostic Triage Cheatsheet](#6-five-command-diagnostic-triage-cheatsheet)
+  - [Classification Matrix (The 4 Buckets)](#classification-matrix-the-4-buckets)
+- [7. Official Documentation & References](#7-official-documentation--references)
+  - [External & Platform Documentation](#external--platform-documentation)
+  - [Repository Reference Guides](#repository-reference-guides)
+
+---
 ## 1. Quick Start
 
 ### Option A: From a Cloned Repository
