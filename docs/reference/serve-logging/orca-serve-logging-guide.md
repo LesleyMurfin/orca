@@ -74,6 +74,7 @@ The file sink is rotated by logrotate, not by the serve process:
 | `--project-root <path>` | Root of the project the serve should host (used with `--recipe-json`). |
 | `--recipe-json` | With `--project-root`, print the recipe result JSON and leave the server running. |
 | `--json` | Emit the versioned single-line `orca_server_ready` JSON contract instead of human text. |
+| `--verbose` | Emit Electron/Chromium verbose logging to stderr (renderer, GPU, and network detail) for headless troubleshooting. |
 | `--environment <id>` | Pin the client to a specific environment id (global flag; see §3). |
 | `--pairing-code <code>` | Supply the remote pairing code (global flag; see §3). |
 
@@ -120,11 +121,12 @@ the current worktree/workspace identity; they are not host configuration.
 > fault, pin the build you are chasing (`ORCA_VERSION`), capture the journal for the failing
 > instance, and reproduce on a spare instance before changing the one under load.
 
-> **Verbose Chromium logging is available today via Electron.** Upstream has no first-class
-> `--verbose` flag, but the serve runtime is Chromium under the hood, so Electron's standard
-> verbose switch surfaces renderer/GPU/network stderr for crash capture (matrix Buckets 1–2):
-> run `ELECTRON_ENABLE_LOGGING=1 orca serve`. On an Electron-direct launch,
-> `--enable-logging=stderr --v=1` passes the same switches through.
+> **Verbose Chromium logging.** `orca serve --verbose` is the first-class way to turn it on:
+> it appends Chromium's `--enable-logging --v=1` switches before `ready`, surfacing
+> renderer/GPU/network stderr for crash capture (matrix Buckets 1–2). The env-equivalent is
+> `ELECTRON_ENABLE_LOGGING=1 orca serve`, which Electron maps to the same `--enable-logging`
+> switch. On an Electron-direct launch, `--enable-logging=stderr --v=1` passes the switches
+> through verbatim.
 
 ---
 

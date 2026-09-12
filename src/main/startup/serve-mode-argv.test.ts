@@ -120,6 +120,14 @@ describe('serve-mode-argv', () => {
     ])
   })
 
+  it('rewrites CLI serve --verbose into the --serve-verbose shape', () => {
+    expect(normalizeServeModeArgv(['/AppRun', 'serve', '--verbose'])).toEqual([
+      '/AppRun',
+      '--serve',
+      '--serve-verbose'
+    ])
+  })
+
   it('keeps Electron-injected Chromium switches while normalizing direct serve', () => {
     expect(
       normalizeServeModeArgv([
