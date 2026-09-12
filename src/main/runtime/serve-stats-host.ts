@@ -88,9 +88,13 @@ function matchMeminfoKiB(meminfo: string, field: string): number | null {
  * `/sys/fs/cgroup/system.slice/…/orca-serve@factory.service/pids.max` = 16384 (systemd `TasksMax`)
  * while the root path reads nothing at all. #18789's `pids.max=4096` was exactly such a unit
  * limit, so a root-only read would report null for the one incident this field exists to show.
- *
  * The pair is read as a unit, from the nearest enclosing cgroup that has both: `current` without
  * `max` cannot say how close to the ceiling a host is, and `max` without `current` says nothing.
+ *
+ * Hierarchy note: cgroup v2 evaluates limits hierarchically. When an enclosing cgroup specifies no
+ * local limit (`max: null` / "max"), an ancestor cgroup may impose a limit on the broader subtree.
+ * The nearest cgroup provides the local accounting scope; pairing a leaf's `current` with an ancestor's
+ * `max` would misrepresent the headroom since sibling processes in the ancestor also consume that ceiling.
  */
 function readCgroupPids(sources: ServeStatsHostSources): RuntimeServeStatsHostPids | null {
   const read = sources.readCgroupFile ?? readCgroupFile

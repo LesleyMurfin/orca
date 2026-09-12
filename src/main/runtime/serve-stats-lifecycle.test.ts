@@ -8,6 +8,7 @@ import { OrchestrationDb } from './orchestration/db'
 import { StatsCollector } from '../stats/collector'
 import { AgentSessionTransitionRecorder } from '../stats/agent-session-transition-recorder'
 
+import type { AgentStatusIpcPayload } from '../../shared/agent-status-types'
 const structuredHost = vi.hoisted(() => ({ current: null as unknown }))
 vi.mock('../native-chat/agent-session-wire/structured-agent-session-registry', () => ({
   getStructuredAgentSessionHost: () => structuredHost.current
@@ -23,9 +24,9 @@ afterEach(() => {
   }
 })
 
-function runtimeWithDb() {
+function runtimeWithDb(extraDeps: Record<string, unknown> = {}) {
   const stats = new StatsCollector()
-  const runtime = new OrcaRuntimeService(null, stats)
+  const runtime = new OrcaRuntimeService(null, stats, extraDeps as never)
   const db = new OrchestrationDb(':memory:')
   runtime.setOrchestrationDb(db)
   return { runtime, db, stats }
@@ -171,17 +172,12 @@ describe('serve stats lifecycle', () => {
   })
 
   it('moves an agent between turn-state buckets, and admits when it cannot prove one', async () => {
-    const { runtime, db } = runtimeWithDb()
+    let currentHookRows: AgentStatusIpcPayload[] = []
+    const { runtime, db } = runtimeWithDb({
+      getAgentStatusSnapshot: () => currentHookRows
+    })
     const internals = runtime as unknown as {
       ptysById: Map<string, { paneKey: string | null }>
-      retainAgentRowSnapshot: (
-        ptyId: string,
-        paneKey: string,
-        worktreeId: string | undefined,
-        tabId: string | undefined,
-        connectionId: string | null,
-        payload: { state: 'working' | 'blocked' | 'waiting' | 'done' }
-      ) => boolean
     }
     try {
       await createHeadlessTerminal(runtime)
@@ -196,11 +192,16 @@ describe('serve stats lifecycle', () => {
       })
 
       const retain = (state: 'working' | 'blocked' | 'done'): void => {
-        internals.retainAgentRowSnapshot('pty-review', paneKey, 'wt-review', 'tab-review', null, {
-          state
-        })
+        currentHookRows = [
+          {
+            paneKey,
+            state,
+            receivedAt: Date.now(),
+            evidenceObservedAt: Date.now(),
+            connectionId: null
+          } as AgentStatusIpcPayload
+        ]
       }
-
       retain('working')
       expect((await runtime.getServeStats()).counts.agentsByState).toEqual({
         working: 1,

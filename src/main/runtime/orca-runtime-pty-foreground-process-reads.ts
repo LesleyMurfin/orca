@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- Why: getServeStats and runtime state accessors are mechanically co-located in this split mixin. */
 // @ts-nocheck -- mechanically split from OrcaRuntimeService; behavior is covered by AST equivalence and characterization tests.
 import { OrcaRuntimeWithStateFields } from './orca-runtime-state-fields'
 import {
@@ -26,6 +27,7 @@ import type { AgentStatus } from '../../shared/agent-detection'
 import type { AgentStatusIpcPayload } from '../../shared/agent-status-types'
 import { getAppEnvironment } from '../../shared/app-environment'
 import { deriveServeStatsAgentState, getLatestPtyTitle } from './runtime-worktree-status-projection'
+import { selectFreshExplicitAgentStatus } from './runtime-hook-agent-row-selection'
 import { getStructuredAgentSessionHost } from '../native-chat/agent-session-wire/structured-agent-session-registry'
 import { observeStructuredWorker } from './structured-worker-authority'
 import { collectMemorySnapshot } from '../memory/collector'
@@ -167,13 +169,17 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
       ...(allowUnverifiedStop ? { allowUnverifiedStop: true } : {}),
       ...(connectionId ? { includeLocalRegistry: false } : {})
     })
+    // Structured sessions are counted here too, mirroring the IPC path: closing a user's chat is
+    // now an ordinary outcome of this verb, and a removal that closed one but no PTY logged nothing.
+    const structuredStopped = teardownResult.structuredStopped ?? 0
     const total =
       teardownResult.runtimeStopped +
       teardownResult.providerStopped +
-      teardownResult.registryStopped
+      teardownResult.registryStopped +
+      structuredStopped
     if (total > 0) {
       console.info(
-        `[worktree-teardown] ${worktreeId} killed runtime=${teardownResult.runtimeStopped} provider=${teardownResult.providerStopped} registry=${teardownResult.registryStopped}`
+        `[worktree-teardown] ${worktreeId} killed runtime=${teardownResult.runtimeStopped} provider=${teardownResult.providerStopped} registry=${teardownResult.registryStopped} structured=${structuredStopped}`
       )
     }
   }
@@ -312,7 +318,7 @@ export class OrcaRuntimeWithPtyForegroundProcessReads extends OrcaRuntimeWithSta
     hookRows: readonly AgentStatusIpcPayload[]
   ): RuntimeServeStatsAgentState {
     const explicit = pty.paneKey
-      ? this.agentRows.getFreshExplicit({
+      ? selectFreshExplicitAgentStatus({
           handle: this.handleByPtyId.get(pty.ptyId) ?? null,
           paneKey: pty.paneKey,
           hookRows
