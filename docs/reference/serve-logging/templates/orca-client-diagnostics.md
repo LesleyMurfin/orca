@@ -36,10 +36,10 @@ ss -ltnp | grep -E ':(6768|6769|6770|6771)'
 | `Connection refused` | Nothing LISTENs on that address/port, or the address is wrong | Confirm serve is `active` on the *serve* host; confirm the client dials the same address the serve advertises (`--pairing-address`, not `localhost` when the serve advertises an overlay IP) |
 | `No route to host` / timeout | Network/firewall drop | Overlay/WireGuard down, firewall blocking the port, or WSL2 `localhostForwarding` off for PC loopback dials |
 
-**Windows (WSL2) loopback note:** when the client dials `ws://localhost:6768` against a
-WSL-hosted serve, ensure `localhostForwarding=true` in `.wslconfig`, otherwise Windows does
-not forward the loopback port into WSL.
-
+**Host environment reachability notes:**
+- **Windows (WSL2) loopback:** When the client dials `ws://localhost:6768` against a WSL-hosted serve, ensure `localhostForwarding=true` in `%USERPROFILE%\.wslconfig`, otherwise Windows refuses loopback forwards into WSL.
+- **Docker containers:** Ensure `orca serve` binds to `0.0.0.0` (not `127.0.0.1`) inside the container and the port is mapped (`-p 6768:6768`).
+- See the full multi-host comparison in `../orca-serve-troubleshooting-matrix.md#6-host-environment-divergence-matrix-ubuntu-wsl2-docker-macos`.
 ---
 
 ## 2. Check environment resolution

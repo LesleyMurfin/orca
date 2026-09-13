@@ -186,7 +186,213 @@ cmp "$HOME/.config/orca/orca-e2ee-keypair.json" "$BACKUP/orca-e2ee-keypair.json"
 
 ---
 
-## 6. Evidence-first checklist
+## 6. Host Environment Divergence Matrix (Ubuntu, WSL2, Docker, macOS)
+
+`orca serve` behaves differently depending on the host virtualization and init system.
+Use this matrix to identify divergence traps across OS targets:
+
+| Architectural Layer | Ubuntu / Debian Bare-Metal | WSL2 (Windows Subsystem) | Docker / Container | macOS (Darwin) |
+|---|---|---|---|---|
+| **Init / Service Manager** | `systemd` (PID 1, multi-instance template `orca-serve@.service`) | `systemd` (conditional via `/etc/wsl.conf` `[boot] systemd=true`) or manual background runner | None (unless custom init such as `tini` / `dumb-init`); container PID 1 lifecycle | `launchd` plist (user agent or system daemon), no native `systemd` |
+| **Networking & Binding** | Direct network stack; loopback or LAN/overlay IP interface binding | Virtual vSwitch NAT (dynamic IP) or Mirrored mode (`networkingMode=mirrored`) | Bridge network (NAT/port-mapping), host networking (`--net=host`), or custom overlay | Native BSD socket stack; loopback or Wi-Fi/Ethernet interface binding |
+| **Display / Headless** | Private self-spawned Xvfb or managed Xvfb service (X11 dummy server) | WSLg X11 socket (`/tmp/.X11-unix/X0`) or virtual Wayland; falls back to Xvfb | No default display; requires `/tmp/.X11-unix` bind mount or in-container Xvfb | Headless Quartz engine; Electron headless runs without X11 or Xvfb |
+| **Filesystems & Shared Memory** | Standard ext4/xfs; `/dev/shm` sized to ~50% RAM | Linux VHDX mount; `/mnt/c` via 9P/drvfs (slow, no flock); native `/dev/shm` | `/dev/shm` default is only **64MB** (crashes Electron renderers unless tuned) | APFS/HFS+; native Mach shared memory, no standard Linux `/dev/shm` |
+
+---
+
+### Display / Headless Implementation Guide
+
+Electron renderers require an active display subsystem even in headless serve mode. The table below outlines concrete, step-by-step implementation and recovery procedures for each platform:
+
+#### 1. Ubuntu / Debian Bare-Metal Headless
+
+Ubuntu servers running without a desktop environment must provide a virtual framebuffer (`Xvfb`).
+
+- **Auto-Xvfb (Default):**
+  If `DISPLAY` and `WAYLAND_DISPLAY` are unset, `orca serve` attempts to self-spawn an internal `Xvfb` on display `:99`.
+  - **Prerequisite:** Ensure `xvfb` package is installed:
+    ```bash
+    sudo apt-get update && sudo apt-get install -y xvfb
+    ```
+  - **Trap:** Dirty restarts leave a stale lock file at `/tmp/.X99-lock` or `/tmp/.X11-unix/X99`, causing the self-spawn to fail with `SIGSEGV` or exit status 1.
+  - **Remediation:** Remove the stale lock before restart:
+    ```bash
+    rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+    ```
+
+- **Managed Xvfb Service (Recommended for Multi-Instance Production):**
+  Running a dedicated, supervisor-managed `xvfb.service` avoids display lifecycle races between multiple instances.
+  1. Create `/etc/systemd/system/xvfb.service`:
+     ```ini
+     [Unit]
+     Description=X Virtual Frame Buffer
+     After=network.target
+
+     [Service]
+     Type=simple
+     ExecStart=/usr/bin/Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp -ac
+     Restart=always
+
+     [Install]
+     WantedBy=multi-user.target
+     ```
+  2. Enable and start the managed Xvfb:
+     ```bash
+     sudo systemctl daemon-reload
+     sudo systemctl enable --now xvfb.service
+     ```
+  3. Supply `DISPLAY=:99` to `orca-serve@.service` via a systemd drop-in (`/etc/systemd/system/orca-serve@.service.d/display.conf`):
+     ```ini
+     [Service]
+     Environment=DISPLAY=:99
+     ```
+
+#### 2. WSL2 (Windows Subsystem for Linux)
+
+WSL2 features WSLg on modern Windows builds, but headless server instances frequently hit stale socket traps.
+
+- **WSLg Detection & Usage:**
+  - Modern WSL2 provisions `/tmp/.X11-unix/X0` backed by the Windows host GUI.
+  - Verify WSLg socket presence: `ls -la /tmp/.X11-unix/X0`.
+  - If present and healthy, `DISPLAY=:0` connects to WSLg directly.
+
+- **Stale Display Fallback:**
+  - If Windows sleeps or WSLg restarts, `DISPLAY=:0` hangs or throws `SIGTRAP`.
+  - Fix: Unset `DISPLAY` and `WAYLAND_DISPLAY` in `/etc/default/orca-serve` or the systemd unit so `orca serve` falls back to its private virtual framebuffer:
+    ```bash
+    # In service environment or unit drop-in:
+    UnsetEnvironment=DISPLAY WAYLAND_DISPLAY
+    ```
+
+- **Software Rendering & GPU Blocklist:**
+  - WSL2 virtual D3D12 GPU drivers (`/dev/dxg`) can crash Chromium/Electron renderers.
+  - Disable hardware acceleration in instance flags when running headless:
+    ```bash
+    ORCA_DISABLE_GPU=1
+    # or pass Electron flags: --disable-gpu --disable-software-rasterizer
+    ```
+
+#### 3. Docker / Containerized Runtimes
+
+Containers running Electron face shared memory limits, lack of PID 1 init, and missing display servers.
+
+- **Shared Memory (`/dev/shm`) Configuration:**
+  - Docker defaults `/dev/shm` to 64MB. Chromium renderers crash with `status=137` (SIGBUS/SIGKILL) when rendering DOM or terminal canvasses.
+  - **Action:** Always run Docker containers with either `--shm-size=2gb` or `--ipc=host`:
+    ```bash
+    docker run -d --shm-size=2gb -p 6768:6768 orca-serve:latest
+    ```
+  - In Docker Compose:
+    ```yaml
+    services:
+      orca-serve:
+        shm_size: '2gb'
+    ```
+
+- **Display in Containers:**
+  - **Option A (In-container Xvfb):** Install `xvfb` inside the container image and wrap the startup script with `xvfb-run`:
+    ```bash
+    xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24 -nolisten tcp" orca serve --port 6768
+    ```
+  - **Option B (Host X11 Mount):** Mount the host socket into the container:
+    ```bash
+    -v /tmp/.X11-unix:/tmp/.X11-unix:ro -e DISPLAY=$DISPLAY
+    ```
+
+- **Init and PID 1 Zombie Reaping:**
+  - Electron spawns multiple helper zygotes, crashpad handlers, and pty sub-processes. Without a proper PID 1, defunct processes accumulate and exhaust PIDs.
+  - Pass `--init` (Docker built-in `tini`) or use `dumb-init` as container entrypoint:
+    ```bash
+    docker run --init -d --shm-size=2gb -p 6768:6768 orca-serve:latest
+    ```
+
+#### 4. macOS (Darwin)
+
+macOS handles headless execution through Quartz WindowServer without requiring an X11 server.
+
+- **Display Subsystem:**
+  - macOS runs headless Electron directly without `Xvfb`. Do NOT install or configure X11/XQuartz for `orca serve`.
+- **Process Supervision (`launchd`):**
+  - `systemd` is absent. Manage `orca serve` using a `launchd` plist under `~/Library/LaunchAgents/com.orca.serve.plist`:
+    ```xml
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>Label</key>
+        <string>com.orca.serve</string>
+        <key>ProgramArguments</key>
+        <array>
+            <string>/Applications/Orca.app/Contents/MacOS/Orca</string>
+            <string>serve</string>
+            <string>--port</string>
+            <string>6768</string>
+        </array>
+        <key>KeepAlive</key>
+        <true/>
+        <key>RunAtLoad</key>
+        <true/>
+        <key>StandardOutPath</key>
+        <string>/tmp/orca-serve.stdout.log</string>
+        <key>StandardErrorPath</key>
+        <string>/tmp/orca-serve.stderr.log</string>
+    </dict>
+    </plist>
+    ```
+  - Load and inspect with:
+    ```bash
+    launchctl load ~/Library/LaunchAgents/com.orca.serve.plist
+    launchctl list | grep com.orca.serve
+    ```
+
+---
+
+### Networking & Filesystem Divergence Patterns
+
+#### Networking, Binding & IP Drift
+- **Ubuntu Bare-Metal:** Binds cleanly to `0.0.0.0` or specific LAN/WireGuard overlay IPs (`tailscale0`, `wg0`). IP addresses remain static across reboots.
+- **WSL2 NAT Mode (Default):**
+  - WSL2 uses a hypervisor virtual switch. The Linux IP (`ip addr show eth0`) changes on every Windows reboot.
+  - Clients on Windows dialing `localhost` depend on `localhostForwarding=true` in `%USERPROFILE%\.wslconfig`. If disabled or broken, connection is refused.
+  - For LAN client access to WSL2, port forwarding (`netsh interface portproxy`) or Mirrored Networking (`networkingMode=mirrored` in Windows 11 23H2+) is required.
+- **Docker Bridge Mode:**
+  - Binding to `127.0.0.1` inside a container binds to the container's isolated loopback, making it unreachable from the host. Always bind `orca serve` to `0.0.0.0` inside containers and publish via `-p <host_port>:<container_port>`.
+
+#### Filesystems & Locks
+- **WSL2 Drvfs (`/mnt/c`):** Storing user data or workspace directories under `/mnt/c/` causes file locking (`fcntl`/`flock`) failures and severe I/O penalties. Always keep `ORCA_USER_DATA_PATH` inside the native Linux ext4 root (`~/.config/orca` or `/opt/orca_serve`).
+- **Docker Volumes:** Ensure `/tmp` inside the container is not a small tmpfs mount. SQLite and AppImage unpackers require adequate free blocks.
+
+---
+
+### Environment-Specific Diagnostic Commands
+
+Run these targeted diagnostics to inspect the active environment stack:
+
+```bash
+# --- WSL2 Diagnostics ---
+uname -r | grep -i microsoft                                   # Returns WSL kernel string if WSL2
+grep -iE 'localhostforwarding|networkingmode' /mnt/c/Users/*/.wslconfig 2>/dev/null || true
+ls -la /tmp/.X11-unix/X0 2>/dev/null || echo "WSLg X0 socket missing"
+
+# --- Container / Docker Diagnostics ---
+cat /proc/1/cgroup 2>/dev/null | grep -iE 'docker|containerd|kubepods' || test -f /.dockerenv && echo "Inside Container"
+df -h /dev/shm                                                 # Ensure Size >= 2GB (not 64MB)
+ps -p 1 -o comm=                                               # Shows init: tini, dumb-init, systemd, or bash
+
+# --- Ubuntu / Debian Bare-Metal Diagnostics ---
+which Xvfb || echo "Xvfb binary not installed"
+ls -la /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || echo "No stale X99 locks"
+systemctl is-active xvfb.service 2>/dev/null || echo "Managed xvfb.service not running"
+
+# --- macOS (Darwin) Diagnostics ---
+uname -s | grep Darwin && echo "macOS Host Detected"
+launchctl list | grep orca || echo "No orca launchd job registered"
+log show --predicate 'process == "Orca"' --last 10m 2>/dev/null | tail -20
+```
+
+---
+
+## 7. Evidence-first checklist
 
 Before any remedy, capture status and the journal and read the delta — it answers "did the
 runtime identity, port, or crash signature change across the restart?".

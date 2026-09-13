@@ -35,6 +35,8 @@ sudo bash install-logging-setup.sh             # provision observability surface
   - [Step 1: Preflight Audit (Dry Run)](#step-1-preflight-audit-dry-run)
   - [Step 2: Post-Installation Verification](#step-2-post-installation-verification)
   - [Step 3: Run the Non-Destructive Test Suite](#step-3-run-the-non-destructive-test-suite)
+    - [Local Sandbox Test](#local-sandbox-test)
+    - [Docker Container Test](#docker-container-test)
 - [6. Five-Command Diagnostic Triage Cheatsheet](#6-five-command-diagnostic-triage-cheatsheet)
   - [Classification Matrix (The 4 Buckets)](#classification-matrix-the-4-buckets)
 - [7. Official Documentation & References](#7-official-documentation--references)
@@ -69,13 +71,16 @@ Provision an external host via a single `curl | bash` command without needing to
 
 ```bash
 # 1. Audit remotely (safe dry-run)
-curl -fsSL https://raw.githubusercontent.com/LesleyMurfin/orca/feature/serve-logging-setup/docs/reference/serve-logging/templates/install-logging-setup.sh | sudo bash -s -- --dry-run
+curl -fsSL https://raw.githubusercontent.com/riley-team/orca/main/docs/reference/serve-logging/templates/install-logging-setup.sh | sudo bash -s -- --dry-run
 
 # 2. Install remotely
-curl -fsSL https://raw.githubusercontent.com/LesleyMurfin/orca/feature/serve-logging-setup/docs/reference/serve-logging/templates/install-logging-setup.sh | sudo bash -s -- --instance default --port 6768
+curl -fsSL https://raw.githubusercontent.com/riley-team/orca/main/docs/reference/serve-logging/templates/install-logging-setup.sh | sudo bash -s -- --instance default --port 6768
+
+# 3. (Optional) Custom repository or branch override
+curl -fsSL https://raw.githubusercontent.com/riley-team/orca/main/docs/reference/serve-logging/templates/install-logging-setup.sh | sudo ORCA_RAW_REPO_BASE="https://raw.githubusercontent.com/riley-team/orca/main" bash -s -- --dry-run
 ```
 
-*(When run standalone via curl, the installer automatically downloads companion template files and the agent skill from GitHub, with a self-contained embedded fallback for air-gapped environments).*
+*(When run standalone via curl, the installer automatically downloads companion template files and the agent skill from GitHub using `ORCA_RAW_REPO_BASE` (defaulting to the canonical upstream main branch), with a self-contained embedded fallback for air-gapped environments).*
 
 ---
 
@@ -268,9 +273,23 @@ sudo systemctl restart systemd-journald
 ```
 
 ### Step 3: Run the Non-Destructive Test Suite
-Verify installer logic, templating substitutions, and idempotency in an isolated sandbox without affecting production files:
+
+#### Local Sandbox Test
+Verify installer logic, templating substitutions, and idempotency in an isolated local sandbox without affecting production files:
 ```bash
-bash test-logging-setup.sh
+bash docs/reference/serve-logging/templates/test-logging-setup.sh
+# Or from this directory:
+# bash test-logging-setup.sh
+```
+
+#### Docker Container Test
+For full end-to-end verification inside a clean Ubuntu 24.04 environment (including user isolation, dry-run, real installation, systemd unit analysis, and logrotate syntax checks), run the containerized test suite:
+```bash
+# 1. Build the test image from the repository root
+docker build -t orca-serve-logging-test -f tests/docker/Dockerfile.serve-logging-test .
+
+# 2. Execute the verification pipeline inside the container
+docker run --rm -t orca-serve-logging-test bash tests/docker/run-test-in-container.sh
 ```
 
 ---

@@ -70,7 +70,8 @@ else
 fi
 
 SKILL_LOCAL_SOURCE="$SCRIPT_DIR/../../../../skills/orca-serve-troubleshoot/SKILL.md"
-SKILL_RAW_URL="https://raw.githubusercontent.com/LesleyMurfin/orca/feature/serve-logging-setup/skills/orca-serve-troubleshoot/SKILL.md"
+ORCA_RAW_REPO_BASE="${ORCA_RAW_REPO_BASE:-https://raw.githubusercontent.com/riley-team/orca/main}"
+SKILL_RAW_URL="${SKILL_RAW_URL:-$ORCA_RAW_REPO_BASE/skills/orca-serve-troubleshoot/SKILL.md}"
 
 DRY_RUN=0
 INSTANCE="$DEFAULT_INSTANCE"
