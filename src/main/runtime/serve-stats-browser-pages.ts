@@ -1,8 +1,8 @@
-import type { WebContents } from 'electron'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { getBrowserHostLeaseRegistry } from './browser-host-lease-registry-instance'
 import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
+import { getRuntimeDesktopSurface } from './runtime-desktop-surface'
 
 // Why: #14552's six agent-opened headless tabs hid one 1.3 GB renderer, and a page count alone
 // could not show it. Same polling discipline as serve-stats-host.ts: one `/proc/<pid>/status` read
@@ -132,29 +132,8 @@ export function parseProcStatusVmRssBytes(status: string): number | null {
   return Number.isFinite(kib) ? kib * KIB : null
 }
 
-// Why `require` in a try, matching AgentBrowserBridgeState.getWebContents: this module is reachable
-// from a `serve stats` read in unit tests where electron is mocked down to `app`, and a missing
-// `webContents` must read as "not measurable" rather than throwing out of the stats call. The
-// module shape is declared locally for the same reason — the real `electron` types are not what a
-// mocked runtime actually hands back.
-type ElectronWebContentsModule = {
-  webContents?: {
-    fromId?: (webContentsId: number) => WebContents | null
-  }
-}
-
 function readOsProcessId(webContentsId: number): number | null {
-  try {
-    const { webContents } = require('electron') as ElectronWebContentsModule
-    const target = webContents?.fromId?.(webContentsId)
-    if (!target || target.isDestroyed()) {
-      return null
-    }
-    const pid = target.getOSProcessId()
-    return typeof pid === 'number' && pid > 0 ? pid : null
-  } catch {
-    return null
-  }
+  return getRuntimeDesktopSurface().getWebContentsOSProcessId?.(webContentsId) ?? null
 }
 
 function readProcStatusFile(pid: number): string | null {

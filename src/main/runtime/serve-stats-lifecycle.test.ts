@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { installFakeAppEnvironment } from '../../../config/scripts/vitest-host-ports-setup'
 import { OrcaRuntimeService } from './orca-runtime'
 import { OrcaRuntimeRpcServer } from './runtime-rpc'
 import { OrchestrationDb } from './orchestration/db'
@@ -22,6 +23,10 @@ afterEach(() => {
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+beforeEach(() => {
+  installFakeAppEnvironment({ getVersion: () => '9.9.9-test' })
 })
 
 function runtimeWithDb(extraDeps: Record<string, unknown> = {}) {
