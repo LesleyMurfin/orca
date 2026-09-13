@@ -12,7 +12,8 @@ const CLI_TO_SERVE_FLAG = new Map([
   ['--json', '--serve-json'],
   ['--no-pairing', '--serve-no-pairing'],
   ['--mobile-pairing', '--serve-mobile-pairing'],
-  ['--recipe-json', '--serve-recipe-json']
+  ['--recipe-json', '--serve-recipe-json'],
+  ['--verbose', '--serve-verbose']
 ])
 
 const CLI_TO_SERVE_VALUE_FLAG = new Map([

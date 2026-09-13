@@ -69,7 +69,8 @@ describe('orca cli worktree awareness', () => {
       noPairing: true,
       mobilePairing: false,
       recipeJson: false,
-      projectRoot: null
+      projectRoot: null,
+      verbose: false
     })
   })
 
@@ -88,7 +89,8 @@ describe('orca cli worktree awareness', () => {
       noPairing: false,
       mobilePairing: true,
       recipeJson: false,
-      projectRoot: null
+      projectRoot: null,
+      verbose: false
     })
   })
 
@@ -114,7 +116,25 @@ describe('orca cli worktree awareness', () => {
       noPairing: false,
       mobilePairing: false,
       recipeJson: true,
-      projectRoot: '/workspace/repo'
+      projectRoot: '/workspace/repo',
+      verbose: false
+    })
+  })
+
+  it('starts a foreground headless server with verbose logging enabled', async () => {
+    serveOrcaAppMock.mockResolvedValue(0)
+
+    await main(['serve', '--verbose'], '/tmp/repo')
+
+    expect(serveOrcaAppMock).toHaveBeenCalledWith({
+      json: false,
+      port: null,
+      pairingAddress: null,
+      noPairing: false,
+      mobilePairing: false,
+      recipeJson: false,
+      projectRoot: null,
+      verbose: true
     })
   })
 

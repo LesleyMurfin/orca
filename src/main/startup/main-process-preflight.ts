@@ -10,6 +10,7 @@ import {
   configureOrcaUserDataPathEnv,
   disableUnsupportedChromiumFeatures,
   enableMainProcessGpuFeatures,
+  enableVerboseElectronLogging,
   installDevParentDisconnectQuit,
   installDevParentSignalQuit,
   installDevParentWatchdog,
@@ -310,6 +311,12 @@ export function runMainProcessPreflight(options: MainProcessPreflightOptions): b
   // Why: unconditional — a GPU-fallback launch skips enableMainProcessGpuFeatures() below.
   optOutOfHiddenPageWakeUpThrottling()
   configureElectronNetworkCompatibility()
+  // Why here: Chromium switches freeze at ready, so serve's verbose logging must land in this
+  // pre-ready block. The argv rewrite above normalized `serve --verbose` and `--serve-verbose`
+  // to the canonical `--serve-verbose`, matching the `state.isServeMode` argv shape.
+  if (state.isServeMode && process.argv.includes('--serve-verbose')) {
+    enableVerboseElectronLogging()
+  }
   enableRendererHeapHeadroom()
   maybeApplyGpuFallbackForThisLaunch()
   if (!state.gpuFallbackActiveThisLaunch) {

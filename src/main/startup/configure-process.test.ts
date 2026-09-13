@@ -591,6 +591,19 @@ describe('disableUnsupportedChromiumFeatures', () => {
   })
 })
 
+describe('enableVerboseElectronLogging', () => {
+  it('appends enable-logging and v=1 before Chromium starts', async () => {
+    const { app } = await import('electron')
+    const { enableVerboseElectronLogging } = await import('./configure-process')
+
+    vi.mocked(app.commandLine.appendSwitch).mockClear()
+    enableVerboseElectronLogging()
+
+    expect(app.commandLine.appendSwitch).toHaveBeenCalledWith('enable-logging')
+    expect(app.commandLine.appendSwitch).toHaveBeenCalledWith('v', '1')
+  })
+})
+
 describe('enableMainProcessGpuFeatures', () => {
   const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
   const originalE2EUserDataDir = process.env.ORCA_E2E_USER_DATA_DIR

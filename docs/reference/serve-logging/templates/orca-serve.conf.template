@@ -1,0 +1,39 @@
+# ============================================================================
+# orca-serve.conf.template — SHARED HOST configuration (global, all instances inherit)
+#
+# Deployed to @PREFIX@/etc/orca-serve.conf and loaded by orca-serve@.service as
+# the FIRST EnvironmentFile= line (before the per-instance instances/<instance>.env,
+# which may override any value here).
+#
+# Authoring rule: a value goes HERE if it could ever differ by HOST. A value that
+# differs by INSTANCE goes in etc/instances/<instance>.env instead. Never duplicate
+# a value in both places. Every value below is a real Orca variable, not a wrapper
+# knob — editing + redeploying this file must never require a unit rebuild.
+#
+# Copy to orca-serve.conf (drop the .template suffix) and set per-host values.
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# Host identity
+# ---------------------------------------------------------------------------
+# The Orca environment id this host serves. Must exactly match a `name` in the
+# environment registry; clients select it with `orca --environment <id>` (or the
+# ORCA_ENVIRONMENT ambient variable). This is the value that makes
+# "Unknown environment: <id>" resolvable on the client side.
+# ---------------------------------------------------------------------------
+ORCA_ENVIRONMENT=default
+
+# ---------------------------------------------------------------------------
+# Everything else is flags, not env.
+#
+# Upstream `orca serve` takes the values that used to be host/env knobs on its
+# command line, so the unit carries them in ExecStart= (substituted at install):
+#
+#   --port <port>                 per-instance listener pin (instances/<instance>)
+#   --pairing-address <addr>      client-advertised endpoint (per-host)
+#
+# The installer substitutes @PORT@ and @PAIRING_ADDRESS@ from its --port /
+# --pairing-address flags into the rendered unit. Everything else the old wrappers
+# configured as environment is a flag upstream — keep only real Orca variables in
+# this file.
+# ---------------------------------------------------------------------------
