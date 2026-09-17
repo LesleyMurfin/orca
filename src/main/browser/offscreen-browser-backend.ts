@@ -8,6 +8,7 @@ import type { BrowserManager } from './browser-manager'
 import type { AgentBrowserBridge } from './agent-browser-bridge'
 import { browserSessionRegistry } from './browser-session-registry'
 import { BrowserError } from './browser-error'
+import { resolveWithTimeout } from './browser-manager-types'
 import {
   offscreenBrowserTabCapacityMessage,
   OFFSCREEN_BROWSER_TAB_CAPACITY_CODE,
@@ -35,6 +36,7 @@ const OWNER_RETIREMENT_CONCURRENCY = 4
 // #14552 hit pages whose renderer had stopped answering. The teardown below must not queue behind
 // a wait that will never return.
 const DEFAULT_OWNER_RETIREMENT_TIMEOUT_MS = 5_000
+const START_TIME_PROBE_TIMEOUT_MS = 1_000
 
 export class OffscreenBrowserBackend implements BrowserBackend {
   private readonly windowsByPageId = new Map<string, BrowserWindow>()
@@ -169,9 +171,13 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     const osProcessId = win.isDestroyed() ? 0 : win.webContents.getOSProcessId()
     const expectedStartTimeMs =
       osProcessId > 0
-        ? await (this.rendererProcessControl.readStartTimeMs ?? readProcessStartTimeMs)(
-            osProcessId
-          ).catch(() => null)
+        ? (
+            await resolveWithTimeout(
+              (this.rendererProcessControl.readStartTimeMs ?? readProcessStartTimeMs)(osProcessId),
+              START_TIME_PROBE_TIMEOUT_MS,
+              null
+            ).catch(() => ({ value: null, timedOut: false }))
+          ).value
         : null
     try {
       await this.settleOwnerRetirement(browserPageId)
