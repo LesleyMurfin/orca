@@ -4,10 +4,12 @@ import {
   runtimeBrowserCommandsFactoryIsHeadless,
   runtimeBrowserUnavailableCause
 } from './runtime-browser-commands-factory'
+import { isBrowserIdentityModeStoreInitialized } from '../browser/browser-identity-mode-store'
 import type { RuntimeCapability } from '../../shared/protocol-version'
 import {
   BROWSER_CERTIFICATE_TRUST_RUNTIME_CAPABILITY,
   BROWSER_HEADLESS_RUNTIME_CAPABILITY,
+  BROWSER_IDENTITY_RUNTIME_CAPABILITY,
   MIN_COMPATIBLE_RUNTIME_CLIENT_VERSION,
   REMOTE_RUNTIME_SHARED_CONTROL_CAPABILITY,
   RUNTIME_CAPABILITIES,
@@ -20,6 +22,7 @@ import {
   browserUnavailableMessage
 } from '../../shared/runtime-types'
 import { runtimeTerminalDegradation } from './native-terminal-availability'
+import { isWindowsProcessStartTimeAvailable } from '../windows/windows-process-table'
 import type { RuntimeWorktreeLifecycleEvent } from './orca-runtime-core'
 import { WORKTREE_CREATE_RESULT_TTL_MS } from './orca-runtime-core'
 import type { RuntimePtyController } from './runtime-pty-controller-contract'
@@ -56,6 +59,10 @@ export class OrcaRuntimeWithGetStatus extends OrcaRuntimeWithGetRuntimeId {
     const hasOffscreen = !hasRenderer && Boolean(this.offscreenBrowserBackend)
     const hasHeadlessCommands = runtimeBrowserCommandsFactoryIsHeadless()
     const canBrowse = hasRenderer || hasOffscreen
+    // This field reports current Windows process-identity proof. Structured RPC
+    // support itself stays advertised; agentSession.createSupport owns current eligibility.
+    const windowsProcessStartTimeAvailable =
+      process.platform === 'win32' && isWindowsProcessStartTimeAvailable()
     const capabilities: RuntimeCapability[] = RUNTIME_CAPABILITIES.filter(
       (capability) =>
         (capability !== 'browser.screencast.v1' || canBrowse) &&
@@ -69,6 +76,12 @@ export class OrcaRuntimeWithGetStatus extends OrcaRuntimeWithGetRuntimeId {
     )
     if (hasOffscreen || hasHeadlessCommands) {
       capabilities.push(BROWSER_HEADLESS_RUNTIME_CAPABILITY)
+    }
+    // Why not a static capability: the identity is this host's own process-wide choice, fixed
+    // before ready. A host that never initialized the store has no identity to report or change,
+    // so advertising it would point clients at a method that can only throw.
+    if (isBrowserIdentityModeStoreInitialized()) {
+      capabilities.push(BROWSER_IDENTITY_RUNTIME_CAPABILITY)
     }
     // Why: certificate proceed is owned by the browser-hosting process for both
     // desktop webviews and offscreen pages. Advertise whenever either backend
@@ -110,6 +123,7 @@ export class OrcaRuntimeWithGetStatus extends OrcaRuntimeWithGetRuntimeId {
       capabilities,
       ...(degradations.length > 0 ? { degradations } : {}),
       worktreeCreateIdempotency: { dedupeTtlMs: WORKTREE_CREATE_RESULT_TTL_MS },
+      ...(windowsProcessStartTimeAvailable ? { windowsProcessStartTimeAvailable } : {}),
       hostPlatform: process.platform,
       terminalWindowsShell: this.store?.getSettings?.().terminalWindowsShell ?? null,
       floatingWorkspaceEnabled: this.store?.getSettings?.().floatingTerminalEnabled !== false,

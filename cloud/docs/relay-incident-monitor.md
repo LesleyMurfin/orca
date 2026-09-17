@@ -83,8 +83,9 @@ freezes as before.
 A production candidate or multi-target mutation must download the exact
 dry-run artifact by workflow run ID and attempt. It verifies the artifact
 hashes and provenance, requires a green completed 15-minute state no older
-than five minutes, then rechecks the live selector and one complete fresh
-sample of every safety signal immediately before running the mutation command.
+than ten minutes (plus 75 minutes per predecessor same-cap wave), then
+rechecks the live selector and one complete fresh sample of every safety
+signal immediately before running the mutation command.
 The signed state binds `strict` evidence to ordinary mutations and
 `recover-forward` evidence to the exact recover-forward source; neither can
 authorize the other.
@@ -102,7 +103,7 @@ durably marked consumed before mutation and cannot authorize another run.
 | Endpoint latency | over 2,000 ms |
 | Cloud SQL CPU | over 80% |
 | Cloud SQL memory | over 90% |
-| Cloud SQL backends | over 250 (62% of the verified 400-connection ceiling) |
+| Cloud SQL backends | over 320 (65% of the 490 usable of `max_connections` 500) |
 | Cloud SQL waiting backends | over 20 |
 | Cloud SQL deadlocks | over 0 |
 | Relay pool waiters | over 800 |
@@ -112,7 +113,8 @@ durably marked consumed before mutation and cannot authorize another run.
 | Director instances | outside 5–6 |
 | Director CPU or memory | over 80% |
 | Director concurrency | over 64 |
-| Unexpected director 5xx or auth 5xx in five minutes | over 0 |
+| Unexpected director 5xx in five minutes (excludes 503) | over 15 |
+| Auth 5xx in five minutes | over 0 |
 | Connections per cell process | over 500 |
 | Queued bytes per cell process | over 48 MiB |
 | Blocked or expired/unregistered migration | over 0 |
@@ -121,8 +123,120 @@ durably marked consumed before mutation and cannot authorize another run.
 Expected enabled cells must also have a powered runtime, healthy and ready endpoints, fresh
 heartbeats, and matching live admission.
 
+A cell's endpoint readings are the one exception to the freeze-on-first-breach rule
+above. Health, ready and latency are a single HTTP round trip from one runner, so they
+must fail more than two consecutive samples before they freeze the run; the streak is
+keyed by cell, so one cell's three readings share it. Absorbed breaches are recorded in
+the state artifact under `toleratedProbeEvents`. The director and auth probes have no
+such tolerance and freeze on the first bad sample. The live preflight that runs before
+each mutating wave re-samples on the same tolerance.
+
+## Region placement alert policies
+
+Cloud Monitoring alert policies, not monitor freeze bars: these page from
+`cloud/infra/terraform/relay-observability.tf` on the shared relay channel in
+`relay_alert_notification_channels`, and they do not gate any workflow. All
+three exist because US desktops sat on asia-east2 cells for weeks in 2026-08
+with every existing bar green.
+
+| Alert policy | Condition |
+| --- | ---: |
+| Orca Relay: far-cell phone accept latency | per cell, median 30-second `clientAcceptTotalMsP95` over 15 minutes above 2,000 ms with at least 20 completed accepts |
+| Orca Relay: cell control round trip | per cell, median `controlRttMsP50` over one hour above 150 ms with at least 500 samples |
+| Orca Relay: region hint skew | fleet-wide, asia-east2 share of hinted requests over one hour more than 2x and more than 15 points above its share of actual placements, with at least 500 hinted requests |
+
+Threshold basis:
+
+- Accept latency. An in-region phone accept completes in 0.3-0.6 s and a
+  cross-Pacific one in 5-10 s, so 2,000 ms sits outside in-region noise and
+  well under the far-cell floor. The 20-accept minimum keeps one slow accept
+  on a quiet cell off the pager. The p95 is the published value, so the
+  window aggregate is its median, not its max.
+- Control round trip. In-region is tens of milliseconds; a US desktop on an
+  asia-east2 cell is 200 ms or more. Only the p50 is used. The desktop echoes
+  the pong on its main thread, so the published p95 and max track renderer
+  stalls rather than distance. 500 samples per hour is about two
+  continuously connected hosts at the 15-second control ping. Tuning risk: EU
+  desktops on us-central1 sit at 100-130 ms, so a cell whose population is
+  mostly European can approach the bar while correctly homed. Check where the
+  hosts are before reading a first breach as mis-homing.
+- Region hint skew. This compares two shares of the same hour rather than
+  testing one absolute share, because an absolute bar is wrong at both ends.
+  Measured over twelve hours on 2026-09-07, while the desktop region probe
+  was still mis-picking: asia-east2 was 33.8% of the 33,800 hinted requests
+  and only 7.9% of the 45,364 assignments, a divergence of 4.27x and a gap of
+  25.9 points. A fixed 40% bar would have stayed silent through that, and
+  once the probe is fixed the genuine APAC share climbs past any such bar and
+  pages forever on the correct end state. The 2x and 15-point bars sit inside
+  the broken state and outside a healthy one. `unhinted` requests are
+  excluded from the denominator: they were 27% of all requests, so a client
+  change that always sends a hint would move the number with no behaviour
+  change at all. The two bars are cross-multiplied rather than divided. An
+  hour that placed nobody in the region is the most extreme skew there is,
+  and it happens whenever the region is drained, fenced, or at capacity, but
+  dividing by that zero placement share makes MQL drop the row and lose the
+  series before any other clause runs.
+
+Expect the skew alert to stay lit after a client fix until the mis-homed
+backlog is rehomed. Sticky assignment never re-consults the hint, so a
+desktop already on an asia cell keeps being placed there whatever it now
+asks for; the ratio clears only once the rehome sweep has drained.
+
+All three conditions are written in MQL rather than the metric filters the
+other relay policies use. Every runtime metric is a DELTA DISTRIBUTION, and
+the only scalar aligners a filter condition can apply to one are percentiles;
+each of these alerts needs the sum of the extracted values as a volume floor,
+which is `sum(value.<metric>)` in MQL and unreachable otherwise. None of the
+metrics they read exists in the project yet, so what was checked against
+production is the query shape: the same MQL run over existing metrics of the
+same kind confirmed the distribution sum, the join arity, the unit literals,
+and the condition clause.
+
+The skew shares are built from one log-based metric per region for hints and
+one per region for placements. They read flat `requestedRegion<Region>Delta`
+and `selectedRegion<Region>Delta` fields that the relay publishes as zeros in
+every interval, not the nested region maps: a log-based metric would need a
+quoted field path to reach a hyphenated map key, and an absent key would drop
+a series out of the inner join. The region list lives in Terraform as
+`relay_region_keys` and is pinned to relay-contract's `RELAY_REGIONS` by
+`dev/scripts/relay-region-hint-metrics.test.mjs`. Both sides spell the field
+name segments out as literal maps rather than deriving them, so the same test
+compares the two declarations directly. Adding a region to the contract
+without its segment is a compile error in relay-contract, not a silent gap.
+
 ## Implementation log
 
+- Recalibrated the Cloud SQL backends freeze from 250 to 320, the unexpected
+  director 5xx freeze from 3 to 15, and gave per-cell endpoint probes a
+  two-consecutive-sample tolerance (2026-09-17). Basis: the pre-roll dry-run had
+  frozen 39 times out of 39, every time on a chronic production condition
+  unrelated to the roll it gates, so it was adding delay rather than safety.
+  Measured over the 24 h to 2026-09-17 through the Cloud Monitoring API with the
+  monitor's own aggregation. `cloud_sql.backends` latest-sum per minute: p50 118 /
+  p90 165 / p95 212 / p99 262 / max 282, so the old bar of 250 sat under the
+  observed peak and tripped 1.95% of minutes and 21.8% of 15-minute gates; 320
+  clears every healthy minute with 13% headroom and still fires at 65% of the 490
+  usable connections, leaving 170 in hand for the runaway that exhaustion actually
+  is. `director.errors` non-503 5xx per rolling five minutes: p50 0 / p90 3 /
+  p95 5 / p99 9 / max 52, so the old bar of 3 sat on the p90 and froze 9.2% of
+  windows and 29.0% of gates on the chronic `/v1/assign`, `/v1/regions` and
+  `/v1/resolve` 500 bursts that accompany the recurring Cloud SQL stall; 15 clears
+  the chronic p99, drops the gate-freeze rate to 1.5%, and deliberately leaves the
+  exceptional 20-52 bursts detectable. The director serves roughly 50 requests a
+  minute in 503s alone, so a genuinely broken director lands in the hundreds per
+  window. For the cell probes, the asia-east2 cells run readiness as `SELECT 1`
+  against Cloud SQL in us-central1 over a 176 ms round trip behind a 2 s timeout,
+  so a saturated pool makes the load balancer answer "no healthy upstream" for
+  about 30 s; 7 of the last 14 freezes were that. It arrives as a real HTTP 503, so
+  provenance cannot separate it from a cell serving `health=0` and persistence has
+  to: at the 60 s interval it spans one sample and at worst two. The streak is
+  keyed by cell rather than by signal, because keyed per signal a cell that
+  alternates between slow and unanswered holds every streak at one and never
+  reaches the tolerance. The live preflight before each mutating wave re-samples on
+  the same tolerance, so a blip cannot fail a wave there either. Thresholds stay
+  code constants sealed into every checkpoint rather than workflow inputs, so a
+  green run stays auditable. Re-tighten the backends bar when the auth connection
+  model lands (#21165).
 - Recalibrated the relay pool freezes from 30 waiters / 1,000 ms to
   800 waiters / 2,500 ms (2026-08-27). Basis, measured from
   `orca_relay_runtime_metrics` (`databasePoolWaitersMax`,
@@ -138,9 +252,11 @@ heartbeats, and matching live admission.
   Basis, measured from `cloudsql.googleapis.com/database/postgresql/num_backends`
   latest-sum over 24 healthy hours: mean ~100, 1-minute spikes to 216, with
   10 minutes over the old bar of 160 — enough to freeze roughly one in ten
-  15-minute pre-drain gates on baseline noise. 250 clears measured healthy
-  peaks and still fires well before the verified 400-connection ceiling;
-  pool waiters and pool wait latency keep their strict thresholds.
+  15-minute pre-drain gates on baseline noise. 250 cleared the healthy peaks
+  measured then and still fired well before the verified 400-connection ceiling;
+  pool waiters and pool wait latency keep their strict thresholds. Superseded by
+  the 2026-09-17 entry above, which re-measured a grown baseline against the
+  490-connection budget.
 - Recalibrated the PostgreSQL-retry freeze from 20 to 300 per five minutes
   (2026-08-26). Basis, measured from
   `jsonPayload.event="orca_relay_postgres_transaction_retry"` in production
@@ -203,3 +319,7 @@ heartbeats, and matching live admission.
   load the director's three-connection database pool.
 - Added private atomic state, idempotent JSONL checkpoints, and secret-safe Markdown evidence.
 - Added the manual production workflow. It has not been dispatched.
+
+### Director error allowance (2026-09-12)
+
+The serving-cell rollout observed three unexpected director 500 responses among approximately 33,600 responses in an hour, all two-second PostgreSQL connection timeouts. CPU remained near 30–37% and the zero-error bar repeatedly prevented any cell mutation. The five-minute allowance was set to three non-503 director 5xx here, and was superseded by the 2026-09-17 recalibration to 15 recorded above. Auth errors, data freshness, active probes, SQL/pool pressure and other limits are unchanged. This is a bounded operational allowance, not a calibrated SLO or proof that intermittent failures are resolved; persistent low-frequency errors below this limit still require diagnosis.
