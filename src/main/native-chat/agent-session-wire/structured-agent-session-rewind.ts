@@ -20,7 +20,7 @@ import { conversationCommandBlocked } from './structured-conversation-command-ad
 import { rewindRefusal } from './structured-rewind-refusal'
 import { persistRewindRecord, recoverStructuredRewind } from './structured-rewind-recovery'
 import { replaceClaudeRewindOwner } from './structured-rewind-claude-owner'
-import { mergeRetainedTurnRows } from './structured-rewind-retained-turns'
+import { mergeRetainedHostLifecycleRows } from './structured-rewind-retained-host-rows'
 
 export async function rewindStructuredAgentSession(
   context: StructuredAgentSessionMutationContext,
@@ -38,6 +38,7 @@ export async function rewindStructuredAgentSession(
       envelope: params.envelope,
       journal: context.sessions.get(sessionId)?.journal,
       publish: (journal) => context.publish(sessionId, journal),
+      flushStreamedEvents: context.flushStreamedEvents,
       now: context.now,
       plan: {
         method: 'agentSession.rewind',
@@ -174,7 +175,7 @@ export async function rewindStructuredAgentSession(
                 fence: ctx.fence,
                 beforeTurnId: key.provider === 'codex' ? key.turnId : '',
                 onPrepared: async (items) => {
-                  const retained = mergeRetainedTurnRows(
+                  const retained = mergeRetainedHostLifecycleRows(
                     prepared.retained,
                     items.map(({ identity, body }) => ({
                       itemId: agentJournalItemKey(identity),
@@ -220,7 +221,7 @@ export async function rewindStructuredAgentSession(
             return rewindRefusal(reason)
           }
           const confirmed = provider.items
-            ? mergeRetainedTurnRows(
+            ? mergeRetainedHostLifecycleRows(
                 prepared.retained,
                 provider.items.map(({ identity, body }) => ({
                   itemId: agentJournalItemKey(identity),

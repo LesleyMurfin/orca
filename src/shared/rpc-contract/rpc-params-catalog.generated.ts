@@ -3,6 +3,11 @@
 import type { z } from 'zod'
 import { AgentSkillShareRequestSchema } from '../agent-skill-sharing-contract'
 import {
+  AiVaultSearchRequestSchema,
+  AiVaultSearchStatusRequestSchema,
+  AiVaultSetSearchEnabledParamsSchema
+} from '../ai-vault-search-contract'
+import {
   BrowserClientFileChannelAbortParams,
   BrowserClientFileChannelReadParams,
   BrowserClientFileChannelWriteParams
@@ -29,6 +34,7 @@ import {
   SelectCodexAccountForTargetParams
 } from './accounts-params'
 import { PrepareCodexForWslPaneParams } from './agent-hooks-params'
+import { AgentLaunch, AgentLaunchReplay } from './agent-launch-params'
 import { CreateAgentSessionParams, EnsureAgentSessionParams } from './agent-session-params'
 import {
   AiVaultListSessionsParams,
@@ -45,6 +51,7 @@ import {
 } from './automation-params'
 import { CertificateProceed } from './browser-core-params'
 import { MouseClick } from './browser-extras-params'
+import { BrowserIdentitySet, ProfileCreate } from './browser-identity-params'
 import {
   Check,
   ClipboardWrite,
@@ -71,7 +78,6 @@ import {
   MouseButton,
   MouseWheel,
   MouseXY,
-  ProfileCreate,
   ProfileDelete,
   ProfileImportFromBrowser,
   Screencast,
@@ -165,6 +171,7 @@ import {
   FileListAll,
   FileOpenDiff,
   FilePathSearch,
+  FilePathsExist,
   FileReadChunk,
   FileSearch,
   FileTreePath,
@@ -549,6 +556,8 @@ export const RPC_PARAMS_BY_METHOD = {
   'accounts.selectCodexForTarget': SelectCodexAccountForTargetParams,
   'accounts.subscribe': null,
   'accounts.unsubscribe': AccountsUnsubscribeParams,
+  'agent.launch': AgentLaunch,
+  'agent.launchReplay': AgentLaunchReplay,
   'agentHooks.prepareCodexForWslPane': PrepareCodexForWslPaneParams,
   'agentSession.cancel': CancelParams,
   'agentSession.close': OptionsParams,
@@ -577,6 +586,9 @@ export const RPC_PARAMS_BY_METHOD = {
   'aiVault.listSessions': AiVaultListSessionsParams,
   'aiVault.prepareSessionResume': AiVaultPrepareSessionResumeParams,
   'aiVault.resolveSessionTitles': AiVaultSessionTitlesParams,
+  'aiVault.searchSessions': AiVaultSearchRequestSchema,
+  'aiVault.searchStatus': AiVaultSearchStatusRequestSchema,
+  'aiVault.setSearchEnabled': AiVaultSetSearchEnabledParamsSchema,
   'artifacts.delete': ArtifactsDeleteParams,
   'artifacts.getPublishedLink': SourceRequest,
   'artifacts.list': ListOptions,
@@ -627,6 +639,8 @@ export const RPC_PARAMS_BY_METHOD = {
   'browser.goto': Goto,
   'browser.highlight': Highlight,
   'browser.hover': Element,
+  'browser.identity.get': null,
+  'browser.identity.set': BrowserIdentitySet,
   'browser.intercept.disable': BrowserTarget,
   'browser.intercept.enable': InterceptEnable,
   'browser.intercept.list': BrowserTarget,
@@ -731,6 +745,7 @@ export const RPC_PARAMS_BY_METHOD = {
   'files.listMarkdownDocuments': WorktreeSelector,
   'files.open': FileOpen,
   'files.openDiff': FileOpenDiff,
+  'files.pathsExist': FilePathsExist,
   'files.read': FileOpen,
   'files.readChunk': FileReadChunk,
   'files.readDir': FileTreePath,
@@ -943,6 +958,7 @@ export const RPC_PARAMS_BY_METHOD = {
   'notifications.getMissedSince': NotificationGetMissedSinceParams,
   'notifications.registerPush': NotificationRegisterPushParams,
   'notifications.subscribe': NotificationsSubscribeParams,
+  'notifications.testPush': null,
   'notifications.unregisterPush': null,
   'notifications.unsubscribe': NotificationUnsubscribeParams,
   'orchestration.ask': AskParams,
@@ -1158,9 +1174,10 @@ export const RPC_METHODS_WITHOUT_SHARED_PARAMS: readonly string[] = [
 
 export type RpcMethodName = keyof typeof RPC_PARAMS_BY_METHOD
 
-// Why: z.output is the post-parse shape the handler receives. z.input is not a
-// send-side type here — requiredString is z.unknown().transform(...), so its input
-// admits any value and loses optional/default semantics.
+// Why: z.output is the post-parse shape the handler receives, which is not what a
+// client may send — a .default() field reads as required. z.input is not the answer
+// either: requiredString is z.unknown().transform(...), so its input admits any value.
+// Senders use RpcSendParams from ./rpc-send-params, which is derived from this map.
 export type RpcParams<Method extends RpcMethodName> =
   (typeof RPC_PARAMS_BY_METHOD)[Method] extends z.ZodType
     ? z.output<(typeof RPC_PARAMS_BY_METHOD)[Method]>

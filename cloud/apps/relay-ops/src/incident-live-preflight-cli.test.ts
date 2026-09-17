@@ -183,24 +183,31 @@ describe('relay incident live preflight', () => {
     await expect(runIncidentLivePreflight(
       ['--state-file', oneRollOld, '--wave-index', '1'], deps
     )).resolves.toBeUndefined()
-    // Both edges of one predecessor job timeout: 5min + 75min exactly.
+    // Wave 0 edges: the 10-minute bound covers same-cap job start-up latency.
     await expect(runIncidentLivePreflight(
-      ['--state-file', agedState(80 * 60_000), '--wave-index', '1'], deps
+      ['--state-file', agedState(10 * 60_000), '--wave-index', '0'], deps
     )).resolves.toBeUndefined()
     await expect(runIncidentLivePreflight(
-      ['--state-file', agedState(80 * 60_000 + 1), '--wave-index', '1'], deps
+      ['--state-file', agedState(10 * 60_000 + 1), '--wave-index', '0'], deps
+    )).rejects.toThrow('monitor evidence is incomplete or stale')
+    // Both edges of one predecessor job timeout: 10min + 75min exactly.
+    await expect(runIncidentLivePreflight(
+      ['--state-file', agedState(85 * 60_000), '--wave-index', '1'], deps
+    )).resolves.toBeUndefined()
+    await expect(runIncidentLivePreflight(
+      ['--state-file', agedState(85 * 60_000 + 1), '--wave-index', '1'], deps
     )).rejects.toThrow('monitor evidence is incomplete or stale')
     await expect(runIncidentLivePreflight(
-      ['--state-file', agedState(155 * 60_000), '--wave-index', '2'], deps
+      ['--state-file', agedState(160 * 60_000), '--wave-index', '2'], deps
     )).resolves.toBeUndefined()
     await expect(runIncidentLivePreflight(
-      ['--state-file', agedState(155 * 60_000 + 1), '--wave-index', '2'], deps
+      ['--state-file', agedState(160 * 60_000 + 1), '--wave-index', '2'], deps
     )).rejects.toThrow('monitor evidence is incomplete or stale')
     await expect(runIncidentLivePreflight(
-      ['--state-file', agedState(230 * 60_000), '--wave-index', '3'], deps
+      ['--state-file', agedState(235 * 60_000), '--wave-index', '3'], deps
     )).resolves.toBeUndefined()
     await expect(runIncidentLivePreflight(
-      ['--state-file', agedState(230 * 60_000 + 1), '--wave-index', '3'], deps
+      ['--state-file', agedState(235 * 60_000 + 1), '--wave-index', '3'], deps
     )).rejects.toThrow('monitor evidence is incomplete or stale')
     // The wave index is a strict single-use 0-3 argument.
     await expect(runIncidentLivePreflight(
@@ -260,9 +267,11 @@ describe('relay incident live preflight', () => {
     slowCell.sources['active-probe']!.signals[
       'cell.production-gce-c1.latency_ms'
     ]!.value = 2_568
+    // A cell probe now re-samples before it fails a wave, so the wait is injected;
+    // this cell stays slow on every sample and still names what stopped it.
     await expect(runIncidentLivePreflight(
       ['--state-file', stateFile()],
-      { now: () => now, collect: async () => slowCell }
+      { now: () => now, collect: async () => slowCell, wait: async () => {} }
     )).rejects.toThrow(
       'relay live preflight failed: active-probe/threshold_max cell.production-gce-c1.latency_ms observed=2568 threshold=2000'
     )
@@ -276,6 +285,150 @@ describe('relay incident live preflight', () => {
     )).rejects.toThrow(
       'relay live preflight failed: active-probe/source_stale observed=60001 threshold=60000'
     )
+  })
+
+  // Why: this one sample decides a mutating wave, so an Asia cell's ~30 s
+  // "no healthy upstream" window could still fail a wave here even after the
+  // 15-minute gate learned to ride it out.
+  describe('cell probe tolerance', () => {
+    const tolerance = INCIDENT_MONITOR_THRESHOLDS.cellProbeToleranceSamples
+
+    // Serves `badSamples` unhealthy cell readings, then healthy ones.
+    const downThen = (badSamples: number) => {
+      let index = 0
+      return async () => {
+        const next = sample()
+        if (index++ < badSamples) {
+          next.sources['active-probe']!.signals['cell.production-gce-c1.health']!
+            .value = 0
+          next.sources['active-probe']!.signals['cell.production-gce-c1.ready']!
+            .value = 0
+        }
+        return next
+      }
+    }
+
+    it('re-samples through a probe outage within the tolerance', async () => {
+      const waits: number[] = []
+      await expect(runIncidentLivePreflight(
+        ['--state-file', stateFile()],
+        {
+          now: () => now,
+          collect: downThen(tolerance),
+          wait: async (ms) => {
+            waits.push(ms)
+          }
+        }
+      )).resolves.toBeUndefined()
+      expect(waits).toHaveLength(tolerance)
+    })
+
+    it('fails the wave once the probe outage outlasts the tolerance', async () => {
+      await expect(runIncidentLivePreflight(
+        ['--state-file', stateFile()],
+        {
+          now: () => now,
+          collect: downThen(tolerance + 1),
+          wait: async () => {}
+        }
+      )).rejects.toThrow('active-probe/threshold_equal cell.production-gce-c1.health')
+    })
+
+    it('does not re-sample a director probe failure', async () => {
+      let samples = 0
+      const down = async () => {
+        samples++
+        const next = sample()
+        next.sources['active-probe']!.signals['director.health']!.value = 0
+        return next
+      }
+      await expect(runIncidentLivePreflight(
+        ['--state-file', stateFile()],
+        { now: () => now, collect: down, wait: async () => {} }
+      )).rejects.toThrow('active-probe/threshold_equal director.health')
+      expect(samples).toBe(1)
+    })
+
+    it('does not re-sample a non-probe threshold failure', async () => {
+      let samples = 0
+      const hot = async () => {
+        samples++
+        const next = sample()
+        next.sources['cloud-monitoring']!.signals['cloud_sql.cpu']!.value = 0.9
+        return next
+      }
+      await expect(runIncidentLivePreflight(
+        ['--state-file', stateFile()],
+        { now: () => now, collect: hot, wait: async () => {} }
+      )).rejects.toThrow('cloud-monitoring/threshold_max')
+      expect(samples).toBe(1)
+    })
+  })
+
+  // Why: on 2026-09-17 a canary wave died because one director admin read
+  // returned 404 for a 2 s Cloud SQL pool timeout. Collecting the sample is not
+  // a health verdict, so a thrown collector spends an attempt instead.
+  describe('collector failures', () => {
+    it('re-samples after a thrown collector and then passes', async () => {
+      const waits: number[] = []
+      let attempts = 0
+      await expect(runIncidentLivePreflight(
+        ['--state-file', stateFile()],
+        {
+          now: () => now,
+          collect: async () => {
+            attempts++
+            if (attempts === 1) throw new Error('Relay admin telemetry returned 404')
+            return sample()
+          },
+          wait: async (ms) => {
+            waits.push(ms)
+          }
+        }
+      )).resolves.toBeUndefined()
+      expect(attempts).toBe(2)
+      expect(waits).toEqual([15_000])
+    })
+
+    it('fails the wave when every attempt throws, naming the collector', async () => {
+      let attempts = 0
+      await expect(runIncidentLivePreflight(
+        ['--state-file', stateFile()],
+        {
+          now: () => now,
+          collect: async () => {
+            attempts++
+            throw new Error('Relay admin telemetry returned 404')
+          },
+          wait: async () => {}
+        }
+      )).rejects.toThrow(
+        'relay live preflight failed: collector: Relay admin telemetry returned 404'
+      )
+      expect(attempts).toBe(1 + INCIDENT_MONITOR_THRESHOLDS.cellProbeToleranceSamples)
+    })
+
+    it('does not re-sample a collector failure past the evidence-age budget', async () => {
+      const agedPath = stateFile('strict', {
+        startedAt: new Date(now - 26 * 60_000).toISOString(),
+        windowStartedAt: new Date(now - 25 * 60_000).toISOString(),
+        lastSampleAt: new Date(now - 10 * 60_000 + 7).toISOString(),
+        completedAt: new Date(now - 10 * 60_000 + 14).toISOString()
+      })
+      let attempts = 0
+      await expect(runIncidentLivePreflight(
+        ['--state-file', agedPath],
+        {
+          now: () => now,
+          collect: async () => {
+            attempts++
+            throw new Error('Relay admin telemetry returned 404')
+          },
+          wait: async () => {}
+        }
+      )).rejects.toThrow('relay live preflight failed: collector:')
+      expect(attempts).toBe(1)
+    })
   })
 
   it('enforces the signed migration policy', async () => {
@@ -374,7 +527,7 @@ describe('relay incident live preflight', () => {
   })
 
   it('stops retrying when the next wait would exceed the evidence-age bound', async () => {
-    const completedAt = now - 290_000
+    const completedAt = now - 590_000
     const stale = sample()
     stale.sources['cloud-monitoring']!.observedAt = new Date(now - (INCIDENT_MONITOR_THRESHOLDS.cloudDataMaxAgeMs + 1)).toISOString()
     const collect = vi.fn(async () => stale)

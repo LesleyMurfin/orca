@@ -7,6 +7,7 @@ import { CodexSubagentRoster } from './codex-subagent-roster'
 import { readCodexThreadItem } from './codex-structured-item-translation'
 import { CodexJournalGenericFrames } from './codex-structured-journal-generic-frames'
 import { CodexJournalCompactions } from './codex-structured-journal-compactions'
+import { CodexJournalGoals } from './codex-structured-journal-goals'
 import { CodexJournalItems } from './codex-structured-journal-items'
 import { CodexJournalPrompts } from './codex-structured-journal-prompts'
 import {
@@ -51,14 +52,17 @@ export function createCodexJournalTranslator(
   const genericFrames = new CodexJournalGenericFrames(deps, (threadId) =>
     activeTurns.current(threadId)
   )
+  const goals = new CodexJournalGoals(deps.sink)
   const items = new CodexJournalItems(
     deps,
     (threadId) => activeTurns.current(threadId),
     (threadId, turnId) => genericFrames.suppress(threadId, turnId)
   )
   const settleOversizedNotification = createCodexOversizedNotificationSettler(deps, items)
-  const prompts = new CodexJournalPrompts(deps, (threadId, itemId) =>
-    items.detailFor(threadId, itemId)
+  const prompts = new CodexJournalPrompts(
+    deps,
+    (threadId, itemId) => items.detailFor(threadId, itemId),
+    (threadId) => activeTurns.current(threadId)
   )
   const subagents = new CodexSubagentRoster({
     sink: deps.sink,
@@ -80,6 +84,8 @@ export function createCodexJournalTranslator(
     primaryThreadId: () => deps.primaryThreadId?.() ?? null,
     activeTurns,
     items,
+    pendingPrompts: prompts.pending,
+    ...(deps.clearPromptTurn ? { clearPromptTurn: deps.clearPromptTurn } : {}),
     flushSuppression: () => genericFrames.flush(),
     resetActivity,
     ...(deps.now ? { now: deps.now } : {})
@@ -176,8 +182,9 @@ export function createCodexJournalTranslator(
         deps.sink.setActivity?.(null)
         items.activeItems.clear()
         prompts.pending.clear()
-        activeTurns.clear()
+        turnBoundaries.clear()
         compactions.clear()
+        goals.clear()
         return CODEX_JOURNAL_ADMITTED
       }
       if (event.type === 'notification') {
@@ -221,6 +228,10 @@ export function createCodexJournalTranslator(
       if (compaction) {
         return publishActivity(event, compaction)
       }
+      const goal = goals.handle(event)
+      if (goal) {
+        return publishActivity(event, goal)
+      }
       if (event.method === CODEX_TOKEN_USAGE_METHOD) {
         // Classified `status-chrome`, so the generic-frame path swallows it
         // before the journal. The roster consumes it as a typed notification.
@@ -246,6 +257,23 @@ export function createCodexJournalTranslator(
           return publishActivity(event, subagentAdmission)
         }
         const translated = items.handle(event)
+        if (translated.handled && translated.dispatchEcho) {
+          const { clientMessageId, providerIdentity } = translated.dispatchEcho
+          const requestOrigin = deps.dispatchRequestOrigin?.(clientMessageId) ?? null
+          if (requestOrigin !== null && providerIdentity.provider === 'codex') {
+            const attribution = turnBoundaries.attributeRequest({
+              sessionId: event.sessionId,
+              clientMessageId,
+              threadId: providerIdentity.threadId,
+              turnId: providerIdentity.turnId,
+              requestOrigin
+            })
+            if (!attribution.accepted) {
+              return attribution
+            }
+          }
+          deps.onUserMessageEcho?.(clientMessageId, providerIdentity)
+        }
         return publishActivity(
           event,
           translated.handled
@@ -262,6 +290,7 @@ export function createCodexJournalTranslator(
         genericFrames.appendUnhandled(`notification:${event.method}`, event.params, event.threadId)
       )
     },
+    cancelPrompt: (journalItemId) => prompts.cancel(journalItemId),
     resolvePrompt: (journalItemId) => prompts.resolve(journalItemId),
     flush: () => {
       items.streams.flush()
@@ -272,8 +301,9 @@ export function createCodexJournalTranslator(
       prompts.dispose()
       genericFrames.dispose()
       subagents.dispose()
-      activeTurns.clear()
+      turnBoundaries.clear()
       compactions.clear()
+      goals.dispose()
     }
   }
 }
