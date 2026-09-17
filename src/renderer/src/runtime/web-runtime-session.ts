@@ -1205,6 +1205,20 @@ async function callWebRuntimeSessionTabMethod(
     }
     return true
   } catch (error) {
+    // Why: if the worktree or tab is already gone on the host, closing is an idempotent success (#21189).
+    // Keep close intents suppressed so that stale in-flight snapshots do not resurrect the dead tab.
+    if (
+      isClose &&
+      (hasRuntimeRpcErrorCode(error, 'selector_not_found') ||
+        hasRuntimeRpcErrorCode(error, 'tab_not_found') ||
+        hasRuntimeRpcErrorCode(error, 'terminal_tab_not_found'))
+    ) {
+      console.info(
+        '[web-runtime-session] tab or worktree already absent during close:',
+        error instanceof Error ? error.message : String(error)
+      )
+      return true
+    }
     if (activationHostTabId) {
       clearWebSessionFocusIntentIfMatches(intentOwner, args.worktreeId, activationHostTabId)
     }

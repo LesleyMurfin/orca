@@ -318,6 +318,43 @@ describe('session tab RPC methods', () => {
     }
   )
 
+  it.each(['selector_not_found', 'tab_not_found'] as const)(
+    'returns closed: true and notFound: true when closeMobileSessionTab rejects with %s',
+    async (errorCode) => {
+      const runtime = {
+        getRuntimeId: () => 'test-runtime',
+        closeMobileSessionTab: vi.fn().mockRejectedValue(new Error(errorCode))
+      } as unknown as OrcaRuntimeService
+      const dispatcher = new RpcDispatcher({ runtime, methods: SESSION_TAB_METHODS })
+
+      const closeResponse = await dispatcher.dispatch(
+        makeRequest('session.tabs.close', {
+          worktree: 'id:wt-1',
+          tabId: 'tab-1',
+          reason: 'user'
+        })
+      )
+      expect(closeResponse).toMatchObject({
+        ok: true,
+        result: { closed: true, notFound: true }
+      })
+
+      const lifecycleResponse = await dispatcher.dispatch(
+        makeRequest('session.tabs.closeLifecycle', {
+          worktree: 'id:wt-1',
+          tabId: 'tab-1',
+          reason: 'pty-exit',
+          publicationEpoch: 'epoch-1',
+          terminal: 'term-1'
+        })
+      )
+      expect(lifecycleResponse).toMatchObject({
+        ok: true,
+        result: { closed: true, notFound: true }
+      })
+    }
+  )
+
   it('dispatches tab moves through the runtime', async () => {
     const runtime = {
       getRuntimeId: () => 'test-runtime',

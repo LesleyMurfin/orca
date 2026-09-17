@@ -449,4 +449,33 @@ describe('web runtime session tab actions', () => {
       )
     ).toBe(false)
   })
+
+  it.each(['selector_not_found', 'tab_not_found'] as const)(
+    'resolves to true and keeps close intent pending when host returns %s',
+    async (errorCode) => {
+      const runtimeCall = vi.fn().mockResolvedValue({
+        id: 'close-not-found',
+        ok: false,
+        error: { code: errorCode, message: errorCode }
+      })
+      vi.stubGlobal('window', { api: { runtimeEnvironments: { call: runtimeCall } } })
+
+      await expect(
+        closeWebRuntimeSessionTab({
+          worktreeId: WORKTREE_ID,
+          tabId: 'local-browser-unified',
+          reason: 'user'
+        })
+      ).resolves.toBe(true)
+
+      expect(
+        isWebSessionCloseIntentPending(
+          { environmentId: ENVIRONMENT_ID },
+          WORKTREE_ID,
+          'host-browser-unified',
+          Date.now()
+        )
+      ).toBe(true)
+    }
+  )
 })

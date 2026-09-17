@@ -3,6 +3,31 @@ import { SESSION_TAB_CLOSE_INTENT_RUNTIME_CAPABILITY } from '../../../../shared/
 import { defineMethod, type RpcAnyMethod } from '../core'
 import { CloseLifecycleTab, CloseTab } from './session-tabs-schemas'
 
+const ABSENT_SESSION_TAB_ERROR_CODES: Record<string, true> = {
+  selector_not_found: true,
+  tab_not_found: true,
+  terminal_tab_not_found: true
+}
+
+function isSessionTabNotFoundError(error: unknown): boolean {
+  if (typeof error === 'string') {
+    return ABSENT_SESSION_TAB_ERROR_CODES[error] === true
+  }
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+  const code = 'code' in error && typeof error.code === 'string' ? error.code : undefined
+  const message =
+    error instanceof Error
+      ? error.message
+      : 'message' in error && typeof error.message === 'string'
+        ? error.message
+        : undefined
+  return (
+    (code !== undefined && ABSENT_SESSION_TAB_ERROR_CODES[code] === true) ||
+    (message !== undefined && ABSENT_SESSION_TAB_ERROR_CODES[message] === true)
+  )
+}
 export const SESSION_TAB_CLOSE_METHODS: RpcAnyMethod[] = [
   defineMethod({
     name: 'session.tabs.close',
@@ -25,14 +50,24 @@ export const SESSION_TAB_CLOSE_METHODS: RpcAnyMethod[] = [
             span.setAttribute('decision', `refused-${result.refusalReason ?? 'missing-intent'}`)
             return result
           }
-          const result = await context.runtime.closeMobileSessionTab(
-            params.worktree,
-            params.tabId,
-            {
-              reason: 'user',
-              ...(context.pairedDeviceId ? { clientNavigationId: context.pairedDeviceId } : {})
+          let result
+          try {
+            result = await context.runtime.closeMobileSessionTab(
+              params.worktree,
+              params.tabId,
+              {
+                reason: 'user',
+                ...(context.pairedDeviceId ? { clientNavigationId: context.pairedDeviceId } : {})
+              }
+            )
+          } catch (error) {
+            // Why: closing an already absent tab or worktree is an idempotent success (#21189).
+            if (isSessionTabNotFoundError(error)) {
+              span.setAttribute('decision', 'allowed-already-absent')
+              return { closed: true, notFound: true }
             }
-          )
+            throw error
+          }
           span.setAttribute(
             'decision',
             result.refused ? `refused-${result.refusalReason ?? 'unknown'}` : 'allowed'
@@ -69,16 +104,26 @@ export const SESSION_TAB_CLOSE_METHODS: RpcAnyMethod[] = [
       withSpan(
         'runtime.session-tabs.close-lifecycle',
         async (span) => {
-          const result = await context.runtime.closeMobileSessionTab(
-            params.worktree,
-            params.tabId,
-            {
-              reason: params.reason,
-              expectedPublicationEpoch: params.publicationEpoch,
-              expectedTerminalHandle: params.terminal,
-              ...(context.pairedDeviceId ? { clientNavigationId: context.pairedDeviceId } : {})
+          let result
+          try {
+            result = await context.runtime.closeMobileSessionTab(
+              params.worktree,
+              params.tabId,
+              {
+                reason: params.reason,
+                expectedPublicationEpoch: params.publicationEpoch,
+                expectedTerminalHandle: params.terminal,
+                ...(context.pairedDeviceId ? { clientNavigationId: context.pairedDeviceId } : {})
+              }
+            )
+          } catch (error) {
+            // Why: closing an already absent tab or worktree is an idempotent success (#21189).
+            if (isSessionTabNotFoundError(error)) {
+              span.setAttribute('decision', 'allowed-already-absent')
+              return { closed: true, notFound: true }
             }
-          )
+            throw error
+          }
           span.setAttribute(
             'decision',
             result.refused ? `refused-${result.refusalReason ?? 'unknown'}` : 'allowed'
