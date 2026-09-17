@@ -1,0 +1,32 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install xvfb, procps, coreutils, curl, ca-certificates, and X11 utilities
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    coreutils \
+    procps \
+    xvfb \
+    curl \
+    ca-certificates \
+    x11-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (NodeSource 22.x LTS) and pnpm
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g pnpm@10 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Copy workspace config and dependencies
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml* tsconfig*.json ./
+COPY config/ ./config/
+COPY src/ ./src/
+COPY tests/docker/ ./tests/docker/
+
+RUN chmod +x ./tests/docker/run-xvfb-test.sh
+
+CMD ["/workspace/tests/docker/run-xvfb-test.sh"]

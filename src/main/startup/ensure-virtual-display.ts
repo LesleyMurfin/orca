@@ -65,6 +65,15 @@ function probeDisplayLock(displayNumber: number): DisplayLockProbe {
 }
 
 /**
+ * Checks whether an X display lock file exists for a dead or corrupt process.
+ * If the process holding the lock is dead (ESRCH) or the lock file is malformed,
+ * the lock is stale and should be cleared before Xvfb spawn.
+ */
+export function isStaleDisplayLock(displayNumber: number): boolean {
+  return probeDisplayLock(displayNumber) === 'dead'
+}
+
+/**
  * Liveness for a display Orca did not create. An X server writes its lock beside the socket and
  * both survive a crash (verified against Xvfb under SIGKILL), so a socket with no lock was never
  * left by a crashed server — it is an endpoint published from elsewhere: a container bind-mounting
@@ -254,6 +263,14 @@ export function ensureVirtualDisplayForHeadlessServe(options: { isServeMode: boo
     }
     // Why: stale socket/lock — clean them up so Xvfb can rebind the display
     // below instead of refusing to start on an "in use" number.
+    removeStaleDisplayArtifacts(VIRTUAL_DISPLAY_NUMBER)
+  } else if (isStaleDisplayLock(VIRTUAL_DISPLAY_NUMBER)) {
+    // Fork Issue #23: Orphan lock file with NO socket, left by hard exit or dead PID.
+    // Unconditionally remove stale lock artifacts before Xvfb attempts to bind :99.
+    console.warn(
+      `[serve] Detected stale display lock at ${xDisplayLockPath(VIRTUAL_DISPLAY_NUMBER)} ` +
+        'without an active server. Cleaning up prior to starting Xvfb.'
+    )
     removeStaleDisplayArtifacts(VIRTUAL_DISPLAY_NUMBER)
   }
 
