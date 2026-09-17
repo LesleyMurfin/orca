@@ -94,6 +94,9 @@ export async function reclaimRendererProcess(
           return 'pid_reused'
         }
       }
+      if (isShared(osProcessId)) {
+        return 'shared'
+      }
       control.kill(osProcessId)
       return 'killed'
     }

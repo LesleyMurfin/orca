@@ -5,7 +5,7 @@
  * and its process behind. These cover the cap at its boundary and the forced reclaim.
  */
 import { EventEmitter } from 'node:events'
-import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   windows: [] as MockBrowserWindow[],
@@ -118,6 +118,10 @@ beforeEach(() => {
   statics.getAllWindows = () => mocks.windows.filter((window) => !window.isDestroyed())
 })
 
+afterEach(() => {
+  vi.useRealTimers()
+})
+
 describe('offscreen browser tab cap', () => {
   it('refuses the create that would exceed the cap and keeps the open tabs usable', async () => {
     const browserManager = { registerOffscreenGuest: vi.fn(() => true), unregisterGuest: vi.fn() }
@@ -223,6 +227,66 @@ describe('offscreen browser tab reclaim', () => {
     await expect(
       reclaimRendererProcess(4321, { control, isShared: () => false, graceMs: 50, pollMs: 1 })
     ).resolves.toBe('exited')
+    expect(control.kill).not.toHaveBeenCalled()
+  })
+
+  it('returns shared and does not kill if a renderer becomes shared while awaiting start-time probe at deadline', async () => {
+    let shared = false
+    const control = { isAlive: () => true, kill: vi.fn() }
+    const isShared = vi.fn(() => shared)
+    const readStartTimeMs = vi.fn(async () => {
+      shared = true
+      return 10_000
+    })
+
+    await expect(
+      reclaimRendererProcess(4321, {
+        control,
+        isShared,
+        readStartTimeMs,
+        expectedStartTimeMs: 10_000,
+        graceMs: 0
+      })
+    ).resolves.toBe('shared')
+    expect(control.kill).not.toHaveBeenCalled()
+  })
+
+  it('times out after START_TIME_PROBE_TIMEOUT_MS and completes teardown if start-time probe hangs', async () => {
+    const browserManager = { registerOffscreenGuest: vi.fn(() => true), unregisterGuest: vi.fn() }
+    const backend = createBackend({
+      browserManager,
+      rendererProcessControl: {
+        isAlive: () => false,
+        kill: vi.fn(),
+        readStartTimeMs: () => new Promise<number>(() => {})
+      }
+    })
+
+    await openTab(backend, 'page-1')
+    vi.useFakeTimers()
+    const closePromise = backend.closeTab('page-1')
+    await vi.advanceTimersByTimeAsync(1_000)
+    await closePromise
+
+    expect(mocks.windows[0].isDestroyed()).toBe(true)
+    expect(browserManager.unregisterGuest).toHaveBeenCalledWith('page-1')
+    expect(backend.getWebContentsId('page-1')).toBeNull()
+  })
+
+  it('returns pid_reused and does not kill if start-time probe detects PID reuse', async () => {
+    const control = { isAlive: () => true, kill: vi.fn() }
+    const isShared = vi.fn(() => false)
+    const readStartTimeMs = vi.fn(async () => 50_000)
+
+    await expect(
+      reclaimRendererProcess(4321, {
+        control,
+        isShared,
+        readStartTimeMs,
+        expectedStartTimeMs: 10_000,
+        graceMs: 0
+      })
+    ).resolves.toBe('pid_reused')
     expect(control.kill).not.toHaveBeenCalled()
   })
 })
