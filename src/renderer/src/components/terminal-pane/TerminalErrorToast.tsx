@@ -120,6 +120,10 @@ export function isHeldByPreviousRelayError(error: string): boolean {
   return HELD_BY_PREVIOUS_RELAY_PATTERN.test(error)
 }
 
+export function isRemoteTerminalClosedError(error: string): boolean {
+  return error.includes(REMOTE_TERMINAL_CLOSED_MARKER)
+}
+
 export function isPaneOwnerUnverifiedError(error: string): boolean {
   const lines = error.split('\n').filter((line) => line.length > 0)
   return lines.length > 0 && lines.every((line) => line.includes(PANE_OWNER_UNVERIFIED_MARKER))
@@ -217,6 +221,7 @@ export function TerminalErrorToast({
   error,
   paneOnClient = true,
   onDismiss,
+  onClosePane,
   onRestartDaemon,
   onRetry
 }: {
@@ -224,6 +229,7 @@ export function TerminalErrorToast({
   /** False for a pane on an SSH or remote host, or one whose host is not yet known. */
   paneOnClient?: boolean
   onDismiss: () => void
+  onClosePane?: () => void
   onRestartDaemon?: () => void
   onRetry?: () => Promise<boolean>
 }): React.JSX.Element {
@@ -389,7 +395,12 @@ export function TerminalErrorToast({
           </Button>
         ) : null}
         <button
-          onClick={onDismiss}
+          onClick={() => {
+            onDismiss()
+            if (isRemoteTerminalClosedError(error)) {
+              onClosePane?.()
+            }
+          }}
           style={{
             background: 'none',
             border: 'none',

@@ -193,6 +193,7 @@ export function TerminalPaneSurface({
               error={visibleTerminalError}
               paneOnClient={paneOnClient}
               onDismiss={dismissTerminalError}
+              onClosePane={() => handleRequestClosePane(activePane.id)}
               onRestartDaemon={() => daemonActions.setPending('restart')}
               onRetry={
                 isPaneOwnerUnverifiedError(visibleTerminalError)
