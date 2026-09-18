@@ -288,7 +288,7 @@ describe('ensureVirtualDisplayForHeadlessServe', () => {
         if (pid === 9999) {
           throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
         }
-        return true as never
+        return true
       })
       spawnMock.mockImplementation(() => {
         bound = true
@@ -314,7 +314,7 @@ describe('ensureVirtualDisplayForHeadlessServe', () => {
     it('preserves lock file when PID is alive', async () => {
       setPlatform('linux')
       readFileSyncMock.mockReturnValue('4321\n')
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true as never)
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
       const { isStaleDisplayLock } = await import('./ensure-virtual-display')
 
       expect(isStaleDisplayLock(99)).toBe(false)
