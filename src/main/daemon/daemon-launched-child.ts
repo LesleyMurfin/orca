@@ -51,7 +51,7 @@ export async function launchDaemonChild(
     }
     console.warn(
       '[daemon] durable cgroup-scope launch failed, retrying without cgroup isolation:',
-      (error as Error).message
+      error instanceof Error ? error.message : String(error)
     )
     return launchDaemonChildAttempt(options, false)
   }

@@ -55,16 +55,15 @@ export async function readDaemonProcessIncarnation(
   }
 }
 
+function isRecord(value: object): value is Record<string, unknown> {
+  return value !== null
+}
+
 export function parseDaemonReadyIdentity(message: unknown): DaemonReadyIdentity | null {
-  if (!message || typeof message !== 'object') {
+  if (!message || typeof message !== 'object' || !isRecord(message)) {
     return null
   }
-  const value = message as {
-    pid?: unknown
-    startedAtMs?: unknown
-    linuxStartTicks?: unknown
-    bootId?: unknown
-  }
+  const value: Record<string, unknown> = message
   if (typeof value.pid !== 'number' || !Number.isSafeInteger(value.pid) || value.pid <= 0) {
     return null
   }

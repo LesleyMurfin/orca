@@ -32,7 +32,7 @@ export type ForkSpec = {
 }
 
 export function forkProcess(spec: ForkSpec): SpawnedProcess {
-  return nodeFork(spec.modulePath, [...(spec.args ?? [])], {
+  const options: ForkOptions & { windowsHide: true } = {
     cwd: spec.cwd,
     env: spec.env,
     detached: spec.detached,
@@ -40,10 +40,8 @@ export function forkProcess(spec: ForkSpec): SpawnedProcess {
     // Why conditional rather than `execPath: spec.execPath`: an explicit `undefined` is not the
     // same as absent to Node, which reads the key to decide whether to override its own binary.
     ...(spec.execPath ? { execPath: spec.execPath } : {}),
-    // Why the assertion: `ForkOptions` does not declare `windowsHide`, but Node forwards the
-    // option to `spawn` at runtime, so the flag every other call site in this directory sets is
-    // reachable here too. Inert for a GUI-subsystem binary and for `detached`, which already
-    // gets no inherited console — but a console-subsystem `execPath` would otherwise flash one.
+    // Node forwards this undocumented fork option to spawn, preventing console flashes on Windows.
     windowsHide: true
-  } as ForkOptions)
+  }
+  return nodeFork(spec.modulePath, [...(spec.args ?? [])], options)
 }

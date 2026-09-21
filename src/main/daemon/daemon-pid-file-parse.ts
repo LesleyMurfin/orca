@@ -32,21 +32,15 @@ export function salvagePidFromCorruptDaemonRecord(contents: string): number | nu
   return Number.isSafeInteger(pid) && pid > 0 ? pid : null
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
 export function parseDaemonPidFile(contents: string): ParsedDaemonPid | null {
   const trimmed = contents.trim()
   try {
-    const parsed = JSON.parse(trimmed) as {
-      pid?: unknown
-      startedAtMs?: unknown
-      entryPath?: unknown
-      appVersion?: unknown
-      launchNonce?: unknown
-      linuxStartTicks?: unknown
-      bootId?: unknown
-      spawnerExecPath?: unknown
-      cgroupUnit?: unknown
-    }
-    if (typeof parsed.pid === 'number' && Number.isFinite(parsed.pid)) {
+    const parsed = JSON.parse(trimmed)
+    if (isRecord(parsed) && typeof parsed.pid === 'number' && Number.isFinite(parsed.pid)) {
       return {
         pid: parsed.pid,
         startedAtMs:

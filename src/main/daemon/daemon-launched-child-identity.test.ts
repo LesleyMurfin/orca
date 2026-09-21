@@ -1,4 +1,3 @@
-import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { DAEMON_EXIT_ENDPOINT_OCCUPIED } from './daemon-endpoint-ownership'
@@ -19,10 +18,12 @@ vi.mock('./daemon-cgroup-scope', () => ({
 vi.mock('./daemon-spawner', () => ({ unlinkOwnedDaemonPidFile: vi.fn(() => true) }))
 
 // exitCode is writable here: the launcher reads it to decide whether the child is already gone.
-type FakeDaemonChild = Omit<ChildProcess, 'exitCode'> & {
-  exitCode: number | null
+type FakeDaemonChild = EventEmitter & {
+  pid: number
   disconnect: Mock
   unref: Mock
+  exitCode: number | null
+  signalCode: NodeJS.Signals | null
 }
 
 const LAUNCH_OPTIONS: DaemonChildSpawnOptions = {
@@ -37,7 +38,7 @@ const LAUNCH_OPTIONS: DaemonChildSpawnOptions = {
 }
 
 function fakeDaemonChild(pid: number): FakeDaemonChild {
-  const child = new EventEmitter() as unknown as FakeDaemonChild
+  const child = new EventEmitter()
   return Object.assign(child, {
     pid,
     disconnect: vi.fn(),
