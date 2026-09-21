@@ -260,6 +260,23 @@ export type StrandedPartitionAdoptionOptions = {
    * rows stay where they are, which is the leak direction the boundary doc asks for.
    */
   foreignSessionKeys?: ReadonlySet<string>
+  /**
+   * Worktree ids the repo catalog positively, currently attributes to EXACTLY this host, with no
+   * evidence any OTHER partition ever held residue for the same id (a migration). For one of
+   * these, an empty tab row is not the #12721 shape — the catalog's confirmation means this is a
+   * live, tracked connection, so a base with literally no `tabsByWorktree` entry for it is the
+   * server reporting zero tabs, not an unverifiable gap. A client that went offline while every
+   * tab for the worktree was closed comes back with exactly this shape: base empty/absent, host
+   * partition still naming the closed tabs from its last connected snapshot. Blindly gap-filling
+   * that repaints them into the merged session and the next `persistWorkspaceSessionByHost` call
+   * round-trips them back out to the host partition and every other client — the ghost-tab
+   * resurrection in stablyai/orca#22038 / revive_labs#962 (GAP-03).
+   *
+   * Declining here still never destroys anything: the id drops out of `adoptedWorkspaceIds`, so
+   * `partitionRowsTheWriteWontReturn` parks the row in the write-side shadow instead, the same
+   * "leak, never kill" safety net a contested id already gets.
+   */
+  reconciledWorktreeIds?: ReadonlySet<string>
 }
 
 export type StrandedPartitionAdoption = {
@@ -281,6 +298,21 @@ export function adoptStrandedHostPartitionSession(
   const adoptable = adoptableWorkspaceIds(base, host)
   for (const key of options.foreignSessionKeys ?? []) {
     adoptable.delete(normalizeWorkspaceSessionKeyToWorkspaceId(key))
+  }
+  // GAP-03: a worktree the catalog confirms belongs to exactly this host, with no evidence it
+  // ever lived on another one, does not get the #12721 unverifiable-gap reading when the base
+  // holds no `tabsByWorktree` row for it at all. The base's silence is the server's current
+  // truth (zero tabs), not a blind spot — so a host row that still names real tabs here is this
+  // client's stale pre-disconnect cache, not evidence of anything live. Declining leaves the row
+  // in place for `partitionRowsTheWriteWontReturn` to park rather than deleting it.
+  for (const workspaceId of options.reconciledWorktreeIds ?? []) {
+    if (!adoptable.has(workspaceId) || Object.hasOwn(base.tabsByWorktree ?? {}, workspaceId)) {
+      continue
+    }
+    const hostTabs = (host.tabsByWorktree ?? {})[workspaceId]
+    if (Array.isArray(hostTabs) && hostTabs.length > 0) {
+      adoptable.delete(workspaceId)
+    }
   }
   if (adoptable.size === 0) {
     return { session: base, adoptedWorkspaceIds: NOTHING_ADOPTED }
