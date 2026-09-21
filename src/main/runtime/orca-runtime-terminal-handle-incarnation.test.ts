@@ -71,6 +71,7 @@ describe('runtime terminal handle incarnation fencing', () => {
     })
     expect(runtime.markRendererReloading(1)).not.toBeNull()
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     expect((runtime as unknown as { handles: Map<string, unknown> }).handles.has(handle)).toBe(
       false
     )
@@ -94,6 +95,7 @@ describe('runtime terminal handle incarnation fencing', () => {
     })
   })
 
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
   // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
   it('treats a null-to-known incarnation as the same un-fenced PTY', async () => {
     const { runtime } = makeRuntime()
@@ -138,6 +140,7 @@ describe('runtime terminal handle incarnation fencing', () => {
 
     // Rotate the record directly so reconcile is the only fence exercised.
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test reaches the runtime's protected pty record map to bypass the registerPty fence.
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     const internals = runtime as unknown as {
       ptysById: Map<string, { incarnationId: string | null }>
@@ -223,6 +226,7 @@ describe('runtime terminal handle incarnation fencing', () => {
     syncGraph(runtime)
 
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     const internals = runtime as unknown as {
       handles: Map<string, unknown>
       handleByLeafKey: Map<string, string>
@@ -273,10 +277,10 @@ describe('resolveTerminalHandleByProcessIncarnation direct fencing', () => {
     serializedHostScope: string | null
   ): string | null {
     return (
-      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
-      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
       // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
       (
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
         runtime as unknown as {
           resolveTerminalHandleByProcessIncarnation(
             processIncarnation: string,

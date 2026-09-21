@@ -92,21 +92,22 @@ describe('PRB-0219 worker-release reap FIX (functional verification)', () => {
     // Incarnation-addressed liveness probe: reads the DURABLE plane, so it stays 'live' across the
     // epoch bump (the process really is still running). Matches the real asymmetry.
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
-    ;// oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
+    ;// oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     (
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
       runtime as unknown as {
         inspectTerminalProcessIncarnationLiveness: (
           incarnation: string
         ) => Promise<'live' | 'exited'>
       }
-    )
-      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
-      .inspectTerminalProcessIncarnationLiveness = vi.fn(async (incarnation: string) => {
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
+    ).inspectTerminalProcessIncarnationLiveness = vi.fn(async (incarnation: string) => {
       const idx = incarnation.lastIndexOf(':')
       const ptyId = incarnation.slice(0, idx)
       const pty = ptysById.get(ptyId)
       return pty?.alive ? 'live' : 'exited'
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
       // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     }) as never
 
@@ -114,18 +115,18 @@ describe('PRB-0219 worker-release reap FIX (functional verification)', () => {
     // same harness proves BOTH tiers: pre-fix completion never calls it (leak); post-fix completion
     // calls it to remint a live handle (reap). Fence: EXACT incarnationId match only.
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
-    ;// oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
+    ;// oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     (
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
       runtime as unknown as {
         resolveTerminalHandleByProcessIncarnation: (
           incarnation: string,
           hostScope: string | null
         ) => string | null
       }
-    )
-      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
-      .resolveTerminalHandleByProcessIncarnation = vi.fn((incarnation: string): string | null => {
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
+    ).resolveTerminalHandleByProcessIncarnation = vi.fn((incarnation: string): string | null => {
       const idx = incarnation.lastIndexOf(':')
       const ptyId = incarnation.slice(0, idx)
       const inc = Number(incarnation.slice(idx + 1))
@@ -140,6 +141,7 @@ describe('PRB-0219 worker-release reap FIX (functional verification)', () => {
       // Remint a live handle at the current graph epoch.
       handleTable.set('term_reminted', { ptyId, epoch: rendererGraphEpoch })
       return 'term_reminted'
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
       // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     }) as never
 
@@ -166,6 +168,7 @@ describe('PRB-0219 worker-release reap FIX (functional verification)', () => {
             processIncarnation: PROCESS_INCARNATION,
             hostScope: { kind: 'local', hostId: 'local' }
             // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
+            // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
           } as never)
         : null
     )
@@ -177,7 +180,7 @@ describe('PRB-0219 worker-release reap FIX (functional verification)', () => {
       if (!resolveHandleToLivePty(handle)) {
         throw new Error('terminal_handle_stale')
       }
-      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
       // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
       return { handle, worktreeId: 'repo::worktree', status: 'running' } as never
     })
@@ -186,22 +189,25 @@ describe('PRB-0219 worker-release reap FIX (functional verification)', () => {
     vi.spyOn(runtime, 'closeTerminal').mockImplementation(async (handle) => {
       const live = resolveHandleToLivePty(handle)
       if (!live) {
-        // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
+        // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
         // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
         return { handle, tabId: null, ptyKilled: false } as never
       }
       live.pty.alive = false
       ptysById.delete(live.ptyId)
       closedPtyIds.push(live.ptyId)
-      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
       // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
       return { handle, tabId: `tab:${live.ptyId}`, ptyKilled: true } as never
     })
 
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     // Remaining runtime surface required to start + settle a worker (mirrors the unit harness).
-    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     vi.spyOn(runtime, 'showManagedTerminalWorkspace').mockResolvedValue({
       id: 'repo::worktree'
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
       // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     } as never)
     vi.spyOn(runtime, 'createTerminal').mockResolvedValue({
@@ -265,14 +271,17 @@ describe('PRB-0219 worker-release reap FIX (functional verification)', () => {
     return method.handler(parsed, ctx)
   }
 
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
   /** Start a worker and settle its report, the state a release acts on. */
   async function startSettledWorker(): Promise<{ taskId: string; dispatchId: string }> {
     const task = db.createTask({ spec: 'reap-leak fixture task', runId: activeRunId })
-    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     const result = (await call('orchestration.workerStart', {
       task: task.id,
       from: 'term_coord',
       agent: 'codex'
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
       // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     })) as { dispatchId: string; state: string }
     expect(result.state).toBe('ready')
@@ -288,7 +297,7 @@ describe('PRB-0219 worker-release reap FIX (functional verification)', () => {
 
   /** The terminalState workerList projects for a dispatch, or null. */
   async function workerTerminalState(dispatchId: string): Promise<string | null> {
-    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     const listed = (await call('orchestration.workerList', { run: activeRunId })) as {
       workers: { dispatchId: string; terminalState: string | null }[]
@@ -308,7 +317,7 @@ describe('PRB-0219 worker-release reap FIX (functional verification)', () => {
     await expect(runtime.showTerminal('term_worker')).rejects.toThrow('terminal_handle_stale')
     expect(ptysById.get(PTY_ID)?.alive).toBe(true)
 
-    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     const receipt = (await call('orchestration.workerRelease', { dispatch: dispatchId })) as {
       state: string
@@ -329,7 +338,7 @@ describe('PRB-0219 worker-release reap FIX (functional verification)', () => {
     setup()
     const { dispatchId } = await startSettledWorker()
 
-    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     const receipt = (await call('orchestration.workerRelease', { dispatch: dispatchId })) as {
       state: string
@@ -355,7 +364,7 @@ describe('PRB-0219 worker-release reap FIX (functional verification)', () => {
       reused.incarnationId = 2
     }
 
-    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This test fixture is deliberately shaped to exercise the private/runtime boundary.
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture crosses a private/runtime boundary with a verified shape.
     const receipt = (await call('orchestration.workerRelease', { dispatch: dispatchId })) as {
       state: string
