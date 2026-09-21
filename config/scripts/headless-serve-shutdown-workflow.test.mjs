@@ -164,7 +164,10 @@ describe('headless serve shutdown PR gate', () => {
       'The detached terminal daemon is preserved by a different mechanism: it is launched through `systemd-run --user --scope`'
     )
     expect(headlessLinuxProse).toContain(
-      'These guarantees do not preserve live processes. The service restart kills every terminal and agent in its cgroup'
+      'These guarantees preserve live processes only when the daemon is in its own'
+    )
+    expect(headlessLinuxProse).toContain(
+      'The unscoped fallback remains destructive: a service restart kills every terminal'
     )
     expect(headlessLinuxProse).toContain(
       'A separately paired runtime is outside that boundary; local execution and SSH hosts reached through this runtime are not. An affected or unknown omission, missing scope, failed request or lost connection is `unverifiable`'

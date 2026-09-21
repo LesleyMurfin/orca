@@ -459,11 +459,13 @@ Two facts make the persisted-state transition predictable:
   state into the current schema and writes it back in the current shape, so a
   forward upgrade needs no manual data step.
 
-These guarantees do not preserve live processes. The service restart kills
-every terminal and agent in its cgroup; an agent conversation may be resumable,
-but its current process and any in-flight command are gone.
+These guarantees preserve live processes only when the daemon is in its own
+`orca-daemon-*.scope`, as reported by `health.terminalDaemon.cgroupUnit`. The
+unscoped fallback remains destructive: a service restart kills every terminal
+and agent in the service cgroup; an agent conversation may be resumable, but
+its current process and any in-flight command are gone.
 
-Immediately before stopping the service, obtain a fresh census as the service's
+When `cgroupUnit` is `null` or unverifiable, immediately before stopping the service, obtain a fresh census as the service's
 OS account and home. Use the installer's absolute launcher path so `sudo`'s
 `secure_path` cannot hide a per-user registration:
 `sudo -Hu orca /home/orca/.local/bin/orca-ide terminal list --json`.
