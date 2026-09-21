@@ -32,16 +32,19 @@ export type ForkSpec = {
 }
 
 export function forkProcess(spec: ForkSpec): SpawnedProcess {
-  const options: ForkOptions & { windowsHide: true } = {
+  const options: ForkOptions = {
     cwd: spec.cwd,
     env: spec.env,
     detached: spec.detached,
     stdio: spec.stdio,
     // Why conditional rather than `execPath: spec.execPath`: an explicit `undefined` is not the
     // same as absent to Node, which reads the key to decide whether to override its own binary.
-    ...(spec.execPath ? { execPath: spec.execPath } : {}),
-    // Node forwards this undocumented fork option to spawn, preventing console flashes on Windows.
-    windowsHide: true
+    ...(spec.execPath ? { execPath: spec.execPath } : {})
   }
-  return nodeFork(spec.modulePath, [...(spec.args ?? [])], options)
+  // Node forwards this undocumented fork option to spawn, preventing console flashes on Windows.
+  return nodeFork(
+    spec.modulePath,
+    [...(spec.args ?? [])],
+    Object.assign({}, options, { windowsHide: true })
+  )
 }

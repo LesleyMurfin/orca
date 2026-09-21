@@ -55,12 +55,12 @@ export async function readDaemonProcessIncarnation(
   }
 }
 
-function isRecord(value: object): value is Record<string, unknown> {
-  return value !== null
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 export function parseDaemonReadyIdentity(message: unknown): DaemonReadyIdentity | null {
-  if (!message || typeof message !== 'object' || !isRecord(message)) {
+  if (!isRecord(message)) {
     return null
   }
   const value: Record<string, unknown> = message
