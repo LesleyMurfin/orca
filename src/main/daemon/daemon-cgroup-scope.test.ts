@@ -1,13 +1,16 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  buildLegacyScopeMigrationCommand,
   buildDurableDaemonScopeCommand,
   daemonScopeUnitName,
   detectOwnCgroupScopeUnit,
-  isDurableDaemonScopeSupported
+  isDurableDaemonScopeSupported,
+  migrateLegacyDaemonScope,
+  readLegacyDaemonScopeProcesses
 } from './daemon-cgroup-scope'
 
 describe('daemonScopeUnitName', () => {
@@ -293,5 +296,90 @@ describe('detectOwnCgroupScopeUnit', () => {
   it('returns null for a scope unit that is not an orca-daemon one', () => {
     const path = writeCgroupFixture('0::/user.slice/user-1000.slice/some-other-app.scope\n')
     expect(detectOwnCgroupScopeUnit('linux', path)).toBeNull()
+  })
+
+  it('recognizes a legacy app-orca scope so an adopted daemon can migrate it', () => {
+    const path = writeCgroupFixture('0::/user.slice/user-1000.slice/app-orca-1420296.scope\n')
+    expect(detectOwnCgroupScopeUnit('linux', path)).toBe('app-orca-1420296.scope')
+  })
+})
+
+describe('legacy daemon scope migration', () => {
+  it('reads every process in the legacy scope, including detached descendants', () => {
+    const root = mkdtempSync(join(tmpdir(), 'legacy-scope-migration-'))
+    const procDir = join(root, 'proc', '321')
+    const cgroupDir = join(root, 'sys', 'user.slice', 'app-orca-1420296.scope')
+    mkdirSync(join(procDir), { recursive: true })
+    mkdirSync(cgroupDir, { recursive: true })
+    writeFileSync(join(procDir, 'cgroup'), '0::/user.slice/app-orca-1420296.scope\n')
+    writeFileSync(join(cgroupDir, 'cgroup.procs'), '321\n400\n401\n')
+    expect(readLegacyDaemonScopeProcesses(321, join(root, 'proc'), join(root, 'sys'))).toEqual({
+      unit: 'app-orca-1420296.scope',
+      pids: [321, 400, 401]
+    })
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('builds a user-bus StartTransientUnit call containing the whole old scope', () => {
+    const command = buildLegacyScopeMigrationCommand(
+      'new-nonce',
+      [321, 400, 401],
+      { XDG_RUNTIME_DIR: '/run/user/1000' },
+      null
+    )
+    expect(command).toEqual({
+      command: 'busctl',
+      args: [
+        '--user',
+        'call',
+        'org.freedesktop.systemd1',
+        '/org/freedesktop/systemd1',
+        'org.freedesktop.systemd1.Manager',
+        'StartTransientUnit',
+        'ssa(sv)a(sa(sv))',
+        'orca-daemon-new-nonce',
+        'fail',
+        '1',
+        'PIDs',
+        'au',
+        '3',
+        '321',
+        '400',
+        '401',
+        '0'
+      ],
+      env: { XDG_RUNTIME_DIR: '/run/user/1000' }
+    })
+  })
+
+  it('migrates only a proven legacy scope and fails closed when systemd rejects it', () => {
+    const runtimeDir = fakeRuntimeDirWithBus()
+    const runMigration = vi.fn(() => ({ code: 0, timedOut: false }))
+    const migrated = migrateLegacyDaemonScope(
+      321,
+      'new-nonce',
+      { XDG_RUNTIME_DIR: runtimeDir },
+      'linux',
+      runtimeDir,
+      () => ({ unit: 'app-orca-1420296.scope', pids: [321, 400] }),
+      fakeSystemdBootPath(),
+      () => ({ code: 0, timedOut: false }),
+      runMigration
+    )
+    expect(migrated).toBe(true)
+    expect(runMigration).toHaveBeenCalledOnce()
+    expect(
+      migrateLegacyDaemonScope(
+        321,
+        'new-nonce',
+        { XDG_RUNTIME_DIR: runtimeDir },
+        'linux',
+        runtimeDir,
+        () => ({ unit: 'app-orca-1420296.scope', pids: [321, 400] }),
+        fakeSystemdBootPath(),
+        () => ({ code: 0, timedOut: false }),
+        () => ({ code: 1, timedOut: false })
+      )
+    ).toBe(false)
   })
 })

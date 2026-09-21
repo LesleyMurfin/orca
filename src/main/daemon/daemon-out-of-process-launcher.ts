@@ -109,7 +109,8 @@ export function createOutOfProcessLauncher(
         recoveryDeadlineMs,
         attributedReason,
         releaseAdoptionClient,
-        preserveDaemon
+        preserveDaemon,
+        launchNonce
       })
       if (preservedHandle) {
         return preservedHandle

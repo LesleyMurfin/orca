@@ -28,6 +28,8 @@ const SYSTEMD_BOOT_PATH = '/run/systemd/system'
 /** Long enough for a local binary to print its version, short enough that a wedged systemd
  *  cannot stall the launch lane. */
 const SYSTEMD_RUN_PROBE_TIMEOUT_MS = 2_000
+const SYSTEMD_SCOPE_MIGRATION_TIMEOUT_MS = 5_000
+const LEGACY_SCOPE_PREFIX = 'app-orca-'
 
 /** The conventional per-UID runtime dir every login session (and `loginctl enable-linger`)
  *  provisions, from `getuid()` rather than from the environment. The exported functions'
@@ -94,6 +96,11 @@ type SystemdRunVersionProbe = (
   timeoutMs: number
 ) => Pick<ProcessResult, 'code' | 'timedOut'>
 
+type SystemdScopeMigrationRunner = (
+  command: DurableDaemonScopeCommand,
+  timeoutMs: number
+) => Pick<ProcessResult, 'code' | 'timedOut'>
+
 function runSystemdRunVersionProbe(
   binary: string,
   timeoutMs: number
@@ -142,6 +149,135 @@ export type DurableDaemonScopeCommand = {
   command: string
   args: string[]
   env: NodeJS.ProcessEnv
+}
+
+export function isLegacyDaemonScopeUnit(unit: string | null): boolean {
+  return unit?.startsWith(LEGACY_SCOPE_PREFIX) === true && unit.endsWith('.scope')
+}
+
+function cgroupPathFromProc(contents: string): string | null {
+  for (const line of contents.split('\n')) {
+    const fields = line.split(':')
+    if (fields.length < 3 && !line.startsWith('0::')) {
+      continue
+    }
+    const path = fields.slice(2).join(':').trim()
+    if (path) {
+      return path
+    }
+  }
+  return null
+}
+
+function scopeUnitFromCgroupPath(path: string): string | null {
+  const unit = path.split('/').at(-1)?.trim()
+  return unit?.endsWith('.scope') ? unit : null
+}
+
+export type LegacyDaemonScopeProcesses = {
+  unit: string
+  pids: number[]
+}
+
+export function readLegacyDaemonScopeProcesses(
+  pid: number,
+  procRoot = '/proc',
+  cgroupRoot = '/sys/fs/cgroup'
+): LegacyDaemonScopeProcesses | null {
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    return null
+  }
+  try {
+    const cgroup = readFileSync(join(procRoot, String(pid), 'cgroup'), 'utf8')
+    const path = cgroupPathFromProc(cgroup)
+    const unit = path ? scopeUnitFromCgroupPath(path) : null
+    if (unit === null || !isLegacyDaemonScopeUnit(unit) || !path) {
+      return null
+    }
+    const legacyUnit = unit
+    const pids = readFileSync(join(cgroupRoot, path.replace(/^\/+/, ''), 'cgroup.procs'), 'utf8')
+      .split(/\s+/)
+      .map(Number)
+      .filter((value) => Number.isSafeInteger(value) && value > 0)
+    return pids.length > 0 ? { unit: legacyUnit, pids } : null
+  } catch {
+    return null
+  }
+}
+
+export function buildLegacyScopeMigrationCommand(
+  launchNonce: string,
+  pids: readonly number[],
+  env: NodeJS.ProcessEnv,
+  canonicalRuntimeDir: string | null = CANONICAL_USER_RUNTIME_DIR
+): DurableDaemonScopeCommand {
+  const runtimeDir = resolveUserRuntimeDir(env, canonicalRuntimeDir)
+  return {
+    command: 'busctl',
+    args: [
+      '--user',
+      'call',
+      'org.freedesktop.systemd1',
+      '/org/freedesktop/systemd1',
+      'org.freedesktop.systemd1.Manager',
+      'StartTransientUnit',
+      'ssa(sv)a(sa(sv))',
+      daemonScopeUnitName(launchNonce),
+      'fail',
+      '1',
+      'PIDs',
+      'au',
+      String(pids.length),
+      ...pids.map(String),
+      '0'
+    ],
+    env: runtimeDir ? { ...env, XDG_RUNTIME_DIR: runtimeDir } : { ...env }
+  }
+}
+
+export function migrateLegacyDaemonScope(
+  pid: number,
+  launchNonce: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  canonicalRuntimeDir: string | null = CANONICAL_USER_RUNTIME_DIR,
+  readProcesses: typeof readLegacyDaemonScopeProcesses = readLegacyDaemonScopeProcesses,
+  systemdBootPath: string = SYSTEMD_BOOT_PATH,
+  runVersionProbe: SystemdRunVersionProbe = runSystemdRunVersionProbe,
+  runMigration: SystemdScopeMigrationRunner = (command, timeoutMs) =>
+    runProcessSync({
+      program: command.command,
+      args: command.args,
+      env: command.env,
+      timeoutMs,
+      stdio: 'ignore'
+    })
+): boolean {
+  if (
+    platform !== 'linux' ||
+    !isDurableDaemonScopeSupported(
+      env,
+      platform,
+      canonicalRuntimeDir,
+      systemdBootPath,
+      runVersionProbe
+    )
+  ) {
+    return false
+  }
+  const legacy = readProcesses(pid)
+  if (!legacy) {
+    return false
+  }
+  try {
+    const result = runMigration(
+      buildLegacyScopeMigrationCommand(launchNonce, legacy.pids, env, canonicalRuntimeDir),
+      SYSTEMD_SCOPE_MIGRATION_TIMEOUT_MS
+    )
+    return result.code === 0 && !result.timedOut
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -199,7 +335,7 @@ export function detectOwnCgroupScopeUnit(
     // cgroup v2 unified hierarchy: "0::/user.slice/.../orca-daemon-<nonce>.scope"
     // cgroup v1 systemd controller: "1:name=systemd:/user.slice/.../orca-daemon-<nonce>.scope"
     const last = line.split('/').at(-1)?.trim()
-    if (last && last.startsWith(UNIT_NAME_PREFIX) && last.endsWith('.scope')) {
+    if (last && (last.startsWith(UNIT_NAME_PREFIX) || isLegacyDaemonScopeUnit(last))) {
       return last
     }
   }
