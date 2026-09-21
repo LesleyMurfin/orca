@@ -16,12 +16,14 @@ import {
 describe('daemonScopeUnitName', () => {
   it('prefixes the launch nonce so the unit is traceable back to a launch', () => {
     expect(daemonScopeUnitName('c0ffee12-3456-7890-abcd-ef0123456789')).toBe(
-      'orca-daemon-c0ffee12-3456-7890-abcd-ef0123456789'
+      'orca-daemon-c0ffee12-3456-7890-abcd-ef0123456789.scope'
     )
   })
 
   it('sanitizes characters systemd unit names reject', () => {
-    expect(daemonScopeUnitName('weird nonce/with:stuff')).toBe('orca-daemon-weird-nonce-with:stuff')
+    expect(daemonScopeUnitName('weird nonce/with:stuff')).toBe(
+      'orca-daemon-weird-nonce-with:stuff.scope'
+    )
   })
 })
 
@@ -199,7 +201,7 @@ describe('buildDurableDaemonScopeCommand', () => {
     expect(result.args).toEqual([
       '--user',
       '--scope',
-      '--unit=orca-daemon-nonce-1',
+      '--unit=orca-daemon-nonce-1.scope',
       '--collect',
       '--quiet',
       '--',
@@ -337,7 +339,7 @@ describe('legacy daemon scope migration', () => {
         'org.freedesktop.systemd1.Manager',
         'StartTransientUnit',
         'ssa(sv)a(sa(sv))',
-        'orca-daemon-new-nonce',
+        'orca-daemon-new-nonce.scope',
         'fail',
         '1',
         'PIDs',

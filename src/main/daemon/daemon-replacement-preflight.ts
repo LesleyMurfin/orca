@@ -66,7 +66,6 @@ export async function prepareDaemonReplacement(
       console.warn(
         `[daemon] Migrated adopted daemon PID ${pidRecord.pid} out of legacy app scope into a durable scope`
       )
-      return preserveDaemon()
     }
     const resolverHealth = await getMacDaemonSystemResolverHealth(socketPath, tokenPath)
     if (resolverHealth === 'unhealthy') {

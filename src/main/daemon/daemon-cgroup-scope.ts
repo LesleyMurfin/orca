@@ -41,7 +41,7 @@ const CANONICAL_USER_RUNTIME_DIR =
 /** systemd unit names are restricted to `[A-Za-z0-9:_.\-@]`; sanitize defensively even though
  *  `launchNonce` is already a UUID (hyphens and hex digits only). */
 export function daemonScopeUnitName(launchNonce: string): string {
-  return `${UNIT_NAME_PREFIX}${launchNonce.replace(/[^A-Za-z0-9:_.-]/g, '-')}`
+  return `${UNIT_NAME_PREFIX}${launchNonce.replace(/[^A-Za-z0-9:_.-]/g, '-')}.scope`
 }
 
 /** `isSocket()`, not `existsSync()`: a stale file or leftover directory at `bus` can never be
@@ -156,17 +156,20 @@ export function isLegacyDaemonScopeUnit(unit: string | null): boolean {
 }
 
 function cgroupPathFromProc(contents: string): string | null {
+  const paths: { path: string; priority: number }[] = []
   for (const line of contents.split('\n')) {
     const fields = line.split(':')
-    if (fields.length < 3 && !line.startsWith('0::')) {
+    if (fields.length < 3) {
       continue
     }
     const path = fields.slice(2).join(':').trim()
     if (path) {
-      return path
+      const controllers = fields[1]?.split(',') ?? []
+      const priority = fields[0] === '0' ? 0 : controllers.includes('name=systemd') ? 1 : 2
+      paths.push({ path, priority })
     }
   }
-  return null
+  return paths.sort((left, right) => left.priority - right.priority)[0]?.path ?? null
 }
 
 function scopeUnitFromCgroupPath(path: string): string | null {
