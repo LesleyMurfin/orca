@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ORCHESTRATION_METHODS } from './orchestration'
-import type { RpcContext } from '../core'
+import { eraseRpcMethods, type RpcContext } from '../core'
 import { OrchestrationDb } from '../../orchestration/db'
 import { OrcaRuntimeService } from '../../orca-runtime'
 import { completeWorkerTerminalRelease } from './orchestration/worker/worker-release-completion'
@@ -106,7 +106,7 @@ describe('orchestration worker release incarnation fallback', () => {
 
   /** Look up a registered orchestration RPC method by name. */
   function findMethod(name: string) {
-    const method = ORCHESTRATION_METHODS.find((m) => m.name === name)
+    const method = eraseRpcMethods(ORCHESTRATION_METHODS).find((m) => m.name === name)
     if (!method) {
       throw new Error(`Method not found: ${name}`)
     }
