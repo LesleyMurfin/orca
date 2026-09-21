@@ -170,6 +170,9 @@ describe('headless serve shutdown PR gate', () => {
       'The unscoped fallback remains destructive: a service restart kills every terminal'
     )
     expect(headlessLinuxProse).toContain(
+      'Treat a stop as destructive unless `health.terminalDaemon.cgroupUnit` names an `orca-daemon-*.scope` on that host'
+    )
+    expect(headlessLinuxProse).toContain(
       'A separately paired runtime is outside that boundary; local execution and SSH hosts reached through this runtime are not. An affected or unknown omission, missing scope, failed request or lost connection is `unverifiable`'
     )
     expect(headlessLinuxGuide).toContain(

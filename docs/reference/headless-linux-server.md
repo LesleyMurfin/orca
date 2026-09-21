@@ -463,9 +463,12 @@ These guarantees preserve live processes only when the daemon is in its own
 `orca-daemon-*.scope`, as reported by `health.terminalDaemon.cgroupUnit`. The
 unscoped fallback remains destructive: a service restart kills every terminal
 and agent in the service cgroup; an agent conversation may be resumable, but
-its current process and any in-flight command are gone.
+its current process and any in-flight command are gone. Treat a stop as
+destructive unless `health.terminalDaemon.cgroupUnit` names an
+`orca-daemon-*.scope` on that host.
 
-When `cgroupUnit` is `null` or unverifiable, immediately before stopping the service, obtain a fresh census as the service's
+When `cgroupUnit` is `null` or unverifiable, immediately before stopping the
+service, obtain a fresh census as the service's
 OS account and home. Use the installer's absolute launcher path so `sudo`'s
 `secure_path` cannot hide a per-user registration:
 `sudo -Hu orca /home/orca/.local/bin/orca-ide terminal list --json`.
