@@ -20,24 +20,13 @@
  * whether anything else makes `persistWorkspaceSessionByHost`/`patchWorkspaceSessionByHost` touch
  * that specific host partition at all in the same call.
  *
- * Verdict, with the evidence below: `hasPendingReconnectionHandshake` is NOT unnecessary. The
- * shipped fix has no write-side protection at all — nothing in `persistWorkspaceSessionByHost` or
- * `patchWorkspaceSessionByHost` inspects whether the host partition being written to was ever
- * declined-from on the read that produced this payload. The moment anything else legitimately
- * writes to the same host partition in the same call (a sibling worktree gaining a tab, a folder
- * workspace attaching to the same target, etc.), the declined row rides back in via the shadow and
- * round-trips to the server and every other connected client — exactly the race the upstream draft
- * describes. A handshake-style write-gate (or an equivalent per-write filter that excludes rows a
- * recent read declined) is the only mechanism that would close it; the current fix has neither.
- * A naive version of that filter was prototyped during this verification pass — unconditionally
- * dropping (instead of parking) every `reconciledWorktreeIds`-declined row — and reverted: it
- * closes this race for a worktree that really was closed while offline, but it is blind to the
- * "Concurrent Active Edits" false positive (see workspace-session-host-offline-reconnect.test.ts's
- * "documented boundary" case) — a live sibling worktree this fix ALSO declines merely for having
- * no prior base row. Dropping that row instead of parking it converts a recoverable
- * non-adoption into an unrecoverable delete of another client's live tabs on this host partition's
- * next `replace`-mode write. Both cases are indistinguishable with the information this fix has;
- * a correct fix needs the live manifest/handshake, not a blanket park-vs-drop policy.
+ * Verdict, resolved: write-race protection is provided by `shadowRowsTheHostHasNotAnswered`
+ * (`workspace-session-host-shadow-testimony.ts`), which withholds parked rows from the write-side
+ * shadow once the host has answered for that target (positive testimony via landed, non-conflicting
+ * remote-workspace hydration). While the host has NOT answered, preserving parked rows remains the
+ * only safe move — this file stands guard against re-introducing the reverted naive drop that
+ * unconditionally dropped parked rows without positive host testimony and caused unrecoverable data
+ * loss on Concurrent Active Edits.
  */
 import { describe, expect, it } from 'vitest'
 import { getDefaultWorkspaceSession } from '../../../shared/constants'
@@ -137,7 +126,7 @@ describe('GAP-03 Write Race Protection', () => {
     expect(captured[SSH_HOST_ID]).toBeUndefined()
   })
 
-  it('a wake-triggered write DOES route the declined row back into the host partition once a sibling worktree on the same host legitimately writes there — this IS the write race the upstream draft describes, and answers the hasPendingReconnectionHandshake question: the gate is not unnecessary', async () => {
+  it('still routes a declined row back into the host partition while the host has not answered for that target — preserving is the only safe move when nothing has superseded the parked verdict', async () => {
     const read = await fetchWorkspaceSessionWithRuntimeHostOwners(
       partitionedApi({
         local: session({}),
@@ -207,5 +196,72 @@ describe('GAP-03 Write Race Protection', () => {
       'tab-2',
       'tab-3'
     ])
+  })
+
+  it('stops routing a declined row back into the host partition once the host has answered for that target', async () => {
+    const read = await fetchWorkspaceSessionWithRuntimeHostOwners(
+      partitionedApi({
+        local: session({}),
+        [SSH_HOST_ID]: session({
+          tabsByWorktree: {
+            [WORKTREE_ID]: [tab('tab-2', WORKTREE_ID), tab('tab-3', WORKTREE_ID)],
+            [SIBLING_WORKTREE_ID]: [tab('tab-4', SIBLING_WORKTREE_ID)]
+          }
+        })
+      }),
+      [
+        { id: REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID },
+        { id: SIBLING_REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID }
+      ]
+    )
+    expect(read.session.tabsByWorktree[WORKTREE_ID] ?? []).toEqual([])
+    expect(read.session.tabsByWorktree[SIBLING_WORKTREE_ID]).toBeUndefined()
+
+    const NEW_LOCAL_WORKTREE_ID = `${SIBLING_REPO_ID}::/remote/new-tab`
+    const payloadWithFreshLocalActivity: WorkspaceSessionState = {
+      ...read.session,
+      tabsByWorktree: {
+        ...read.session.tabsByWorktree,
+        [NEW_LOCAL_WORKTREE_ID]: [tab('tab-fresh', NEW_LOCAL_WORKTREE_ID)]
+      }
+    }
+
+    const { captured, api } = capturingApi()
+    const state: HostPersistenceState = {
+      repos: [
+        { id: REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID },
+        { id: SIBLING_REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID }
+      ],
+      worktreesByRepo: {
+        [REPO_ID]: [
+          {
+            id: WORKTREE_ID,
+            repoId: REPO_ID,
+            hostId: SSH_HOST_ID,
+            runtimeOwnerEnvironmentId: undefined
+          }
+        ],
+        [SIBLING_REPO_ID]: [
+          {
+            id: NEW_LOCAL_WORKTREE_ID,
+            repoId: SIBLING_REPO_ID,
+            hostId: SSH_HOST_ID,
+            runtimeOwnerEnvironmentId: undefined
+          }
+        ]
+      },
+      contestedHostWorkspaceSessions: read.contestedHostWorkspaceSessions,
+      contestedPrimaryHostBySessionKey: read.contestedPrimaryHostBySessionKey,
+      remoteWorkspaceHydratedTargetIds: new Set([TARGET_ID]),
+      remoteWorkspaceSyncStatusByTargetId: { [TARGET_ID]: { phase: 'synced' } }
+    }
+
+    await persistWorkspaceSessionByHost(api as never, payloadWithFreshLocalActivity, state)
+
+    expect(captured[SSH_HOST_ID]?.tabsByWorktree?.[WORKTREE_ID]).toBeUndefined()
+    expect(captured[SSH_HOST_ID]?.tabsByWorktree?.[SIBLING_WORKTREE_ID]).toBeUndefined()
+    expect(
+      captured[SSH_HOST_ID]?.tabsByWorktree?.[NEW_LOCAL_WORKTREE_ID]?.map((e) => e.id)
+    ).toEqual(['tab-fresh'])
   })
 })
