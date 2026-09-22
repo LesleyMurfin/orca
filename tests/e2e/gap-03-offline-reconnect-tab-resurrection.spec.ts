@@ -39,6 +39,9 @@ import path from 'node:path'
 import type { ElectronApplication } from '@stablyai/playwright-test'
 import { DEFAULT_LOCAL_ORCA_PROFILE_ID } from '../../src/shared/orca-profiles'
 import { toSshExecutionHostId } from '../../src/shared/execution-host'
+import type { Tab, TabGroup, TabGroupLayoutNode } from '../../src/shared/tab-types'
+import type { TerminalTab } from '../../src/shared/terminal-tab-types'
+import type { WorkspaceSessionState } from '../../src/shared/workspace-session-state-types'
 import { test, expect } from './helpers/orca-app'
 import { createRestartSession } from './helpers/orca-restart'
 import { waitForActiveWorktree, waitForSessionReady } from './helpers/store'
@@ -55,16 +58,25 @@ import {
 import { connectDockerSshRelayTarget } from './helpers/docker-ssh-relay-connection'
 
 const RUN_DOCKER_SSH = process.env.ORCA_E2E_SSH_DOCKER === '1'
-const TAB_COUNT = Math.max(2, Number(process.env.ORCA_GAP03_TAB_COUNT ?? '4'))
+// Why full closure, not partial: adoptStrandedHostPartitionSession's GAP-03 decline path
+// (`reconciledWorktreeIds`) only distinguishes "the base names this worktree at all" from "it
+// doesn't" -- see that module's own doc comment ("The one thing the base keeps unconditionally is
+// a workspace it holds terminal tabs for... An EMPTY tab row is not such a copy"). A base row that
+// still names ANY survivor tab makes `workspacesTheBaseOwns` treat the whole worktree as owned and
+// excludes it from adoption entirely -- true before AND after the fix, so it proves nothing about
+// the regression. The bug's own root-cause description is "every tab for a worktree closed
+// server-side while a client was offline" -- not some. CLOSE_COUNT therefore defaults to, and is
+// clamped to, TAB_COUNT.
+const TAB_COUNT = Math.max(2, Number(process.env.ORCA_GAP03_TAB_COUNT ?? '2'))
 const CLOSE_COUNT = Math.min(
-  TAB_COUNT - 1,
-  Math.max(1, Number(process.env.ORCA_GAP03_CLOSE_COUNT ?? '2'))
+  TAB_COUNT,
+  Math.max(1, Number(process.env.ORCA_GAP03_CLOSE_COUNT ?? String(TAB_COUNT)))
 )
 const OFFLINE_DRAFT_TAB_ID = 'gap03-offline-draft-tab'
 
 type SessionProfile = {
-  workspaceSession: { tabsByWorktree: Record<string, { id: string }[]> }
-  workspaceSessionsByHostId?: Record<string, { tabsByWorktree?: Record<string, { id: string }[]> }>
+  workspaceSession: WorkspaceSessionState
+  workspaceSessionsByHostId?: Record<string, WorkspaceSessionState>
 }
 
 function profilePath(userDataDir: string): string {
@@ -141,35 +153,111 @@ test.describe('GAP-03: offline client reconnect must not resurrect server-closed
         hostMirrorTabs: hostMirrorTabs?.length ?? 0
       })
 
-      // --- Step 4: close M of the N tabs "server-side" while offline. The local base row is
-      // exactly what a live client resyncs to on next contact with the server; the stale SSH
-      // host-partition mirror is left untouched, matching what an offline client's own on-disk
-      // cache looks like the moment it went unreachable. ---
+      // --- Step 4: close M of the N tabs "server-side" while offline. `remote.worktreeId` is
+      // SSH-hosted, so its worktree-keyed fields (tabsByWorktree, unifiedTabs, tabGroups, ...)
+      // never land in the local base row in the first place — `buildHostSessionRouting` always
+      // routes them to `ssh:<targetId>` at quit time, confirmed by offline-snapshot's
+      // `localTabs: 0` above. "Closing" the base row is therefore deleting the key outright, never
+      // writing an empty array: `adoptStrandedHostPartitionSession`'s GAP-03 decline path keys its
+      // verdict on `Object.hasOwn(base.tabsByWorktree, workspaceId)`, and an explicit `[]`
+      // satisfies `hasOwn` exactly as much as a populated row would — silently defeating the fix.
+      // The stale SSH host-partition mirror is left untouched, matching what an offline client's
+      // own on-disk cache looks like the moment it went unreachable. ---
       const closedIds = openedTabs.slice(0, CLOSE_COUNT).map((t) => t.id)
       const survivorIds = openedTabs.slice(CLOSE_COUNT).map((t) => t.id)
       const closedFaultProfile = readProfile(session.userDataDir)
-      const localRow = closedFaultProfile.workspaceSession.tabsByWorktree[remote.worktreeId] ?? []
-      closedFaultProfile.workspaceSession.tabsByWorktree[remote.worktreeId] = localRow.filter(
-        (tab) => survivorIds.includes(tab.id)
-      )
+      const survivorRow = (
+        closedFaultProfile.workspaceSession.tabsByWorktree[remote.worktreeId] ?? []
+      ).filter((tab) => survivorIds.includes(tab.id))
+      if (survivorRow.length > 0) {
+        closedFaultProfile.workspaceSession.tabsByWorktree[remote.worktreeId] = survivorRow
+      } else {
+        delete closedFaultProfile.workspaceSession.tabsByWorktree[remote.worktreeId]
+      }
 
       // #12721 non-regression, injected in the same fault-injection pass: a tab drafted entirely
       // offline lives only in `local`, on a real, catalog-known worktree whose SSH host partition
       // has never heard of it at all (connected with zero tabs above) — the exact "host has
       // nothing for it" shape `workspace-session-host-offline-reconnect.test.ts`'s non-regression
-      // case pins.
-      closedFaultProfile.workspaceSession.tabsByWorktree[offlineDraftTarget.worktreeId] = [
-        {
-          id: OFFLINE_DRAFT_TAB_ID,
-          ptyId: null,
-          worktreeId: offlineDraftTarget.worktreeId,
-          title: 'offline draft',
-          customTitle: null,
-          color: null,
-          sortOrder: 0,
-          createdAt: Date.now()
-        } as unknown as { id: string }
+      // case pins. Written in BOTH the legacy `tabsByWorktree` row and the modern unified-tab
+      // format (`unifiedTabs`/`tabGroups`/`tabGroupLayouts`/`activeGroupIdByWorktree`/
+      // `activeTabIdByWorktree`): the first real launch's own quit-time write already populated
+      // `unifiedTabs`/`tabGroups` in `workspaceSession` (a running client always writes both
+      // formats together), so `buildHydratedTabState` takes the unified branch
+      // (`session.unifiedTabs && session.tabGroups`) on the second launch and enumerates worktrees
+      // from `unifiedTabs` alone — never from `tabsByWorktree`. A row that exists only in the
+      // legacy field is invisible to that enumeration, and even where `tabsByWorktree` IS swept
+      // (`reconcileHydratedWorkspaceTabModels`), a legacy row with no live PTY and no unified twin
+      // is exactly what `getOrphanTerminalIds` deletes as an orphan on the very same boot. This was
+      // the #12721 anomaly: `offlineDraftSurvived: false` even on pre-fix code, because the tab
+      // never reached a store the modern hydration path reads from at all.
+      const offlineDraftWorktreeId = offlineDraftTarget.worktreeId
+      const offlineDraftGroupId = `${OFFLINE_DRAFT_TAB_ID}-group`
+      const offlineDraftTerminalTab: TerminalTab = {
+        id: OFFLINE_DRAFT_TAB_ID,
+        ptyId: null,
+        worktreeId: offlineDraftWorktreeId,
+        title: 'offline draft',
+        customTitle: null,
+        color: null,
+        sortOrder: 0,
+        createdAt: Date.now()
+      }
+      const offlineDraftTab: Tab = {
+        id: OFFLINE_DRAFT_TAB_ID,
+        entityId: OFFLINE_DRAFT_TAB_ID,
+        groupId: offlineDraftGroupId,
+        worktreeId: offlineDraftWorktreeId,
+        contentType: 'terminal',
+        label: 'offline draft',
+        customLabel: null,
+        color: null,
+        sortOrder: 0,
+        createdAt: Date.now()
+      }
+      const offlineDraftGroup: TabGroup = {
+        id: offlineDraftGroupId,
+        worktreeId: offlineDraftWorktreeId,
+        activeTabId: OFFLINE_DRAFT_TAB_ID,
+        tabOrder: [OFFLINE_DRAFT_TAB_ID]
+      }
+      const offlineDraftLayout: TabGroupLayoutNode = { type: 'leaf', groupId: offlineDraftGroupId }
+      closedFaultProfile.workspaceSession.tabsByWorktree[offlineDraftWorktreeId] = [
+        offlineDraftTerminalTab
       ]
+      closedFaultProfile.workspaceSession.unifiedTabs = {
+        ...closedFaultProfile.workspaceSession.unifiedTabs,
+        [offlineDraftWorktreeId]: [offlineDraftTab]
+      }
+      closedFaultProfile.workspaceSession.tabGroups = {
+        ...closedFaultProfile.workspaceSession.tabGroups,
+        [offlineDraftWorktreeId]: [offlineDraftGroup]
+      }
+      closedFaultProfile.workspaceSession.tabGroupLayouts = {
+        ...closedFaultProfile.workspaceSession.tabGroupLayouts,
+        [offlineDraftWorktreeId]: offlineDraftLayout
+      }
+      closedFaultProfile.workspaceSession.activeGroupIdByWorktree = {
+        ...closedFaultProfile.workspaceSession.activeGroupIdByWorktree,
+        [offlineDraftWorktreeId]: offlineDraftGroupId
+      }
+      closedFaultProfile.workspaceSession.activeTabIdByWorktree = {
+        ...closedFaultProfile.workspaceSession.activeTabIdByWorktree,
+        [offlineDraftWorktreeId]: OFFLINE_DRAFT_TAB_ID
+      }
+      // Prevent the second launch from auto-reconnecting either SSH target. GAP-03's own fix
+      // (`fetchWorkspaceSessionWithRuntimeHostOwners`) is the boot-time PERSISTED-state merge; it
+      // is not the only thing that can populate `tabsByWorktree` after a relaunch. If the client
+      // still lists a target in `activeConnectionIdsAtShutdown`, `use-app-startup-hydration.ts`
+      // auto-reconnects it, and a LIVE SSH reconnect pulls a fresh PTY snapshot straight off the
+      // real host (`applyDirectSshRemoteWorkspaceSnapshot` / `mergeDirectSshRemoteWorkspaceSession`)
+      // — a wholly separate code path GAP-03 never touches. This Docker fixture's "closed while
+      // offline" tabs were only ever removed from the persisted JSON, never actually killed on the
+      // container, so a live reconnect resyncs to the still-alive PTYs and resurrects them
+      // regardless of the fix. Clearing this field keeps the second launch on the one path the
+      // fix is verifying: boot-time hydration of persisted state, with nothing left to
+      // second-guess it.
+      delete closedFaultProfile.workspaceSession.activeConnectionIdsAtShutdown
       writeFileSync(
         profilePath(session.userDataDir),
         `${JSON.stringify(closedFaultProfile, null, 2)}\n`
@@ -177,7 +265,7 @@ test.describe('GAP-03: offline client reconnect must not resurrect server-closed
       logKpi('fault-injected', {
         closedIds,
         survivorIds,
-        offlineDraftWorktreeId: offlineDraftTarget.worktreeId
+        offlineDraftWorktreeId
       })
 
       // --- Step 5: "reconnect" — relaunch against the same profile. This is the only code path
