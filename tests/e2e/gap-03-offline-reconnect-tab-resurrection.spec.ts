@@ -313,3 +313,82 @@ test.describe('GAP-03: offline client reconnect must not resurrect server-closed
     }
   })
 })
+
+test.describe('GAP-03 regression: an ordinary restart must not drop live tabs (Docker cross-site)', () => {
+  test.skip(!RUN_DOCKER_SSH, 'Set ORCA_E2E_SSH_DOCKER=1 to run Docker-backed GAP-03 tests.')
+  test.skip(process.platform === 'win32', 'Docker SSH restore uses POSIX SSH tooling.')
+
+  test('tabs survive an ordinary quit + relaunch with nothing closed and the connection still active at shutdown', async (// oxlint-disable-next-line no-empty-pattern -- this test owns both Electron launches.
+  {}, testInfo) => {
+    test.setTimeout(300_000)
+    const session = createRestartSession(testInfo)
+    const target = startDockerSshRelayTarget(testInfo)
+    let firstApp: ElectronApplication | null = null
+    let secondApp: ElectronApplication | null = null
+
+    try {
+      const first = await session.launch()
+      firstApp = first.app
+      await waitForSessionReady(first.page)
+      const remote = await connectDockerSshRelayTarget(first.page, target)
+      await expect
+        .poll(() => waitForActiveWorktree(first.page), { timeout: 30_000 })
+        .toBe(remote.worktreeId)
+      await waitForActiveTerminalManager(first.page, 60_000)
+      await waitForActivePanePtyId(first.page, 60_000)
+      await createRemoteTerminalTab(first.page, remote.worktreeId)
+      const openedTabs = await readRemoteTerminalTabs(first.page, remote.worktreeId)
+      expect(openedTabs.length, 'setup must open exactly 2 tabs').toBe(2)
+
+      // --- Ordinary quit: still connected, nothing closed, no fault injection whatsoever. This
+      // is what the vast majority of real restarts look like, and is the exact case the
+      // `reconciledWorktreeIds` decline path silently broke before this slice: `remote-repo-
+      // registration.ts` stamps `executionHostId` on this repo (the modern, default shape), and
+      // an SSH worktree's `tabsByWorktree` row never lands in the local base row at all -- so
+      // "the base has nothing for this worktree" is true on EVERY boot, closed or not, and was
+      // read as "the server's confirmed zero tabs" regardless of whether the target was ever
+      // actually offline. ---
+      await session.close(firstApp)
+      firstApp = null
+
+      const sshHostId = toSshExecutionHostId(remote.targetId)
+      const profile = readProfile(session.userDataDir)
+      expect(
+        profile.workspaceSession.activeConnectionIdsAtShutdown ?? [],
+        'the connection must still be recorded as active at shutdown -- this was never an offline gap'
+      ).toContain(remote.targetId)
+      const hostMirrorTabs =
+        profile.workspaceSessionsByHostId?.[sshHostId]?.tabsByWorktree?.[remote.worktreeId]
+      expect(hostMirrorTabs?.length, 'both tabs must be on disk before relaunch').toBe(2)
+      logKpi('ordinary-restart-snapshot', {
+        sshHostId,
+        activeConnectionIdsAtShutdown: profile.workspaceSession.activeConnectionIdsAtShutdown,
+        hostMirrorTabs: hostMirrorTabs?.length ?? 0
+      })
+
+      // --- Relaunch against the SAME, completely unmodified profile. ---
+      const second = await session.launch()
+      secondApp = second.app
+      await waitForSessionReady(second.page)
+
+      const afterTabs = await readRemoteTerminalTabs(second.page, remote.worktreeId)
+      logKpi('ordinary-restart-post-relaunch', {
+        expectedCount: openedTabs.length,
+        actualCount: afterTabs.length,
+        actualIds: afterTabs.map((t) => t.id)
+      })
+      expect(
+        afterTabs.map((t) => t.id).sort(),
+        'GAP-03 regression: an ordinary restart with nothing closed must not drop any live tab'
+      ).toEqual(openedTabs.map((t) => t.id).sort())
+    } finally {
+      for (const app of [secondApp, firstApp]) {
+        if (app) {
+          await session.close(app).catch(() => undefined)
+        }
+      }
+      await session.dispose()
+      cleanupDockerSshRelayTarget(target)
+    }
+  })
+})

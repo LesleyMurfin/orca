@@ -107,3 +107,205 @@ describe('GAP-03 non-regression: #12721 offline-created local work must survive 
     ])
   })
 })
+
+describe('GAP-03 regression: an ordinary restart must not be treated as an offline reconnect', () => {
+  it('keeps every still-open tab when the SSH target was still connected at the last shutdown', async () => {
+    // `remote-repo-registration.ts` stamps `executionHostId` on every SSH repo it registers (the
+    // modern, default shape -- not a rare legacy one), so `confirmedSessionKeysByHostId` fires for
+    // this repo exactly as it would in real usage. Before the `activeConnectionIdsAtShutdown` gate
+    // was added, `reconciledWorktreeIdsForHost` applied unconditionally: since an SSH worktree's
+    // `tabsByWorktree` row NEVER routes to `local` in the first place (`buildHostSessionRouting`
+    // always sends it to `ssh:<targetId>`), `base.tabsByWorktree[WORKTREE_ID]` is absent on EVERY
+    // boot, closed or not -- so this exact "two still-open tabs, ordinary quit + relaunch, nothing
+    // closed by anyone" case was declined and dropped on every single restart of every SSH
+    // worktree whose repo carries the modern stamp. `activeConnectionIdsAtShutdown` is the same
+    // field `use-app-startup-hydration.ts` reads to decide which SSH targets to auto-reconnect at
+    // boot, so "this target was connected at last shutdown" is an existing, meaningful signal
+    // that the host partition's mirror is this client's OWN current state, not a stale pre-offline
+    // cache -- and the one case GAP-03 was never meant to touch at all.
+    const read = await fetchWorkspaceSessionWithRuntimeHostOwners(
+      partitionedApi({
+        local: session({ activeConnectionIdsAtShutdown: [TARGET_ID] }),
+        [SSH_HOST_ID]: session({
+          tabsByWorktree: {
+            [WORKTREE_ID]: [tab('tab-1', WORKTREE_ID), tab('tab-2', WORKTREE_ID)]
+          }
+        })
+      }),
+      [{ id: REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID }]
+    )
+
+    expect(read.session.tabsByWorktree[WORKTREE_ID]?.map((entry) => entry.id)).toEqual([
+      'tab-1',
+      'tab-2'
+    ])
+  })
+
+  it('still declines a worktree whose tabs were genuinely closed while the target was disconnected at shutdown', async () => {
+    // Same confirmed-attribution shape as the regression above, but the target was NOT connected
+    // at last shutdown -- the actual GAP-03 precondition -- so the decline must still fire.
+    const read = await fetchWorkspaceSessionWithRuntimeHostOwners(
+      partitionedApi({
+        local: session({}),
+        [SSH_HOST_ID]: session({
+          tabsByWorktree: {
+            [WORKTREE_ID]: [tab('tab-2', WORKTREE_ID), tab('tab-3', WORKTREE_ID)]
+          }
+        })
+      }),
+      [{ id: REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID }]
+    )
+
+    expect(read.session.tabsByWorktree[WORKTREE_ID] ?? []).toEqual([])
+  })
+})
+
+describe('GAP-03 Split Layout Pruning: a declined worktree carries no orphaned split-layout leaves', () => {
+  it('excludes tabGroupLayouts/tabGroups/unifiedTabs for a declined worktree exactly like tabsByWorktree, so no dead-leaf layout survives to be hydrated', async () => {
+    const SPLIT_GROUP_LEFT = 'group-left'
+    const SPLIT_GROUP_RIGHT = 'group-right'
+    const read = await fetchWorkspaceSessionWithRuntimeHostOwners(
+      partitionedApi({
+        local: session({}),
+        [SSH_HOST_ID]: session({
+          tabsByWorktree: {
+            [WORKTREE_ID]: [tab('tab-2', WORKTREE_ID), tab('tab-3', WORKTREE_ID)]
+          },
+          unifiedTabs: {
+            [WORKTREE_ID]: [
+              {
+                id: 'tab-2',
+                entityId: 'tab-2',
+                groupId: SPLIT_GROUP_LEFT,
+                worktreeId: WORKTREE_ID,
+                contentType: 'terminal',
+                label: 'tab-2',
+                customLabel: null,
+                color: null,
+                sortOrder: 0,
+                createdAt: 1
+              },
+              {
+                id: 'tab-3',
+                entityId: 'tab-3',
+                groupId: SPLIT_GROUP_RIGHT,
+                worktreeId: WORKTREE_ID,
+                contentType: 'terminal',
+                label: 'tab-3',
+                customLabel: null,
+                color: null,
+                sortOrder: 1,
+                createdAt: 1
+              }
+            ]
+          },
+          tabGroups: {
+            [WORKTREE_ID]: [
+              {
+                id: SPLIT_GROUP_LEFT,
+                worktreeId: WORKTREE_ID,
+                activeTabId: 'tab-2',
+                tabOrder: ['tab-2']
+              },
+              {
+                id: SPLIT_GROUP_RIGHT,
+                worktreeId: WORKTREE_ID,
+                activeTabId: 'tab-3',
+                tabOrder: ['tab-3']
+              }
+            ]
+          },
+          tabGroupLayouts: {
+            [WORKTREE_ID]: {
+              type: 'split',
+              direction: 'horizontal',
+              first: { type: 'leaf', groupId: SPLIT_GROUP_LEFT },
+              second: { type: 'leaf', groupId: SPLIT_GROUP_RIGHT }
+            }
+          }
+        })
+      }),
+      [{ id: REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID }]
+    )
+
+    // The decline is per-worktree across every field, not per-tab: a worktree that is declined
+    // carries no rows in ANY of these fields, so there is no stale split node left over to prune.
+    expect(read.session.tabsByWorktree[WORKTREE_ID] ?? []).toEqual([])
+    expect(read.session.unifiedTabs?.[WORKTREE_ID]).toBeUndefined()
+    expect(read.session.tabGroups?.[WORKTREE_ID]).toBeUndefined()
+    expect(read.session.tabGroupLayouts?.[WORKTREE_ID]).toBeUndefined()
+  })
+})
+
+describe('GAP-03 Concurrent Active Edits', () => {
+  it('achievable case: a live sibling worktree on the same confirmed host adopts normally when the host was NOT disconnected', async () => {
+    // Maps "Client A opens Tab-4 on another worktree while Client B is online" onto this
+    // architecture: B's own connection to the shared SSH target was never interrupted (still
+    // listed in `activeConnectionIdsAtShutdown`), so BOTH this worktree's own survivor tab and a
+    // second, previously-unseen worktree's freshly-opened tab on the SAME host must adopt --
+    // reconciliation is skipped for the whole host, exactly like the plain-restart regression
+    // above, because nothing about this boot represents an offline gap at all.
+    const SIBLING_WORKTREE_ID = `${REPO_ID}-2::/remote/sibling`
+    const read = await fetchWorkspaceSessionWithRuntimeHostOwners(
+      partitionedApi({
+        local: session({ activeConnectionIdsAtShutdown: [TARGET_ID] }),
+        [SSH_HOST_ID]: session({
+          tabsByWorktree: {
+            [WORKTREE_ID]: [tab('tab-1', WORKTREE_ID)],
+            [SIBLING_WORKTREE_ID]: [tab('tab-4', SIBLING_WORKTREE_ID)]
+          }
+        })
+      }),
+      [
+        { id: REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID },
+        { id: `${REPO_ID}-2`, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID }
+      ]
+    )
+
+    expect(read.session.tabsByWorktree[WORKTREE_ID]?.map((entry) => entry.id)).toEqual(['tab-1'])
+    expect(read.session.tabsByWorktree[SIBLING_WORKTREE_ID]?.map((entry) => entry.id)).toEqual([
+      'tab-4'
+    ])
+  })
+
+  it('documented boundary: a genuinely offline reconnect parks (never deletes) a live sibling worktree it cannot yet distinguish from a closed one', async () => {
+    // The harder case the upstream matrix describes -- Client A opens a brand-new worktree's
+    // first tab while Client B is genuinely OFFLINE (disconnected at last shutdown, the real
+    // GAP-03 precondition) -- is NOT solvable by this fix's design. `reconciledWorktreeIdsForHost`
+    // gates per HOST, not per worktree: once a host is treated as "possibly stale" (disconnected
+    // at shutdown), a worktree the base has never cached at all is indistinguishable from one
+    // whose tabs were genuinely closed while offline -- both look identical on disk (absent base
+    // row, non-empty host mirror). Resolving this would need a live signal from the server (an
+    // authoritative manifest/handshake, e.g. the upstream draft's own `manifestEpoch` proposal) --
+    // there is no such signal in this fix. The behavior below is the SAFE fallback: the sibling's
+    // row is parked in the write-side shadow (survives, recoverable by a live SSH reconnect later)
+    // rather than deleted, but it is NOT adopted into the visible session on this boot.
+    const SIBLING_WORKTREE_ID = `${REPO_ID}-2::/remote/sibling`
+    const read = await fetchWorkspaceSessionWithRuntimeHostOwners(
+      partitionedApi({
+        local: session({}),
+        [SSH_HOST_ID]: session({
+          tabsByWorktree: {
+            [WORKTREE_ID]: [tab('tab-2', WORKTREE_ID), tab('tab-3', WORKTREE_ID)],
+            [SIBLING_WORKTREE_ID]: [tab('tab-4', SIBLING_WORKTREE_ID)]
+          }
+        })
+      }),
+      [
+        { id: REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID },
+        { id: `${REPO_ID}-2`, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID }
+      ]
+    )
+
+    // Not adopted this boot -- the known, accepted limitation.
+    expect(read.session.tabsByWorktree[SIBLING_WORKTREE_ID]).toBeUndefined()
+    // But not deleted either: it survives in the write-side shadow for the host partition, so a
+    // live SSH reconnect (a separate code path this fix does not touch) can still recover it, and
+    // the next write to this host cannot erase it (`attachHostSessionShadow`).
+    expect(
+      read.contestedHostWorkspaceSessions[SSH_HOST_ID]?.tabsByWorktree?.[SIBLING_WORKTREE_ID]?.map(
+        (entry: TerminalTab) => entry.id
+      )
+    ).toEqual(['tab-4'])
+  })
+})

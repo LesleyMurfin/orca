@@ -170,11 +170,28 @@ function migratedSessionKeys(attribution: SshPartitionCatalogAttribution): Set<s
  * confirms this host owns them, and no sibling partition holds foreign residue proving a
  * migration. See `sshPartitionCatalogAttribution` and that option's own docs for the full
  * reasoning.
+ *
+ * `wasConnectedAtLastShutdown` gates the whole result on whether THIS host's SSH target was
+ * actually connected when the client last quit (`activeConnectionIdsAtShutdown`, read from the
+ * base session before this host's slice is merged in). GAP-03's own bug requires the client to
+ * have been disconnected from the host while the server closed tabs — an absent base row for an
+ * SSH-routed worktree is never evidence of anything by itself (that data is never routed to the
+ * base partition at all, closed or not), so it only becomes trustworthy as "the server's current
+ * truth of zero" once a genuine offline gap has actually happened. A client that quit while still
+ * connected wrote the host partition's mirror itself, moments earlier, as its OWN live state, not
+ * a leftover cache — treating that boot identically to a real reconnect-after-offline mistook an
+ * ordinary restart for one, and declined (dropped) every still-open tab on every SSH worktree
+ * whose repo carries the modern `executionHostId` stamp (`remote-repo-registration.ts` sets this
+ * on every SSH repo it registers) on literally every quit+relaunch, closed or not.
  */
 export function reconciledWorktreeIdsForHost(
   attribution: SshPartitionCatalogAttribution,
-  hostId: ExecutionHostId
+  hostId: ExecutionHostId,
+  wasConnectedAtLastShutdown: boolean
 ): Set<string> {
+  if (wasConnectedAtLastShutdown) {
+    return new Set()
+  }
   const reconciled = new Set(attribution.confirmedSessionKeysByHostId.get(hostId))
   for (const workspaceId of migratedSessionKeys(attribution)) {
     reconciled.delete(workspaceId)

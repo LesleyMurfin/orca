@@ -2,6 +2,7 @@ import type { Repo } from '../../../shared/repo-types'
 import type { WorkspaceSessionState } from '../../../shared/workspace-session-state-types'
 import {
   getRepoExecutionHostId,
+  getSshTargetIdForExecutionHost,
   LOCAL_EXECUTION_HOST_ID,
   parseExecutionHostId,
   type ExecutionHostId
@@ -217,7 +218,11 @@ export async function fetchWorkspaceSessionWithRuntimeHostOwners(
   // for the slices it arbitrates, and these are not among them. Everything this read leaves behind
   // in an ssh partition still has to survive the next write to it.
   const shadow: HostSessionSlices = { ...merged.shadow }
+  // Why captured once, before the loop: `activeConnectionIdsAtShutdown` is global (routes to
+  // 'local' unconditionally), so it never changes as `session` is reassigned across hosts below.
+  const connectedTargetIdsAtShutdown = new Set(merged.session.activeConnectionIdsAtShutdown ?? [])
   for (const [hostId, slice] of sshPartitions) {
+    const targetId = getSshTargetIdForExecutionHost(hostId)
     const adoption = adoptStrandedHostPartitionSession(session, slice, {
       contestedSessionKeys: attribution.contestedSessionKeys,
       foreignSessionKeys: unownedSessionKeys(
@@ -225,7 +230,11 @@ export async function fetchWorkspaceSessionWithRuntimeHostOwners(
         attribution.contestedSessionKeys,
         attribution.foreignSessionKeysByHostId.get(hostId)
       ),
-      reconciledWorktreeIds: reconciledWorktreeIdsForHost(attribution, hostId)
+      reconciledWorktreeIds: reconciledWorktreeIdsForHost(
+        attribution,
+        hostId,
+        Boolean(targetId && connectedTargetIdsAtShutdown.has(targetId))
+      )
     })
     session = adoption.session
     if (slice) {
