@@ -36,6 +36,8 @@ import {
   extendWorktreeIdByTabId,
   type WorkspaceTabOwnerCatalog
 } from '../../../shared/workspace-session-host-records'
+import type { RemoteWorkspaceTestimonyState } from './remote-workspace-host-testimony'
+import { shadowRowsTheHostHasNotAnswered } from './workspace-session-host-shadow-testimony'
 
 export type HostPersistenceState = WorkspaceTabOwnerCatalog & {
   repos: readonly Pick<Repo, 'id' | 'connectionId' | 'executionHostId'>[]
@@ -53,7 +55,7 @@ export type HostPersistenceState = WorkspaceTabOwnerCatalog & {
   /** Partition each restored session key was read from. Routing honours it so a write returns rows
    *  to their own partition instead of re-deriving an owner the read never agreed to. */
   contestedPrimaryHostBySessionKey?: Record<string, ExecutionHostId>
-}
+} & RemoteWorkspaceTestimonyState
 
 type SessionApi = {
   get: (hostId?: ExecutionHostId) => Promise<WorkspaceSessionState>
@@ -227,7 +229,12 @@ function splitWorkspaceSessionForWrite(
   const slices = splitWorkspaceSessionByHost(payload, routing.hostIdByWorktreeId, {
     worktreeIdByTabId
   })
-  attachHostSessionShadow(slices, state.contestedHostWorkspaceSessions, routing.claims, mode)
+  attachHostSessionShadow(
+    slices,
+    shadowRowsTheHostHasNotAnswered(state.contestedHostWorkspaceSessions, state),
+    routing.claims,
+    mode
+  )
   return slices
 }
 
