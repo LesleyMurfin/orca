@@ -85,6 +85,32 @@ describe('GAP-03: offline client reconnect must not resurrect server-closed tabs
   })
 })
 
+describe('GAP-03 regression: canonical-keyed host rows must still be declined', () => {
+  it('declines a stale tab row even when the host partition stores it under a canonical `worktree:` key', async () => {
+    // The host partition's `tabsByWorktree` type comment says keys "may be legacy raw worktree IDs
+    // or canonical WorkspaceKey values" (`worktree:${worktreeId}`). The decline loop in
+    // `adoptStrandedHostPartitionSession` (workspace-session-stranded-partition-adoption.ts) reads
+    // `host.tabsByWorktree[workspaceId]` with the bare id, so a host row keyed canonically is
+    // invisible to it -- the row silently defeats the whole decline and its stale tabs get adopted.
+    const read = await fetchWorkspaceSessionWithRuntimeHostOwners(
+      partitionedApi({
+        local: session({}),
+        [SSH_HOST_ID]: session({
+          tabsByWorktree: {
+            [`worktree:${WORKTREE_ID}`]: [tab('tab-2', WORKTREE_ID), tab('tab-3', WORKTREE_ID)]
+          }
+        })
+      }),
+      [{ id: REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID }]
+    )
+
+    const survivingTabIds = Object.entries(read.session.tabsByWorktree ?? {})
+      .flatMap(([, tabs]) => tabs)
+      .map((entry) => entry.id)
+    expect(survivingTabIds).toEqual([])
+  })
+})
+
 describe('GAP-03 non-regression: #12721 offline-created local work must survive reconnect', () => {
   it('keeps a genuinely offline-created tab that was never synced to the host partition', async () => {
     // This client created a tab entirely offline — the host partition (mirroring the last state
