@@ -16,6 +16,25 @@ import {
 } from './remote-workspace-host-testimony'
 
 /**
+ * Terminal fields that direct-SSH remote workspace snapshots actually project and manage.
+ * Non-terminal fields (such as `openFilesByWorktree` editor drafts) are never reported by an
+ * SSH host snapshot, so host testimony does not supersede them and they are never withheld.
+ */
+const SSH_TERMINAL_TESTIMONY_FIELDS: ReadonlySet<keyof WorkspaceSessionState> = new Set([
+  'tabsByWorktree',
+  'terminalLayoutsByTabId',
+  'remoteSessionIdsByTabId',
+  'localOnlyScrollbackByTabId',
+  'terminalPtyIncarnationsByPaneKey',
+  'unifiedTabs',
+  'tabGroups',
+  'tabGroupLayouts',
+  'activeGroupIdByWorktree',
+  'defaultTerminalTabsAppliedByWorktreeId',
+  'activeTabIdByWorktree',
+  'activeTabTypeByWorktree'
+])
+/**
  * The shadow minus every parked row whose host has already answered for it. Returns the input by
  * reference when nothing is withheld.
  */
@@ -67,10 +86,11 @@ export function shadowRowsTheHostHasNotAnswered(
             : ownership === 'tabKeyed'
               ? worktreeIdByTabIdInShadow.get(key)
               : worktreeIdForPaneKey(worktreeIdByTabIdInShadow, key)
-        if (
+        const isFolder =
           owningWorkspaceKey !== undefined &&
           parseWorkspaceKey(owningWorkspaceKey)?.type === 'folder'
-        ) {
+        const isCoveredByTerminalTestimony = SSH_TERMINAL_TESTIMONY_FIELDS.has(field)
+        if (isFolder || !isCoveredByTerminalTestimony) {
           survivingRecord[key] = value
         } else {
           fieldWithheld = true

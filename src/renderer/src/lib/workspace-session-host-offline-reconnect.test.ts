@@ -355,7 +355,9 @@ describe('GAP-03 Concurrent Active Edits', () => {
     expect(read.session.tabsByWorktree[SIBLING_WORKTREE_ID]).toBeUndefined()
     // But not deleted either: it survives in the write-side shadow for the host partition, so a
     // live SSH reconnect (a separate code path this fix does not touch) can still recover it, and
-    // the next write to this host cannot erase it (`attachHostSessionShadow`).
+    // writes before host testimony arrives cannot erase it (`attachHostSessionShadow`). Once the
+    // host answers with a live non-conflicting snapshot, testimony supersedes terminal rows, while
+    // non-terminal state (like editor drafts) remains protected.
     expect(
       read.contestedHostWorkspaceSessions[SSH_HOST_ID]?.tabsByWorktree?.[SIBLING_WORKTREE_ID]?.map(
         (entry: TerminalTab) => entry.id

@@ -141,4 +141,47 @@ describe('shadowRowsTheHostHasNotAnswered', () => {
     expect(result?.[SSH_HOST_ID]).toBeUndefined()
     expect(Object.keys(result ?? {})).toEqual([])
   })
+
+  it('keeps non-terminal fields such as openFilesByWorktree even after the host answers, because direct-SSH snapshots only project terminal state', () => {
+    // Pullfrog finding 6: direct-SSH snapshots project terminal state only
+    // (remote-workspace-snapshot-apply.ts:201). A parked row for openFilesByWorktree (and its
+    // unsaved dirtyDraftContent) was never in the host's terminal snapshot and never superseded by
+    // it, so host testimony must not withhold it from the shadow.
+    const answeredState: RemoteWorkspaceTestimonyState = {
+      remoteWorkspaceHydratedTargetIds: new Set([TARGET_ID]),
+      remoteWorkspaceSyncStatusByTargetId: {
+        [TARGET_ID]: { phase: 'synced', direction: 'pull' }
+      }
+    }
+
+    const worktreeKey = 'worktree:repo-1::worktree-1'
+    const worktreeTabs = [tab('tab-worktree', worktreeKey)]
+    const openFiles = [
+      {
+        filePath: '/srv/app/index.ts',
+        relativePath: 'index.ts',
+        worktreeId: worktreeKey,
+        language: 'typescript'
+      }
+    ]
+
+    const shadow: HostSessionSlices = {
+      [SSH_HOST_ID]: {
+        ...sessionWithTabs({ [worktreeKey]: worktreeTabs }),
+        openFilesByWorktree: { [worktreeKey]: openFiles as never }
+      }
+    }
+
+    const result = shadowRowsTheHostHasNotAnswered(shadow, answeredState)
+
+    expect(result).toBeDefined()
+    const hostSlice = result?.[SSH_HOST_ID]
+    expect(hostSlice).toBeDefined()
+    // Terminal tabs for worktreeKey are withheld (superseded by testimony):
+    expect(hostSlice?.tabsByWorktree).toBeUndefined()
+    // Non-terminal openFilesByWorktree row survives:
+    expect(hostSlice?.openFilesByWorktree).toEqual({
+      [worktreeKey]: openFiles
+    })
+  })
 })
