@@ -264,6 +264,132 @@ describe('GAP-03 Write Race Protection', () => {
       captured[SSH_HOST_ID]?.tabsByWorktree?.[NEW_LOCAL_WORKTREE_ID]?.map((e) => e.id)
     ).toEqual(['tab-fresh'])
   })
+
+  it('a deferred write prepared before testimony arrived does not overwrite authoritative state if testimony arrives before delivery', async () => {
+    // CodeRabbit finding 3: an api.set call generated while hostHasAnsweredForTarget was false
+    // (so declined tabs were attached by the shadow) can be delivered AFTER the live snapshot lands
+    // and testimony flips true. If nothing orders in-flight writes against the live snapshot's
+    // arrival, the stale in-flight payload overwrites the authoritative state and resurrects the
+    // closed tabs.
+    const read = await fetchWorkspaceSessionWithRuntimeHostOwners(
+      partitionedApi({
+        local: session({}),
+        [SSH_HOST_ID]: session({
+          tabsByWorktree: {
+            [WORKTREE_ID]: [tab('tab-2', WORKTREE_ID), tab('tab-3', WORKTREE_ID)],
+            [SIBLING_WORKTREE_ID]: [tab('tab-4', SIBLING_WORKTREE_ID)]
+          }
+        })
+      }),
+      [
+        { id: REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID },
+        { id: SIBLING_REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID }
+      ]
+    )
+    expect(read.session.tabsByWorktree[WORKTREE_ID] ?? []).toEqual([])
+
+    const NEW_LOCAL_WORKTREE_ID = `${SIBLING_REPO_ID}::/remote/new-tab`
+    const payloadWithFreshLocalActivity: WorkspaceSessionState = {
+      ...read.session,
+      tabsByWorktree: {
+        ...read.session.tabsByWorktree,
+        [NEW_LOCAL_WORKTREE_ID]: [tab('tab-fresh', NEW_LOCAL_WORKTREE_ID)]
+      }
+    }
+
+    const state: HostPersistenceState = {
+      repos: [
+        { id: REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID },
+        { id: SIBLING_REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID }
+      ],
+      worktreesByRepo: {
+        [REPO_ID]: [
+          {
+            id: WORKTREE_ID,
+            repoId: REPO_ID,
+            hostId: SSH_HOST_ID,
+            runtimeOwnerEnvironmentId: undefined
+          }
+        ],
+        [SIBLING_REPO_ID]: [
+          {
+            id: NEW_LOCAL_WORKTREE_ID,
+            repoId: SIBLING_REPO_ID,
+            hostId: SSH_HOST_ID,
+            runtimeOwnerEnvironmentId: undefined
+          }
+        ]
+      },
+      contestedHostWorkspaceSessions: read.contestedHostWorkspaceSessions,
+      contestedPrimaryHostBySessionKey: read.contestedPrimaryHostBySessionKey,
+      remoteWorkspaceHydratedTargetIds: new Set<string>(),
+      remoteWorkspaceSyncStatusByTargetId: {}
+    }
+
+    const captured: Partial<Record<string, WorkspaceSessionState>> = {}
+    const api = {
+      get: async () => getDefaultWorkspaceSession(),
+      patch: async () => {},
+      setSync: () => {},
+      set: async (payload: WorkspaceSessionState, hostId?: ExecutionHostId) => {
+        captured[hostId ?? 'local'] = payload
+      },
+      flush: async () => {}
+    }
+
+    // An earlier write W0 is in-flight on SSH_HOST_ID, holding that partition's write queue:
+    let releaseW0!: () => void
+    const w0Gate = new Promise<void>((resolve) => {
+      releaseW0 = resolve
+    })
+    const w0Promise = persistWorkspaceSessionByHost(
+      {
+        ...api,
+        set: async (_payload: WorkspaceSessionState, hostId?: ExecutionHostId) => {
+          if (hostId === SSH_HOST_ID) {
+            await w0Gate
+          }
+        }
+      } as never,
+      session({
+        tabsByWorktree: {
+          [NEW_LOCAL_WORKTREE_ID]: [tab('tab-fresh', NEW_LOCAL_WORKTREE_ID)]
+        }
+      }),
+      state
+    )
+
+    // W1 is dispatched while W0 is in-flight: W1 carries the stale declined tabs (prepared without testimony)
+    // and queues behind W0 on SSH_HOST_ID.
+    const writePromise = persistWorkspaceSessionByHost(
+      api as never,
+      payloadWithFreshLocalActivity,
+      state
+    )
+
+    // While W1 is in-flight / queued, the live snapshot lands on the partition and establishes authoritative state:
+    captured[SSH_HOST_ID] = session({
+      tabsByWorktree: {
+        [SIBLING_WORKTREE_ID]: [tab('tab-4', SIBLING_WORKTREE_ID)]
+      }
+    })
+    // And testimony arrives:
+    state.remoteWorkspaceHydratedTargetIds = new Set([TARGET_ID])
+    state.remoteWorkspaceSyncStatusByTargetId = { [TARGET_ID]: { phase: 'synced' } }
+
+    // Release W0 to let the queue proceed:
+    releaseW0()
+    await w0Promise
+    await writePromise
+
+    // W1 was queued behind W0 and prepared before testimony arrived; when W1 dequeued,
+    // it observed that testimony had landed for TARGET_ID, so it discarded its stale pre-testimony
+    // payload rather than overwriting the authoritative state!
+    expect(captured[SSH_HOST_ID]?.tabsByWorktree?.[WORKTREE_ID]).toBeUndefined()
+    expect(captured[SSH_HOST_ID]?.tabsByWorktree?.[SIBLING_WORKTREE_ID]?.map((e) => e.id)).toEqual([
+      'tab-4'
+    ])
+  })
 })
 
 describe('GAP-03 regression: a declined tab must park and restore its dependent tab/pane rows too', () => {
