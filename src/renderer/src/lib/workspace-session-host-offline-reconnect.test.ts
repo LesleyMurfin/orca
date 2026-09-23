@@ -111,6 +111,34 @@ describe('GAP-03 regression: canonical-keyed host rows must still be declined', 
   })
 })
 
+describe('GAP-03 regression: unknown shutdown status must not decline tabs if remoteSessionIdsByTabId indicates connection', () => {
+  it('keeps tabs when activeConnectionIdsAtShutdown is undefined but remoteSessionIdsByTabId names the target', async () => {
+    // When activeConnectionIdsAtShutdown is undefined (older persisted sessions, interrupted
+    // shutdowns), treating it as an empty set passes false ("disconnected") into
+    // reconciledWorktreeIdsForHost, which then declines every worktree on that host -- dropping
+    // tabs that were actually connected. If remoteSessionIdsByTabId still holds a session for the
+    // target, connection status must be inferred as connected so tabs survive.
+    const read = await fetchWorkspaceSessionWithRuntimeHostOwners(
+      partitionedApi({
+        local: session({
+          remoteSessionIdsByTabId: { 'tab-1': `ssh:${TARGET_ID}@@pty-1` }
+        }),
+        [SSH_HOST_ID]: session({
+          tabsByWorktree: {
+            [WORKTREE_ID]: [tab('tab-1', WORKTREE_ID), tab('tab-2', WORKTREE_ID)]
+          }
+        })
+      }),
+      [{ id: REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID }]
+    )
+
+    expect(read.session.tabsByWorktree[WORKTREE_ID]?.map((entry) => entry.id)).toEqual([
+      'tab-1',
+      'tab-2'
+    ])
+  })
+})
+
 describe('GAP-03 non-regression: #12721 offline-created local work must survive reconnect', () => {
   it('keeps a genuinely offline-created tab that was never synced to the host partition', async () => {
     // This client created a tab entirely offline — the host partition (mirroring the last state
