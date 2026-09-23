@@ -305,13 +305,18 @@ export function adoptStrandedHostPartitionSession(
   // truth (zero tabs), not a blind spot — so a host row that still names real tabs here is this
   // client's stale pre-disconnect cache, not evidence of anything live. Declining leaves the row
   // in place for `partitionRowsTheWriteWontReturn` to park rather than deleting it.
+  const hostTabsByWorktree = host.tabsByWorktree ?? {}
   for (const workspaceId of options.reconciledWorktreeIds ?? []) {
     if (!adoptable.has(workspaceId) || Object.hasOwn(base.tabsByWorktree ?? {}, workspaceId)) {
       continue
     }
-    const hostTabs = (host.tabsByWorktree ?? {})[workspaceId]
-    if (Array.isArray(hostTabs) && hostTabs.length > 0) {
-      adoptable.delete(workspaceId)
+    for (const [key, hostTabs] of Object.entries(hostTabsByWorktree)) {
+      if (normalizeWorkspaceSessionKeyToWorkspaceId(key) !== workspaceId) {
+        continue
+      }
+      if (Array.isArray(hostTabs) && hostTabs.length > 0) {
+        adoptable.delete(workspaceId)
+      }
     }
   }
   if (adoptable.size === 0) {
