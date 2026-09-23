@@ -103,6 +103,12 @@ jobs:
       - name: Typecheck tests (ratchet)
         run: pnpm run check:tests-typecheck
 
+      # This includes the bridged replay of the whole recording corpus, which used to be a second
+      # step of its own behind RPC_FOUNDATION_BRIDGE=1. A gate nobody can forget to set is the point:
+      # it fails when a divergence class grows, when a divergence lands in no class at all, or when
+      # one of the 103 goldens inside the C1 page closure changes the verdict it is pinned to. It is
+      # ~3 min of test time on its own, and Vitest runs it on a worker beside the rest of the suite,
+      # so folding it in costs a fraction of that in wall time and one step less to skip.
       - name: Test
         run: pnpm test
 

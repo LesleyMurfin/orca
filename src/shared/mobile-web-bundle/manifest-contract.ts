@@ -12,8 +12,10 @@ export const MOBILE_WEB_BUNDLE_ENTRYPOINT = 'index.html'
 export const MOBILE_WEB_BUNDLE_MAX_ASSETS = 256
 export const MOBILE_WEB_BUNDLE_MAX_TOTAL_BYTES = 32 * 1024 * 1024
 export const MOBILE_WEB_BUNDLE_MAX_ASSET_BYTES = 10 * 1024 * 1024
+export const MOBILE_WEB_BUNDLE_MAX_ROUTES = 64
+export const MOBILE_WEB_BUNDLE_MAX_ROUTE_GRANTS = 16
 
-const SHA256_PATTERN = /^[a-f0-9]{64}$/
+export const SHA256_PATTERN = /^[a-f0-9]{64}$/
 const ASSET_PATH_PATTERN = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/
 const WINDOWS_RESERVED_SEGMENT = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i
 // One spelling only, lowercase with a single space before `charset`: content type feeds the build
@@ -22,6 +24,32 @@ const CONTENT_TYPE_PATTERN = /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*(?:; ch
 const MAX_ASSET_PATH_LENGTH = 255
 const MAX_CONTENT_TYPE_LENGTH = 128
 const MAX_DESKTOP_VERSION_LENGTH = 64
+const MAX_ROUTE_PATHNAME_LENGTH = 255
+const MAX_GRANT_NAME_LENGTH = 64
+/** Rooted, single-slash, no query and no fragment: a phone writes this into its own history. */
+const ROUTE_PATHNAME_PATTERN = /^\/(?![/\\])[^?#\s]*$/
+/**
+ * A grant is either a plain capability name (`navigate`, `storage`, `externalLink`) or one of the
+ * shell-answered verbs, which live under `native.` and are named `native.<domain>.<action>`.
+ *
+ * Two segments at least, so a plain name wearing a dot is still refused: the verb namespace is what
+ * the shell's table declares, and a route that could not name one would never be granted one —
+ * which, with grants scoped per route, leaves every verb unreachable.
+ */
+const GRANT_NAME_PATTERN = /^(?:[a-zA-Z][a-zA-Z0-9]*|native(?:\.[a-z][a-z0-9]*){2,})$/
+
+/**
+ * One grant name, as both the manifest and the bridge read it.
+ *
+ * Exported so the `init` frame's route-grant pairs are checked by the same grammar the desktop
+ * wrote the manifest under. Two spellings of one rule drift, and the half that matters is the half
+ * the page believes.
+ */
+export const MobileWebBundleGrantNameSchema = z
+  .string()
+  .min(1)
+  .max(MAX_GRANT_NAME_LENGTH)
+  .regex(GRANT_NAME_PATTERN)
 
 /** Every segment must be a name the bundle root can hold on all three desktop platforms: no
  *  traversal, and none of the Windows shapes that cannot be created or that resolve to a device.
@@ -82,6 +110,59 @@ export function computeMobileWebBundleId(assets: readonly MobileWebBundleAsset[]
   const digest = sha256(new TextEncoder().encode(serializeMobileWebBundleAssets(assets)))
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
+
+/**
+ * A screen the desktop asks the phone's shell to render from this bundle rather than natively.
+ *
+ * `pathname` is an expo-router pattern, dynamic segments and all (`/h/[hostId]`), because the shell
+ * matches a concrete route against it. `grants` names what that screen needs the shell to do on its
+ * behalf; a shell that does not implement one of them renders the native screen instead, which is
+ * the capability negotiation that keeps an old app against a new bundle on a working screen rather
+ * than a dead tap.
+ *
+ * `optionalGrants` names what the screen is better with and complete without (ruling 37). Serving
+ * the route reads `grants` alone, so the all-or-nothing rule above is untouched and an author who
+ * cannot show a screen at all without a capability still keeps it native; only the session's
+ * granted list reads both. Which side a capability goes on is the desktop's call, because the
+ * desktop is what knows which screens it has proved.
+ *
+ * Optional rather than defaulted to `[]`: a desktop older than the field writes no key, and a shell
+ * whose policy predates the field never reads one, so it serves the route on its required set.
+ *
+ * What it does NOT get is a reader that strips the key. `pageRouteSchema` on the phone is
+ * `z.looseObject`, which passes unknown keys through rather than dropping them (measured on zod
+ * 4.4.3), so the entry an older shell holds still carries this field. That is why the publish path
+ * must build the pairs it hands the bridge instead of forwarding a manifest entry: the pair schema
+ * is `.strict()`, and an entry reaching it refuses the whole session rather than one field. See
+ * `page-route-policy.ts`'s `routeViewOf`.
+ */
+export const MobileWebBundleRouteSchema = z
+  .object({
+    pathname: z.string().min(1).max(MAX_ROUTE_PATHNAME_LENGTH).regex(ROUTE_PATHNAME_PATTERN),
+    grants: z.array(MobileWebBundleGrantNameSchema).max(MOBILE_WEB_BUNDLE_MAX_ROUTE_GRANTS),
+    optionalGrants: z
+      .array(MobileWebBundleGrantNameSchema)
+      .max(MOBILE_WEB_BUNDLE_MAX_ROUTE_GRANTS)
+      .optional()
+  })
+  .strict()
+  // The ceiling is over the union, because the union is what a session's granted list is built
+  // from: two lists each under the cap would hand a page twice what the cap bounds. The per-array
+  // ceilings above stay, so the arrays are bounded before this runs.
+  .superRefine((route, context) => {
+    if (
+      route.grants.length + (route.optionalGrants?.length ?? 0) >
+      MOBILE_WEB_BUNDLE_MAX_ROUTE_GRANTS
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['optionalGrants'],
+        message: 'grants and optionalGrants together must not exceed the route grant ceiling'
+      })
+    }
+  })
+
+export type MobileWebBundleRoute = z.infer<typeof MobileWebBundleRouteSchema>
 
 function validateManifestInvariants(
   manifest: {
@@ -163,10 +244,13 @@ function validateManifestInvariants(
   }
 }
 
-/** Closed in both directions: `.strict()` rejects an unknown key and `schemaVersion` is a literal,
- *  so there is no additive path here. Any manifest change is a `schemaVersion` bump, and a phone
- *  reading a bundle it cached must treat an unrecognised `schemaVersion` as an unusable bundle to
- *  re-fetch, never as a crash. */
+/** Closed on the side that writes it: `.strict()` rejects an unknown key and `schemaVersion` is a
+ *  literal, so a desktop cannot ship a manifest it did not declare here and cannot read one from a
+ *  future it does not know. The phone reads the same document loosely and pins no version
+ *  (`mobile-web-bundle-reply-schemas.ts`), which is what makes a field added here the additive
+ *  change `docs/reference/remote-wire-compatibility.md` allows: an older phone drops what it has no
+ *  use for, and a newer phone reading an older bundle sees the field absent. A change that removes
+ *  a field, or changes what one already means, is still a `schemaVersion` bump. */
 export const MobileWebBundleManifestSchema = z
   .object({
     schemaVersion: z.literal(MOBILE_WEB_BUNDLE_SCHEMA_VERSION),
@@ -177,7 +261,10 @@ export const MobileWebBundleManifestSchema = z
     runtimeProtocolVersion: z.number().int().nonnegative(),
     entrypoint: z.literal(MOBILE_WEB_BUNDLE_ENTRYPOINT),
     totalBytes: z.number().int().nonnegative().max(MOBILE_WEB_BUNDLE_MAX_TOTAL_BYTES),
-    assets: z.array(MobileWebBundleAssetSchema).min(1).max(MOBILE_WEB_BUNDLE_MAX_ASSETS)
+    assets: z.array(MobileWebBundleAssetSchema).min(1).max(MOBILE_WEB_BUNDLE_MAX_ASSETS),
+    /** Outside `buildId`, which hashes the assets alone. The routes are derived from the same
+     *  source tree the script asset is built from, so identical assets are identical routes. */
+    routes: z.array(MobileWebBundleRouteSchema).max(MOBILE_WEB_BUNDLE_MAX_ROUTES)
   })
   .strict()
   .superRefine(validateManifestInvariants)

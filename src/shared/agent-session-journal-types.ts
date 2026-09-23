@@ -184,9 +184,22 @@ export const AGENT_JOURNAL_TURN_LIFECYCLE_STATES = [
 ] as const
 export type AgentJournalTurnLifecycleState = (typeof AGENT_JOURNAL_TURN_LIFECYCLE_STATES)[number]
 
+/** What the PROVIDER said became of a turn, kept separate from the lifecycle
+ *  state so the four arms above stay a report on what the HOST observed.
+ *  `cancellation` is a stop somebody asked for, `failure` is the provider's own
+ *  error, and the two are never interchangeable: only `failure` is a fault. */
+export const AGENT_JOURNAL_TURN_OUTCOMES = ['success', 'failure', 'cancellation'] as const
+export type AgentJournalTurnOutcome = (typeof AGENT_JOURNAL_TURN_OUTCOMES)[number]
+
 export type AgentJournalTurnLifecycle = {
   turnId: string
   state: AgentJournalTurnLifecycleState
+  /** The provider's own verdict, when it gave one. ABSENT MEANS UNKNOWN and must
+   *  never be read as success: a row from a host that predates the field, an end
+   *  the host inferred rather than heard, and a verdict vocabulary this build
+   *  cannot place all land here. `completed` alone proves nothing — the provider
+   *  reports an API error as a finished turn. */
+  outcome?: AgentJournalTurnOutcome
   /** Journal key of the user item that opened the turn. A lifecycle row may key
    *  itself when provider output opened a turn with no user item; absent means
    *  an older host. */
@@ -224,7 +237,8 @@ export type AgentJournalStatusItem = {
  *  never tombstoned, so the endpoints survive. Timestamps are the execution
  *  host's clock at provider-event receipt; `durationMs` is the provider's own
  *  measurement. `unverifiable` carries no end: the host lost the child without
- *  observing its exit. */
+ *  observing its exit. `outcome` is the provider's separate verdict and is
+ *  absent whenever nothing told the host one. */
 export type AgentJournalTurnItem = { kind: 'turn' } & AgentJournalTurnLifecycle
 
 export type AgentJournalItemBody =
@@ -236,10 +250,41 @@ export type AgentJournalItemBody =
   | AgentJournalStatusItem
   | AgentJournalTurnItem
 
+/** Agent work, versus a backgrounded shell or command task. Classified once by
+ *  the producer, which holds the provider vocabulary, so no reader re-derives it. */
+export type AgentJournalProducerKind = 'agent' | 'background'
+
+/**
+ * Which agent produced a row, repeated on every row that agent produced.
+ *
+ * One journal is the durable record of one agent SESSION, and a session that
+ * runs subagents journals their rows into it too. Absence is a positive claim
+ * and never "unknown": no `agentId` means the session's own agent wrote the row.
+ * Repeated per row rather than held once on a start row, so a row answers for
+ * itself: every reader here scans backwards from the tail and stops at the
+ * turn, so one that had to find a start row first would have to scan past that
+ * stop to attribute anything. Repetition is near-free — absent on the session's
+ * own rows, which are most of them — and it is what keeps the field correct
+ * without a second lookup.
+ */
+export type AgentJournalProducerLinkage = {
+  /** The producing subagent's canonical id. Absent ⇒ the session's own agent. */
+  agentId?: string
+  /** The producing agent's own parent. Absent ⇒ its parent is the session root. */
+  parentAgentId?: string
+  /** The provider's own parent reference for this row. Provenance only: it names
+   *  the tool CALL, which is re-minted on every resume, so it is never a join key. */
+  providerParentRef?: string
+  producerKind?: AgentJournalProducerKind
+  /** Which run of the agent, when past the first. Identity answers "which agent";
+   *  this answers "which run of it", and is deliberately not part of the identity. */
+  attempt?: number
+}
+
 /** One reduced timeline entry. `sequence` orders the list; `observedAt` is the
  *  provider's own clock and may sort earlier than a later sequence when the row
  *  was recovered after a crash. */
-export type AgentJournalRenderItem = {
+export type AgentJournalRenderItem = AgentJournalProducerLinkage & {
   itemId: string
   revision: number
   body: AgentJournalItemBody

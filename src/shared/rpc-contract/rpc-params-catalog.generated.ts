@@ -22,6 +22,7 @@ import {
   PairingGetEndpointsParamsSchema,
   PairingProvisionRelayParamsSchema
 } from '../mobile-relay-credential-contract'
+import { MobileWebBundleChunkParamsSchema } from '../mobile-web-bundle/bundle-rpc-contract'
 import { pluginConsentRequestSchema } from '../plugins/plugin-consent-request'
 import {
   AccountsUnsubscribeParams,
@@ -212,6 +213,7 @@ import {
   GitTargetedRemote,
   WorktreeSelector as WorktreeSelectorOfGitParams
 } from './git-params'
+import { BindableAccounts, ValidateAccountBinding } from './github-account-binding-params'
 import { CreateIssue, Issue, IssueComment, UpdateIssue } from './github-issue-params'
 import {
   ClearProjectItemField,
@@ -586,6 +588,7 @@ export const RPC_PARAMS_BY_METHOD = {
   'agentSession.setOption': SetOptionParams,
   'agentSession.subscribe': SubscribeParams,
   'agentSession.subscribeStatus': null,
+  'agentSession.subscribeTurnCompletions': null,
   'agentSession.unsubscribe': UnsubscribeParams,
   'agentTeams.prepareLaunch': AgentTeamsPrepareLaunch,
   'agentTeams.tmuxCompat': AgentTeamsTmuxCompat,
@@ -817,6 +820,7 @@ export const RPC_PARAMS_BY_METHOD = {
   'github.createIssue': CreateIssue,
   'github.issue': Issue,
   'github.listAssignableUsers': RepoSelector,
+  'github.listBindableAccounts': BindableAccounts,
   'github.listIssues': IssuesList,
   'github.listLabels': RepoSelector,
   'github.listWorkItems': WorkItemsList,
@@ -857,6 +861,7 @@ export const RPC_PARAMS_BY_METHOD = {
   'github.updatePR': UpdatePr,
   'github.updatePRState': UpdatePrState,
   'github.updatePRTitle': UpdatePrTitle,
+  'github.validateAccountBinding': ValidateAccountBinding,
   'github.workItem': WorkItem,
   'github.workItemByOwnerRepo': WorkItemByOwnerRepo,
   'github.workItemDetails': WorkItem,
@@ -957,6 +962,9 @@ export const RPC_PARAMS_BY_METHOD = {
   'linear.updateIssue': IssueUpdateOfLinearParams,
   'markdown.readTab': ActivateTab,
   'markdown.saveTab': SaveMarkdownTab,
+  'mobileWeb.bundle.chunk': MobileWebBundleChunkParamsSchema,
+  'mobileWeb.bundle.manifest': null,
+  'mobileWeb.bundle.range': MobileWebBundleChunkParamsSchema,
   'nativeChat.readSession': NativeChatSession,
   'nativeChat.subscribe': NativeChatSession,
   'nativeChat.unsubscribe': NativeChatUnsubscribe,

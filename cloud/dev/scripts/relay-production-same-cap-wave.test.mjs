@@ -48,13 +48,62 @@ test('requires one canary or a bounded reviewed batch', () => {
     rollbackDigest,
     confirmation: `ROLL_RELAY_SAME_CAP ${targetDigest} production-gce-c28`
   }).cells, ['production-gce-c28'])
-  assert.throws(() => validateSameCapWave({
+  assert.deepEqual(validateSameCapWave({
     mode: 'canary-apply',
     cellIds: 'production-gce-c30',
     targetDigest,
     rollbackDigest,
     confirmation: `ROLL_RELAY_SAME_CAP ${targetDigest} production-gce-c30`
+  }).cells, ['production-gce-c30'])
+  assert.throws(() => validateSameCapWave({
+    mode: 'canary-apply',
+    cellIds: 'production-gce-c31',
+    targetDigest,
+    rollbackDigest,
+    confirmation: `ROLL_RELAY_SAME_CAP ${targetDigest} production-gce-c31`
   }), /cells/)
+})
+
+// The bound is the wave workflow's static cell_1..cell_10 chain: a batch longer than the
+// chain would silently drop its tail cells, so it is refused before any mutation.
+test('a batch fills the serial cell chain and never overflows it', () => {
+  const general = SAME_CAP_CELLS.filter((cell) => entryAdmission(cell) === 'general')
+  const batch = (count) => {
+    const cellIds = general.slice(0, count).join(',')
+    return validateSameCapWave({
+      mode: 'batch-apply',
+      cellIds,
+      targetDigest,
+      rollbackDigest,
+      confirmation: `ROLL_RELAY_SAME_CAP ${targetDigest} ${cellIds}`,
+      canaryRunId: '42'
+    })
+  }
+  assert.equal(batch(10).cells.length, 10)
+  assert.throws(() => batch(11), /same-cap wave cells are invalid/)
+  assert.throws(() => batch(1), /batch mode requires two to ten cells/)
+})
+
+// The validator's ten-cell bound is only true if the workflow really declares ten strictly
+// serial cell jobs and frees the lease after all of them.
+test('the wave workflow chains exactly ten serial cell jobs', () => {
+  const dispatch = readRelayWorkflow('deploy-relay-production-same-cap.yml')
+  for (let index = 0; index < 10; index += 1) {
+    const job = index + 1
+    assert.match(dispatch, new RegExp(`\n  cell_${job}:\n`), `cell_${job} is missing`)
+    assert.match(dispatch, new RegExp(`fromJSON\\(needs\\.gate\\.outputs\\.cells\\)\\[${index}\\]`))
+    assert.match(dispatch, new RegExp(`wave-index: '${index}'`))
+    if (index > 0) {
+      assert.match(dispatch, new RegExp(`needs: \\[gate, cell_${index}\\]`))
+      assert.match(
+        dispatch,
+        new RegExp(`if: \\$\\{\\{ needs\\.cell_${index}\\.result == 'success' && ` +
+          `fromJSON\\(needs\\.gate\\.outputs\\.cells\\)\\[${index}\\] != null \\}\\}`)
+      )
+    }
+    assert.match(dispatch, new RegExp(`\n      - cell_${job}\n`), `release_lease must need cell_${job}`)
+  }
+  assert.doesNotMatch(dispatch, /\n  cell_11:/)
 })
 
 test('rolls the migration-only cells but never mixes the two classes in one wave', () => {
@@ -78,6 +127,17 @@ test('rolls the migration-only cells but never mixes the two classes in one wave
     confirmation: `ROLL_RELAY_SAME_CAP ${targetDigest} ${cellIds}`,
     canaryRunId: '42'
   }).cells, ['production-gce-c17', 'production-gce-c18'])
+  // Until its canary promotes it, a same-cap restore must hand C30 back isolated, never activated.
+  assert.equal(entryAdmission('production-gce-c30'), 'migration-only')
+  const asiaMixed = 'production-gce-c29,production-gce-c30'
+  assert.throws(() => validateSameCapWave({
+    mode: 'batch-apply',
+    cellIds: asiaMixed,
+    targetDigest,
+    rollbackDigest,
+    confirmation: `ROLL_RELAY_SAME_CAP ${targetDigest} ${asiaMixed}`,
+    canaryRunId: '42'
+  }), /all general or all migration-only/)
   // A mixed wave has no single selector delta for its later cells to offset from.
   const mixed = 'production-gce-c7,production-gce-c17'
   assert.throws(() => validateSameCapWave({

@@ -4,7 +4,10 @@ import { requireSameEvidenceCode } from './relay-evidence-code-provenance.mjs'
 
 // Migration-only by policy: zero hosts and no reservation, so a wave rolls one without
 // displacing anybody. It enters and must leave migration-only, never general.
-export const SAME_CAP_MIGRATION_ONLY_CELLS = ['production-gce-c17', 'production-gce-c18']
+// C30 stays here until its Asia canary promotes it; that follow-up moves it to the general list.
+export const SAME_CAP_MIGRATION_ONLY_CELLS = [
+  'production-gce-c17', 'production-gce-c18', 'production-gce-c30'
+]
 
 export const SAME_CAP_CELLS = [
   'production-gce-c7', 'production-gce-c8', 'production-gce-c9', 'production-gce-c10',
@@ -34,7 +37,7 @@ function cells(value) {
   const parsed = value.split(',').map((cell) => cell.trim()).filter(Boolean)
   if (
     parsed.length < 1 ||
-    parsed.length > 4 ||
+    parsed.length > 10 ||
     new Set(parsed).size !== parsed.length ||
     parsed.some((cell) => !SAME_CAP_CELLS.includes(cell))
   ) throw new Error('same-cap wave cells are invalid')
@@ -76,8 +79,9 @@ export function validateSameCapWave(input) {
   if (input.mode === 'canary-apply' && selected.length !== 1) {
     throw new Error('canary mode requires exactly one cell')
   }
-  if (input.mode === 'batch-apply' && (selected.length < 2 || selected.length > 4)) {
-    throw new Error('batch mode requires two to four cells')
+  // Ten is the wave workflow's statically declared serial cell-job chain, cell_1..cell_10.
+  if (input.mode === 'batch-apply' && (selected.length < 2 || selected.length > 10)) {
+    throw new Error('batch mode requires two to ten cells')
   }
   // Later waves expect the selector to advance by exactly 2 per predecessor,
   // which a resumed rollback cell (isolate skipped, +1) violates.

@@ -99,7 +99,8 @@ ingests the summary into the hook server as a status row:
 | `paneKey`                                           | `structuredAgentSessionPaneKey(tabId, sessionId)`, the key the renderer already uses; its leaf is UUID-shaped so pane-key validation accepts it |
 | `tabId`                                             | `structuredAgentSessionTabId(sessionId)`                                                                                                        |
 | `worktreeId`                                        | `summary.workspaceId` (a folder workspace id is a valid value)                                                                                  |
-| `state`                                             | `structuredAgentSessionStatusState(summary.status)`, the mapping #19217 shared                                                                  |
+| `state`                                             | `structuredAgentSessionAgentStatus(summary).state`: the lead's own status folded with its live `backgroundTasks`, so a settled lead whose subagent still runs reads `working`  |
+| `workingMode`                                       | `'monitoring'` from the same fold when watch loops are the only live child work; omitted otherwise, which clears it on the row                  |
 | `structuredHost`                                    | `'owned'` while `summary.hostExecutionOwned` is set, otherwise `'held'`; `worktree ps` derives its row's `structuredHostOwned` from it          |
 | prompt, tool, last message, model, provider session | the summary's fields                                                                                                                            |
 
@@ -354,3 +355,27 @@ call it.
   the retained store restored.
 - Live: the parity check from #19217 (working, done, close, reload) repeated
   against the merged store, with both surfaces read from the one row.
+
+## Retired OMP pane recovery
+
+A desktop renderer retirement carries an optional UUID through the existing
+`agentStatus:retirePaneAuthority` IPC message. The hook server retains it with
+its bounded retirement fence. A validated live OMP new turn consumes that UUID
+and echoes `authorityRestartId` only in the live notification. Cached rows,
+persistence and startup replay never carry the acknowledgement. Older peers
+omit or ignore it and retain explicit attach restoration.
+
+The renderer keeps the UUID in its existing non-persisted retirement tombstone;
+every re-retirement mints a new one. A matching acknowledgement may clear that
+tombstone only with a successful status write for the existing pane and matching
+workspace/connection. Closed tombstones remain `true`, including after the tab
+LRU evicts its entry. Closing a retired physical alias revokes its whole group.
+This is control-plane retirement correlation, not a second agent-status store.
+
+Fallback restores the hook server's recorded status aliases through the existing
+attach-restoration path. The accepted renderer write restores the matching status
+alias routes too, preserving group membership for the next retirement. It does
+not restore orchestration or launch credentials.
+It is scoped to the requesting desktop renderer. A different window's retirement
+UUID cannot be cleared by the acknowledgement, and web mirrors keep their existing
+host-snapshot/attach behavior.

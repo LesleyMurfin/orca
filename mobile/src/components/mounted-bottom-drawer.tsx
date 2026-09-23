@@ -5,7 +5,6 @@ import {
   useWindowDimensions,
   ScrollView,
   Keyboard,
-  BackHandler,
   Modal,
   Platform
 } from 'react-native'
@@ -28,6 +27,7 @@ import { BOTTOM_DRAWER_HIDE_DURATION_MS } from './bottom-drawer-constants'
 import { bottomDrawerStyles as styles } from './bottom-drawer-styles'
 import { useInsideBottomDrawerModalHost } from './bottom-drawer-modal-host'
 import { useResponsiveLayout } from '../layout/responsive-layout'
+import { useBackClaim } from '../navigation/use-back-claim'
 
 const DISMISS_THRESHOLD = 80
 const SPRING_CONFIG = { damping: 28, stiffness: 400 }
@@ -193,17 +193,18 @@ export function MountedBottomDrawer({
     })
   }, [onClose, progress])
 
-  useEffect(() => {
-    if (!visible || !interactive) {
-      return
-    }
-
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      dismiss()
-      return true
-    })
-    return () => sub.remove()
-  }, [visible, interactive, dismiss])
+  // One seam, both platforms: natively this is the hardware key, and inside the shell's page it is
+  // a claim the shell hands one press over on. Every session sheet renders through this component,
+  // so this one claim is what makes Android Back close the sheet rather than leave the screen.
+  // Only the top interactive drawer claims; a sheet pinned under a fill picker does not own the key.
+  useBackClaim(
+    visible && interactive
+      ? () => {
+          dismiss()
+          return true
+        }
+      : null
+  )
 
   const scrollHandler = useAnimatedScrollHandler((event) => {
     scrollOffsetY.value = Math.max(event.contentOffset.y, 0)
@@ -298,12 +299,12 @@ export function MountedBottomDrawer({
         }
       ]
     }
-  })
+  }, [progress, translateY, keyboardOffset, screenHeight, fillAvailable])
 
   const backdropStyle = useAnimatedStyle(() => {
     const dragFade = interpolate(translateY.value, [0, 300], [1, 0], Extrapolation.CLAMP)
     return { opacity: progress.value * dragFade }
-  })
+  }, [progress, translateY])
 
   // Why: the sheet renders through a full-screen native window (its own Modal
   // below, or the shared BottomDrawerModalHost) so it always covers the viewport
@@ -382,6 +383,8 @@ export function MountedBottomDrawer({
           <Animated.View
             // Why: remount per window hand-back — see the windowEpoch effect.
             key={windowEpoch}
+            // The sheet names itself so a check can find it without reading its styling.
+            testID="bottom-drawer-sheet"
             style={[
               styles.drawer,
               fillAvailable ? styles.drawerFill : null,
