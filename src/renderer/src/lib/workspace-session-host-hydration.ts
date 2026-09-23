@@ -1,5 +1,6 @@
 import type { Repo } from '../../../shared/repo-types'
 import type { WorkspaceSessionState } from '../../../shared/workspace-session-state-types'
+import { parseAppSshPtyId } from '../../../shared/ssh-pty-id'
 import {
   getRepoExecutionHostId,
   getSshTargetIdForExecutionHost,
@@ -157,6 +158,27 @@ export async function fetchWorkspaceSessionFromHosts(
     .session
 }
 
+function wasTargetConnectedAtLastShutdown(
+  session: WorkspaceSessionState,
+  targetId: string | null
+): boolean {
+  if (!targetId) {
+    return false
+  }
+  if (session.activeConnectionIdsAtShutdown !== undefined) {
+    return session.activeConnectionIdsAtShutdown.includes(targetId)
+  }
+  // When activeConnectionIdsAtShutdown is undefined (older persisted sessions, interrupted
+  // shutdowns), infer connection status from remoteSessionIdsByTabId: if the base session still
+  // holds a remote PTY session for this target, the client was connected to it, so do not decline.
+  for (const sessionId of Object.values(session.remoteSessionIdsByTabId ?? {})) {
+    if (parseAppSshPtyId(sessionId)?.connectionId === targetId) {
+      return true
+    }
+  }
+  return false
+}
+
 export async function fetchWorkspaceSessionWithRuntimeHostOwners(
   api: SessionReadApi,
   repos: readonly Pick<Repo, 'id' | 'connectionId' | 'executionHostId'>[],
@@ -218,9 +240,6 @@ export async function fetchWorkspaceSessionWithRuntimeHostOwners(
   // for the slices it arbitrates, and these are not among them. Everything this read leaves behind
   // in an ssh partition still has to survive the next write to it.
   const shadow: HostSessionSlices = { ...merged.shadow }
-  // Why captured once, before the loop: `activeConnectionIdsAtShutdown` is global (routes to
-  // 'local' unconditionally), so it never changes as `session` is reassigned across hosts below.
-  const connectedTargetIdsAtShutdown = new Set(merged.session.activeConnectionIdsAtShutdown ?? [])
   for (const [hostId, slice] of sshPartitions) {
     const targetId = getSshTargetIdForExecutionHost(hostId)
     const adoption = adoptStrandedHostPartitionSession(session, slice, {
@@ -233,7 +252,7 @@ export async function fetchWorkspaceSessionWithRuntimeHostOwners(
       reconciledWorktreeIds: reconciledWorktreeIdsForHost(
         attribution,
         hostId,
-        Boolean(targetId && connectedTargetIdsAtShutdown.has(targetId))
+        wasTargetConnectedAtLastShutdown(merged.session, targetId)
       )
     })
     session = adoption.session
