@@ -265,3 +265,85 @@ describe('GAP-03 Write Race Protection', () => {
     ).toEqual(['tab-fresh'])
   })
 })
+
+describe('GAP-03 regression: a declined tab must park and restore its dependent tab/pane rows too', () => {
+  it('carries terminalLayoutsByTabId and remoteSessionIdsByTabId for a declined tab back with it, not just tabsByWorktree', async () => {
+    // Same shape as the "still routes a declined row back" case above (host has not answered yet,
+    // so preserving the parked verdict is the only safe move), but this host partition also carries
+    // per-tab rows for the declined worktree's tabs: a terminal layout and a remote relay session id.
+    // `partitionRowsTheWriteWontReturn` only walked `worktreeKeyed` fields, so these tab-keyed rows
+    // were never parked -- and the next write to this SSH partition (forced here by the sibling
+    // worktree's fresh local activity, same as the sibling test above) drops them even though the
+    // worktree-keyed `tabsByWorktree` row for the same declined tabs correctly comes back.
+    const read = await fetchWorkspaceSessionWithRuntimeHostOwners(
+      partitionedApi({
+        local: session({}),
+        [SSH_HOST_ID]: session({
+          tabsByWorktree: {
+            [WORKTREE_ID]: [tab('tab-2', WORKTREE_ID), tab('tab-3', WORKTREE_ID)],
+            [SIBLING_WORKTREE_ID]: [tab('tab-4', SIBLING_WORKTREE_ID)]
+          },
+          terminalLayoutsByTabId: {
+            'tab-2': { root: null, activeLeafId: null, expandedLeafId: null } as never
+          },
+          remoteSessionIdsByTabId: {
+            'tab-2': 'ssh:target-1@@pty-2'
+          }
+        })
+      }),
+      [
+        { id: REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID },
+        { id: SIBLING_REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID }
+      ]
+    )
+    expect(read.session.tabsByWorktree[WORKTREE_ID] ?? []).toEqual([])
+
+    const NEW_LOCAL_WORKTREE_ID = `${SIBLING_REPO_ID}::/remote/new-tab`
+    const payloadWithFreshLocalActivity: WorkspaceSessionState = {
+      ...read.session,
+      tabsByWorktree: {
+        ...read.session.tabsByWorktree,
+        [NEW_LOCAL_WORKTREE_ID]: [tab('tab-fresh', NEW_LOCAL_WORKTREE_ID)]
+      }
+    }
+
+    const { captured, api } = capturingApi()
+    const state: HostPersistenceState = {
+      repos: [
+        { id: REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID },
+        { id: SIBLING_REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID }
+      ],
+      worktreesByRepo: {
+        [REPO_ID]: [
+          {
+            id: WORKTREE_ID,
+            repoId: REPO_ID,
+            hostId: SSH_HOST_ID,
+            runtimeOwnerEnvironmentId: undefined
+          }
+        ],
+        [SIBLING_REPO_ID]: [
+          {
+            id: NEW_LOCAL_WORKTREE_ID,
+            repoId: SIBLING_REPO_ID,
+            hostId: SSH_HOST_ID,
+            runtimeOwnerEnvironmentId: undefined
+          }
+        ]
+      },
+      contestedHostWorkspaceSessions: read.contestedHostWorkspaceSessions,
+      contestedPrimaryHostBySessionKey: read.contestedPrimaryHostBySessionKey
+    }
+
+    await persistWorkspaceSessionByHost(api as never, payloadWithFreshLocalActivity, state)
+
+    // The worktree-keyed row already round-trips correctly (pinned by the sibling test above).
+    expect(captured[SSH_HOST_ID]?.tabsByWorktree?.[WORKTREE_ID]?.map((entry) => entry.id)).toEqual([
+      'tab-2',
+      'tab-3'
+    ])
+    // The tab-keyed rows for the SAME declined tab must survive the write alongside it.
+    expect(captured[SSH_HOST_ID]?.terminalLayoutsByTabId?.['tab-2']).toBeDefined()
+    expect(captured[SSH_HOST_ID]?.remoteSessionIdsByTabId?.['tab-2']).toBe('ssh:target-1@@pty-2')
+  })
+})
