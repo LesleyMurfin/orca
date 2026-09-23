@@ -32,13 +32,19 @@ sudo bash templates/orca-serve/install-logging-setup.sh             # then insta
 | `orca-client-diagnostics.md` | Client-side reachability/pairing runbook (Bucket 4) |
 | `test-logging-setup.sh` | Sandbox install + verify + idempotency + unit-drift refusal (run `bash templates/orca-serve/test-logging-setup.sh` from the repo root) |
 
-**`docs/guides/`** — the operational docs:
+**`docs/reference/serve-logging/`** — the operational docs:
 
 | File | Purpose |
 |------|---------|
 | `orca-serve-logging-guide.md` | Architecture, env vars, sinks, client log locations |
 | `orca-serve-troubleshooting-matrix.md` | Symptom → bucket → ≤5-command triage (Buckets 1–4) |
 
+**`docs/reference/serve-logging/skills/`** — agent SRE & diagnostic skills:
+
+| Skill | Purpose |
+|-------|---------|
+| `skills/orca-serve-troubleshoot/SKILL.md` | Headless `orca serve` 4-bucket triage, preflight & remediation |
+| `skills/orca-diagnostics/SKILL.md` | General Orca desktop/client & PTY diagnostic skill |
 ## 2. Deploy in 5 steps
 
 1. **Audit** — `sudo bash templates/orca-serve/install-logging-setup.sh --dry-run`. Fix any `FAIL` line.
@@ -70,5 +76,33 @@ orca-serve-diag --phase after && logrotate -d /etc/logrotate.d/orca-serve   # sn
 ```
 
 > Not sure which failure you have? Open the zero-guess index
-> (`.ai/skills/orca-serve-troubleshoot/references/diagnostic-index.md`) first, then the
-> `docs/guides/orca-serve-troubleshooting-matrix.md` cheat sheet for the matching bucket.
+> (`docs/reference/serve-logging/skills/orca-serve-troubleshoot/references/diagnostic-index.md`) first, then the
+> `docs/reference/serve-logging/orca-serve-troubleshooting-matrix.md` cheat sheet for the matching bucket.
+
+---
+
+## 4. Agent Diagnostic Skills Installation
+
+Community users and AI agents can install the diagnostic skills directly into their environment:
+
+### For Claude Code (`~/.claude/skills/`):
+```bash
+# Install orca-serve-troubleshoot (headless server triage)
+mkdir -p ~/.claude/skills/orca-serve-troubleshoot/references
+curl -fsSL https://raw.githubusercontent.com/LesleyMurfin/orca/feature/serve-logging-setup/docs/reference/serve-logging/skills/orca-serve-troubleshoot/SKILL.md \
+  -o ~/.claude/skills/orca-serve-troubleshoot/SKILL.md
+curl -fsSL https://raw.githubusercontent.com/LesleyMurfin/orca/feature/serve-logging-setup/docs/reference/serve-logging/skills/orca-serve-troubleshoot/references/diagnostic-index.md \
+  -o ~/.claude/skills/orca-serve-troubleshoot/references/diagnostic-index.md
+
+# Install orca-diagnostics (client & desktop diagnostics)
+mkdir -p ~/.claude/skills/orca-diagnostics
+curl -fsSL https://raw.githubusercontent.com/LesleyMurfin/orca/feature/serve-logging-setup/docs/reference/serve-logging/skills/orca-diagnostics/SKILL.md \
+  -o ~/.claude/skills/orca-diagnostics/SKILL.md
+```
+
+### For Oh My Pi / Agents (`~/.omp/skills/` or `~/.agents/skills/`):
+```bash
+mkdir -p ~/.omp/skills/orca-serve-troubleshoot ~/.omp/skills/orca-diagnostics
+cp -r ~/.claude/skills/orca-serve-troubleshoot/* ~/.omp/skills/orca-serve-troubleshoot/
+cp ~/.claude/skills/orca-diagnostics/SKILL.md ~/.omp/skills/orca-diagnostics/
+```
