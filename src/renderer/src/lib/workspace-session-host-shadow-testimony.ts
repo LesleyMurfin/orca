@@ -1,9 +1,14 @@
 import type { ExecutionHostId } from '../../../shared/execution-host'
 import { parseExecutionHostId } from '../../../shared/execution-host'
 import { parseWorkspaceKey } from '../../../shared/workspace-scope'
+import { WORKSPACE_SESSION_FIELD_OWNERSHIP } from '../../../shared/workspace-session-host-field-ownership'
 import type { WorkspaceSessionState } from '../../../shared/workspace-session-state-types'
 import { isWorkspaceSessionRecord } from '../../../shared/workspace-session-host-records'
-import { WORKTREE_KEYED_FIELDS } from './workspace-session-host-contention'
+import {
+  buildWorktreeIdByTabId,
+  worktreeIdForPaneKey
+} from '../../../shared/workspace-session-host-records'
+import { PARKABLE_HOST_SESSION_FIELDS } from './workspace-session-host-contention'
 import type { HostSessionSlices } from './workspace-session-host-split'
 import {
   hostHasAnsweredForTarget,
@@ -41,20 +46,31 @@ export function shadowRowsTheHostHasNotAnswered(
     }
 
     let hostWithheld = false
-    let survivingWorktreeKeyedFieldCount = 0
+    let survivingParkableFieldCount = 0
     const nextHostSlice: WorkspaceSessionState = { ...hostSlice }
+    const worktreeIdByTabIdInShadow = buildWorktreeIdByTabId(hostSlice)
 
-    for (const field of WORKTREE_KEYED_FIELDS) {
+    for (const field of PARKABLE_HOST_SESSION_FIELDS) {
       const record = hostSlice[field]
       if (!isWorkspaceSessionRecord(record)) {
         continue
       }
 
+      const ownership = WORKSPACE_SESSION_FIELD_OWNERSHIP[field]
       let fieldWithheld = false
       const survivingRecord: Record<string, unknown> = {}
 
       for (const [key, value] of Object.entries(record)) {
-        if (parseWorkspaceKey(key)?.type === 'folder') {
+        const owningWorkspaceKey =
+          ownership === 'worktreeKeyed'
+            ? key
+            : ownership === 'tabKeyed'
+              ? worktreeIdByTabIdInShadow.get(key)
+              : worktreeIdForPaneKey(worktreeIdByTabIdInShadow, key)
+        if (
+          owningWorkspaceKey !== undefined &&
+          parseWorkspaceKey(owningWorkspaceKey)?.type === 'folder'
+        ) {
           survivingRecord[key] = value
         } else {
           fieldWithheld = true
@@ -65,21 +81,21 @@ export function shadowRowsTheHostHasNotAnswered(
         hostWithheld = true
         withheld = true
         if (Object.keys(survivingRecord).length > 0) {
-          // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: field is a worktree-keyed record field and survivingRecord contains only its surviving entries.
+          // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: field is a parkable record field and survivingRecord contains only its surviving entries.
           ;(nextHostSlice as Record<string, unknown>)[field] = survivingRecord
-          survivingWorktreeKeyedFieldCount++
+          survivingParkableFieldCount++
         } else {
           delete nextHostSlice[field]
         }
       } else {
         if (Object.keys(record).length > 0) {
-          survivingWorktreeKeyedFieldCount++
+          survivingParkableFieldCount++
         }
       }
     }
 
     if (hostWithheld) {
-      if (survivingWorktreeKeyedFieldCount > 0) {
+      if (survivingParkableFieldCount > 0) {
         nextShadow[hostId] = nextHostSlice
       }
     } else {
