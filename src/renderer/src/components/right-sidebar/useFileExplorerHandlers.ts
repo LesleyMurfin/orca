@@ -172,8 +172,9 @@ export function useFileExplorerHandlers({
 }: UseFileExplorerHandlersParams): UseFileExplorerHandlersReturn {
   const handleClick = useCallback(
     (node: TreeNode, dirToggle: DirToggleTiming = 'immediate') => {
-      if (dirToggle === 'skip' && node.isDirectory) {
-        // Why: the rename about to start owns this gesture; selection still applies.
+      if (dirToggle === 'skip' && (node.isDirectory || node.isSymlink)) {
+        // Why: rename owns this click. Symlink rows stay file-shaped until
+        // activation, so isDirectory alone would stat and toggle again.
         setSelectedPath(node.path)
         return
       }
