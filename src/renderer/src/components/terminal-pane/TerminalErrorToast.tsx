@@ -94,7 +94,15 @@ export function isExplainedTerminalError(error: string): boolean {
 }
 
 export function isRemoteTerminalClosedError(error: string): boolean {
-  return error.includes(REMOTE_TERMINAL_CLOSED_MARKER)
+  return (
+    error.includes(REMOTE_TERMINAL_CLOSED_MARKER) ||
+    error.includes(
+      translate(
+        'auto.components.terminal.pane.TerminalErrorToast.remoteTerminalClosed',
+        REMOTE_TERMINAL_CLOSED_MARKER
+      )
+    )
+  )
 }
 
 export function isPaneOwnerUnverifiedError(error: string): boolean {
