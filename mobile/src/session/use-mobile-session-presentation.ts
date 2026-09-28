@@ -25,9 +25,10 @@ export function useMobileSessionPresentation(scope: MobileSessionBulkCloseModel)
     toastOpacityRef,
     hostEndpoint,
     initialSessionAutoCreateRef,
-    terminalFrameHeightRef,
+    terminalFrameRef,
     handleCreateTerminal,
-    visibleTabs
+    visibleTabs,
+    forceReconnectHost
   } = scope
   const showLoadingState = connState === 'connected' && !terminalsLoaded && visibleTabs.length === 0
   const showEmptyState =
@@ -55,8 +56,10 @@ export function useMobileSessionPresentation(scope: MobileSessionBulkCloseModel)
     lastConnectedAt,
     endpoint: hostEndpoint
   })
-  const showConnectionRetry =
+  const connectionEscalated =
     connectionVerdict.kind === 'warning' || connectionVerdict.kind === 'unreachable'
+  // Not on the page: the shell owns the connection and the tap could only do nothing.
+  const showConnectionRetry = connectionEscalated && forceReconnectHost !== null
 
   const terminalSummary =
     connState === 'connected'
@@ -67,7 +70,9 @@ export function useMobileSessionPresentation(scope: MobileSessionBulkCloseModel)
           : `${visibleTabs.length} tabs`
       : showConnectionRetry
         ? `${verdictDisplayLabel(connectionVerdict)} — tap to retry`
-        : MOBILE_SESSION_STATUS_LABELS[connState]
+        : connectionEscalated
+          ? verdictDisplayLabel(connectionVerdict)
+          : MOBILE_SESSION_STATUS_LABELS[connState]
 
   // Why: iOS keyboard height includes the home-indicator inset; Android IME height does not.
   const keyboardLift =
@@ -79,7 +84,7 @@ export function useMobileSessionPresentation(scope: MobileSessionBulkCloseModel)
   const activeTerminalKeyboardLift = computeActiveTerminalKeyboardLift({
     keyboardLift,
     metrics: activeHandle ? terminalKeyboardMetrics.get(activeHandle) : undefined,
-    terminalFrameHeight: terminalFrameHeightRef.current
+    terminalFrameHeight: terminalFrameRef.current?.height ?? 0
   })
   const toastAnimatedStyle = {
     opacity: toastOpacityRef.current,

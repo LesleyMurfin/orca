@@ -21,15 +21,18 @@ export const CLEANUP_METHODS = [
     params: { envelope: envelope(), turnId: 'turn-1' },
     hostCall: 'cancel'
   },
+  // A no-op kept for older clients: it answers without reaching the host.
   {
     method: 'agentSession.release',
     params: { sessionId: SESSION, holderId: 'surface-1' },
-    hostCall: 'release'
+    hostCall: null,
+    result: { released: true }
   },
   {
     method: 'agentSession.unsubscribe',
     params: { sessionId: SESSION },
-    hostCall: 'unsubscribe'
+    hostCall: null,
+    result: { unsubscribed: true }
   }
 ] as const
 
@@ -54,6 +57,10 @@ export const ADMISSION_METHODS = [
   { method: 'agentSession.ensure', params: attachParams() },
   { method: 'agentSession.send', params: sendParams() },
   {
+    method: 'agentSession.rewind',
+    params: { envelope: envelope(), itemId: 'chosen', expectedEpoch: 'epoch' }
+  },
+  {
     method: 'agentSession.respondToApproval',
     params: { envelope: envelope(), itemId: 'item-1', expectedRevision: 1, optionId: 'allow' }
   },
@@ -66,12 +73,14 @@ export const ADMISSION_METHODS = [
     params: { envelope: envelope(), key: 'model', value: 'gpt-live' }
   },
   {
-    method: 'agentSession.requestHandoff',
-    params: { envelope: envelope(), direction: 'to-tui', mode: 'now' }
+    method: 'agentSession.threadGoal',
+    params: { envelope: envelope(), change: { kind: 'clear' } }
   },
   { method: 'agentSession.handoffStatus', params: { sessionId: SESSION } },
   { method: 'agentSession.options', params: { sessionId: SESSION } },
+  { method: 'agentSession.modelCatalog', params: { agent: 'codex', sessionId: SESSION } },
   { method: 'agentSession.history', params: { sessionId: SESSION, direction: 'tail' } },
+  { method: 'agentSession.conversationOutline', params: { sessionId: SESSION } },
   { method: 'agentSession.subscribe', params: { sessionId: SESSION } },
   { method: 'agentSession.hold', params: { sessionId: SESSION, holderId: 'surface-1' } },
   { method: 'agentSession.reveal', params: { sessionId: SESSION } },

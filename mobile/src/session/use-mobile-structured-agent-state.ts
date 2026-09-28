@@ -16,6 +16,35 @@ import type { RpcClient } from '../transport/rpc-client'
 import { callAgentSession } from './mobile-structured-agent-session-rpc'
 
 const MAX_RETAINED_SESSION_STATES = 32
+/** Bounded so a busy stream cannot turn one Load-earlier tap into an endless read chain. */
+const OLDER_PAGE_ANCHOR_ATTEMPTS = 3
+
+/**
+ * Opens the transcript stream once the hold settles, either way: a refused hold is an older host
+ * saying it could not start the agent — which the next send does — never a reason to hide the
+ * transcript. Returns what ends the stream, opened or not yet. Outside the effect so its cleanup
+ * rule can see the stream is owned.
+ */
+function openTranscriptAfterHold(
+  client: RpcClient,
+  sessionId: string,
+  held: Promise<unknown>,
+  onFrame: (raw: unknown) => void
+): () => void {
+  let ended = false
+  let close = (): void => {}
+  void held
+    .catch(() => undefined)
+    .then(() => {
+      if (!ended) {
+        close = client.subscribe('agentSession.subscribe', { sessionId }, onFrame)
+      }
+    })
+  return () => {
+    ended = true
+    close()
+  }
+}
 
 function isSubscribeEvent(value: unknown): value is AgentSessionSubscribeEvent {
   if (typeof value !== 'object' || value === null) {
@@ -65,7 +94,7 @@ export function useMobileStructuredAgentState(args: {
       }
       setSessionStates((current) => {
         const previous = current.get(sessionKey) ?? EMPTY_STRUCTURED_AGENT_SESSION
-        const next = reduceStructuredAgentSession(previous, action)
+        const next = reduceStructuredAgentSession(previous, action, Date.now())
         if (next === previous) {
           return current
         }
@@ -99,39 +128,21 @@ export function useMobileStructuredAgentState(args: {
     }
     apply({ type: 'loading' })
     const holderId = structuredAgentSessionHolderId('mobile-chat')
-    let cancelled = false
-    let unsubscribe = (): void => {}
     const held = callAgentSession(client, 'agentSession.hold', {
       sessionId,
       holderId
     })
-    void held
-      .then(() => {
-        if (cancelled) {
-          return
-        }
-        unsubscribe = client.subscribe('agentSession.subscribe', { sessionId }, (raw) => {
-          if (
-            typeof raw === 'object' &&
-            raw !== null &&
-            (raw as { type?: unknown }).type === 'error'
-          ) {
-            apply({ type: 'error', message: String((raw as { message?: unknown }).message ?? '') })
-            return
-          }
-          if (isSubscribeEvent(raw)) {
-            apply({ type: 'event', event: raw })
-          }
-        })
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          apply({ type: 'error', message: error instanceof Error ? error.message : String(error) })
-        }
-      })
+    const endStream = openTranscriptAfterHold(client, sessionId, held, (raw) => {
+      if (typeof raw === 'object' && raw !== null && 'type' in raw && raw.type === 'error') {
+        apply({ type: 'error', message: 'message' in raw ? String(raw.message ?? '') : '' })
+        return
+      }
+      if (isSubscribeEvent(raw)) {
+        apply({ type: 'event', event: raw })
+      }
+    })
     return () => {
-      cancelled = true
-      unsubscribe()
+      endStream()
       void held
         .then(() =>
           callAgentSession(
@@ -154,41 +165,45 @@ export function useMobileStructuredAgentState(args: {
     if (!client || !sessionId || !sessionKey || loadingOlder || !current.hasOlder) {
       return
     }
-    const cursor = oldestStructuredAgentSessionCursor(current)
-    if (!cursor) {
+    if (!oldestStructuredAgentSessionCursor(current)) {
       return
     }
     const requestSessionKey = sessionKey
     const requestGeneration = streamGenerationRef.current
+    const isCurrentRead = (): boolean =>
+      sessionKeyRef.current === requestSessionKey &&
+      streamGenerationRef.current === requestGeneration
     setLoadingOlder(true)
-    void callAgentSession<AgentSessionHistoryResult>(client, 'agentSession.history', {
-      sessionId,
-      direction: 'before',
-      cursor,
-      limit: AGENT_SESSION_HISTORY_MAX_LIMIT
-    })
-      .then((result) => {
-        if (
-          result.ok &&
-          sessionKeyRef.current === requestSessionKey &&
-          streamGenerationRef.current === requestGeneration
-        ) {
-          apply({ type: 'older-page', requestedEpoch: cursor.epoch, page: result.page })
+    void (async () => {
+      // A live batch can head-trim past the anchor mid-read, and the reducer drops that
+      // page rather than leave a hole in the transcript. Re-anchor and retry.
+      for (let attempt = 0; attempt < OLDER_PAGE_ANCHOR_ATTEMPTS; attempt += 1) {
+        const cursor = oldestStructuredAgentSessionCursor(stateRef.current)
+        if (!cursor || !isCurrentRead()) {
+          return
         }
-      })
+        const result = await callAgentSession<AgentSessionHistoryResult>(
+          client,
+          'agentSession.history',
+          { sessionId, direction: 'before', cursor, limit: AGENT_SESSION_HISTORY_MAX_LIMIT }
+        )
+        if (!result.ok || !isCurrentRead()) {
+          return
+        }
+        // The reducer drops a page whose anchor slid, so only an intact anchor lands.
+        if (oldestStructuredAgentSessionCursor(stateRef.current)?.sequence === cursor.sequence) {
+          apply({ type: 'older-page', requestedCursor: cursor, page: result.page })
+          return
+        }
+      }
+    })()
       .catch((error: unknown) => {
-        if (
-          sessionKeyRef.current === requestSessionKey &&
-          streamGenerationRef.current === requestGeneration
-        ) {
+        if (isCurrentRead()) {
           apply({ type: 'error', message: error instanceof Error ? error.message : String(error) })
         }
       })
       .finally(() => {
-        if (
-          sessionKeyRef.current === requestSessionKey &&
-          streamGenerationRef.current === requestGeneration
-        ) {
+        if (isCurrentRead()) {
           setLoadingOlder(false)
         }
       })

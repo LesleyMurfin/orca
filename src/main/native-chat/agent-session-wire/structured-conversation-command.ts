@@ -16,6 +16,7 @@ import {
 } from './structured-agent-session-attach'
 import { admitAndRunAgentSessionMutation } from './structured-agent-session-mutation-admission'
 import type { StructuredAgentSessionMutationContext } from './structured-agent-session-host-mutations'
+import { openWithAgent } from './structured-agent-session-send-preparation'
 import type { StructuredAgentSessionCaller } from './structured-agent-session-host-types'
 import type { StructuredAgentSessionHost } from './structured-agent-session-host'
 import { conversationCommandBlocked } from './structured-conversation-command-admission'
@@ -52,8 +53,11 @@ export function runStructuredConversationCommand(
       adapter: context.deps.adapter,
       callerKey: caller.callerKey,
       envelope,
-      journal: context.sessions.get(sessionId)?.journal,
+      // Only the provider can do this, so an agent at rest is started first.
+      prepareSession: openWithAgent(context, params.envelope),
+      journal: () => context.sessions.get(sessionId)?.journal,
       publish: (journal) => context.publish(sessionId, journal),
+      flushStreamedEvents: context.flushStreamedEvents,
       now: context.now,
       plan: {
         method: 'agentSession.conversationCommand',
@@ -111,33 +115,6 @@ export function runStructuredConversationCommand(
             state: 'unknown' as const,
             ...(replacementSessionId ? { replacementSessionId } : {})
           }
-          let effectiveOptions = record.options
-          if (command === 'clear' && !prior) {
-            try {
-              const options = await ctx.adapter.readOptions?.({ sessionId, fence: ctx.fence })
-              effectiveOptions = {
-                ...record.options,
-                ...(options
-                  ? {
-                      model: options.current.model,
-                      ...(options.current.effort ? { effort: options.current.effort } : {})
-                    }
-                  : {})
-              }
-            } catch {
-              return {
-                ok: false,
-                refusal: {
-                  code: 'agent_session_operation_invalid',
-                  message:
-                    'Could not read the current session configuration. Try again when the provider is connected.'
-                }
-              }
-            }
-          }
-          if (effectiveOptions && command === 'clear') {
-            await ctx.persistOptions(effectiveOptions)
-          }
           await store.setConversationCommand(sessionId, ctx.fence, prepared)
           let error: string | undefined
           if (command === 'clear' && replacementSessionId) {
@@ -159,7 +136,8 @@ export function runStructuredConversationCommand(
               agent: record.provider,
               runtimeKind: 'native',
               launchArgs: record.launchArgs,
-              options: effectiveOptions
+              // The options the user chose, which any restart of this chat would replay too.
+              options: record.options
             }
             attach.envelope.payloadFingerprint = computeAgentSessionPayloadFingerprint({
               method: 'agentSession.attach',
@@ -201,7 +179,6 @@ export function runStructuredConversationCommand(
               },
               { fence: ctx.fence }
             )
-            ctx.publish()
             try {
               error = (
                 await ctx.adapter.compact({
@@ -237,7 +214,6 @@ export function runStructuredConversationCommand(
                           conversationCommand: matching()!
                         }
                       })
-                      ctx.publish()
                     })
                 })
               ).error
@@ -248,7 +224,6 @@ export function runStructuredConversationCommand(
                 { kind: 'status', text: 'Compaction completion is unconfirmed.' },
                 { fence: ctx.fence }
               )
-              ctx.publish()
               throw cause
             }
             await ctx.journal.appendItem(
@@ -256,7 +231,6 @@ export function runStructuredConversationCommand(
               { kind: 'status', text: error ?? 'Conversation compacted.' },
               { fence: ctx.fence }
             )
-            ctx.publish()
           }
           const completed = {
             ...prepared,

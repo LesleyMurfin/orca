@@ -149,8 +149,6 @@ export function registerRuntimeWindowLifecycle(
         resolution,
         ...(ptyId ? { ptyId } : {})
       }),
-    setLegacyWorkerTerminalResumeFence: (paneKey, blocked) =>
-      send('agentStatus:legacyWorkerTerminalResumeFence', { paneKey, blocked }),
     splitTerminal: (tabId, paneRuntimeId, opts) => {
       send('ui:splitTerminal', {
         tabId,
@@ -200,7 +198,8 @@ export function registerRuntimeWindowLifecycle(
         baseVersion,
         content
       }) as Promise<RuntimeMarkdownSaveTabResult>,
-    closeTerminal: (tabId, paneRuntimeId) => send('ui:closeTerminal', { tabId, paneRuntimeId }),
+    closeTerminal: (tabId) => send('ui:closeTerminal', { kind: 'tab', tabId }),
+    closeTerminalPane: (tabId, leafId) => send('ui:closeTerminal', { kind: 'pane', tabId, leafId }),
     closeTerminalTab: (tabId, options) =>
       requestTerminalTabCloseFromRenderer(mainWindow, tabId, options),
     sleepWorktree: (worktreeId) => send('ui:sleepWorktree', { worktreeId }),

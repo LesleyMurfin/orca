@@ -5,12 +5,12 @@ import { createHarnessStoreState } from './ipc-events-test-harness'
 const EXPECTED_DIRECT_CALLBACK_METHODS = [
   'agentStatus.onClear',
   'agentStatus.onLegacyWorkerTerminalRecovery',
-  'agentStatus.onLegacyWorkerTerminalResumeFence',
   'agentStatus.onMigrationUnsupported',
   'agentStatus.onMigrationUnsupportedClear',
   'agentStatus.onSet',
   'automations.onChanged',
   'browser.onActivateView',
+  'browser.onCapturePaintHold',
   'browser.onCertificateFailureChanged',
   'browser.onGuestLoadFailed',
   'browser.onNavigationUpdate',
@@ -31,7 +31,7 @@ const EXPECTED_DIRECT_CALLBACK_METHODS = [
   'runtime.onNativeChatLaunchDraftResolved',
   'runtime.onTerminalDriverChanged',
   'runtime.onTerminalFitOverrideChanged',
-  'runtimeEnvironments.onSharedControlDiagnostics',
+  'runtimeEnvironments.onStatusChanged',
   'settings.onChanged',
   'ssh.onCredentialRequest',
   'ssh.onCredentialResolved',
@@ -107,7 +107,7 @@ const EXPECTED_DIRECT_CALLBACK_METHODS = [
 const EXPECTED_CALLBACK_REGISTRATION_SEQUENCE = [
   'ui.onMobileMarkdownRequest',
   'automations.onChanged',
-  'runtimeEnvironments.onSharedControlDiagnostics',
+  'runtimeEnvironments.onStatusChanged',
   'repos.onChanged',
   'worktrees.onChanged',
   'worktrees.onHeadIdentitiesChanged',
@@ -166,6 +166,7 @@ const EXPECTED_CALLBACK_REGISTRATION_SEQUENCE = [
   'browser.onCertificateFailureChanged',
   'browser.onNavigationUpdate',
   'browser.onActivateView',
+  'browser.onCapturePaintHold',
   'browser.onPaneFocus',
   'browser.onOpenLinkInOrcaTab',
   'ui.onNewBrowserTab',
@@ -199,7 +200,6 @@ const EXPECTED_CALLBACK_REGISTRATION_SEQUENCE = [
   'agentStatus.onMigrationUnsupported',
   'agentStatus.onMigrationUnsupportedClear',
   'agentStatus.onLegacyWorkerTerminalRecovery',
-  'agentStatus.onLegacyWorkerTerminalResumeFence',
   'runtime.onTerminalFitOverrideChanged',
   'runtime.onTerminalDriverChanged',
   'runtime.onNativeChatLaunchDraftResolved',
@@ -384,7 +384,7 @@ describe('useIpcEvents App-lifetime lifecycle', () => {
     ).toEqual([
       'ui.onMobileMarkdownRequest',
       'automations.onChanged',
-      'runtimeEnvironments.onSharedControlDiagnostics',
+      'runtimeEnvironments.onStatusChanged',
       'runtimeEnvironments.subscribe',
       ...EXPECTED_CALLBACK_REGISTRATION_SEQUENCE.slice(3)
     ])

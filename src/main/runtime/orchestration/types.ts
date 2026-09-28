@@ -1,4 +1,5 @@
 import type { TerminalExitCause } from '../../../shared/terminal-exit-cause'
+import type { OrcaSessionId } from '../../../shared/orca-session-address'
 export const MESSAGE_TYPES = [
   'status',
   'dispatch',
@@ -46,6 +47,10 @@ export type RunRow = {
   home_database: string
   coordinator_handle: string | null
   coordinator_pane_key: string | null
+  /** Bare Orca session id the coordinator is addressed by, when it has one (today only structured sessions); a `/clear`ed chat's lineage root. */
+  coordinator_orca_session_id: OrcaSessionId | null
+  /** The consumer_generation the id was written at; see currentRunCoordinatorOrcaSessionId. */
+  coordinator_orca_session_id_generation: number | null
   consumer_generation: number
   legacy: number
   created_at: string
@@ -190,6 +195,7 @@ export type FederatedDispatchRow = {
 }
 
 export type RemoteDispatchAttachmentRow = {
+  home_run_id: string
   dispatch_id: string
   task_id: string
   home_peer_fingerprint: string
@@ -277,6 +283,8 @@ export type DispatchContextRow = {
   launch_token_hash: string | null
   assignee_handle: string | null
   assignee_pane_key: string | null
+  /** Bare Orca session id the assignee is addressed by, when it has one (today only structured sessions); a `/clear`ed chat's lineage root. */
+  assignee_orca_session_id: OrcaSessionId | null
   capability_hash: string | null
   process_incarnation: string | null
   capability_revoked_at: string | null
@@ -286,6 +294,8 @@ export type DispatchContextRow = {
   /** Creator identity; equal to the assignee means a self-dispatch, which adds no nesting depth. */
   creator_handle: string | null
   creator_pane_key: string | null
+  /** Bare Orca session id the creator is addressed by, when it has one (today only structured sessions); a `/clear`ed chat's lineage root. */
+  creator_orca_session_id: OrcaSessionId | null
   host_scope: string | null
   status: DispatchStatus
   failure_count: number
