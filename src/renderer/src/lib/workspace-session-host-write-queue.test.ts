@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ExecutionHostId } from '../../../shared/execution-host'
+import type { RemoteWorkspaceTestimonyState } from './remote-workspace-host-testimony'
 import {
   enqueueHostPartitionWrite,
-  resetHostPartitionWriteStateForTest
+  resetHostPartitionWriteStateForTest,
+  type HostPartitionWriteOptions
 } from './workspace-session-host-write-queue'
 
 describe('workspace-session-host-write-queue', () => {
@@ -151,6 +153,164 @@ describe('workspace-session-host-write-queue', () => {
     })
 
     testimonyArrived = true
+    resolveActive?.()
+
+    const [resActive, resGuarded] = await Promise.all([activeWrite, guardedWrite])
+    expect(resActive).toBe('active-done')
+    expect(resGuarded).toBeNull()
+    expect(writeFn).not.toHaveBeenCalled()
+  })
+
+  it('does not discard a queued write with replaceable: false when a newer generation write is enqueued', async () => {
+    resetHostPartitionWriteStateForTest()
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock
+    const hostId = 'ssh:target-1' as ExecutionHostId
+
+    const executionLog: string[] = []
+
+    let resolveActive: (() => void) | undefined
+    const activeBlocker = new Promise<void>((resolve) => {
+      resolveActive = resolve
+    })
+
+    const activeWrite = enqueueHostPartitionWrite(
+      hostId,
+      async () => {
+        executionLog.push('active')
+        await activeBlocker
+        return 'active-res'
+      },
+      { generation: 1 }
+    )
+
+    const nonReplaceableWrite = enqueueHostPartitionWrite(
+      hostId,
+      async () => {
+        executionLog.push('partial-patch')
+        return 'partial-patch-res'
+      },
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Slice 2 test fixture exercising planned replaceable option
+      { generation: 2, replaceable: false } as HostPartitionWriteOptions
+    )
+
+    const latestWrite = enqueueHostPartitionWrite(
+      hostId,
+      async () => {
+        executionLog.push('latest')
+        return 'latest-res'
+      },
+      { generation: 3 }
+    )
+
+    resolveActive?.()
+
+    const [resActive, resNonReplaceable, resLatest] = await Promise.all([
+      activeWrite,
+      nonReplaceableWrite,
+      latestWrite
+    ])
+
+    expect(resActive).toBe('active-res')
+    expect(resNonReplaceable).toBe('partial-patch-res')
+    expect(resLatest).toBe('latest-res')
+    expect(executionLog).toEqual(['active', 'partial-patch', 'latest'])
+  })
+
+  it('does not discard a queued replaceable persist when a subsequent non-replaceable patch is enqueued', async () => {
+    resetHostPartitionWriteStateForTest()
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock
+    const hostId = 'ssh:target-1' as ExecutionHostId
+
+    const executionLog: string[] = []
+
+    let resolveActive: (() => void) | undefined
+    const activeBlocker = new Promise<void>((resolve) => {
+      resolveActive = resolve
+    })
+
+    const activeWrite = enqueueHostPartitionWrite(
+      hostId,
+      async () => {
+        executionLog.push('active')
+        await activeBlocker
+        return 'active-res'
+      },
+      { generation: 1 }
+    )
+
+    const replaceablePersist = enqueueHostPartitionWrite(
+      hostId,
+      async () => {
+        executionLog.push('replaceable-persist')
+        return 'replaceable-persist-res'
+      },
+      { generation: 2, replaceable: true }
+    )
+
+    const subsequentPatch = enqueueHostPartitionWrite(
+      hostId,
+      async () => {
+        executionLog.push('subsequent-patch')
+        return 'subsequent-patch-res'
+      },
+      { replaceable: false }
+    )
+
+    resolveActive?.()
+
+    const [resActive, resPersist, resPatch] = await Promise.all([
+      activeWrite,
+      replaceablePersist,
+      subsequentPatch
+    ])
+
+    expect(resActive).toBe('active-res')
+    expect(resPersist).toBe('replaceable-persist-res')
+    expect(resPatch).toBe('subsequent-patch-res')
+    expect(executionLog).toEqual(['active', 'replaceable-persist', 'subsequent-patch'])
+  })
+
+  it('discards a pre-testimony write when live testimony lands before dequeuing even with an immutable initial state', async () => {
+    resetHostPartitionWriteStateForTest()
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock
+    const hostId = 'ssh:target-1' as ExecutionHostId
+
+    const initialTestimonyState: RemoteWorkspaceTestimonyState = Object.freeze({
+      remoteWorkspaceHydratedTargetIds: new Set<string>(),
+      remoteWorkspaceSyncStatusByTargetId: {}
+    })
+
+    let liveState: RemoteWorkspaceTestimonyState = initialTestimonyState
+
+    let resolveActive: (() => void) | undefined
+    const activeBlocker = new Promise<void>((resolve) => {
+      resolveActive = resolve
+    })
+
+    const activeWrite = enqueueHostPartitionWrite(hostId, async () => {
+      await activeBlocker
+      return 'active-done'
+    })
+
+    const writeFn = vi.fn().mockResolvedValue('testimony-guarded-res')
+
+    const guardedWrite = enqueueHostPartitionWrite(
+      hostId,
+      initialTestimonyState,
+      writeFn,
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Slice 2 test fixture exercising planned getLiveState option
+      { getLiveState: () => liveState } as HostPartitionWriteOptions
+    )
+
+    // Live testimony arrives before the active write finishes, updating liveState
+    // while initialTestimonyState remains frozen and untouched.
+    liveState = {
+      remoteWorkspaceHydratedTargetIds: new Set(['target-1']),
+      remoteWorkspaceSyncStatusByTargetId: {
+        'target-1': { phase: 'idle' }
+      }
+    }
+
     resolveActive?.()
 
     const [resActive, resGuarded] = await Promise.all([activeWrite, guardedWrite])

@@ -158,7 +158,7 @@ export async function fetchWorkspaceSessionFromHosts(
     .session
 }
 
-function wasTargetConnectedAtLastShutdown(
+export function wasTargetConnectedAtLastShutdown(
   session: WorkspaceSessionState,
   targetId: string | null
 ): boolean {
@@ -171,6 +171,8 @@ function wasTargetConnectedAtLastShutdown(
   // When activeConnectionIdsAtShutdown is undefined (older persisted sessions, interrupted
   // shutdowns), infer connection status from remoteSessionIdsByTabId: if the base session still
   // holds a remote PTY session for this target, the client was connected to it, so do not decline.
+  // Residual remoteSessionIdsByTabId on the SSH partition mirror itself are NOT inspected:
+  // they are the stale cache GAP-03 exists to decline.
   for (const sessionId of Object.values(session.remoteSessionIdsByTabId ?? {})) {
     if (parseAppSshPtyId(sessionId)?.connectionId === targetId) {
       return true

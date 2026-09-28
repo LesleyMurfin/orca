@@ -17,7 +17,8 @@ import {
 } from '../lib/workspace-session'
 import {
   buildWorkspaceSessionHostSnapshots,
-  patchWorkspaceSessionByHost
+  patchWorkspaceSessionByHost,
+  registerLiveTestimonyProvider
 } from '../lib/workspace-session-host-persistence'
 import {
   createShutdownCheckpointBeforeUnloadHandler,
@@ -118,7 +119,12 @@ function captureUploadedDirectSshLayoutEdits(
  */
 export function useAppSessionPersistence(): void {
   useEffect(() => registerUpdaterBeforeUnloadBypass(), [])
-
+  useEffect(() => {
+    registerLiveTestimonyProvider(() => useAppStore.getState())
+    return () => {
+      registerLiveTestimonyProvider(undefined)
+    }
+  }, [])
   // Why: session persistence only writes to disk; a Zustand subscribe() outside React drops ~15 render-cycle subscriptions and their re-renders on every tab/file/browser change.
   useEffect(() => {
     return createSessionWriteSubscriber({
@@ -129,11 +135,10 @@ export function useAppSessionPersistence(): void {
       persist: ({ patch }) => {
         const state = useAppStore.getState()
         // Why: route each host's worktree-scoped slice to its own partition; the upload chain below orders after the local write.
-        const { localWrite, written } = patchWorkspaceSessionByHost(
-          window.api.session,
-          patch,
-          state
-        )
+        const { localWrite, written } = patchWorkspaceSessionByHost(window.api.session, patch, {
+          ...state,
+          getLiveTestimonyState: () => useAppStore.getState()
+        })
         const uploadAuthorities = captureRemoteWorkspaceUploadAuthorities(state)
         const pendingLayoutEdits = state.pendingDirectSshLayoutEditsByTabId
         if (uploadAuthorities.length > 0) {

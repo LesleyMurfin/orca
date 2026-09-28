@@ -304,13 +304,16 @@ test.describe('GAP-03: offline client reconnect must not resurrect server-closed
         '#12721 non-regression: an offline-created, never-synced tab must survive reconnect'
       ).toContain(OFFLINE_DRAFT_TAB_ID)
     } finally {
-      for (const app of [secondApp, firstApp]) {
-        if (app) {
-          await session.close(app).catch(() => undefined)
+      try {
+        for (const app of [secondApp, firstApp]) {
+          if (app) {
+            await session.close(app).catch(() => undefined)
+          }
         }
+        await session.dispose()
+      } finally {
+        cleanupDockerSshRelayTarget(target)
       }
-      await session.dispose()
-      cleanupDockerSshRelayTarget(target)
     }
   })
 })
@@ -383,13 +386,16 @@ test.describe('GAP-03 regression: an ordinary restart must not drop live tabs (D
         'GAP-03 regression: an ordinary restart with nothing closed must not drop any live tab'
       ).toEqual(openedTabs.map((t) => t.id).sort())
     } finally {
-      for (const app of [secondApp, firstApp]) {
-        if (app) {
-          await session.close(app).catch(() => undefined)
+      try {
+        for (const app of [secondApp, firstApp]) {
+          if (app) {
+            await session.close(app).catch(() => undefined)
+          }
         }
+        await session.dispose()
+      } finally {
+        cleanupDockerSshRelayTarget(target)
       }
-      await session.dispose()
-      cleanupDockerSshRelayTarget(target)
     }
   })
 })

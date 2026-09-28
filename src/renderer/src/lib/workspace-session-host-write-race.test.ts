@@ -28,7 +28,7 @@
  * unconditionally dropped parked rows without positive host testimony and caused unrecoverable data
  * loss on Concurrent Active Edits.
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { getDefaultWorkspaceSession } from '../../../shared/constants'
 import type { ExecutionHostId } from '../../../shared/execution-host'
 import { normalizeExecutionHostId } from '../../../shared/execution-host'
@@ -39,6 +39,7 @@ import {
   persistWorkspaceSessionByHost,
   type HostPersistenceState
 } from './workspace-session-host-persistence'
+import { resetHostPartitionWriteStateForTest } from './workspace-session-host-write-queue'
 
 const TARGET_ID = 'target-1'
 const SSH_HOST_ID: ExecutionHostId = `ssh:${TARGET_ID}`
@@ -88,6 +89,14 @@ function capturingApi() {
     }
   }
 }
+
+beforeEach(() => {
+  resetHostPartitionWriteStateForTest()
+})
+
+afterEach(() => {
+  resetHostPartitionWriteStateForTest()
+})
 
 describe('GAP-03 Write Race Protection', () => {
   it('a wake-triggered write for a worktree with nothing else on the same host never even touches that host partition, so the declined tabs cannot round-trip back', async () => {
@@ -408,7 +417,9 @@ describe('GAP-03 regression: a declined tab must park and restore its dependent 
     // worktree-keyed `tabsByWorktree` row for the same declined tabs correctly comes back.
     const read = await fetchWorkspaceSessionWithRuntimeHostOwners(
       partitionedApi({
-        local: session({}),
+        local: session({
+          activeConnectionIdsAtShutdown: []
+        }),
         [SSH_HOST_ID]: session({
           tabsByWorktree: {
             [WORKTREE_ID]: [tab('tab-2', WORKTREE_ID), tab('tab-3', WORKTREE_ID)],
