@@ -3,7 +3,7 @@ import {
   WORKSPACE_SESSION_FIELD_OWNERSHIP,
   type WorkspaceSessionFieldOwnership
 } from './workspace-session-host-field-ownership'
-import { normalizeWorkspaceSessionKeyToWorkspaceId } from './workspace-scope'
+import { normalizeWorkspaceSessionKeyToWorkspaceId, worktreeWorkspaceKey } from './workspace-scope'
 import { isWorktreeHostIdentity as isHostQualifiedSessionKey } from './worktree/host-qualified-identity'
 import {
   buildWorktreeIdByFileId,
@@ -209,64 +209,7 @@ function adoptRecord(
   ;(next as KeyedRecord)[field] = merged
 }
 
-/**
- * The worktree-keyed rows a partition holds for workspaces the write will not route back to it,
- * plus the tab- and pane-keyed rows those declined tabs own (`terminalLayoutsByTabId`,
- * `remoteSessionIdsByTabId`, `localOnlyScrollbackByTabId`, `terminalPtyIncarnationsByPaneKey`).
- *
- * Parked rather than dropped. A partition write replaces each field with exactly what the unified
- * session routed there, so a row this read left out — declined as residue, withheld as contested,
- * or skipped because the base already holds the live copy — is erased the moment any sibling
- * workspace writes the same partition. `attachHostSessionShadow` puts these back into the slice
- * first, which is the protection a contested runtime co-claimant already gets. Declining to show a
- * row must never mean deleting it: docs/reference/ssh-execution-boundary.md makes leak, never kill,
- * the safe direction, and a row no partition holds at all is unrecoverable.
- *
- * Why the tab/pane sweep and not just `tabsByWorktree`: a declined worktree's `terminalLayoutsByTabId`
- * and `remoteSessionIdsByTabId` rows are keyed by tab id, not worktree id, so the worktree-keyed
- * walk above never sees them. Without this, a write landing on the same SSH partition before a live
- * answer keeps the declined tab (via the worktree-keyed park) but drops its layout and relay-session
- * rows, leaving the restored tab with no pane to reattach to.
- */
-export function partitionRowsTheWriteWontReturn(
-  host: WorkspaceSessionState,
-  adoptedWorkspaceIds: ReadonlySet<string>
-): WorkspaceSessionState | null {
-  let parked: KeyedRecord | null = null
-  const worktreeIdByTabIdOnHost = buildWorktreeIdByTabId(host)
-  const isDeclinedWorktree = (worktreeId: string | undefined): boolean =>
-    worktreeId !== undefined && !adoptedWorkspaceIds.has(worktreeId)
-  for (const field of SESSION_FIELDS) {
-    const ownership: WorkspaceSessionFieldOwnership = WORKSPACE_SESSION_FIELD_OWNERSHIP[field]
-    if (ownership !== 'worktreeKeyed' && ownership !== 'tabKeyed' && ownership !== 'paneKeyed') {
-      continue
-    }
-    const record = asRecord(host[field])
-    if (!record) {
-      continue
-    }
-    let kept: KeyedRecord | null = null
-    for (const [key, entry] of Object.entries(record)) {
-      const rowWorktreeId =
-        ownership === 'worktreeKeyed'
-          ? normalizeWorkspaceSessionKeyToWorkspaceId(key)
-          : ownership === 'tabKeyed'
-            ? worktreeIdByTabIdOnHost.get(key)
-            : worktreeIdForPaneKey(worktreeIdByTabIdOnHost, key)
-      if (!isDeclinedWorktree(rowWorktreeId)) {
-        continue
-      }
-      kept ??= {}
-      kept[key] = entry
-    }
-    if (kept) {
-      parked ??= {}
-      parked[field] = kept
-    }
-  }
-  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: every key written here is a session field name taken from the ownership table, and every value is that field's own record copied by reference.
-  return parked as WorkspaceSessionState | null
-}
+export { partitionRowsTheWriteWontReturn } from './workspace-session-stranded-partition-parking'
 
 export type StrandedPartitionAdoptionOptions = {
   /** Session keys the read found claimed by more than one partition. */
@@ -324,8 +267,16 @@ export function adoptStrandedHostPartitionSession(
   // client's stale pre-disconnect cache, not evidence of anything live. Declining leaves the row
   // in place for `partitionRowsTheWriteWontReturn` to park rather than deleting it.
   const hostTabsByWorktree = host.tabsByWorktree ?? {}
+  const baseTabs = base.tabsByWorktree ?? {}
   for (const workspaceId of options.reconciledWorktreeIds ?? []) {
-    if (!adoptable.has(workspaceId) || Object.hasOwn(base.tabsByWorktree ?? {}, workspaceId)) {
+    const canonicalKey = worktreeWorkspaceKey(workspaceId)
+    const hasBaseKey =
+      Object.hasOwn(baseTabs, workspaceId) ||
+      Object.hasOwn(baseTabs, canonicalKey) ||
+      Object.keys(baseTabs).some(
+        (key) => normalizeWorkspaceSessionKeyToWorkspaceId(key) === workspaceId
+      )
+    if (!adoptable.has(workspaceId) || hasBaseKey) {
       continue
     }
     for (const [key, hostTabs] of Object.entries(hostTabsByWorktree)) {

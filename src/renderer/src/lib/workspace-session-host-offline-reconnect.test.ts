@@ -109,6 +109,41 @@ describe('GAP-03 regression: canonical-keyed host rows must still be declined', 
       .map((entry) => entry.id)
     expect(survivingTabIds).toEqual([])
   })
+  it('normalizes canonical worktree keys so live rows are not falsely parked into the write shadow', async () => {
+    // When host partition stores tab/pane entries under canonical `worktree:${id}` keys,
+    // live rows that ARE adopted must not be falsely parked into the write shadow.
+    const read = await fetchWorkspaceSessionWithRuntimeHostOwners(
+      partitionedApi({
+        local: session({
+          activeConnectionIdsAtShutdown: [TARGET_ID]
+        }),
+        [SSH_HOST_ID]: session({
+          tabsByWorktree: {
+            [`worktree:${WORKTREE_ID}`]: [tab('tab-1', WORKTREE_ID)]
+          },
+          terminalLayoutsByTabId: {
+            'tab-1': { root: null, activeLeafId: null, expandedLeafId: null }
+          }
+        })
+      }),
+      [{ id: REPO_ID, connectionId: TARGET_ID, executionHostId: SSH_HOST_ID }]
+    )
+
+    // The tab is live and adopted into the session
+    const survivingTabIds = Object.entries(read.session.tabsByWorktree ?? {})
+      .flatMap(([, tabs]) => tabs)
+      .map((entry) => entry.id)
+    expect(survivingTabIds).toContain('tab-1')
+
+    // Because the tab is live / adopted, its rows MUST NOT be parked into the write shadow
+    const shadowTabs = read.contestedHostWorkspaceSessions[SSH_HOST_ID]?.tabsByWorktree ?? {}
+    expect(shadowTabs[WORKTREE_ID]).toBeUndefined()
+    expect(shadowTabs[`worktree:${WORKTREE_ID}`]).toBeUndefined()
+
+    const shadowLayouts =
+      read.contestedHostWorkspaceSessions[SSH_HOST_ID]?.terminalLayoutsByTabId ?? {}
+    expect(shadowLayouts['tab-1']).toBeUndefined()
+  })
 })
 
 describe('GAP-03 regression: unknown shutdown status must not decline tabs if remoteSessionIdsByTabId indicates connection', () => {

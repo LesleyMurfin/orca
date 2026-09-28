@@ -9,7 +9,9 @@ import { normalizeWorkspaceSessionKeyToWorkspaceId } from '../../../shared/works
 import { WORKSPACE_SESSION_FIELD_OWNERSHIP } from '../../../shared/workspace-session-host-field-ownership'
 import { workspaceSessionPartitionHostId } from '../../../shared/workspace-session-partition-owner'
 import {
+  buildWorktreeIdByTabId,
   isWorkspaceSessionRecord,
+  worktreeIdForPaneKey,
   type WorkspaceSessionRecord
 } from '../../../shared/workspace-session-host-records'
 import type { WorkspaceRuntimeOwnerProjection } from './workspace-runtime-host-ownership'
@@ -291,7 +293,23 @@ export function attachHostSessionShadow(
     if (!slice || !shadowSlice) {
       continue
     }
+    const worktreeIdByTabId = buildWorktreeIdByTabId(shadowSlice)
+    for (const [worktreeKey, tabs] of Object.entries(slice.tabsByWorktree ?? {})) {
+      for (const tab of tabs) {
+        if (!worktreeIdByTabId.has(tab.id)) {
+          worktreeIdByTabId.set(tab.id, tab.worktreeId ?? worktreeKey)
+        }
+      }
+    }
+    for (const tabs of Object.values(slice.unifiedTabs ?? {})) {
+      for (const tab of tabs) {
+        if (!worktreeIdByTabId.has(tab.id)) {
+          worktreeIdByTabId.set(tab.id, tab.worktreeId)
+        }
+      }
+    }
     for (const field of PARKABLE_HOST_SESSION_FIELDS) {
+      const ownership = WORKSPACE_SESSION_FIELD_OWNERSHIP[field]
       const parked = shadowSlice[field]
       if (!isWorkspaceSessionRecord(parked)) {
         continue
@@ -307,7 +325,16 @@ export function attachHostSessionShadow(
         ;(slice as WorkspaceSessionRecord)[field] = target
       }
       for (const [key, entry] of Object.entries(parked)) {
-        if (Object.hasOwn(target, key) || !hostStillClaimsKey(claims, key, hostId)) {
+        if (Object.hasOwn(target, key)) {
+          continue
+        }
+        const worktreeId =
+          ownership === 'worktreeKeyed'
+            ? key
+            : ownership === 'tabKeyed'
+              ? worktreeIdByTabId.get(key)
+              : worktreeIdForPaneKey(worktreeIdByTabId, key)
+        if (!hostStillClaimsKey(claims, worktreeId ?? key, hostId)) {
           continue
         }
         target[key] = entry

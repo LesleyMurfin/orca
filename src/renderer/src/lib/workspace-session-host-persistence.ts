@@ -40,10 +40,11 @@ import type { RemoteWorkspaceTestimonyState } from './remote-workspace-host-test
 import { shadowRowsTheHostHasNotAnswered } from './workspace-session-host-shadow-testimony'
 import {
   enqueueHostPartitionWrite,
+  registerLiveTestimonyProvider,
   resetHostPartitionWriteStateForTest
 } from './workspace-session-host-write-queue'
 
-export { resetHostPartitionWriteStateForTest }
+export { registerLiveTestimonyProvider, resetHostPartitionWriteStateForTest }
 
 export type HostPersistenceState = WorkspaceTabOwnerCatalog & {
   repos: readonly Pick<Repo, 'id' | 'connectionId' | 'executionHostId'>[]
@@ -61,6 +62,7 @@ export type HostPersistenceState = WorkspaceTabOwnerCatalog & {
   /** Partition each restored session key was read from. Routing honours it so a write returns rows
    *  to their own partition instead of re-deriving an owner the read never agreed to. */
   contestedPrimaryHostBySessionKey?: Record<string, ExecutionHostId>
+  getLiveTestimonyState?: () => RemoteWorkspaceTestimonyState
 } & RemoteWorkspaceTestimonyState
 
 type SessionApi = {
@@ -256,9 +258,17 @@ export function patchWorkspaceSessionByHost(
   const local = (slices[LOCAL_EXECUTION_HOST_ID] ?? patch) as WorkspaceSessionPatch
   const localWrite = api.patch(local)
   for (const [hostId, slice] of nonLocalHostSessionEntries(slices)) {
-    const task = enqueueHostPartitionWrite(hostId, state, () =>
-      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: slice is a partition subset matching WorkspaceSessionPatch
-      api.patch(slice as WorkspaceSessionPatch, hostId)
+    const task = enqueueHostPartitionWrite(
+      hostId,
+      state,
+      () =>
+        // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: slice is a partition subset matching WorkspaceSessionPatch
+        api.patch(slice as WorkspaceSessionPatch, hostId),
+      {
+        state,
+        replaceable: false,
+        getLiveState: state.getLiveTestimonyState
+      }
     )
     // Why: a failed runtime-partition write must not reject the local chain.
     void task.catch((err) => {
@@ -281,7 +291,13 @@ export async function persistWorkspaceSessionByHost(
   const slices = splitWorkspaceSessionForWrite(payload, state, 'replace')
   const writes: Promise<void>[] = [api.set(slices[LOCAL_EXECUTION_HOST_ID] ?? payload)]
   for (const [hostId, slice] of nonLocalHostSessionEntries(slices)) {
-    writes.push(enqueueHostPartitionWrite(hostId, state, () => api.set(slice, hostId)))
+    writes.push(
+      enqueueHostPartitionWrite(hostId, state, () => api.set(slice, hostId), {
+        state,
+        replaceable: true,
+        getLiveState: state.getLiveTestimonyState
+      })
+    )
   }
   await Promise.all(writes)
   await api.flush()

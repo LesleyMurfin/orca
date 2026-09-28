@@ -8,6 +8,16 @@ export type HostPartitionWriteOptions = {
   generation?: number
   shouldSkip?: () => boolean
   state?: RemoteWorkspaceTestimonyState
+  getLiveState?: () => RemoteWorkspaceTestimonyState
+  replaceable?: boolean
+}
+
+let globalLiveTestimonyProvider: (() => RemoteWorkspaceTestimonyState) | undefined
+
+export function registerLiveTestimonyProvider(
+  provider: (() => RemoteWorkspaceTestimonyState) | undefined
+): void {
+  globalLiveTestimonyProvider = provider
 }
 
 const hostPartitionWriteChains = new Map<ExecutionHostId, Promise<void>>()
@@ -16,6 +26,7 @@ const hostPartitionWriteGenerations = new Map<ExecutionHostId, number>()
 export function resetHostPartitionWriteStateForTest(): void {
   hostPartitionWriteChains.clear()
   hostPartitionWriteGenerations.clear()
+  globalLiveTestimonyProvider = undefined
 }
 
 export function enqueueHostPartitionWrite(
@@ -68,8 +79,14 @@ export function enqueueHostPartitionWrite<T>(
     return Promise.resolve(null)
   }
 
-  const assignedGen = options?.generation ?? currentGen + 1
-  hostPartitionWriteGenerations.set(hostId, Math.max(currentGen, assignedGen))
+  const advancesGeneration = options?.generation !== undefined || (options?.replaceable ?? false)
+  const assignedGen = options?.generation ?? (advancesGeneration ? currentGen + 1 : currentGen)
+  if (advancesGeneration) {
+    hostPartitionWriteGenerations.set(hostId, Math.max(currentGen, assignedGen))
+  }
+
+  const resolveLiveState = (): RemoteWorkspaceTestimonyState =>
+    options?.getLiveState?.() ?? globalLiveTestimonyProvider?.() ?? state ?? {}
 
   const shouldDiscard = (): boolean => {
     if (options?.shouldSkip?.()) {
@@ -78,12 +95,12 @@ export function enqueueHostPartitionWrite<T>(
     if (
       preparedWithoutTestimony &&
       targetId !== null &&
-      state &&
-      hostHasAnsweredForTarget(state, targetId)
+      hostHasAnsweredForTarget(resolveLiveState(), targetId)
     ) {
       return true
     }
-    if ((hostPartitionWriteGenerations.get(hostId) ?? 0) > assignedGen) {
+    const isReplaceable = options?.replaceable ?? options?.generation !== undefined
+    if (isReplaceable && (hostPartitionWriteGenerations.get(hostId) ?? 0) > assignedGen) {
       return true
     }
     return false
@@ -110,12 +127,14 @@ export function enqueueHostPartitionWrite<T>(
       return Promise.reject(err)
     }
 
-    void result.finally(() => {
-      resolveInFlight()
-      if (hostPartitionWriteChains.get(hostId) === inFlightPromise) {
-        hostPartitionWriteChains.delete(hostId)
-      }
-    })
+    void result
+      .finally(() => {
+        resolveInFlight()
+        if (hostPartitionWriteChains.get(hostId) === inFlightPromise) {
+          hostPartitionWriteChains.delete(hostId)
+        }
+      })
+      .catch(() => {})
     return result
   }
 
@@ -130,12 +149,14 @@ export function enqueueHostPartitionWrite<T>(
   const trackedPromise = new Promise<void>((resolve) => {
     resolveTracked = resolve
   })
-  void task.finally(() => {
-    resolveTracked()
-    if (hostPartitionWriteChains.get(hostId) === trackedPromise) {
-      hostPartitionWriteChains.delete(hostId)
-    }
-  })
+  void task
+    .finally(() => {
+      resolveTracked()
+      if (hostPartitionWriteChains.get(hostId) === trackedPromise) {
+        hostPartitionWriteChains.delete(hostId)
+      }
+    })
+    .catch(() => {})
   hostPartitionWriteChains.set(hostId, trackedPromise)
 
   return task
