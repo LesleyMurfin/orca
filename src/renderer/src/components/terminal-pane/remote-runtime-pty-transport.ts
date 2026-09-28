@@ -131,6 +131,7 @@ function isRemoteTerminalGoneMessage(message: string): boolean {
     message.includes('terminal_exited') ||
     message.includes('terminal_gone') ||
     message.includes('terminal_not_found') ||
+    message.includes('tab_not_found') ||
     message.includes('no_connected_pty') ||
     message.toLocaleLowerCase('en-US').includes('explicitly killed')
   )
@@ -1219,7 +1220,11 @@ export function createRemoteRuntimePtyTransport(
         resolvePaneUnavailable = true
         return null
       }
-      if (message.includes('terminal_not_found') || message.includes('method_not_found')) {
+      if (
+        message.includes('terminal_not_found') ||
+        message.includes('tab_not_found') ||
+        message.includes('method_not_found')
+      ) {
         return null
       }
       throw error
@@ -2489,8 +2494,14 @@ export function createRemoteRuntimePtyTransport(
         }
         if (!resolved) {
           connecting = false
+          connected = false
           terminalEnded = true
+          handle = null
+          clearPendingViewportClaim()
+          closeMultiplexedStream()
+          setAttachmentUnavailable()
           emitRecoveryState()
+          onPtyExit?.(toRemoteRuntimePtyId(persistedHandle, currentRuntimeEnvironmentId), -1)
           surfaceErrorMessage('Remote terminal was closed.')
           return
         }
