@@ -5,7 +5,7 @@
  * and its process behind. These cover the cap at its boundary and the forced reclaim.
  */
 import { EventEmitter } from 'node:events'
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   windows: [] as MockBrowserWindow[],
@@ -59,7 +59,7 @@ vi.mock('./browser-session-registry', () => ({
   }
 }))
 
-import { OffscreenBrowserBackend } from './offscreen-browser-backend'
+import { OffscreenBrowserBackend, type OffscreenBrowserManager } from './offscreen-browser-backend'
 import {
   DEFAULT_MAX_OFFSCREEN_BROWSER_TABS,
   MAX_OFFSCREEN_BROWSER_TABS_ENV,
@@ -71,10 +71,7 @@ import {
   type RendererProcessControl
 } from './offscreen-renderer-process-reclaim'
 
-type BrowserManagerDouble = {
-  registerOffscreenGuest: Mock<() => boolean>
-  unregisterGuest: Mock<(browserPageId: string) => void>
-}
+type BrowserManagerDouble = OffscreenBrowserManager
 
 /**
  * Every backend gets an injected process control: the default one signals real OS pids, and the
@@ -87,7 +84,7 @@ function createBackend(options: {
   rendererProcessControl?: RendererProcessControl
 }): OffscreenBrowserBackend {
   const { browserManager, ...rest } = options
-  return new OffscreenBrowserBackend(browserManager as never, {
+  return new OffscreenBrowserBackend(browserManager, {
     rendererProcessControl: { isAlive: () => false, kill: () => {} },
     ...rest
   })
@@ -112,6 +109,7 @@ beforeEach(() => {
       this.destroy = window.destroy.bind(window)
     }
   )
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: BrowserWindow in tests is a mock constructor function that must also carry the static getAllWindows helper.
   const statics = mocks.BrowserWindow as unknown as {
     getAllWindows: () => MockBrowserWindow[]
   }

@@ -32,7 +32,9 @@ export const nodeRendererProcessControl: RendererProcessControl = {
       return true
     } catch (error) {
       // Why EPERM counts as alive: the signal was refused, which only a live process can do.
-      return (error as NodeJS.ErrnoException).code === 'EPERM'
+      return (
+        typeof error === 'object' && error !== null && 'code' in error && error.code === 'EPERM'
+      )
     }
   },
   kill: (osProcessId) => {

@@ -5,6 +5,11 @@ import { ORCA_BROWSER_GUEST_WEB_PREFERENCES } from '../../shared/browser-guest-w
 import { mapSettledWithConcurrency } from '../../shared/map-with-concurrency'
 import type { BrowserBackend, BrowserBackendCreateTab } from './browser-backend'
 import type { BrowserManager } from './browser-manager'
+
+export type OffscreenBrowserManager = Pick<
+  BrowserManager,
+  'registerOffscreenGuest' | 'unregisterGuest'
+>
 import type { AgentBrowserBridge } from './agent-browser-bridge'
 import { browserSessionRegistry } from './browser-session-registry'
 import { BrowserError } from './browser-error'
@@ -51,7 +56,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   private readonly rendererProcessControl: RendererProcessControl
 
   constructor(
-    private readonly browserManager: BrowserManager,
+    private readonly browserManager: OffscreenBrowserManager,
     private readonly options: {
       getAgentBrowserBridge?: () => Pick<AgentBrowserBridge, 'onPageClosed'> | null
       /** Per-host override; production resolves the cap from the environment. */
