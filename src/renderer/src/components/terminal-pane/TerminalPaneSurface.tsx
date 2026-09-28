@@ -49,6 +49,7 @@ export function TerminalPaneSurface({
     expectedLayoutLeafIdsAttr,
     expandedPaneId,
     effectiveChatViewMode,
+    executeClosePane,
     handleCancelClose,
     handleConfirmClose,
     handleContextMenuToggleNativeChat,
@@ -167,7 +168,7 @@ export function TerminalPaneSurface({
             <TerminalErrorToast
               error={visibleTerminalError}
               onDismiss={dismissTerminalError}
-              onClosePane={() => handleRequestClosePane(activePane.id)}
+              onClosePane={() => executeClosePane(activePane.id)}
               onRestartDaemon={() => daemonActions.setPending('restart')}
               onRetry={
                 isPaneOwnerUnverifiedError(visibleTerminalError)
