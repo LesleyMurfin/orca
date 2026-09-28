@@ -84,6 +84,7 @@ function profilePath(userDataDir: string): string {
 }
 
 function readProfile(userDataDir: string): SessionProfile {
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: JSON.parse result deserialized into SessionProfile fixture
   return JSON.parse(readFileSync(profilePath(userDataDir), 'utf8')) as SessionProfile
 }
 

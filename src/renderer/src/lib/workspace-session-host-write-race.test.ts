@@ -121,6 +121,7 @@ describe('GAP-03 Write Race Protection', () => {
       contestedPrimaryHostBySessionKey: read.contestedPrimaryHostBySessionKey
     }
 
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock for DurableSessionApi
     await persistWorkspaceSessionByHost(api as never, read.session, state)
 
     expect(captured[SSH_HOST_ID]).toBeUndefined()
@@ -188,6 +189,7 @@ describe('GAP-03 Write Race Protection', () => {
       contestedPrimaryHostBySessionKey: read.contestedPrimaryHostBySessionKey
     }
 
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock for DurableSessionApi
     await persistWorkspaceSessionByHost(api as never, payloadWithFreshLocalActivity, state)
 
     // The write race, demonstrated: WORKTREE_ID's genuinely-closed tabs come back, even though the
@@ -256,6 +258,7 @@ describe('GAP-03 Write Race Protection', () => {
       remoteWorkspaceSyncStatusByTargetId: { [TARGET_ID]: { phase: 'synced' } }
     }
 
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock for DurableSessionApi
     await persistWorkspaceSessionByHost(api as never, payloadWithFreshLocalActivity, state)
 
     expect(captured[SSH_HOST_ID]?.tabsByWorktree?.[WORKTREE_ID]).toBeUndefined()
@@ -343,6 +346,7 @@ describe('GAP-03 Write Race Protection', () => {
       releaseW0 = resolve
     })
     const w0Promise = persistWorkspaceSessionByHost(
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock for DurableSessionApi
       {
         ...api,
         set: async (_payload: WorkspaceSessionState, hostId?: ExecutionHostId) => {
@@ -362,6 +366,7 @@ describe('GAP-03 Write Race Protection', () => {
     // W1 is dispatched while W0 is in-flight: W1 carries the stale declined tabs (prepared without testimony)
     // and queues behind W0 on SSH_HOST_ID.
     const writePromise = persistWorkspaceSessionByHost(
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock for DurableSessionApi
       api as never,
       payloadWithFreshLocalActivity,
       state
@@ -410,6 +415,7 @@ describe('GAP-03 regression: a declined tab must park and restore its dependent 
             [SIBLING_WORKTREE_ID]: [tab('tab-4', SIBLING_WORKTREE_ID)]
           },
           terminalLayoutsByTabId: {
+            // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock for TerminalLayout
             'tab-2': { root: null, activeLeafId: null, expandedLeafId: null } as never
           },
           remoteSessionIdsByTabId: {
@@ -461,6 +467,7 @@ describe('GAP-03 regression: a declined tab must park and restore its dependent 
       contestedPrimaryHostBySessionKey: read.contestedPrimaryHostBySessionKey
     }
 
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock for DurableSessionApi
     await persistWorkspaceSessionByHost(api as never, payloadWithFreshLocalActivity, state)
 
     // The worktree-keyed row already round-trips correctly (pinned by the sibling test above).
