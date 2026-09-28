@@ -32,6 +32,7 @@ const LINUX_CGROUP_PIDS: Record<string, string> = {
 
 function sources(overrides: Parameters<typeof collectServeStatsHost>[0] = {}) {
   return {
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture pins platform to linux.
     platform: 'linux' as NodeJS.Platform,
     loadAverage: () => [6.85, 4.2, 3.1],
     cpuCoreCount: () => 4,

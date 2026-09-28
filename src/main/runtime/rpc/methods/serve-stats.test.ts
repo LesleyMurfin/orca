@@ -66,6 +66,7 @@ describe('serve.stats RPC method', () => {
         }
       }
     }
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test stub provides only the two runtime methods the serve stats RPC reaches.
     const runtime = {
       getRuntimeId: () => 'test-runtime',
       getServeStats: async () => stats

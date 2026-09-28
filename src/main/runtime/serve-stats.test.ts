@@ -217,6 +217,7 @@ describe('getServeStats', () => {
   it('counts a pty that lost host contact as unverifiable, never as a terminal', async () => {
     db = new OrchestrationDb(':memory:')
     const runtime = runtimeWithStubbedWorktrees(db)
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test reaches internal runtime method for fixture setup.
     const internals = runtime as unknown as {
       recordPtyWorktree: (
         ptyId: string,
@@ -245,6 +246,7 @@ describe('getServeStats', () => {
   it('separates a pty the host reported exited from one that merely lost contact', async () => {
     db = new OrchestrationDb(':memory:')
     const runtime = runtimeWithStubbedWorktrees(db)
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test reaches internal runtime method for fixture setup.
     const internals = runtime as unknown as {
       recordPtyWorktree: (
         ptyId: string,
@@ -476,6 +478,7 @@ function installBrowserBridge(
   registeredPages: Map<string, number>
 ): void {
   // The field is protected on the runtime; tests here already reach internals the same way.
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test sets protected agentBrowserBridge field on runtime instance.
   const internals = runtime as unknown as { agentBrowserBridge: AgentBrowserBridge }
   internals.agentBrowserBridge = new AgentBrowserBridge(mockBrowserManager(registeredPages))
 }

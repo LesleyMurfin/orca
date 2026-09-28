@@ -8,8 +8,10 @@ import { OrcaRuntimeRpcServer } from './runtime-rpc'
 import { OrchestrationDb } from './orchestration/db'
 import { StatsCollector } from '../stats/collector'
 import { AgentSessionTransitionRecorder } from '../stats/agent-session-transition-recorder'
-
 import type { AgentStatusIpcPayload } from '../../shared/agent-status-types'
+import { agentSessionRecordFixture } from '../native-chat/agent-session-record-test-fixture'
+
+// oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture mock container typed dynamically.
 const structuredHost = vi.hoisted(() => ({ current: null as unknown }))
 vi.mock('../native-chat/agent-session-wire/structured-agent-session-registry', () => ({
   getStructuredAgentSessionHost: () => structuredHost.current
@@ -31,6 +33,7 @@ beforeEach(() => {
 
 function runtimeWithDb(extraDeps: Record<string, unknown> = {}) {
   const stats = new StatsCollector()
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Injects partial runtime test dependencies.
   const runtime = new OrcaRuntimeService(null, stats, extraDeps as never)
   const db = new OrchestrationDb(':memory:')
   runtime.setOrchestrationDb(db)
@@ -38,19 +41,25 @@ function runtimeWithDb(extraDeps: Record<string, unknown> = {}) {
 }
 
 describe('serve stats lifecycle', () => {
-  it('counts native live sessions without counting readable or terminal-owned sessions twice', async () => {
+  it('counts native live sessions without counting recovering or unattached sessions twice', async () => {
     const { runtime, db } = runtimeWithDb()
     structuredHost.current = {
-      listSessionTabs: () => ['live', 'restored', 'terminal'].map((sessionId) => ({ sessionId })),
-      hasSession: () => true,
+      listSessionTabs: () => ['live', 'restored', 'unattached'].map((sessionId) => ({ sessionId })),
+      hasSession: (id: string) => id === 'live',
       deps: {
         store: {
-          getRecord: (id: string) => ({
-            lease: {
-              runtimeKind: id === 'terminal' ? 'tui' : 'native',
-              claimStatus: id === 'restored' ? 'recovering' : 'live'
+          getRecord: (id: string) => {
+            const base = agentSessionRecordFixture({ sessionId: id })
+            return {
+              ...base,
+              lease: {
+                ...base.lease,
+                // restored is mid-recovery (not live); unattached is live on disk but not attached.
+                claimStatus: id === 'restored' ? 'reserved' : 'live',
+                handoffStage: id === 'restored' ? 'recovering' : null
+              }
             }
-          })
+          }
         }
       }
     }
@@ -88,6 +97,7 @@ describe('serve stats lifecycle', () => {
     const event = {
       paneKey: 'tab-review::11111111-1111-4111-8111-111111111111',
       connectionId: null,
+      receivedAt: Date.now(),
       stateStartedAt: Date.now(),
       payload: { state: 'working' as const }
     }
@@ -113,6 +123,7 @@ describe('serve stats lifecycle', () => {
 
   it('keeps a proven exit in the counts across an inventory refresh that omits the pty', async () => {
     const { runtime, db } = runtimeWithDb()
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test reaches internal runtime method for fixture setup.
     const internals = runtime as unknown as {
       refreshPtyWorktreeRecordsWithControllerInventory: (
         resolvedWorktrees: unknown[],
@@ -152,6 +163,7 @@ describe('serve stats lifecycle', () => {
 
   it('stops counting a proven exit once the pty record itself is disposed', async () => {
     const { runtime, db } = runtimeWithDb()
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test reaches internal runtime method for fixture setup.
     const internals = runtime as unknown as {
       dropDisconnectedPtyRecord: (ptyId: string) => void
     }
@@ -177,10 +189,11 @@ describe('serve stats lifecycle', () => {
   })
 
   it('moves an agent between turn-state buckets, and admits when it cannot prove one', async () => {
-    let currentHookRows: AgentStatusIpcPayload[] = []
+    let hookRows: AgentStatusIpcPayload[] = []
     const { runtime, db } = runtimeWithDb({
-      getAgentStatusSnapshot: () => currentHookRows
+      getAgentStatusSnapshot: () => hookRows
     })
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test reaches internal runtime method for fixture setup.
     const internals = runtime as unknown as {
       ptysById: Map<string, { paneKey: string | null }>
     }
@@ -197,16 +210,20 @@ describe('serve stats lifecycle', () => {
       })
 
       const retain = (state: 'working' | 'blocked' | 'done'): void => {
-        currentHookRows = [
+        const now = Date.now()
+        hookRows = [
+          // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test synthesizes minimal agent status hook row.
           {
             paneKey,
             state,
-            receivedAt: Date.now(),
-            evidenceObservedAt: Date.now(),
-            connectionId: null
+            agentType: 'claude',
+            connectionId: null,
+            receivedAt: now,
+            stateStartedAt: now
           } as AgentStatusIpcPayload
         ]
       }
+
       retain('working')
       expect((await runtime.getServeStats()).counts.agentsByState).toEqual({
         working: 1,
@@ -238,6 +255,7 @@ describe('serve stats lifecycle', () => {
 
 /** A pty with no renderer leaf behind it: the shape `orca serve` runs headless. */
 async function createHeadlessTerminal(runtime: OrcaRuntimeService): Promise<void> {
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test spies on protected runtime method for fixture setup.
   const scope = runtime as unknown as {
     resolveTerminalWorkspaceLaunchScope: (selector: string) => Promise<unknown>
   }

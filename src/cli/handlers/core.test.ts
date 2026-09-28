@@ -362,6 +362,7 @@ describe('orca serve stats CLI handler', () => {
       json: true
     })
 
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture asserts the parsed JSON RPC payload shape.
     const parsed = JSON.parse(String(log.mock.calls[0]?.[0])) as {
       result: { port: number | null; counts: { agents: number } }
     }

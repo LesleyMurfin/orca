@@ -84,7 +84,7 @@ export function resolveServeStatsPtyAgentState(
 ): RuntimeServeStatsAgentState {
   const explicit = pty.paneKey
     ? selectFreshExplicitAgentStatus({
-        handle: runtime.handleByPtyId.get(pty.ptyId) ?? null,
+        handle: runtime.handleByPtyId.get(pty.ptyId) ?? '',
         paneKey: pty.paneKey,
         hookRows
       })
@@ -158,6 +158,7 @@ export async function collectRuntimeServeStats(
   // Pages of both kinds plus their renderer footprint, from one walk of the bridge's page-id
   // registration map.
   const browserPages = collectServeStatsBrowserPages(
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: ServeStatsRuntime satisfies the subset of OrcaRuntimeService needed for desktop surface.
     runtime as unknown as Parameters<typeof collectServeStatsBrowserPages>[0],
     runtime.agentBrowserBridge
   )
@@ -182,6 +183,7 @@ export async function collectRuntimeServeStats(
       browserPageMemoryMaxBytes: browserPages.memory.maxBytes,
       tasksByStatus,
       agentsByState,
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Object.fromEntries maps each defined state to a count.
       workersByTerminalState: Object.fromEntries(
         WORKER_TERMINAL_LIST_STATES.map((state) => [state, workerTerminals.counts[state] ?? 0])
       ) as Record<WorkerTerminalListState, number>

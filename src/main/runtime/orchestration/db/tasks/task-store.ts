@@ -176,10 +176,12 @@ export function countTasks(this: OrchestrationDb): number {
 // hand (#13047). One grouped scan, and every status is seeded so a status with no rows reads as
 // 0 instead of vanishing from the contract.
 export function countTasksByStatus(this: OrchestrationDb): Record<TaskStatus, number> {
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Seeds every declared status key to 0.
   const counts = Object.fromEntries(
     ORCHESTRATION_TASK_STATUSES.map((status) => [status, 0])
   ) as Record<TaskStatus, number>
   const rows = this.db.prepare('SELECT status, COUNT(*) AS count FROM tasks GROUP BY status').all()
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: SQLite query returns rows shaped with status and count columns.
   for (const row of rows as { status: TaskStatus; count: number }[]) {
     if (row.status in counts) {
       counts[row.status] = Number(row.count)

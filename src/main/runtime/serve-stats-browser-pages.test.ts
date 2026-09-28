@@ -13,6 +13,7 @@ const RSS_BY_PID: Record<number, number> = {
 
 function sources(overrides: Parameters<typeof collectServeStatsBrowserPageMemory>[1] = {}) {
   return {
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Test fixture pins platform to linux.
     platform: 'linux' as NodeJS.Platform,
     // WebContents id 501 → pid 4101, and so on: the registration map only knows WebContents ids.
     osProcessId: (webContentsId: number) => webContentsId - 501 + 4101,
