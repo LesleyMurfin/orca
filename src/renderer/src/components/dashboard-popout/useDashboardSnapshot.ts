@@ -52,6 +52,7 @@ export function useDashboardSnapshot(): DashboardSnapshot {
   const columnSignatureRef = useRef('')
   const retainedRepoIconsRef = useRef<DashboardSnapshot['repoIconsByRepoId']>(undefined)
   const snapshotRef = useRef(snapshot)
+  const activeTransitionRef = useRef<unknown>(null)
 
   useEffect(() => {
     let topologyRefreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -120,6 +121,10 @@ export function useDashboardSnapshot(): DashboardSnapshot {
       const nextSignature = columnSignature(next)
       const layoutChanged = nextSignature !== columnSignatureRef.current
       columnSignatureRef.current = nextSignature
+      if (activeTransitionRef.current !== null) {
+        setSnapshot(next)
+        return
+      }
 
       const startViewTransition = document.startViewTransition?.bind(document)
       if (
@@ -139,20 +144,38 @@ export function useDashboardSnapshot(): DashboardSnapshot {
         const transition = startViewTransition(() => {
           try {
             flushSync(() => setSnapshot(next))
-          } catch {
+          } catch (err: unknown) {
             setSnapshot(next)
+            if (!isBenignViewTransitionError(err)) {
+              console.warn(
+                'flushSync failed during view transition; fell back to asynchronous snapshot update:',
+                err
+              )
+            }
           }
         })
-        if (transition && typeof transition === 'object' && 'finished' in transition) {
-          const vt = transition as { finished?: Promise<void> }
-          vt.finished?.catch((err: unknown) => {
-            if (!isBenignViewTransitionError(err)) {
-              console.warn('Unexpected view transition rejection:', err)
-            }
-          })
+        activeTransitionRef.current = transition
+        if (
+          transition &&
+          typeof transition === 'object' &&
+          'finished' in transition &&
+          transition.finished instanceof Promise
+        ) {
+          transition.finished
+            .catch((err: unknown) => {
+              if (!isBenignViewTransitionError(err)) {
+                console.warn('Unexpected view transition rejection:', err)
+              }
+            })
+            .finally(() => {
+              if (activeTransitionRef.current === transition) {
+                activeTransitionRef.current = null
+              }
+            })
         }
       } catch (err: unknown) {
         if (isBenignViewTransitionError(err)) {
+          activeTransitionRef.current = null
           setSnapshot(next)
         } else {
           throw err
