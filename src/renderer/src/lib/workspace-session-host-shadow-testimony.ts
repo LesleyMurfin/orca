@@ -3,9 +3,9 @@ import { parseExecutionHostId } from '../../../shared/execution-host'
 import { parseWorkspaceKey } from '../../../shared/workspace-scope'
 import { WORKSPACE_SESSION_FIELD_OWNERSHIP } from '../../../shared/workspace-session-host-field-ownership'
 import type { WorkspaceSessionState } from '../../../shared/workspace-session-state-types'
-import { isWorkspaceSessionRecord } from '../../../shared/workspace-session-host-records'
 import {
   buildWorktreeIdByTabId,
+  isWorkspaceSessionRecord,
   worktreeIdForPaneKey
 } from '../../../shared/workspace-session-host-records'
 import { PARKABLE_HOST_SESSION_FIELDS } from './workspace-session-host-contention'
@@ -49,6 +49,7 @@ export function shadowRowsTheHostHasNotAnswered(
   let withheld = false
   const nextShadow: HostSessionSlices = {}
 
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Object.entries returns string keys; cast to ExecutionHostId and WorkspaceSessionState
   for (const [hostId, hostSlice] of Object.entries(shadow) as [
     ExecutionHostId,
     WorkspaceSessionState | undefined

@@ -168,6 +168,7 @@ describe('shadowRowsTheHostHasNotAnswered', () => {
     const shadow: HostSessionSlices = {
       [SSH_HOST_ID]: {
         ...sessionWithTabs({ [worktreeKey]: worktreeTabs }),
+        // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock for openFilesByWorktree record
         openFilesByWorktree: { [worktreeKey]: openFiles as never }
       }
     }

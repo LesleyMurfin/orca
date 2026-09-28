@@ -36,11 +36,14 @@ import {
   extendWorktreeIdByTabId,
   type WorkspaceTabOwnerCatalog
 } from '../../../shared/workspace-session-host-records'
-import {
-  hostHasAnsweredForTarget,
-  type RemoteWorkspaceTestimonyState
-} from './remote-workspace-host-testimony'
+import type { RemoteWorkspaceTestimonyState } from './remote-workspace-host-testimony'
 import { shadowRowsTheHostHasNotAnswered } from './workspace-session-host-shadow-testimony'
+import {
+  enqueueHostPartitionWrite,
+  resetHostPartitionWriteStateForTest
+} from './workspace-session-host-write-queue'
+
+export { resetHostPartitionWriteStateForTest }
 
 export type HostPersistenceState = WorkspaceTabOwnerCatalog & {
   repos: readonly Pick<Repo, 'id' | 'connectionId' | 'executionHostId'>[]
@@ -241,68 +244,6 @@ function splitWorkspaceSessionForWrite(
   return slices
 }
 
-const hostPartitionWriteChains = new Map<ExecutionHostId, Promise<void>>()
-const hostPartitionWriteGenerations = new Map<ExecutionHostId, number>()
-
-export function resetHostPartitionWriteStateForTest(): void {
-  hostPartitionWriteChains.clear()
-  hostPartitionWriteGenerations.clear()
-}
-function enqueueHostPartitionWrite(
-  hostId: ExecutionHostId,
-  state: HostPersistenceState,
-  perform: () => Promise<void>
-): Promise<void> {
-  const parsed = parseExecutionHostId(hostId)
-  const targetId = parsed?.kind === 'ssh' ? parsed.targetId : null
-  const preparedWithoutTestimony = targetId !== null && !hostHasAnsweredForTarget(state, targetId)
-  const nextGen = (hostPartitionWriteGenerations.get(hostId) ?? 0) + 1
-  hostPartitionWriteGenerations.set(hostId, nextGen)
-
-  const inFlight = hostPartitionWriteChains.get(hostId)
-  if (!inFlight) {
-    if (
-      preparedWithoutTestimony &&
-      targetId !== null &&
-      hostHasAnsweredForTarget(state, targetId)
-    ) {
-      return Promise.resolve()
-    }
-    let resolveInFlight!: () => void
-    const inFlightPromise = new Promise<void>((resolve) => {
-      resolveInFlight = resolve
-    })
-    hostPartitionWriteChains.set(hostId, inFlightPromise)
-    const result = perform()
-    void result.finally(() => {
-      resolveInFlight()
-      if (hostPartitionWriteChains.get(hostId) === inFlightPromise) {
-        hostPartitionWriteChains.delete(hostId)
-      }
-    })
-    return result
-  }
-
-  const task = inFlight.then(async () => {
-    if (
-      (preparedWithoutTestimony &&
-        targetId !== null &&
-        hostHasAnsweredForTarget(state, targetId)) ||
-      (hostPartitionWriteGenerations.get(hostId) ?? 0) > nextGen
-    ) {
-      return
-    }
-    await perform()
-  })
-  const tracked = task.finally(() => {
-    if (hostPartitionWriteChains.get(hostId) === tracked) {
-      hostPartitionWriteChains.delete(hostId)
-    }
-  })
-  hostPartitionWriteChains.set(hostId, tracked)
-  return task
-}
-
 /** Patch path of the debounced session writer: split the partial patch by owner
  *  host and patch each partition. Returns the promise for the local write so
  *  App.tsx can keep chaining the SSH remote-workspace upload off it. */
@@ -316,6 +257,7 @@ export function patchWorkspaceSessionByHost(
   const localWrite = api.patch(local)
   for (const [hostId, slice] of nonLocalHostSessionEntries(slices)) {
     const task = enqueueHostPartitionWrite(hostId, state, () =>
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: slice is a partition subset matching WorkspaceSessionPatch
       api.patch(slice as WorkspaceSessionPatch, hostId)
     )
     // Why: a failed runtime-partition write must not reject the local chain.
