@@ -4,6 +4,7 @@ import {
   SshDualChannelMultiplexer,
   type DualChannelTransports
 } from './ssh-dual-channel-multiplexer'
+import { SingleChannelState } from './ssh-dual-channel-state'
 import type { MultiplexerTransport } from './ssh-channel-multiplexer'
 import { encodeFrame, MessageType, HEADER_LENGTH } from './relay-protocol'
 
@@ -323,6 +324,129 @@ describe('SshDualChannelMultiplexer', () => {
       const cancelFrame = decodeWrittenPayload(interactive.written[1])
       expect(cancelFrame.method).toBe('rpc.cancel')
       expect(cancelFrame.params).toEqual({ id })
+    })
+
+    it('routes direct notify rpc.cancel to originating channel for pending requests', () => {
+      void dualMux.request('pty.spawn', { cols: 80, rows: 24 }).catch(() => {})
+      expect(interactive.written.length).toBe(1)
+      const { id } = decodeWrittenPayload(interactive.written[0])
+      expect(typeof id).toBe('number')
+
+      dualMux.notify('rpc.cancel', { id })
+
+      expect(interactive.written.length).toBe(2)
+      expect(background.written.length).toBe(0)
+      const cancelPayload = decodeWrittenPayload(interactive.written[1])
+      expect(cancelPayload.method).toBe('rpc.cancel')
+      expect(cancelPayload.params).toEqual({ id })
+    })
+
+    it('does not send rpc response if multiplexer is disposed during async request processing', async () => {
+      const { promise, resolve } = Promise.withResolvers<unknown>()
+      dualMux.onRequest('async.action', () => promise)
+
+      interactive.dataCallbacks[0](makeRequestFrame(202, 'async.action'))
+      expect(interactive.written.length).toBe(0)
+
+      dualMux.dispose()
+      resolve({ done: true })
+      await vi.runAllTimersAsync()
+
+      // No response frame should be written after disposal
+      expect(interactive.written.length).toBe(0)
+    })
+
+    it('cleans up immediately and prevents orphaned timers if transport write throws synchronously', async () => {
+      const writeError = new Error('Transport write failure')
+      interactive.write = vi.fn(() => {
+        throw writeError
+      })
+
+      const abortController = new AbortController()
+      await expect(
+        dualMux.request(
+          'pty.spawn',
+          { cols: 80, rows: 24 },
+          {
+            signal: abortController.signal,
+            timeoutMs: 1000
+          }
+        )
+      ).rejects.toThrow('Transport write failure')
+
+      // Advancing past timeout must not trigger another rejection or cancel notification
+      vi.advanceTimersByTime(2000)
+      expect(interactive.written.length).toBe(0)
+      expect(background.written.length).toBe(0)
+
+      // Aborting the signal must also be a no-op because cleanup already detached the listener
+      abortController.abort()
+      expect(interactive.written.length).toBe(0)
+    })
+  })
+
+  describe('resource deallocation & inverse falsification (Round 3)', () => {
+    it('cleans up all request handlers and rejects new registrations after disposal', async () => {
+      const handler = vi.fn()
+      dualMux.onRequest('test.method', handler)
+
+      dualMux.dispose()
+
+      // Registering on disposed multiplexer must return a no-op cleanup
+      const unreg = dualMux.onRequest('new.method', vi.fn())
+      expect(typeof unreg).toBe('function')
+      unreg()
+
+      // Sending frames for previously registered method must be dropped
+      interactive.dataCallbacks[0](makeRequestFrame(301, 'test.method'))
+      await vi.runAllTimersAsync()
+      expect(handler).not.toHaveBeenCalled()
+      expect(interactive.written.length).toBe(0)
+    })
+
+    it('safely dispatches all onDispose handlers even if a handler unregisters itself during traversal', () => {
+      const order: number[] = []
+      let unreg2!: () => void
+
+      dualMux.onDispose(() => {
+        order.push(1)
+        unreg2()
+      })
+      unreg2 = dualMux.onDispose(() => {
+        order.push(2)
+      })
+      dualMux.onDispose(() => {
+        order.push(3)
+      })
+
+      dualMux.dispose('shutdown')
+
+      // All handlers snapshotted for dispatch run safely without mutation skipping
+      expect(order).toEqual([1, 2, 3])
+    })
+  })
+
+  describe('single channel state lifecycle & boundary resilience (Round 4)', () => {
+    it('stops feeding decoder and drops outgoing frames once SingleChannelState is disposed', () => {
+      const mockTransport = createMockTransport()
+      const onFrame = vi.fn()
+      const state = new SingleChannelState('interactive', mockTransport, onFrame)
+
+      expect(state.isDisposed()).toBe(false)
+      state.sendJsonRpc({ jsonrpc: '2.0', method: 'ping' })
+      expect(mockTransport.written.length).toBe(1)
+
+      state.dispose()
+      expect(state.isDisposed()).toBe(true)
+      expect(mockTransport.close).toHaveBeenCalled()
+
+      // Further outgoing frames are dropped
+      state.sendJsonRpc({ jsonrpc: '2.0', method: 'ping' })
+      expect(mockTransport.written.length).toBe(1)
+
+      // Incoming data on transport callback is ignored
+      mockTransport.dataCallbacks[0](Buffer.from([0, 1, 2, 3]))
+      expect(onFrame).not.toHaveBeenCalled()
     })
   })
 })

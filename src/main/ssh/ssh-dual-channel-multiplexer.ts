@@ -7,6 +7,7 @@ import {
 } from './relay-protocol'
 import {
   createSshDisposalError,
+  SSH_MUX_REQUEST_TIMEOUT_CODE,
   type MultiplexerDisposeReason,
   type NotificationHandler,
   type MethodNotificationHandler,
@@ -16,6 +17,8 @@ import {
 import {
   SingleChannelState,
   DualChannelRegistry,
+  selectChannel,
+  createCancelNotification,
   type DualChannelTransports,
   type ChannelKind
 } from './ssh-dual-channel-state'
@@ -32,10 +35,6 @@ type PendingRequest = {
 }
 
 const REQUEST_TIMEOUT_MS = 30_000
-
-function selectChannel(method: string): ChannelKind {
-  return method.startsWith('pty.') ? 'interactive' : 'background'
-}
 
 export class SshDualChannelMultiplexer {
   private readonly channels: { interactive: SingleChannelState; background: SingleChannelState }
@@ -99,11 +98,9 @@ export class SshDualChannelMultiplexer {
       }
       pending.cleanup()
       this.pendingRequests.delete(id)
-      this.channels[pending.channel].sendJsonRpc({
-        jsonrpc: '2.0',
-        method: 'rpc.cancel',
-        params: { id }
-      })
+      if (!this.disposed) {
+        this.channels[pending.channel].sendJsonRpc(createCancelNotification(id))
+      }
       const err = new Error(`Request "${method}" was cancelled`)
       err.name = 'AbortError'
       pending.reject(err)
@@ -113,16 +110,14 @@ export class SshDualChannelMultiplexer {
       const pending = this.pendingRequests.get(id)
       if (pending) {
         pending.cleanup()
-        this.channels[pending.channel].sendJsonRpc({
-          jsonrpc: '2.0',
-          method: 'rpc.cancel',
-          params: { id }
-        })
+        if (!this.disposed) {
+          this.channels[pending.channel].sendJsonRpc(createCancelNotification(id))
+        }
       }
       this.pendingRequests.delete(id)
       reject(
         Object.assign(new Error(`Request "${method}" timed out after ${timeoutMs}ms`), {
-          code: 'SSH_MUX_REQUEST_TIMEOUT'
+          code: SSH_MUX_REQUEST_TIMEOUT_CODE
         })
       )
     }, timeoutMs)
@@ -139,12 +134,18 @@ export class SshDualChannelMultiplexer {
       channel: channelKind
     })
 
-    this.channels[channelKind].sendJsonRpc({
-      jsonrpc: '2.0',
-      id,
-      method,
-      ...(params !== undefined ? { params } : {})
-    })
+    try {
+      this.channels[channelKind].sendJsonRpc({
+        jsonrpc: '2.0',
+        id,
+        method,
+        ...(params !== undefined ? { params } : {})
+      })
+    } catch (writeErr) {
+      cleanup()
+      this.pendingRequests.delete(id)
+      throw writeErr
+    }
     return promise
   }
 
@@ -152,7 +153,14 @@ export class SshDualChannelMultiplexer {
     if (this.disposed) {
       return
     }
-    this.channels[selectChannel(method)].sendJsonRpc({
+    let channelKind = selectChannel(method)
+    if (method === 'rpc.cancel' && typeof params?.id === 'number') {
+      const pending = this.pendingRequests.get(params.id)
+      if (pending) {
+        channelKind = pending.channel
+      }
+    }
+    this.channels[channelKind].sendJsonRpc({
       jsonrpc: '2.0',
       method,
       ...(params !== undefined ? { params } : {})
@@ -174,6 +182,9 @@ export class SshDualChannelMultiplexer {
   }
 
   onRequest(method: string, handler: RequestHandler): () => void {
+    if (this.disposed) {
+      return () => {}
+    }
     return this.registry.addRequest(method, handler)
   }
 
@@ -261,6 +272,9 @@ export class SshDualChannelMultiplexer {
     const handler = this.registry.requestHandlers.get(msg.method)
     const ch = this.channels[channel]
     if (!handler) {
+      if (this.disposed) {
+        return
+      }
       ch.sendJsonRpc({
         jsonrpc: '2.0',
         id: msg.id,
@@ -270,8 +284,14 @@ export class SshDualChannelMultiplexer {
     }
     try {
       const result = await handler(msg.params ?? {})
+      if (this.disposed) {
+        return
+      }
       ch.sendJsonRpc({ jsonrpc: '2.0', id: msg.id, result: result ?? null })
     } catch (err) {
+      if (this.disposed) {
+        return
+      }
       ch.sendJsonRpc({
         jsonrpc: '2.0',
         id: msg.id,

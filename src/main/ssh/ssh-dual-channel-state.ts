@@ -2,7 +2,8 @@ import {
   FrameDecoder,
   encodeJsonRpcFrame,
   type DecodedFrame,
-  type JsonRpcMessage
+  type JsonRpcMessage,
+  type JsonRpcNotification
 } from './relay-protocol'
 import type {
   MultiplexerTransport,
@@ -18,27 +19,54 @@ export type DualChannelTransports = {
 }
 
 export type ChannelKind = 'interactive' | 'background'
+export function selectChannel(method: string): ChannelKind {
+  return method.startsWith('pty.') ? 'interactive' : 'background'
+}
+
+export function createCancelNotification(id: number): JsonRpcNotification {
+  return { jsonrpc: '2.0', method: 'rpc.cancel', params: { id } }
+}
 
 export class SingleChannelState {
   nextOutgoingSeq = 1
   highestReceivedSeq = 0
   readonly decoder: FrameDecoder
+  private disposed = false
 
   constructor(
     readonly kind: ChannelKind,
     readonly transport: MultiplexerTransport,
     onFrame: (frame: DecodedFrame, ch: ChannelKind) => void
   ) {
-    this.decoder = new FrameDecoder((f) => onFrame(f, this.kind))
-    transport.onData((data: Buffer) => this.decoder.feed(data))
+    this.decoder = new FrameDecoder((f) => {
+      if (!this.disposed) {
+        onFrame(f, this.kind)
+      }
+    })
+    transport.onData((data: Buffer) => {
+      if (!this.disposed) {
+        this.decoder.feed(data)
+      }
+    })
+  }
+
+  isDisposed(): boolean {
+    return this.disposed
   }
 
   sendJsonRpc(msg: JsonRpcMessage): void {
+    if (this.disposed) {
+      return
+    }
     const frame = encodeJsonRpcFrame(msg, this.nextOutgoingSeq++, this.highestReceivedSeq)
     this.transport.write(frame)
   }
 
   dispose(): void {
+    if (this.disposed) {
+      return
+    }
+    this.disposed = true
     this.decoder.reset()
     this.transport.close?.()
   }
@@ -118,18 +146,20 @@ export class DualChannelRegistry {
   }
 
   dispatchDispose(reason: MultiplexerDisposeReason): void {
-    for (const handler of this.disposeHandlers) {
+    const handlers = Array.from(this.disposeHandlers)
+    this.disposeHandlers.length = 0
+    for (const handler of handlers) {
       try {
         handler(reason)
       } catch {
         /* empty */
       }
     }
-    this.disposeHandlers.length = 0
   }
 
   clear(): void {
     this.notificationHandlers.length = 0
     this.methodNotificationHandlers.clear()
+    this.requestHandlers.clear()
   }
 }
