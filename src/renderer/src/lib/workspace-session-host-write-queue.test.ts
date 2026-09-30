@@ -294,13 +294,9 @@ describe('workspace-session-host-write-queue', () => {
 
     const writeFn = vi.fn().mockResolvedValue('testimony-guarded-res')
 
-    const guardedWrite = enqueueHostPartitionWrite(
-      hostId,
-      initialTestimonyState,
-      writeFn,
-      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Slice 2 test fixture exercising planned getLiveState option
-      { getLiveState: () => liveState } as HostPartitionWriteOptions
-    )
+    const guardedWrite = enqueueHostPartitionWrite(hostId, initialTestimonyState, writeFn, {
+      getLiveState: () => liveState
+    })
 
     // Live testimony arrives before the active write finishes, updating liveState
     // while initialTestimonyState remains frozen and untouched.
