@@ -4,6 +4,7 @@
 // rule (match on normalized user-message content) is unit-testable without React.
 
 import type { NativeChatMessage } from '../../../../shared/native-chat-types'
+import { LIFECYCLE_CLOCK_SKEW_SLACK_MS } from './native-chat-live-status'
 import { setBoundedScopeCacheEntry } from './native-chat-composer-scope-cache'
 import type { NativeChatLaunchPrompt } from '@/lib/native-chat-launch-prompt'
 import {
@@ -44,6 +45,8 @@ export type NativeChatPendingSend = {
   matchingOccurrence?: number
   /** Shared time boundary when that message boundary is unavailable. */
   matchingAfterTimestamp?: number
+  /** Queued while the agent was already streaming/working, so it sorts after the streaming preview. */
+  queued?: boolean
 }
 
 export type NativeChatPendingSendScope = {
@@ -128,8 +131,6 @@ function messageIsAfterPendingTimestamp(
     return true
   }
   const boundary = nativeChatPendingMatchingAfter(pending)
-  // A transcript-clock boundary describes an existing message, so exclude ties.
-  // Local send time has no existing record and remains inclusive.
   return pending.afterMessageTimestamp == null
     ? message.timestamp >= boundary
     : message.timestamp > boundary
@@ -266,7 +267,8 @@ export function pendingSendsAsMessages(
         ...(entry.text.trim().length > 0 ? [{ type: 'text' as const, text: entry.text }] : [])
       ],
       timestamp: entry.sentAt,
-      source: 'scrape' as const
+      source: 'scrape' as const,
+      queued: entry.queued ? true : undefined
     }))
 }
 
@@ -287,9 +289,15 @@ export function launchPromptAsMessage(
   }
   // Why: a launch prompt seeds a brand-new session, so a matching user turn
   // with no timestamp (e.g. Grok transcripts) can only be its own delivery.
+  // Slack accounts for cross-host clock skew between renderer and host.
   const represented = matchingNativeChatUserContentCounts(
     existingMessages.filter(
-      (message) => message.timestamp === null || message.timestamp >= entry.createdAt
+      (message) =>
+        message.timestamp === null ||
+        message.timestamp >= entry.createdAt ||
+        (entry.createdAt > 1e11 &&
+          message.timestamp > 1e11 &&
+          message.timestamp + LIFECYCLE_CLOCK_SKEW_SLACK_MS >= entry.createdAt)
     )
   )
   if ((represented.get(nativeChatPendingContentKey(entry)) ?? 0) > 0) {
@@ -312,7 +320,12 @@ export function shouldPruneLaunchPrompt(
   messages: NativeChatMessage[]
 ): boolean {
   const relevant = messages.filter(
-    (message) => message.timestamp === null || message.timestamp >= entry.createdAt
+    (message) =>
+      message.timestamp === null ||
+      message.timestamp >= entry.createdAt ||
+      (entry.createdAt > 1e11 &&
+        message.timestamp > 1e11 &&
+        message.timestamp + LIFECYCLE_CLOCK_SKEW_SLACK_MS >= entry.createdAt)
   )
   return (
     (advancedNativeChatUserContentCounts(relevant).get(nativeChatPendingContentKey(entry)) ?? 0) > 0

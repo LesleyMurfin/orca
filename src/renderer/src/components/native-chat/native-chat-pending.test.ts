@@ -498,6 +498,53 @@ describe('pendingSendsAsMessages', () => {
     expect(pendingSendsAsMessages(pending, remoteTranscript)).toEqual([])
     expect(prunePendingSends(pending, remoteTranscript)).toEqual([])
   })
+  it('does not prune pending send using older transcript message when afterMessageTimestamp is set with epoch times', () => {
+    const epoch = 1_700_000_000_000
+    const pending = [
+      {
+        ...pendingOf('new-send', 'run tests'),
+        sentAt: epoch + 100,
+        afterMessageId: 'paged-out-answer',
+        afterMessageTimestamp: epoch
+      }
+    ]
+    const remoteTranscript = [{ ...userMessage('old-user', 'run tests'), timestamp: epoch - 500 }]
+
+    expect(pendingSendsAsMessages(pending, remoteTranscript).map((m) => m.id)).toEqual([
+      'pending:new-send'
+    ])
+    expect(prunePendingSends(pending, remoteTranscript)).toEqual(pending)
+  })
+  it('does not prune pending send using older identical prompt when afterMessageTimestamp is null', () => {
+    const epoch = 1_700_000_000_000
+    const pending = [
+      {
+        ...pendingOf('new-send', 'run tests'),
+        sentAt: epoch + 100,
+        afterMessageId: null,
+        afterMessageTimestamp: null
+      }
+    ]
+    // An older identical prompt arrived 500ms before this new send was issued.
+    // Without slack on sentAt, it must not match the older turn.
+    const remoteTranscript = [{ ...userMessage('old-user', 'run tests'), timestamp: epoch - 500 }]
+
+    expect(pendingSendsAsMessages(pending, remoteTranscript).map((m) => m.id)).toEqual([
+      'pending:new-send'
+    ])
+    expect(prunePendingSends(pending, remoteTranscript)).toEqual(pending)
+  })
+  it('maps queued true onto output NativeChatMessage', () => {
+    const pending = [
+      {
+        ...pendingOf('queued-send', 'later'),
+        queued: true
+      }
+    ]
+    const messages = pendingSendsAsMessages(pending)
+    expect(messages[0]?.queued).toBe(true)
+  })
+
 
   it('hides a first send while its timestampless transcript turn is visible (grok)', () => {
     const pending = [{ ...pendingOf('p1', 'rename it'), afterMessageId: null }]
@@ -629,6 +676,22 @@ describe('launchPromptAsMessage', () => {
 
     expect(launchPromptAsMessage(entry, oldHistory)).not.toBeNull()
     expect(shouldPruneLaunchPrompt(entry, oldHistory)).toBe(false)
+  })
+
+  it('prunes launch prompt when transcript timestamp slightly trails createdAt due to clock skew', () => {
+    const now = 1_700_000_000_000
+    const entry = {
+      tabId: 'tab-1',
+      agent: 'codex' as const,
+      text: 'Fix clock skew',
+      createdAt: now
+    }
+    const transcriptWithSkew = [
+      { ...userMessage('u1', 'Fix clock skew'), timestamp: now - 500 },
+      { ...assistantMessage('a1', 'Fixed'), timestamp: now + 500 }
+    ]
+    expect(launchPromptAsMessage(entry, transcriptWithSkew)).toBeNull()
+    expect(shouldPruneLaunchPrompt(entry, transcriptWithSkew)).toBe(true)
   })
 })
 
