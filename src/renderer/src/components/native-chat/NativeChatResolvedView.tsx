@@ -218,8 +218,12 @@ export function NativeChatResolvedView({
   // The optimistic user echoes sit before the streaming preview bubble
   // so the prompt appears before the agent reply that answers it.
   const pendingMessages = useMemo(
-    () => pendingSendsAsMessages(pending, sessionAfterCommandBoundaries.messages),
-    [pending, sessionAfterCommandBoundaries.messages]
+    () =>
+      pendingSendsAsMessages(pending, sessionAfterCommandBoundaries.messages, {
+        liveWorking,
+        hookWorkingEpoch
+      }),
+    [pending, sessionAfterCommandBoundaries.messages, liveWorking, hookWorkingEpoch]
   )
   const streamingText = useMemo(() => {
     return deriveNativeChatStreamingText({

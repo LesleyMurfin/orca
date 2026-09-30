@@ -124,16 +124,23 @@ function messageIsAfterPendingTimestamp(
   message: NativeChatMessage,
   pending: NativeChatPendingSend
 ): boolean {
-  // Why: some transcripts (e.g. Grok) never carry timestamps. Excluding their
-  // rows would make the echo unmatchable forever, stranding a rank-pinned
-  // bubble at the list tail — which reads as the conversation reordering.
   if (message.timestamp === null) {
     return true
   }
   const boundary = nativeChatPendingMatchingAfter(pending)
-  return pending.afterMessageTimestamp == null
-    ? message.timestamp >= boundary
-    : message.timestamp > boundary
+  if (pending.afterMessageTimestamp != null) {
+    return message.timestamp > boundary
+  }
+  if (pending.afterMessageId === null) {
+    if (
+      message.timestamp > 1e11 &&
+      boundary > 1e11 &&
+      message.timestamp + LIFECYCLE_CLOCK_SKEW_SLACK_MS >= boundary
+    ) {
+      return true
+    }
+  }
+  return message.timestamp >= boundary
 }
 
 /**
@@ -224,9 +231,15 @@ export function prunePendingSends(
  * transcript turn always supersedes them if both are briefly present, and the
  * send time as the timestamp so they sort to the end (most recent) of the list.
  */
+export type PendingSendsAsMessagesOptions = {
+  liveWorking?: boolean
+  hookWorkingEpoch?: number | null
+}
+
 export function pendingSendsAsMessages(
   pending: NativeChatPendingSend[],
-  existingMessages: NativeChatMessage[] = []
+  existingMessages: NativeChatMessage[] = [],
+  options?: PendingSendsAsMessagesOptions
 ): NativeChatMessage[] {
   if (pending.length === 0) {
     return []
@@ -259,17 +272,30 @@ export function pendingSendsAsMessages(
       const openIndex = stillVisible.indexOf(entry)
       return openIndex === -1 || !gluedRepresented.has(openIndex)
     })
-    .map((entry) => ({
-      id: `pending:${entry.id}`,
-      role: 'user' as const,
-      blocks: [
-        ...(entry.imagePaths ?? []).map((path) => ({ type: 'image-ref' as const, path })),
-        ...(entry.text.trim().length > 0 ? [{ type: 'text' as const, text: entry.text }] : [])
-      ],
-      timestamp: entry.sentAt,
-      source: 'scrape' as const,
-      queued: entry.queued ? true : undefined
-    }))
+    .map((entry) => {
+      const queued =
+        options !== undefined
+          ? Boolean(
+              options.liveWorking &&
+              options.hookWorkingEpoch != null &&
+              entry.sentAt != null &&
+              entry.sentAt >= options.hookWorkingEpoch
+            ) || undefined
+          : entry.queued
+            ? true
+            : undefined
+      return {
+        id: `pending:${entry.id}`,
+        role: 'user' as const,
+        blocks: [
+          ...(entry.imagePaths ?? []).map((path) => ({ type: 'image-ref' as const, path })),
+          ...(entry.text.trim().length > 0 ? [{ type: 'text' as const, text: entry.text }] : [])
+        ],
+        timestamp: entry.sentAt,
+        source: 'scrape' as const,
+        queued
+      }
+    })
 }
 
 /** True when a message id was minted for an optimistic pending send. */

@@ -455,7 +455,6 @@ describe('compareMessages', () => {
     ])
   })
 
-
   it('sorts a queued user prompt after an active streaming assistant preview', () => {
     const queued = msg({ id: 'pending:queued', role: 'user', timestamp: 100, queued: true })
     const streaming = msg({ id: NATIVE_CHAT_STREAMING_ID, role: 'assistant', timestamp: null })
@@ -464,5 +463,19 @@ describe('compareMessages', () => {
       NATIVE_CHAT_STREAMING_ID,
       'pending:queued'
     ])
+  })
+
+  it('sorts queued prompt becoming active turn before streaming preview, and follow-up prompt after', () => {
+    const activePrompt = msg({
+      id: 'pending:p1',
+      role: 'user',
+      timestamp: 1_000,
+      queued: undefined
+    })
+    const followUpPrompt = msg({ id: 'pending:p2', role: 'user', timestamp: 2_500, queued: true })
+    const streaming = msg({ id: NATIVE_CHAT_STREAMING_ID, role: 'assistant', timestamp: null })
+
+    const sorted = [followUpPrompt, streaming, activePrompt].sort(compareMessages)
+    expect(sorted.map((m) => m.id)).toEqual(['pending:p1', NATIVE_CHAT_STREAMING_ID, 'pending:p2'])
   })
 })

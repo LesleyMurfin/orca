@@ -515,18 +515,18 @@ describe('pendingSendsAsMessages', () => {
     ])
     expect(prunePendingSends(pending, remoteTranscript)).toEqual(pending)
   })
-  it('does not prune pending send using older identical prompt when afterMessageTimestamp is null', () => {
+  it('does not prune pending send using older identical prompt when afterMessageId points to paged out message and afterMessageTimestamp is null', () => {
     const epoch = 1_700_000_000_000
     const pending = [
       {
         ...pendingOf('new-send', 'run tests'),
         sentAt: epoch + 100,
-        afterMessageId: null,
+        afterMessageId: 'paged-out-turn',
         afterMessageTimestamp: null
       }
     ]
     // An older identical prompt arrived 500ms before this new send was issued.
-    // Without slack on sentAt, it must not match the older turn.
+    // Because afterMessageId is non-null, slack is not applied to match older turns.
     const remoteTranscript = [{ ...userMessage('old-user', 'run tests'), timestamp: epoch - 500 }]
 
     expect(pendingSendsAsMessages(pending, remoteTranscript).map((m) => m.id)).toEqual([
@@ -534,6 +534,27 @@ describe('pendingSendsAsMessages', () => {
     ])
     expect(prunePendingSends(pending, remoteTranscript)).toEqual(pending)
   })
+
+  it('prunes pending send on first send in empty conversation when trailing remote host clock is within slack', () => {
+    const epoch = 1_700_000_000_000
+    const pending = [
+      {
+        ...pendingOf('first-send', 'run tests'),
+        sentAt: epoch + 100,
+        afterMessageId: null,
+        afterMessageTimestamp: null
+      }
+    ]
+    // Host clock lagged by 500ms when producing the first turn in the conversation.
+    const remoteTranscript = [
+      { ...userMessage('first-user', 'run tests'), timestamp: epoch - 500 },
+      { ...assistantMessage('first-answer', 'running'), timestamp: epoch - 400 }
+    ]
+
+    expect(pendingSendsAsMessages(pending, remoteTranscript)).toEqual([])
+    expect(prunePendingSends(pending, remoteTranscript)).toEqual([])
+  })
+
   it('maps queued true onto output NativeChatMessage', () => {
     const pending = [
       {
@@ -545,6 +566,28 @@ describe('pendingSendsAsMessages', () => {
     expect(messages[0]?.queued).toBe(true)
   })
 
+  it('evaluates queued dynamically relative to hookWorkingEpoch and liveWorking', () => {
+    const priorSend = { ...pendingOf('p1', 'active turn prompt'), sentAt: 1_000, queued: true }
+    const laterSend = { ...pendingOf('p2', 'follow-up prompt'), sentAt: 2_500, queued: true }
+    const active = pendingSendsAsMessages([priorSend, laterSend], [], {
+      liveWorking: true,
+      hookWorkingEpoch: 2_000
+    })
+    expect(active[0]?.queued).toBeUndefined()
+    expect(active[1]?.queued).toBe(true)
+
+    const noEpoch = pendingSendsAsMessages([laterSend], [], {
+      liveWorking: true,
+      hookWorkingEpoch: null
+    })
+    expect(noEpoch[0]?.queued).toBeUndefined()
+
+    const notWorking = pendingSendsAsMessages([laterSend], [], {
+      liveWorking: false,
+      hookWorkingEpoch: 2_000
+    })
+    expect(notWorking[0]?.queued).toBeUndefined()
+  })
 
   it('hides a first send while its timestampless transcript turn is visible (grok)', () => {
     const pending = [{ ...pendingOf('p1', 'rename it'), afterMessageId: null }]
