@@ -74,7 +74,7 @@ export class SshDualChannelMultiplexer {
       throw createSshDisposalError(this.disposeReason ?? 'shutdown')
     }
     if (options?.signal?.aborted) {
-      const err = new Error(`Request "${method}" was cancelled`) as Error & { name: string }
+      const err = new Error(`Request "${method}" was cancelled`)
       err.name = 'AbortError'
       throw err
     }
@@ -99,8 +99,12 @@ export class SshDualChannelMultiplexer {
       }
       pending.cleanup()
       this.pendingRequests.delete(id)
-      this.notify('rpc.cancel', { id })
-      const err = new Error(`Request "${method}" was cancelled`) as Error & { name: string }
+      this.channels[pending.channel].sendJsonRpc({
+        jsonrpc: '2.0',
+        method: 'rpc.cancel',
+        params: { id }
+      })
+      const err = new Error(`Request "${method}" was cancelled`)
       err.name = 'AbortError'
       pending.reject(err)
     }
@@ -109,7 +113,11 @@ export class SshDualChannelMultiplexer {
       const pending = this.pendingRequests.get(id)
       if (pending) {
         pending.cleanup()
-        this.notify('rpc.cancel', { id })
+        this.channels[pending.channel].sendJsonRpc({
+          jsonrpc: '2.0',
+          method: 'rpc.cancel',
+          params: { id }
+        })
       }
       this.pendingRequests.delete(id)
       reject(
@@ -213,8 +221,10 @@ export class SshDualChannelMultiplexer {
     try {
       const msg = parseJsonRpcMessage(frame.payload)
       if ('id' in msg && ('result' in msg || 'error' in msg)) {
+        // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Property checks verify JsonRpcResponse shape.
         this.handleResponse(msg as JsonRpcResponse, channel)
       } else if ('id' in msg && 'method' in msg) {
+        // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Property checks verify JsonRpcRequest shape.
         void this.handleIncomingRequest(msg as JsonRpcRequest, channel)
       } else if ('method' in msg && !('id' in msg)) {
         this.registry.dispatchNotification(msg.method, msg.params ?? {})
@@ -266,7 +276,10 @@ export class SshDualChannelMultiplexer {
         jsonrpc: '2.0',
         id: msg.id,
         error: {
-          code: (err as { code?: number }).code ?? -32000,
+          code:
+            typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'number'
+              ? err.code
+              : -32000,
           message: err instanceof Error ? err.message : String(err)
         }
       })

@@ -50,7 +50,30 @@ function makeResponseFrame(requestId: number, result: unknown, seq: number): Buf
   return encodeFrame(MessageType.Regular, seq, 0, payload)
 }
 
-type WrittenPayload = { id?: number; method?: string }
+function makeRequestFrame(
+  requestId: number,
+  method: string,
+  params?: Record<string, unknown>,
+  seq = 1
+): Buffer {
+  const payload = Buffer.from(
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: requestId,
+      method,
+      ...(params !== undefined ? { params } : {})
+    })
+  )
+  return encodeFrame(MessageType.Regular, seq, 0, payload)
+}
+
+type WrittenPayload = {
+  id?: number
+  method?: string
+  params?: Record<string, unknown>
+  error?: { code: number; message: string; data?: unknown }
+  result?: unknown
+}
 
 function decodeWrittenPayload(frame: Buffer): WrittenPayload {
   const payloadLen = frame.readUInt32BE(9)
@@ -168,18 +191,24 @@ describe('SshDualChannelMultiplexer', () => {
     it('resolves an interactive request only from a response delivered on the interactive channel', async () => {
       const promise = dualMux.request('pty.spawn', { cols: 80, rows: 24 })
       const { id } = decodeWrittenPayload(interactive.written[0])
+      expect(typeof id).toBe('number')
+      if (typeof id !== 'number') {
+        throw new Error('Expected request id to be a number')
+      }
 
-      interactive.dataCallbacks[0](makeResponseFrame(id as number, { id: 'pty-1' }, 1))
-
+      interactive.dataCallbacks[0](makeResponseFrame(id, { id: 'pty-1' }, 1))
       await expect(promise).resolves.toEqual({ id: 'pty-1' })
     })
 
     it('resolves a background request only from a response delivered on the background channel', async () => {
       const promise = dualMux.request('fs.listFiles', { path: '/repo' })
       const { id } = decodeWrittenPayload(background.written[0])
+      expect(typeof id).toBe('number')
+      if (typeof id !== 'number') {
+        throw new Error('Expected request id to be a number')
+      }
 
-      background.dataCallbacks[0](makeResponseFrame(id as number, { files: [] }, 1))
-
+      background.dataCallbacks[0](makeResponseFrame(id, { files: [] }, 1))
       await expect(promise).resolves.toEqual({ files: [] })
     })
   })
@@ -217,6 +246,83 @@ describe('SshDualChannelMultiplexer', () => {
       background.closeCallbacks[0]()
 
       await expect(promise).rejects.toThrow('SSH connection lost, reconnecting...')
+    })
+  })
+
+  describe('incoming requests and abort signals', () => {
+    it('returns an error response payload with exact numeric error code when onRequest handler throws with custom code', async () => {
+      dualMux.onRequest('custom.action', () => {
+        const error = Object.assign(new Error('Action rejected'), { code: -32042 })
+        throw error
+      })
+
+      interactive.dataCallbacks[0](makeRequestFrame(101, 'custom.action', { target: 'alpha' }))
+      await vi.runAllTimersAsync()
+
+      expect(interactive.written.length).toBe(1)
+      const response = decodeWrittenPayload(interactive.written[0])
+      expect(response.id).toBe(101)
+      expect(response.error).toEqual({
+        code: -32042,
+        message: 'Action rejected'
+      })
+    })
+
+    it('rejects immediately when request is called with an already aborted signal', async () => {
+      const controller = new AbortController()
+      controller.abort()
+
+      await expect(
+        dualMux.request('pty.spawn', { cols: 80, rows: 24 }, { signal: controller.signal })
+      ).rejects.toMatchObject({
+        name: 'AbortError',
+        message: 'Request "pty.spawn" was cancelled'
+      })
+      expect(interactive.written.length).toBe(0)
+    })
+
+    it('aborts a pending request and notifies rpc.cancel when signal is triggered', async () => {
+      const controller = new AbortController()
+      const promise = dualMux.request(
+        'pty.spawn',
+        { cols: 80, rows: 24 },
+        { signal: controller.signal }
+      )
+      expect(interactive.written.length).toBe(1)
+      const { id } = decodeWrittenPayload(interactive.written[0])
+      expect(typeof id).toBe('number')
+
+      controller.abort()
+
+      await expect(promise).rejects.toMatchObject({
+        name: 'AbortError',
+        message: 'Request "pty.spawn" was cancelled'
+      })
+      // rpc.cancel is routed to the channel of the pending request being cancelled (interactive)
+      expect(interactive.written.length).toBe(2)
+      expect(background.written.length).toBe(0)
+      const cancelFrame = decodeWrittenPayload(interactive.written[1])
+      expect(cancelFrame.method).toBe('rpc.cancel')
+      expect(cancelFrame.params).toEqual({ id })
+    })
+
+    it('routes rpc.cancel to the channel of a timed out request', async () => {
+      const promise = dualMux.request('pty.spawn', { cols: 80, rows: 24 }, { timeoutMs: 1000 })
+      expect(interactive.written.length).toBe(1)
+      const { id } = decodeWrittenPayload(interactive.written[0])
+      expect(typeof id).toBe('number')
+
+      vi.advanceTimersByTime(1000)
+
+      await expect(promise).rejects.toMatchObject({
+        code: 'SSH_MUX_REQUEST_TIMEOUT',
+        message: 'Request "pty.spawn" timed out after 1000ms'
+      })
+      expect(interactive.written.length).toBe(2)
+      expect(background.written.length).toBe(0)
+      const cancelFrame = decodeWrittenPayload(interactive.written[1])
+      expect(cancelFrame.method).toBe('rpc.cancel')
+      expect(cancelFrame.params).toEqual({ id })
     })
   })
 })
