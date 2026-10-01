@@ -13,44 +13,47 @@ import {
   type MethodNotificationHandler,
   type RequestHandler,
   type SshMultiplexerRequestOptions,
-  type MultiplexerWriteSettlement
+  type MultiplexerWriteSettlement,
+  type MultiplexerTransport
 } from './ssh-channel-multiplexer'
 import {
   SingleChannelState,
   DualChannelRegistry,
   DualChannelRequestTracker,
-  selectChannel,
+  selectTransportIndex,
   createCancelNotification,
   createAbortError,
   createTimeoutError,
   applyResponseSettlement,
-  dispatchIncomingRequest,
-  type DualChannelTransports,
-  type ChannelKind
+  dispatchIncomingRequest
 } from './ssh-dual-channel-state'
 
-export type { DualChannelTransports }
-
-const REQUEST_TIMEOUT_MS = 30_000
-
-export class SshDualChannelMultiplexer {
-  private readonly channels: { interactive: SingleChannelState; background: SingleChannelState }
+/**
+ * Internal backend for 1..N physical transports.
+ * Public API is only SshChannelMultiplexer — never construct this from session code.
+ */
+export class MultiChannelMuxBackend {
+  private readonly channels: SingleChannelState[]
   private readonly registry = new DualChannelRegistry()
   private readonly pending = new DualChannelRequestTracker()
   private nextRequestId = 1
   private disposed = false
   private disposeReason: MultiplexerDisposeReason | null = null
 
-  constructor(transports: DualChannelTransports) {
-    const onFrame = (f: DecodedFrame, ch: ChannelKind): void => {
-      this.handleFrame(f, ch)
+  constructor(transports: MultiplexerTransport[]) {
+    if (transports.length < 1) {
+      throw new Error('MultiChannelMuxBackend requires at least one transport')
     }
-    this.channels = {
-      interactive: new SingleChannelState('interactive', transports.interactive, onFrame),
-      background: new SingleChannelState('background', transports.background, onFrame)
+    const onFrame = (f: DecodedFrame, index: number): void => {
+      this.handleFrame(f, index)
     }
-    transports.interactive.onClose(() => this.dispose('connection_lost'))
-    transports.background.onClose(() => this.dispose('connection_lost'))
+    this.channels = transports.map((transport, index) => {
+      const kind = index === 0 ? 'interactive' : 'background'
+      return new SingleChannelState(kind, transport, (frame, _kind) => onFrame(frame, index))
+    })
+    for (const transport of transports) {
+      transport.onClose(() => this.dispose('connection_lost'))
+    }
   }
 
   isDisposed(): boolean {
@@ -70,8 +73,8 @@ export class SshDualChannelMultiplexer {
     }
 
     const id = this.nextRequestId++
-    const timeoutMs = options?.timeoutMs ?? REQUEST_TIMEOUT_MS
-    const channelKind = selectChannel(method)
+    const timeoutMs = options?.timeoutMs ?? 30_000
+    const channelIndex = selectTransportIndex(method, this.channels.length)
     const { promise, resolve, reject } = Promise.withResolvers<unknown>()
     promise.catch(() => {})
 
@@ -90,7 +93,7 @@ export class SshDualChannelMultiplexer {
       req.cleanup()
       this.pending.delete(id)
       if (!this.disposed) {
-        this.channels[req.channel].sendJsonRpc(createCancelNotification(id))
+        this.channels[req.channelIndex]?.sendJsonRpc(createCancelNotification(id))
       }
       req.reject(createAbortError(method))
     }
@@ -100,7 +103,7 @@ export class SshDualChannelMultiplexer {
       if (req) {
         req.cleanup()
         if (!this.disposed) {
-          this.channels[req.channel].sendJsonRpc(createCancelNotification(id))
+          this.channels[req.channelIndex]?.sendJsonRpc(createCancelNotification(id))
         }
       }
       this.pending.delete(id)
@@ -116,11 +119,11 @@ export class SshDualChannelMultiplexer {
       beforeResolve: options?.beforeResolve,
       timer,
       cleanup,
-      channel: channelKind
+      channelIndex
     })
 
     try {
-      this.channels[channelKind].sendJsonRpc({
+      this.channels[channelIndex]!.sendJsonRpc({
         jsonrpc: '2.0',
         id,
         method,
@@ -138,14 +141,14 @@ export class SshDualChannelMultiplexer {
     if (this.disposed) {
       return
     }
-    let channelKind = selectChannel(method)
+    let channelIndex = selectTransportIndex(method, this.channels.length)
     if (method === 'rpc.cancel' && typeof params?.id === 'number') {
-      const targetChannel = this.pending.getChannel(params.id)
-      if (targetChannel) {
-        channelKind = targetChannel
+      const pendingIndex = this.pending.getChannelIndex(params.id)
+      if (pendingIndex !== undefined) {
+        channelIndex = pendingIndex
       }
     }
-    this.channels[channelKind].sendJsonRpc({
+    this.channels[channelIndex]!.sendJsonRpc({
       jsonrpc: '2.0',
       method,
       ...(params !== undefined ? { params } : {})
@@ -165,8 +168,8 @@ export class SshDualChannelMultiplexer {
       })
       return
     }
-    const channelKind = selectChannel(method)
-    this.channels[channelKind].sendJsonRpc(
+    const channelIndex = selectTransportIndex(method, this.channels.length)
+    this.channels[channelIndex]!.sendJsonRpc(
       {
         jsonrpc: '2.0',
         method,
@@ -207,7 +210,7 @@ export class SshDualChannelMultiplexer {
       remove()
       resolve(false)
     }, timeoutMs)
-    this.channels.interactive.sendKeepAlive()
+    this.channels[0]!.sendKeepAlive()
     return promise
   }
 
@@ -253,17 +256,21 @@ export class SshDualChannelMultiplexer {
     this.pending.rejectAll(createSshDisposalError(reason))
     this.registry.failLiveness()
     this.registry.clear()
-    this.channels.interactive.dispose()
-    this.channels.background.dispose()
+    for (const ch of this.channels) {
+      ch.dispose()
+    }
     this.registry.dispatchDispose(reason)
   }
 
-  private handleFrame(frame: DecodedFrame, channel: ChannelKind): void {
+  private handleFrame(frame: DecodedFrame, channelIndex: number): void {
     if (this.disposed) {
       return
     }
     this.registry.resolveLiveness()
-    const ch = this.channels[channel]
+    const ch = this.channels[channelIndex]
+    if (!ch) {
+      return
+    }
     ch.highestReceivedSeq = Math.max(ch.highestReceivedSeq, frame.id)
     if (frame.type !== MessageType.Regular) {
       return
@@ -272,7 +279,7 @@ export class SshDualChannelMultiplexer {
       const msg = parseJsonRpcMessage(frame.payload)
       if ('id' in msg && ('result' in msg || 'error' in msg)) {
         // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Property checks verify JsonRpcResponse shape.
-        this.handleResponse(msg as JsonRpcResponse, channel)
+        this.handleResponse(msg as JsonRpcResponse, channelIndex)
       } else if ('id' in msg && 'method' in msg) {
         // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Property checks verify JsonRpcRequest shape.
         void dispatchIncomingRequest(msg as JsonRpcRequest, ch, this.registry, () => this.disposed)
@@ -284,9 +291,9 @@ export class SshDualChannelMultiplexer {
     }
   }
 
-  private handleResponse(msg: JsonRpcResponse, channel: ChannelKind): void {
+  private handleResponse(msg: JsonRpcResponse, channelIndex: number): void {
     const pending = this.pending.get(msg.id)
-    if (!pending || pending.channel !== channel) {
+    if (!pending || pending.channelIndex !== channelIndex) {
       return
     }
     pending.cleanup()

@@ -1,6 +1,5 @@
 import { Client, type ClientChannel } from 'ssh2'
 import { readFileSync } from 'node:fs'
-import { SshDualChannelMultiplexer } from '../src/main/ssh/ssh-dual-channel-multiplexer'
 import {
   SshChannelMultiplexer,
   type MultiplexerTransport
@@ -183,16 +182,13 @@ async function runBenchmark(): Promise<void> {
   )
 
   // --- Phase 3: Dual Channel Multiplexer Under 5MB Background Saturation ---
-  console.log('\n--- Phase 3: SshDualChannelMultiplexer Under 5MB Background Scan Saturation ---')
+  console.log('\n--- Phase 3: SshChannelMultiplexer Under 5MB Background Scan Saturation ---')
   const { transport: interactiveTransport, stream: interactiveStream } =
     await openForwardedSocket(remotePort)
   const { transport: backgroundTransport, stream: backgroundStream } =
     await openForwardedSocket(remotePort)
 
-  const dualMux = new SshDualChannelMultiplexer({
-    interactive: interactiveTransport,
-    background: backgroundTransport
-  })
+  const dualMux = new SshChannelMultiplexer([interactiveTransport, backgroundTransport])
 
   // Start heavy background transfer on background channel
   console.log('Initiating 5MB background scan on background channel...')

@@ -1,11 +1,11 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import type { Mock } from 'vitest'
 import {
-  SshDualChannelMultiplexer,
-  type DualChannelTransports
-} from './ssh-dual-channel-multiplexer'
+  SshChannelMultiplexer,
+  type DualChannelTransports,
+  type MultiplexerTransport
+} from './ssh-channel-multiplexer'
 import { SingleChannelState } from './ssh-dual-channel-state'
-import type { MultiplexerTransport } from './ssh-channel-multiplexer'
 import { encodeFrame, MessageType, HEADER_LENGTH } from './relay-protocol'
 
 // Why: the interactive (PTY/keystroke) and background (fs scan/git) RPC lanes
@@ -85,22 +85,22 @@ function decodeWrittenPayload(frame: Buffer): WrittenPayload {
   return JSON.parse(frame.subarray(HEADER_LENGTH, HEADER_LENGTH + payloadLen).toString())
 }
 
-describe('SshDualChannelMultiplexer', () => {
+describe('SshChannelMultiplexer dual-transport mode', () => {
   let interactive: MockTransport
   let background: MockTransport
   let transports: DualChannelTransports
-  let dualMux: SshDualChannelMultiplexer
+  let mux: SshChannelMultiplexer
 
   beforeEach(() => {
     vi.useFakeTimers()
     interactive = createMockTransport()
     background = createMockTransport()
     transports = { interactive, background }
-    dualMux = new SshDualChannelMultiplexer(transports)
+    mux = new SshChannelMultiplexer(transports)
   })
 
   afterEach(() => {
-    dualMux.dispose()
+    mux.dispose()
     vi.useRealTimers()
   })
 
@@ -120,7 +120,7 @@ describe('SshDualChannelMultiplexer', () => {
 
   describe('interactive routing (PTY, keystrokes, resize)', () => {
     it('routes a pty.spawn request to the interactive channel only', () => {
-      void dualMux.request('pty.spawn', { cols: 80, rows: 24 }).catch(() => {})
+      void mux.request('pty.spawn', { cols: 80, rows: 24 }).catch(() => {})
 
       expect(interactive.written.length).toBe(1)
       expect(background.written.length).toBe(0)
@@ -128,7 +128,7 @@ describe('SshDualChannelMultiplexer', () => {
     })
 
     it('routes pty.data keystroke notifications to the interactive channel only', () => {
-      dualMux.notify('pty.data', { id: 'pty-1', data: 'k' })
+      mux.notify('pty.data', { id: 'pty-1', data: 'k' })
 
       expect(interactive.written.length).toBe(1)
       expect(background.written.length).toBe(0)
@@ -136,7 +136,7 @@ describe('SshDualChannelMultiplexer', () => {
     })
 
     it('routes a terminal resize RPC to the interactive channel only', () => {
-      void dualMux.request('pty.resize', { id: 'pty-1', cols: 100, rows: 40 }).catch(() => {})
+      void mux.request('pty.resize', { id: 'pty-1', cols: 100, rows: 40 }).catch(() => {})
 
       expect(interactive.written.length).toBe(1)
       expect(background.written.length).toBe(0)
@@ -144,15 +144,15 @@ describe('SshDualChannelMultiplexer', () => {
     })
 
     it('routes pty.shutdown to the interactive channel only', () => {
-      void dualMux.request('pty.shutdown', { id: 'pty-1' }).catch(() => {})
+      void mux.request('pty.shutdown', { id: 'pty-1' }).catch(() => {})
 
       expect(interactive.written.length).toBe(1)
       expect(background.written.length).toBe(0)
     })
     it('routes bulk PTY methods (pty.replay, pty.history, pty.dumpScrollback) to the background channel', () => {
-      void dualMux.request('pty.history', { id: 'pty-1' }).catch(() => {})
-      void dualMux.request('pty.replay', { id: 'pty-1' }).catch(() => {})
-      void dualMux.request('pty.dumpScrollback', { id: 'pty-1' }).catch(() => {})
+      void mux.request('pty.history', { id: 'pty-1' }).catch(() => {})
+      void mux.request('pty.replay', { id: 'pty-1' }).catch(() => {})
+      void mux.request('pty.dumpScrollback', { id: 'pty-1' }).catch(() => {})
 
       expect(background.written.length).toBe(3)
       expect(interactive.written.length).toBe(0)
@@ -161,7 +161,7 @@ describe('SshDualChannelMultiplexer', () => {
 
   describe('background routing (fs scans, git commands)', () => {
     it('routes fs.listFiles scans to the background channel only', () => {
-      void dualMux.request('fs.listFiles', { path: '/repo' }).catch(() => {})
+      void mux.request('fs.listFiles', { path: '/repo' }).catch(() => {})
 
       expect(background.written.length).toBe(1)
       expect(interactive.written.length).toBe(0)
@@ -169,7 +169,7 @@ describe('SshDualChannelMultiplexer', () => {
     })
 
     it('routes fs.readDir scans to the background channel only', () => {
-      void dualMux.request('fs.readDir', { path: '/repo' }).catch(() => {})
+      void mux.request('fs.readDir', { path: '/repo' }).catch(() => {})
 
       expect(background.written.length).toBe(1)
       expect(interactive.written.length).toBe(0)
@@ -177,8 +177,8 @@ describe('SshDualChannelMultiplexer', () => {
     })
 
     it('routes git.status and git.diff RPCs to the background channel only', () => {
-      void dualMux.request('git.status', { cwd: '/repo' }).catch(() => {})
-      void dualMux.request('git.diff', { cwd: '/repo' }).catch(() => {})
+      void mux.request('git.status', { cwd: '/repo' }).catch(() => {})
+      void mux.request('git.diff', { cwd: '/repo' }).catch(() => {})
 
       expect(background.written.length).toBe(2)
       expect(interactive.written.length).toBe(0)
@@ -188,9 +188,9 @@ describe('SshDualChannelMultiplexer', () => {
       // A large background scan is issued first and left unresolved (no
       // response fed to the mock transport) to simulate a slow relay-side
       // directory walk.
-      void dualMux.request('fs.listFiles', { path: '/repo' }).catch(() => {})
+      void mux.request('fs.listFiles', { path: '/repo' }).catch(() => {})
 
-      dualMux.notify('pty.data', { id: 'pty-1', data: 'k' })
+      mux.notify('pty.data', { id: 'pty-1', data: 'k' })
 
       // The keystroke still lands on the interactive transport immediately —
       // proving the two channels are independent, not just independently
@@ -202,7 +202,7 @@ describe('SshDualChannelMultiplexer', () => {
 
   describe('response correlation', () => {
     it('resolves an interactive request only from a response delivered on the interactive channel', async () => {
-      const promise = dualMux.request('pty.spawn', { cols: 80, rows: 24 })
+      const promise = mux.request('pty.spawn', { cols: 80, rows: 24 })
       const { id } = decodeWrittenPayload(interactive.written[0])
       expect(typeof id).toBe('number')
       if (typeof id !== 'number') {
@@ -214,7 +214,7 @@ describe('SshDualChannelMultiplexer', () => {
     })
 
     it('resolves a background request only from a response delivered on the background channel', async () => {
-      const promise = dualMux.request('fs.listFiles', { path: '/repo' })
+      const promise = mux.request('fs.listFiles', { path: '/repo' })
       const { id } = decodeWrittenPayload(background.written[0])
       expect(typeof id).toBe('number')
       if (typeof id !== 'number') {
@@ -228,14 +228,14 @@ describe('SshDualChannelMultiplexer', () => {
 
   describe('disposal', () => {
     it('marks the multiplexer disposed and rejects further requests', async () => {
-      dualMux.dispose()
+      mux.dispose()
 
-      expect(dualMux.isDisposed()).toBe(true)
-      await expect(dualMux.request('pty.spawn')).rejects.toThrow('Multiplexer disposed')
+      expect(mux.isDisposed()).toBe(true)
+      await expect(mux.request('pty.spawn')).rejects.toThrow('Multiplexer disposed')
     })
 
     it('closes both underlying transports on dispose', () => {
-      dualMux.dispose()
+      mux.dispose()
 
       expect(interactive.close).toHaveBeenCalled()
       expect(background.close).toHaveBeenCalled()
@@ -244,17 +244,17 @@ describe('SshDualChannelMultiplexer', () => {
     it('disposes the whole dual multiplexer when the background channel drops', () => {
       background.closeCallbacks[0]()
 
-      expect(dualMux.isDisposed()).toBe(true)
+      expect(mux.isDisposed()).toBe(true)
     })
 
     it('disposes the whole dual multiplexer when the interactive channel drops', () => {
       interactive.closeCallbacks[0]()
 
-      expect(dualMux.isDisposed()).toBe(true)
+      expect(mux.isDisposed()).toBe(true)
     })
 
     it('rejects a pending interactive request when the background channel drops', async () => {
-      const promise = dualMux.request('pty.spawn', { cols: 80, rows: 24 })
+      const promise = mux.request('pty.spawn', { cols: 80, rows: 24 })
 
       background.closeCallbacks[0]()
 
@@ -264,7 +264,7 @@ describe('SshDualChannelMultiplexer', () => {
 
   describe('incoming requests and abort signals', () => {
     it('returns an error response payload with exact numeric error code when onRequest handler throws with custom code', async () => {
-      dualMux.onRequest('custom.action', () => {
+      mux.onRequest('custom.action', () => {
         const error = Object.assign(new Error('Action rejected'), { code: -32042 })
         throw error
       })
@@ -286,7 +286,7 @@ describe('SshDualChannelMultiplexer', () => {
       controller.abort()
 
       await expect(
-        dualMux.request('pty.spawn', { cols: 80, rows: 24 }, { signal: controller.signal })
+        mux.request('pty.spawn', { cols: 80, rows: 24 }, { signal: controller.signal })
       ).rejects.toMatchObject({
         name: 'AbortError',
         message: 'Request "pty.spawn" was cancelled'
@@ -296,7 +296,7 @@ describe('SshDualChannelMultiplexer', () => {
 
     it('aborts a pending request and notifies rpc.cancel when signal is triggered', async () => {
       const controller = new AbortController()
-      const promise = dualMux.request(
+      const promise = mux.request(
         'pty.spawn',
         { cols: 80, rows: 24 },
         { signal: controller.signal }
@@ -320,7 +320,7 @@ describe('SshDualChannelMultiplexer', () => {
     })
 
     it('routes rpc.cancel to the channel of a timed out request', async () => {
-      const promise = dualMux.request('pty.spawn', { cols: 80, rows: 24 }, { timeoutMs: 1000 })
+      const promise = mux.request('pty.spawn', { cols: 80, rows: 24 }, { timeoutMs: 1000 })
       expect(interactive.written.length).toBe(1)
       const { id } = decodeWrittenPayload(interactive.written[0])
       expect(typeof id).toBe('number')
@@ -339,12 +339,12 @@ describe('SshDualChannelMultiplexer', () => {
     })
 
     it('routes direct notify rpc.cancel to originating channel for pending requests', () => {
-      void dualMux.request('pty.spawn', { cols: 80, rows: 24 }).catch(() => {})
+      void mux.request('pty.spawn', { cols: 80, rows: 24 }).catch(() => {})
       expect(interactive.written.length).toBe(1)
       const { id } = decodeWrittenPayload(interactive.written[0])
       expect(typeof id).toBe('number')
 
-      dualMux.notify('rpc.cancel', { id })
+      mux.notify('rpc.cancel', { id })
 
       expect(interactive.written.length).toBe(2)
       expect(background.written.length).toBe(0)
@@ -355,12 +355,12 @@ describe('SshDualChannelMultiplexer', () => {
 
     it('does not send rpc response if multiplexer is disposed during async request processing', async () => {
       const { promise, resolve } = Promise.withResolvers<unknown>()
-      dualMux.onRequest('async.action', () => promise)
+      mux.onRequest('async.action', () => promise)
 
       interactive.dataCallbacks[0](makeRequestFrame(202, 'async.action'))
       expect(interactive.written.length).toBe(0)
 
-      dualMux.dispose()
+      mux.dispose()
       resolve({ done: true })
       await vi.runAllTimersAsync()
 
@@ -376,7 +376,7 @@ describe('SshDualChannelMultiplexer', () => {
 
       const abortController = new AbortController()
       await expect(
-        dualMux.request(
+        mux.request(
           'pty.spawn',
           { cols: 80, rows: 24 },
           {
@@ -400,12 +400,12 @@ describe('SshDualChannelMultiplexer', () => {
   describe('resource deallocation & inverse falsification (Round 3)', () => {
     it('cleans up all request handlers and rejects new registrations after disposal', async () => {
       const handler = vi.fn()
-      dualMux.onRequest('test.method', handler)
+      mux.onRequest('test.method', handler)
 
-      dualMux.dispose()
+      mux.dispose()
 
       // Registering on disposed multiplexer must return a no-op cleanup
-      const unreg = dualMux.onRequest('new.method', vi.fn())
+      const unreg = mux.onRequest('new.method', vi.fn())
       expect(typeof unreg).toBe('function')
       unreg()
 
@@ -420,18 +420,18 @@ describe('SshDualChannelMultiplexer', () => {
       const order: number[] = []
       let unreg2!: () => void
 
-      dualMux.onDispose(() => {
+      mux.onDispose(() => {
         order.push(1)
         unreg2()
       })
-      unreg2 = dualMux.onDispose(() => {
+      unreg2 = mux.onDispose(() => {
         order.push(2)
       })
-      dualMux.onDispose(() => {
+      mux.onDispose(() => {
         order.push(3)
       })
 
-      dualMux.dispose('shutdown')
+      mux.dispose('shutdown')
 
       // All handlers snapshotted for dispatch run safely without mutation skipping
       expect(order).toEqual([1, 2, 3])
@@ -466,7 +466,7 @@ describe('SshDualChannelMultiplexer', () => {
     it('settles with accepted when transport write succeeds', () => {
       const settled = vi.fn()
       interactive.supportsWriteSettlement = true
-      dualMux.notifyWithSettlement('pty.ackData', { acknowledgements: [] }, settled)
+      mux.notifyWithSettlement('pty.ackData', { acknowledgements: [] }, settled)
 
       expect(interactive.written.length).toBe(1)
       expect(settled).toHaveBeenCalledWith({ outcome: 'accepted' })
@@ -474,8 +474,8 @@ describe('SshDualChannelMultiplexer', () => {
 
     it('settles with refused when multiplexer is disposed', () => {
       const settled = vi.fn()
-      dualMux.dispose('shutdown')
-      dualMux.notifyWithSettlement('pty.ackData', { acknowledgements: [] }, settled)
+      mux.dispose('shutdown')
+      mux.notifyWithSettlement('pty.ackData', { acknowledgements: [] }, settled)
 
       expect(settled).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -488,7 +488,7 @@ describe('SshDualChannelMultiplexer', () => {
 
   describe('probeLiveness', () => {
     it('sends keepalive frame on interactive transport and resolves true on incoming frame', async () => {
-      const probePromise = dualMux.probeLiveness(5000)
+      const probePromise = mux.probeLiveness(5000)
 
       expect(interactive.written.length).toBe(1)
       // First byte of keepalive frame is MessageType.KeepAlive (9)
@@ -500,14 +500,14 @@ describe('SshDualChannelMultiplexer', () => {
     })
 
     it('resolves false when liveness probe times out', async () => {
-      const probePromise = dualMux.probeLiveness(1000)
+      const probePromise = mux.probeLiveness(1000)
       vi.advanceTimersByTime(1000)
       await expect(probePromise).resolves.toBe(false)
     })
 
     it('resolves false immediately if probeLiveness is called on a disposed multiplexer', async () => {
-      dualMux.dispose()
-      await expect(dualMux.probeLiveness(1000)).resolves.toBe(false)
+      mux.dispose()
+      await expect(mux.probeLiveness(1000)).resolves.toBe(false)
     })
   })
 })

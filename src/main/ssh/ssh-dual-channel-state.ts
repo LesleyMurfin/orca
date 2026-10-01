@@ -4,7 +4,6 @@ import {
   encodeKeepAliveFrame,
   type DecodedFrame,
   type JsonRpcMessage,
-  type JsonRpcNotification,
   type JsonRpcRequest,
   type JsonRpcResponse
 } from './relay-protocol'
@@ -16,74 +15,25 @@ import type {
   MultiplexerDisposeReason
 } from './ssh-channel-multiplexer'
 import type { MultiplexerTransportWriteResult } from './ssh-multiplexer-transport-writer'
+import type { ChannelKind, LivenessWaiter, PendingRequest } from './ssh-multiplexer-transports'
 
-export type DualChannelTransports = {
-  interactive: MultiplexerTransport
-  background: MultiplexerTransport
-}
-
-export type ChannelKind = 'interactive' | 'background'
-export function selectChannel(method: string): ChannelKind {
-  if (method === 'pty.history' || method === 'pty.replay' || method === 'pty.dumpScrollback') {
-    return 'background'
-  }
-  return method.startsWith('pty.') ? 'interactive' : 'background'
-}
-
-export type LivenessWaiter = {
-  succeed: () => void
-  fail: () => void
-}
-export type PendingRequest = {
-  resolve: (result: unknown) => void
-  reject: (error: Error) => void
-  beforeResolve?: (result: unknown) => void
-  timer: NodeJS.Timeout
-  cleanup: () => void
-  channel: ChannelKind
-}
-
-export function createAbortError(method: string): Error {
-  const err = new Error(`Request "${method}" was cancelled`)
-  err.name = 'AbortError'
-  return err
-}
-
-export function createTimeoutError(method: string, timeoutMs: number, code: string): Error {
-  return Object.assign(new Error(`Request "${method}" timed out after ${timeoutMs}ms`), { code })
-}
-
-export class DualChannelRequestTracker {
-  private readonly pending = new Map<number, PendingRequest>()
-
-  get(id: number): PendingRequest | undefined {
-    return this.pending.get(id)
-  }
-
-  set(id: number, req: PendingRequest): void {
-    this.pending.set(id, req)
-  }
-
-  delete(id: number): boolean {
-    return this.pending.delete(id)
-  }
-
-  rejectAll(error: Error): void {
-    for (const [id, req] of this.pending) {
-      req.cleanup()
-      req.reject(error)
-      this.pending.delete(id)
-    }
-  }
-
-  getChannel(id: number): ChannelKind | undefined {
-    return this.pending.get(id)?.channel
-  }
-}
-
-export function createCancelNotification(id: number): JsonRpcNotification {
-  return { jsonrpc: '2.0', method: 'rpc.cancel', params: { id } }
-}
+export type {
+  DualChannelTransports,
+  SshMultiplexerTransports,
+  ChannelKind,
+  LivenessWaiter,
+  PendingRequest
+} from './ssh-multiplexer-transports'
+export {
+  selectChannel,
+  selectTransportIndex,
+  isDualChannelTransports,
+  normalizeSshMultiplexerTransports,
+  createAbortError,
+  createTimeoutError,
+  DualChannelRequestTracker,
+  createCancelNotification
+} from './ssh-multiplexer-transports'
 
 export class SingleChannelState {
   nextOutgoingSeq = 1

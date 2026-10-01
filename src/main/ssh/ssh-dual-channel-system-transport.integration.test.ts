@@ -10,7 +10,7 @@ vi.mock('electron', () => ({
 import { SshConnection } from './ssh-connection'
 import { deployAndLaunchRelay } from './ssh-relay-deploy'
 import { waitForSentinel } from './ssh-relay-deploy-helpers'
-import { SshDualChannelMultiplexer } from './ssh-dual-channel-multiplexer'
+import { SshChannelMultiplexer } from './ssh-channel-multiplexer'
 import type { SshTarget } from '../../shared/ssh-types'
 import { relayArtifactFilenames } from '../../shared/relay-artifacts'
 
@@ -232,17 +232,17 @@ describe('dual-channel system SSH transport end-to-end integration', () => {
       )
       const backgroundTransport = await waitForSentinel(backgroundChannel)
 
-      // Step 3: Instantiate SshDualChannelMultiplexer with the two independent physical transports
-      const dualMux = new SshDualChannelMultiplexer({
+      // Step 3: Instantiate SshChannelMultiplexer with the two independent physical transports
+      const mux = new SshChannelMultiplexer({
         interactive: deployResult.transport,
         background: backgroundTransport
       })
 
       try {
         // Step 4: Issue concurrent interactive (pty.*) and background (fs.* / session.*) RPCs
-        const ptyPromise = dualMux.request('pty.spawn', { cols: 80, rows: 24 })
-        const fsPromise = dualMux.request('fs.listFiles', { path: '/workspace' })
-        const homePromise = dualMux.request('session.resolveHome', { path: '~' })
+        const ptyPromise = mux.request('pty.spawn', { cols: 80, rows: 24 })
+        const fsPromise = mux.request('fs.listFiles', { path: '/workspace' })
+        const homePromise = mux.request('session.resolveHome', { path: '~' })
 
         // Step 5: Verify both channels resolve end-to-end through real processes and sockets
         const [ptyRes, fsRes, homeRes] = await Promise.all([ptyPromise, fsPromise, homePromise])
@@ -252,9 +252,9 @@ describe('dual-channel system SSH transport end-to-end integration', () => {
         expect(homeRes).toBe(join(tempDir, 'remote-home'))
 
         // Step 6: Verify notifications route without blocking
-        dualMux.notify('pty.data', { id: 'pty-dual-1', data: 'ls -la\n' })
+        mux.notify('pty.data', { id: 'pty-dual-1', data: 'ls -la\n' })
       } finally {
-        dualMux.dispose()
+        mux.dispose()
         await conn.disconnect()
       }
     },
@@ -274,18 +274,18 @@ describe('dual-channel system SSH transport end-to-end integration', () => {
       )
       const backgroundTransport = await waitForSentinel(backgroundChannel)
 
-      const dualMux = new SshDualChannelMultiplexer({
+      const mux = new SshChannelMultiplexer({
         interactive: deployResult.transport,
         background: backgroundTransport
       })
 
       try {
         // Start a 512KB bulk scan on the background channel
-        const heavyBackgroundPromise = dualMux.request('fs.heavyScan')
+        const heavyBackgroundPromise = mux.request('fs.heavyScan')
 
         // Immediately issue interactive PTY keystroke RPC
         const interactiveStart = performance.now()
-        const ptyRes = await dualMux.request('pty.spawn', { cols: 80, rows: 24 })
+        const ptyRes = await mux.request('pty.spawn', { cols: 80, rows: 24 })
         const interactiveDurationMs = performance.now() - interactiveStart
 
         expect(ptyRes).toEqual({ id: 'pty-dual-1', cols: 80, rows: 24 })
@@ -303,7 +303,7 @@ describe('dual-channel system SSH transport end-to-end integration', () => {
           }
         }
       } finally {
-        dualMux.dispose()
+        mux.dispose()
         await conn.disconnect()
       }
     },
