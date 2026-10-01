@@ -67,11 +67,10 @@ const RUN_DOCKER_SSH = process.env.ORCA_E2E_SSH_DOCKER === '1'
 // the regression. The bug's own root-cause description is "every tab for a worktree closed
 // server-side while a client was offline" -- not some. CLOSE_COUNT therefore defaults to, and is
 // clamped to, TAB_COUNT.
-const TAB_COUNT = Math.max(2, Number(process.env.ORCA_GAP03_TAB_COUNT ?? '2'))
-const CLOSE_COUNT = Math.min(
-  TAB_COUNT,
-  Math.max(1, Number(process.env.ORCA_GAP03_CLOSE_COUNT ?? String(TAB_COUNT)))
-)
+const requestedTabCount = Number.parseInt(process.env.ORCA_GAP03_TAB_COUNT ?? '2', 10)
+const TAB_COUNT = Number.isFinite(requestedTabCount) ? Math.max(2, requestedTabCount) : 2
+// Partial closure cannot exercise the decline path; see the comment above.
+const CLOSE_COUNT = TAB_COUNT
 const OFFLINE_DRAFT_TAB_ID = 'gap03-offline-draft-tab'
 
 type SessionProfile = {

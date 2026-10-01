@@ -315,6 +315,51 @@ describe('workspace-session-host-write-queue', () => {
     expect(writeFn).not.toHaveBeenCalled()
   })
 
+  it('does not discard a pre-testimony write when carriesParkedShadowRows is false even if testimony arrives before dequeuing', async () => {
+    resetHostPartitionWriteStateForTest()
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock
+    const hostId = 'ssh:target-1' as ExecutionHostId
+
+    const initialTestimonyState: RemoteWorkspaceTestimonyState = Object.freeze({
+      remoteWorkspaceHydratedTargetIds: new Set<string>(),
+      remoteWorkspaceSyncStatusByTargetId: {}
+    })
+
+    let liveState: RemoteWorkspaceTestimonyState = initialTestimonyState
+
+    let resolveActive: (() => void) | undefined
+    const activeBlocker = new Promise<void>((resolve) => {
+      resolveActive = resolve
+    })
+
+    const activeWrite = enqueueHostPartitionWrite(hostId, async () => {
+      await activeBlocker
+      return 'active-done'
+    })
+
+    const writeFn = vi.fn().mockResolvedValue('fresh-edit-res')
+
+    const patchWrite = enqueueHostPartitionWrite(hostId, initialTestimonyState, writeFn, {
+      getLiveState: () => liveState,
+      carriesParkedShadowRows: false
+    })
+
+    // Live testimony arrives before the active write finishes
+    liveState = {
+      remoteWorkspaceHydratedTargetIds: new Set(['target-1']),
+      remoteWorkspaceSyncStatusByTargetId: {
+        'target-1': { phase: 'idle' }
+      }
+    }
+
+    resolveActive?.()
+
+    const [resActive, resPatch] = await Promise.all([activeWrite, patchWrite])
+    expect(resActive).toBe('active-done')
+    expect(resPatch).toBe('fresh-edit-res')
+    expect(writeFn).toHaveBeenCalledTimes(1)
+  })
+
   it('resetHostPartitionWriteStateForTest clears write chains and generation counters', async () => {
     resetHostPartitionWriteStateForTest()
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock
