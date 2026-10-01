@@ -45,7 +45,8 @@ export function selectMuxPriorityLane(method: string): MuxPriorityLane {
     method === 'pty.resize' ||
     method === 'pty.ackData' ||
     method === 'pty.setDeliveryPaused' ||
-    method === 'pty.input'
+    method === 'pty.input' ||
+    method === 'pty.key' // harness / echo probes
   ) {
     return 'interactive'
   }

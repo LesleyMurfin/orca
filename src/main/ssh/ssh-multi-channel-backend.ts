@@ -60,6 +60,10 @@ export class MultiChannelMuxBackend {
     return this.disposed
   }
 
+  getTransportCount(): number {
+    return this.channels.length
+  }
+
   async request(
     method: string,
     params?: Record<string, unknown>,

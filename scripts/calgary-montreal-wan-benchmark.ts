@@ -189,6 +189,10 @@ async function runBenchmark(): Promise<void> {
     await openForwardedSocket(remotePort)
 
   const dualMux = new SshChannelMultiplexer([interactiveTransport, backgroundTransport])
+  console.log(`Multi mux transport count: ${dualMux.getTransportCount()} (expect 2)`)
+  if (dualMux.getTransportCount() !== 2) {
+    throw new Error(`expected 2 transports, got ${dualMux.getTransportCount()}`)
+  }
 
   // Start heavy background transfer on background channel
   console.log('Initiating 5MB background scan on background channel...')
@@ -225,11 +229,12 @@ async function runBenchmark(): Promise<void> {
     `Single-Channel (Legacy) Under 5MB Load: ${singleSatAvg.toFixed(2)} ms avg (Max: ${singleSatMax.toFixed(2)} ms)`
   )
   console.log(
-    `Dual-Channel (PR #49) Under 5MB Load:   ${dualSatAvg.toFixed(2)} ms avg (Max: ${dualSatMax.toFixed(2)} ms)`
+    `Multi N=2 (PR #49) Under 5MB Load:      ${dualSatAvg.toFixed(2)} ms avg (Max: ${dualSatMax.toFixed(2)} ms)`
   )
   console.log(
     `Latency Improvement / Jitter Drop:      ${((1 - dualSatAvg / singleSatAvg) * 100).toFixed(1)}% reduction`
   )
+  console.log(`Tip SHA / run:                         ${new Date().toISOString()}`)
   console.log('===============================================================')
 
   serverChannel.close()

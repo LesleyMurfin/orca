@@ -467,6 +467,14 @@ export class SshChannelMultiplexer {
     return this.disposed
   }
 
+  /** Number of physical transports (1 = legacy single-pipe). */
+  getTransportCount(): number {
+    if (this.multi) {
+      return this.multi.getTransportCount()
+    }
+    return this.disposed ? 0 : 1
+  }
+
   // ── Private ───────────────────────────────────────────────────────
 
   private disposedError(): Error & { code: string } {

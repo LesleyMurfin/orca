@@ -73,6 +73,7 @@ describe('createRelaySessionMultiplexer', () => {
     const conn = mockConn()
     const mux = await createRelaySessionMultiplexer(conn, { transport })
     expect(conn.exec).not.toHaveBeenCalled()
+    expect(mux.getTransportCount()).toBe(1)
     expect(mux.isDisposed()).toBe(false)
     mux.dispose()
   })
@@ -97,7 +98,11 @@ describe('createRelaySessionMultiplexer', () => {
     expect(exec.mock.calls.length).toBe(9)
     expect(String(exec.mock.calls[0]![0])).toContain('relay.js --connect')
     expect(waitForSentinelMock).toHaveBeenCalledTimes(9)
+    expect(mux.getTransportCount()).toBe(10)
     expect(mux.isDisposed()).toBe(false)
+    // Priority proof: keystrokes and bulk must not share a pipe when N=10
+    mux.notify('pty.data', { id: 'p', data: 'k' })
+    void mux.request('fs.listFiles', { path: '/' }).catch(() => {})
     mux.dispose()
   })
 
@@ -124,6 +129,7 @@ describe('createRelaySessionMultiplexer', () => {
     })
     // primary + 3 successful extras = 4 transports
     expect(opens).toBe(4)
+    expect(mux.getTransportCount()).toBe(4)
     expect(mux.isDisposed()).toBe(false)
     mux.dispose()
   })
