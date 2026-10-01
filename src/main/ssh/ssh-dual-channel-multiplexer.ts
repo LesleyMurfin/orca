@@ -12,35 +12,32 @@ import {
   type NotificationHandler,
   type MethodNotificationHandler,
   type RequestHandler,
-  type SshMultiplexerRequestOptions
+  type SshMultiplexerRequestOptions,
+  type MultiplexerWriteSettlement
 } from './ssh-channel-multiplexer'
 import {
   SingleChannelState,
   DualChannelRegistry,
+  DualChannelRequestTracker,
   selectChannel,
   createCancelNotification,
+  createAbortError,
+  createTimeoutError,
+  applyResponseSettlement,
+  dispatchIncomingRequest,
   type DualChannelTransports,
   type ChannelKind
 } from './ssh-dual-channel-state'
 
 export type { DualChannelTransports }
 
-type PendingRequest = {
-  resolve: (result: unknown) => void
-  reject: (error: Error) => void
-  beforeResolve?: (result: unknown) => void
-  timer: ReturnType<typeof setTimeout>
-  cleanup: () => void
-  channel: ChannelKind
-}
-
 const REQUEST_TIMEOUT_MS = 30_000
 
 export class SshDualChannelMultiplexer {
   private readonly channels: { interactive: SingleChannelState; background: SingleChannelState }
   private readonly registry = new DualChannelRegistry()
+  private readonly pending = new DualChannelRequestTracker()
   private nextRequestId = 1
-  private pendingRequests = new Map<number, PendingRequest>()
   private disposed = false
   private disposeReason: MultiplexerDisposeReason | null = null
 
@@ -52,12 +49,8 @@ export class SshDualChannelMultiplexer {
       interactive: new SingleChannelState('interactive', transports.interactive, onFrame),
       background: new SingleChannelState('background', transports.background, onFrame)
     }
-    transports.interactive.onClose(() => {
-      this.dispose('connection_lost')
-    })
-    transports.background.onClose(() => {
-      this.dispose('connection_lost')
-    })
+    transports.interactive.onClose(() => this.dispose('connection_lost'))
+    transports.background.onClose(() => this.dispose('connection_lost'))
   }
 
   isDisposed(): boolean {
@@ -73,9 +66,7 @@ export class SshDualChannelMultiplexer {
       throw createSshDisposalError(this.disposeReason ?? 'shutdown')
     }
     if (options?.signal?.aborted) {
-      const err = new Error(`Request "${method}" was cancelled`)
-      err.name = 'AbortError'
-      throw err
+      throw createAbortError(method)
     }
 
     const id = this.nextRequestId++
@@ -84,7 +75,7 @@ export class SshDualChannelMultiplexer {
     const { promise, resolve, reject } = Promise.withResolvers<unknown>()
     promise.catch(() => {})
 
-    let timer: ReturnType<typeof setTimeout>
+    let timer: NodeJS.Timeout
     const cleanup = (): void => {
       clearTimeout(timer)
       if (options?.signal) {
@@ -92,40 +83,34 @@ export class SshDualChannelMultiplexer {
       }
     }
     const onAbort = (): void => {
-      const pending = this.pendingRequests.get(id)
-      if (!pending) {
+      const req = this.pending.get(id)
+      if (!req) {
         return
       }
-      pending.cleanup()
-      this.pendingRequests.delete(id)
+      req.cleanup()
+      this.pending.delete(id)
       if (!this.disposed) {
-        this.channels[pending.channel].sendJsonRpc(createCancelNotification(id))
+        this.channels[req.channel].sendJsonRpc(createCancelNotification(id))
       }
-      const err = new Error(`Request "${method}" was cancelled`)
-      err.name = 'AbortError'
-      pending.reject(err)
+      req.reject(createAbortError(method))
     }
 
     timer = setTimeout(() => {
-      const pending = this.pendingRequests.get(id)
-      if (pending) {
-        pending.cleanup()
+      const req = this.pending.get(id)
+      if (req) {
+        req.cleanup()
         if (!this.disposed) {
-          this.channels[pending.channel].sendJsonRpc(createCancelNotification(id))
+          this.channels[req.channel].sendJsonRpc(createCancelNotification(id))
         }
       }
-      this.pendingRequests.delete(id)
-      reject(
-        Object.assign(new Error(`Request "${method}" timed out after ${timeoutMs}ms`), {
-          code: SSH_MUX_REQUEST_TIMEOUT_CODE
-        })
-      )
+      this.pending.delete(id)
+      reject(createTimeoutError(method, timeoutMs, SSH_MUX_REQUEST_TIMEOUT_CODE))
     }, timeoutMs)
 
     if (options?.signal) {
       options.signal.addEventListener('abort', onAbort, { once: true })
     }
-    this.pendingRequests.set(id, {
+    this.pending.set(id, {
       resolve,
       reject,
       beforeResolve: options?.beforeResolve,
@@ -143,7 +128,7 @@ export class SshDualChannelMultiplexer {
       })
     } catch (writeErr) {
       cleanup()
-      this.pendingRequests.delete(id)
+      this.pending.delete(id)
       throw writeErr
     }
     return promise
@@ -155,9 +140,9 @@ export class SshDualChannelMultiplexer {
     }
     let channelKind = selectChannel(method)
     if (method === 'rpc.cancel' && typeof params?.id === 'number') {
-      const pending = this.pendingRequests.get(params.id)
-      if (pending) {
-        channelKind = pending.channel
+      const targetChannel = this.pending.getChannel(params.id)
+      if (targetChannel) {
+        channelKind = targetChannel
       }
     }
     this.channels[channelKind].sendJsonRpc({
@@ -165,6 +150,65 @@ export class SshDualChannelMultiplexer {
       method,
       ...(params !== undefined ? { params } : {})
     })
+  }
+
+  notifyWithSettlement(
+    method: string,
+    params: Record<string, unknown> | undefined,
+    onSettled: (result: MultiplexerWriteSettlement) => void
+  ): void {
+    if (this.disposed) {
+      onSettled({
+        outcome: 'refused',
+        reason: 'transport_disposed',
+        error: createSshDisposalError(this.disposeReason ?? 'shutdown')
+      })
+      return
+    }
+    const channelKind = selectChannel(method)
+    this.channels[channelKind].sendJsonRpc(
+      {
+        jsonrpc: '2.0',
+        method,
+        ...(params !== undefined ? { params } : {})
+      },
+      (res) => {
+        if (res.ok) {
+          onSettled({ outcome: 'accepted' })
+        } else {
+          onSettled({
+            outcome: 'unverifiable',
+            reason: 'transport_settlement_lost',
+            bytesHandedToTransport: true,
+            error: res.error
+          })
+        }
+      }
+    )
+  }
+
+  probeLiveness(timeoutMs: number): Promise<boolean> {
+    if (this.disposed) {
+      return Promise.resolve(false)
+    }
+    const { promise, resolve } = Promise.withResolvers<boolean>()
+    let timer: NodeJS.Timeout
+    const remove = this.registry.addLivenessWaiter({
+      succeed: () => {
+        clearTimeout(timer)
+        resolve(true)
+      },
+      fail: () => {
+        clearTimeout(timer)
+        resolve(false)
+      }
+    })
+    timer = setTimeout(() => {
+      remove()
+      resolve(false)
+    }, timeoutMs)
+    this.channels.interactive.sendKeepAlive()
+    return promise
   }
 
   onNotification(handler: NotificationHandler): () => void {
@@ -206,14 +250,8 @@ export class SshDualChannelMultiplexer {
     }
     this.disposed = true
     this.disposeReason = reason
-    const err = createSshDisposalError(reason)
-
-    for (const [id, pending] of this.pendingRequests) {
-      pending.cleanup()
-      pending.reject(err)
-      this.pendingRequests.delete(id)
-    }
-
+    this.pending.rejectAll(createSshDisposalError(reason))
+    this.registry.failLiveness()
     this.registry.clear()
     this.channels.interactive.dispose()
     this.channels.background.dispose()
@@ -224,6 +262,7 @@ export class SshDualChannelMultiplexer {
     if (this.disposed) {
       return
     }
+    this.registry.resolveLiveness()
     const ch = this.channels[channel]
     ch.highestReceivedSeq = Math.max(ch.highestReceivedSeq, frame.id)
     if (frame.type !== MessageType.Regular) {
@@ -236,7 +275,7 @@ export class SshDualChannelMultiplexer {
         this.handleResponse(msg as JsonRpcResponse, channel)
       } else if ('id' in msg && 'method' in msg) {
         // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Property checks verify JsonRpcRequest shape.
-        void this.handleIncomingRequest(msg as JsonRpcRequest, channel)
+        void dispatchIncomingRequest(msg as JsonRpcRequest, ch, this.registry, () => this.disposed)
       } else if ('method' in msg && !('id' in msg)) {
         this.registry.dispatchNotification(msg.method, msg.params ?? {})
       }
@@ -246,63 +285,12 @@ export class SshDualChannelMultiplexer {
   }
 
   private handleResponse(msg: JsonRpcResponse, channel: ChannelKind): void {
-    const pending = this.pendingRequests.get(msg.id)
+    const pending = this.pending.get(msg.id)
     if (!pending || pending.channel !== channel) {
       return
     }
     pending.cleanup()
-    this.pendingRequests.delete(msg.id)
-
-    if (msg.error) {
-      const err = new Error(msg.error.message)
-      Object.defineProperty(err, 'code', { value: msg.error.code })
-      Object.defineProperty(err, 'data', { value: msg.error.data })
-      pending.reject(err)
-    } else {
-      try {
-        pending.beforeResolve?.(msg.result)
-        pending.resolve(msg.result)
-      } catch (error) {
-        pending.reject(error instanceof Error ? error : new Error(String(error)))
-      }
-    }
-  }
-
-  private async handleIncomingRequest(msg: JsonRpcRequest, channel: ChannelKind): Promise<void> {
-    const handler = this.registry.requestHandlers.get(msg.method)
-    const ch = this.channels[channel]
-    if (!handler) {
-      if (this.disposed) {
-        return
-      }
-      ch.sendJsonRpc({
-        jsonrpc: '2.0',
-        id: msg.id,
-        error: { code: -32601, message: `Method not found: ${msg.method}` }
-      })
-      return
-    }
-    try {
-      const result = await handler(msg.params ?? {})
-      if (this.disposed) {
-        return
-      }
-      ch.sendJsonRpc({ jsonrpc: '2.0', id: msg.id, result: result ?? null })
-    } catch (err) {
-      if (this.disposed) {
-        return
-      }
-      ch.sendJsonRpc({
-        jsonrpc: '2.0',
-        id: msg.id,
-        error: {
-          code:
-            typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'number'
-              ? err.code
-              : -32000,
-          message: err instanceof Error ? err.message : String(err)
-        }
-      })
-    }
+    this.pending.delete(msg.id)
+    applyResponseSettlement(msg, pending)
   }
 }

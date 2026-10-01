@@ -28,8 +28,12 @@ function createMockTransport(): MockTransport {
   const written: Buffer[] = []
 
   return {
-    write: (data: Buffer) => {
+    write: (
+      data: Buffer,
+      onSettled?: (result: { ok: true } | { ok: false; error: Error }) => void
+    ) => {
       written.push(data)
+      onSettled?.({ ok: true })
     },
     onData: (cb) => dataCallbacks.push(cb),
     onClose: (cb) => closeCallbacks.push(cb),
@@ -144,6 +148,14 @@ describe('SshDualChannelMultiplexer', () => {
 
       expect(interactive.written.length).toBe(1)
       expect(background.written.length).toBe(0)
+    })
+    it('routes bulk PTY methods (pty.replay, pty.history, pty.dumpScrollback) to the background channel', () => {
+      void dualMux.request('pty.history', { id: 'pty-1' }).catch(() => {})
+      void dualMux.request('pty.replay', { id: 'pty-1' }).catch(() => {})
+      void dualMux.request('pty.dumpScrollback', { id: 'pty-1' }).catch(() => {})
+
+      expect(background.written.length).toBe(3)
+      expect(interactive.written.length).toBe(0)
     })
   })
 
@@ -447,6 +459,55 @@ describe('SshDualChannelMultiplexer', () => {
       // Incoming data on transport callback is ignored
       mockTransport.dataCallbacks[0](Buffer.from([0, 1, 2, 3]))
       expect(onFrame).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('notifyWithSettlement', () => {
+    it('settles with accepted when transport write succeeds', () => {
+      const settled = vi.fn()
+      interactive.supportsWriteSettlement = true
+      dualMux.notifyWithSettlement('pty.ackData', { acknowledgements: [] }, settled)
+
+      expect(interactive.written.length).toBe(1)
+      expect(settled).toHaveBeenCalledWith({ outcome: 'accepted' })
+    })
+
+    it('settles with refused when multiplexer is disposed', () => {
+      const settled = vi.fn()
+      dualMux.dispose('shutdown')
+      dualMux.notifyWithSettlement('pty.ackData', { acknowledgements: [] }, settled)
+
+      expect(settled).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: 'refused',
+          reason: 'transport_disposed'
+        })
+      )
+    })
+  })
+
+  describe('probeLiveness', () => {
+    it('sends keepalive frame on interactive transport and resolves true on incoming frame', async () => {
+      const probePromise = dualMux.probeLiveness(5000)
+
+      expect(interactive.written.length).toBe(1)
+      // First byte of keepalive frame is MessageType.KeepAlive (9)
+      expect(interactive.written[0][0]).toBe(MessageType.KeepAlive)
+
+      // Simulate incoming frame on background channel
+      background.dataCallbacks[0](makeResponseFrame(999, { ok: true }, 1))
+      await expect(probePromise).resolves.toBe(true)
+    })
+
+    it('resolves false when liveness probe times out', async () => {
+      const probePromise = dualMux.probeLiveness(1000)
+      vi.advanceTimersByTime(1000)
+      await expect(probePromise).resolves.toBe(false)
+    })
+
+    it('resolves false immediately if probeLiveness is called on a disposed multiplexer', async () => {
+      dualMux.dispose()
+      await expect(dualMux.probeLiveness(1000)).resolves.toBe(false)
     })
   })
 })

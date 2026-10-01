@@ -1,9 +1,12 @@
 import {
   FrameDecoder,
   encodeJsonRpcFrame,
+  encodeKeepAliveFrame,
   type DecodedFrame,
   type JsonRpcMessage,
-  type JsonRpcNotification
+  type JsonRpcNotification,
+  type JsonRpcRequest,
+  type JsonRpcResponse
 } from './relay-protocol'
 import type {
   MultiplexerTransport,
@@ -12,6 +15,7 @@ import type {
   RequestHandler,
   MultiplexerDisposeReason
 } from './ssh-channel-multiplexer'
+import type { MultiplexerTransportWriteResult } from './ssh-multiplexer-transport-writer'
 
 export type DualChannelTransports = {
   interactive: MultiplexerTransport
@@ -20,7 +24,61 @@ export type DualChannelTransports = {
 
 export type ChannelKind = 'interactive' | 'background'
 export function selectChannel(method: string): ChannelKind {
+  if (method === 'pty.history' || method === 'pty.replay' || method === 'pty.dumpScrollback') {
+    return 'background'
+  }
   return method.startsWith('pty.') ? 'interactive' : 'background'
+}
+
+export type LivenessWaiter = {
+  succeed: () => void
+  fail: () => void
+}
+export type PendingRequest = {
+  resolve: (result: unknown) => void
+  reject: (error: Error) => void
+  beforeResolve?: (result: unknown) => void
+  timer: NodeJS.Timeout
+  cleanup: () => void
+  channel: ChannelKind
+}
+
+export function createAbortError(method: string): Error {
+  const err = new Error(`Request "${method}" was cancelled`)
+  err.name = 'AbortError'
+  return err
+}
+
+export function createTimeoutError(method: string, timeoutMs: number, code: string): Error {
+  return Object.assign(new Error(`Request "${method}" timed out after ${timeoutMs}ms`), { code })
+}
+
+export class DualChannelRequestTracker {
+  private readonly pending = new Map<number, PendingRequest>()
+
+  get(id: number): PendingRequest | undefined {
+    return this.pending.get(id)
+  }
+
+  set(id: number, req: PendingRequest): void {
+    this.pending.set(id, req)
+  }
+
+  delete(id: number): boolean {
+    return this.pending.delete(id)
+  }
+
+  rejectAll(error: Error): void {
+    for (const [id, req] of this.pending) {
+      req.cleanup()
+      req.reject(error)
+      this.pending.delete(id)
+    }
+  }
+
+  getChannel(id: number): ChannelKind | undefined {
+    return this.pending.get(id)?.channel
+  }
 }
 
 export function createCancelNotification(id: number): JsonRpcNotification {
@@ -54,11 +112,23 @@ export class SingleChannelState {
     return this.disposed
   }
 
-  sendJsonRpc(msg: JsonRpcMessage): void {
+  sendJsonRpc(
+    msg: JsonRpcMessage,
+    onSettled?: (result: MultiplexerTransportWriteResult) => void
+  ): void {
     if (this.disposed) {
+      onSettled?.({ ok: false, error: new Error('Channel disposed') })
       return
     }
     const frame = encodeJsonRpcFrame(msg, this.nextOutgoingSeq++, this.highestReceivedSeq)
+    this.transport.write(frame, onSettled)
+  }
+
+  sendKeepAlive(): void {
+    if (this.disposed) {
+      return
+    }
+    const frame = encodeKeepAliveFrame(this.nextOutgoingSeq++, this.highestReceivedSeq)
     this.transport.write(frame)
   }
 
@@ -77,6 +147,33 @@ export class DualChannelRegistry {
   readonly methodNotificationHandlers = new Map<string, Set<MethodNotificationHandler>>()
   readonly requestHandlers = new Map<string, RequestHandler>()
   readonly disposeHandlers: ((reason: MultiplexerDisposeReason) => void)[] = []
+  readonly livenessWaiters: LivenessWaiter[] = []
+
+  addLivenessWaiter(waiter: LivenessWaiter): () => void {
+    this.livenessWaiters.push(waiter)
+    return () => {
+      const idx = this.livenessWaiters.indexOf(waiter)
+      if (idx !== -1) {
+        this.livenessWaiters.splice(idx, 1)
+      }
+    }
+  }
+
+  resolveLiveness(): void {
+    const waiters = Array.from(this.livenessWaiters)
+    this.livenessWaiters.length = 0
+    for (const waiter of waiters) {
+      waiter.succeed()
+    }
+  }
+
+  failLiveness(): void {
+    const waiters = Array.from(this.livenessWaiters)
+    this.livenessWaiters.length = 0
+    for (const waiter of waiters) {
+      waiter.fail()
+    }
+  }
 
   addNotification(handler: NotificationHandler): () => void {
     this.notificationHandlers.push(handler)
@@ -161,5 +258,63 @@ export class DualChannelRegistry {
     this.notificationHandlers.length = 0
     this.methodNotificationHandlers.clear()
     this.requestHandlers.clear()
+  }
+}
+
+export function applyResponseSettlement(msg: JsonRpcResponse, pending: PendingRequest): void {
+  if (msg.error) {
+    const err = new Error(msg.error.message)
+    Object.defineProperty(err, 'code', { value: msg.error.code })
+    Object.defineProperty(err, 'data', { value: msg.error.data })
+    pending.reject(err)
+  } else {
+    try {
+      pending.beforeResolve?.(msg.result)
+      pending.resolve(msg.result)
+    } catch (error) {
+      pending.reject(error instanceof Error ? error : new Error(String(error)))
+    }
+  }
+}
+
+export async function dispatchIncomingRequest(
+  msg: JsonRpcRequest,
+  channel: SingleChannelState,
+  registry: DualChannelRegistry,
+  isDisposed: () => boolean
+): Promise<void> {
+  const handler = registry.requestHandlers.get(msg.method)
+  if (!handler) {
+    if (isDisposed()) {
+      return
+    }
+    channel.sendJsonRpc({
+      jsonrpc: '2.0',
+      id: msg.id,
+      error: { code: -32601, message: `Method not found: ${msg.method}` }
+    })
+    return
+  }
+  try {
+    const result = await handler(msg.params ?? {})
+    if (isDisposed()) {
+      return
+    }
+    channel.sendJsonRpc({ jsonrpc: '2.0', id: msg.id, result: result ?? null })
+  } catch (err) {
+    if (isDisposed()) {
+      return
+    }
+    channel.sendJsonRpc({
+      jsonrpc: '2.0',
+      id: msg.id,
+      error: {
+        code:
+          typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'number'
+            ? err.code
+            : -32000,
+        message: err instanceof Error ? err.message : String(err)
+      }
+    })
   }
 }
