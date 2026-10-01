@@ -20,20 +20,30 @@ import {
  * Non-terminal fields (such as `openFilesByWorktree` editor drafts) are never reported by an
  * SSH host snapshot, so host testimony does not supersede them and they are never withheld.
  */
-const SSH_TERMINAL_TESTIMONY_FIELDS: ReadonlySet<keyof WorkspaceSessionState> = new Set([
-  'tabsByWorktree',
-  'terminalLayoutsByTabId',
-  'remoteSessionIdsByTabId',
-  'localOnlyScrollbackByTabId',
-  'terminalPtyIncarnationsByPaneKey',
-  'unifiedTabs',
-  'tabGroups',
-  'tabGroupLayouts',
-  'activeGroupIdByWorktree',
-  'defaultTerminalTabsAppliedByWorktreeId',
-  'activeTabIdByWorktree',
-  'activeTabTypeByWorktree'
-])
+export const SSH_TERMINAL_TESTIMONY_FIELDS: Partial<Record<keyof WorkspaceSessionState, true>> = {
+  tabsByWorktree: true,
+  terminalLayoutsByTabId: true,
+  remoteSessionIdsByTabId: true,
+  terminalPtyIncarnationsByPaneKey: true,
+  activeTabIdByWorktree: true,
+  defaultTerminalTabsAppliedByWorktreeId: true
+}
+
+/**
+ * Returns true if a parked shadow field/key is subject to SSH host testimony invalidation
+ * (i.e. managed by direct-SSH snapshots and not belonging to a folder workspace).
+ */
+export function isShadowRowSubjectToHostTestimony(
+  field: keyof WorkspaceSessionState,
+  owningWorkspaceKey: string | undefined
+): boolean {
+  if (!SSH_TERMINAL_TESTIMONY_FIELDS[field]) {
+    return false
+  }
+  const isFolder =
+    owningWorkspaceKey !== undefined && parseWorkspaceKey(owningWorkspaceKey)?.type === 'folder'
+  return !isFolder
+}
 /**
  * The shadow minus every parked row whose host has already answered for it. Returns the input by
  * reference when nothing is withheld.
@@ -87,11 +97,7 @@ export function shadowRowsTheHostHasNotAnswered(
             : ownership === 'tabKeyed'
               ? worktreeIdByTabIdInShadow.get(key)
               : worktreeIdForPaneKey(worktreeIdByTabIdInShadow, key)
-        const isFolder =
-          owningWorkspaceKey !== undefined &&
-          parseWorkspaceKey(owningWorkspaceKey)?.type === 'folder'
-        const isCoveredByTerminalTestimony = SSH_TERMINAL_TESTIMONY_FIELDS.has(field)
-        if (isFolder || !isCoveredByTerminalTestimony) {
+        if (!isShadowRowSubjectToHostTestimony(field, owningWorkspaceKey)) {
           survivingRecord[key] = value
         } else {
           fieldWithheld = true

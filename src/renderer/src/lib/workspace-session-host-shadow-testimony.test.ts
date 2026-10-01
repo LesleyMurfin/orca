@@ -185,4 +185,39 @@ describe('shadowRowsTheHostHasNotAnswered', () => {
       [worktreeKey]: openFiles
     })
   })
+
+  it('keeps local-only fields such as localOnlyScrollbackByTabId even after the host answers, because direct-SSH snapshots do not manage local scrollback', () => {
+    const answeredState: RemoteWorkspaceTestimonyState = {
+      remoteWorkspaceHydratedTargetIds: new Set([TARGET_ID]),
+      remoteWorkspaceSyncStatusByTargetId: {
+        [TARGET_ID]: { phase: 'synced', direction: 'pull' }
+      }
+    }
+
+    const worktreeKey = 'worktree:repo-1::worktree-1'
+    const worktreeTabs = [tab('tab-worktree', worktreeKey)]
+    const scrollback = {
+      'tab-worktree': {
+        lines: ['output line 1', 'output line 2']
+      }
+    }
+
+    const shadow: HostSessionSlices = {
+      [SSH_HOST_ID]: {
+        ...sessionWithTabs({ [worktreeKey]: worktreeTabs }),
+        // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock for localOnlyScrollbackByTabId record
+        localOnlyScrollbackByTabId: scrollback as never
+      }
+    }
+
+    const result = shadowRowsTheHostHasNotAnswered(shadow, answeredState)
+
+    expect(result).toBeDefined()
+    const hostSlice = result?.[SSH_HOST_ID]
+    expect(hostSlice).toBeDefined()
+    // Terminal tabs for worktreeKey are withheld (superseded by testimony):
+    expect(hostSlice?.tabsByWorktree).toBeUndefined()
+    // Local-only scrollback survives:
+    expect(hostSlice?.localOnlyScrollbackByTabId).toEqual(scrollback)
+  })
 })

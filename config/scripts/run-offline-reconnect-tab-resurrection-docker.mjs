@@ -9,9 +9,9 @@ import { spawnSync } from 'node:child_process'
 // Modeled directly on run-ssh-docker-e2e.mjs: same pnpm/Playwright invocation shape, same
 // ORCA_E2E_SSH_DOCKER env-gate the target spec reads to skip itself outside a Docker-capable host.
 //
-// ORCA_GAP03_TAB_COUNT and ORCA_GAP03_CLOSE_COUNT tune the repro's N/M without editing the spec.
-// Left unset here so the spec's own defaults (TAB_COUNT=2, CLOSE_COUNT=TAB_COUNT, i.e. every
-// opened tab closes) apply — GAP-03's fix is an all-or-nothing repair (see the spec's own doc
+// ORCA_GAP03_TAB_COUNT tunes the repro's N without editing the spec.
+// Left unset here so the spec's own default (TAB_COUNT=2, CLOSE_COUNT=TAB_COUNT, i.e. every
+// opened tab closes) applies — GAP-03's fix is an all-or-nothing repair (see the spec's own doc
 // comment on CLOSE_COUNT), so a run that leaves any survivor tab in the worktree never exercises
 // the regression at all, pre- or post-fix.
 const rawExtraArgs = process.argv.slice(2)
@@ -22,9 +22,6 @@ const env = {
   ORCA_E2E_SSH_DOCKER: '1',
   ...(process.env.ORCA_GAP03_TAB_COUNT
     ? { ORCA_GAP03_TAB_COUNT: process.env.ORCA_GAP03_TAB_COUNT }
-    : {}),
-  ...(process.env.ORCA_GAP03_CLOSE_COUNT
-    ? { ORCA_GAP03_CLOSE_COUNT: process.env.ORCA_GAP03_CLOSE_COUNT }
     : {})
 }
 

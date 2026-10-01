@@ -227,7 +227,11 @@ function splitWorkspaceSessionForWrite(
   payload: WorkspaceSessionState,
   state: HostPersistenceState,
   mode: HostSessionWriteMode
-): { slices: HostSessionSlices; hostsWithAttachedShadow: Set<ExecutionHostId> } {
+): {
+  slices: HostSessionSlices
+  hostsWithAttachedShadow: Set<ExecutionHostId>
+  hostsWithTestimonyInvalidatableShadow: Set<ExecutionHostId>
+} {
   const routing = buildHostSessionRouting(state)
   // Why the live catalogs: a debounced patch carries only the fields that changed, so a park
   // capture's layouts-only patch names no tab rows. Routed by the payload alone, every tab-keyed
@@ -237,13 +241,14 @@ function splitWorkspaceSessionForWrite(
   const slices = splitWorkspaceSessionByHost(payload, routing.hostIdByWorktreeId, {
     worktreeIdByTabId
   })
-  const hostsWithAttachedShadow = attachHostSessionShadow(
-    slices,
-    shadowRowsTheHostHasNotAnswered(state.contestedHostWorkspaceSessions, state),
-    routing.claims,
-    mode
-  )
-  return { slices, hostsWithAttachedShadow }
+  const { hostsWithAttachedShadow, hostsWithTestimonyInvalidatableShadow } =
+    attachHostSessionShadow(
+      slices,
+      shadowRowsTheHostHasNotAnswered(state.contestedHostWorkspaceSessions, state),
+      routing.claims,
+      mode
+    )
+  return { slices, hostsWithAttachedShadow, hostsWithTestimonyInvalidatableShadow }
 }
 
 /** Patch path of the debounced session writer: split the partial patch by owner
@@ -254,7 +259,8 @@ export function patchWorkspaceSessionByHost(
   patch: WorkspaceSessionPatch,
   state: HostPersistenceState
 ): Promise<void> {
-  const { slices, hostsWithAttachedShadow } = splitWorkspaceSessionForWrite(
+  const { slices, hostsWithTestimonyInvalidatableShadow } = splitWorkspaceSessionForWrite(
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: patch is a partial WorkspaceSessionState routed by present keys
     patch as WorkspaceSessionState,
     state,
     'patch'
@@ -272,7 +278,7 @@ export function patchWorkspaceSessionByHost(
         state,
         replaceable: false,
         getLiveState: state.getLiveTestimonyState,
-        carriesParkedShadowRows: hostsWithAttachedShadow.has(hostId)
+        carriesParkedShadowRows: hostsWithTestimonyInvalidatableShadow.has(hostId)
       }
     )
     // Why: a failed runtime-partition write must not reject the local chain.
@@ -293,7 +299,7 @@ export async function persistWorkspaceSessionByHost(
 ): Promise<void> {
   // Why 'replace': api.set swaps the whole partition, so parked rows must ride along even for
   // fields nothing else routed to this host.
-  const { slices, hostsWithAttachedShadow } = splitWorkspaceSessionForWrite(
+  const { slices, hostsWithTestimonyInvalidatableShadow } = splitWorkspaceSessionForWrite(
     payload,
     state,
     'replace'
@@ -305,7 +311,7 @@ export async function persistWorkspaceSessionByHost(
         state,
         replaceable: true,
         getLiveState: state.getLiveTestimonyState,
-        carriesParkedShadowRows: hostsWithAttachedShadow.has(hostId)
+        carriesParkedShadowRows: hostsWithTestimonyInvalidatableShadow.has(hostId)
       })
     )
   }

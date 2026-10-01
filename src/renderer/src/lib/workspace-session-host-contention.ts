@@ -19,6 +19,7 @@ import {
   mergeWorkspaceSessionsFromHosts,
   type HostSessionSlices
 } from './workspace-session-host-split'
+import { isShadowRowSubjectToHostTestimony } from './workspace-session-host-shadow-testimony'
 
 /**
  * Which execution hosts publish each workspace id, and what persistence does when two of them
@@ -274,18 +275,24 @@ function hostStillClaimsKey(
 /** Whether the slices will be applied as a merge-by-field patch or a full partition replace. */
 export type HostSessionWriteMode = 'patch' | 'replace'
 
+export type AttachedHostSessionShadowResult = {
+  hostsWithAttachedShadow: Set<ExecutionHostId>
+  hostsWithTestimonyInvalidatableShadow: Set<ExecutionHostId>
+}
+
 /** Write parked entries back into their own host's slice so a write for the primary host cannot
  *  erase a co-claimant's persisted session. Mutates the slices produced by the split.
- *  Returns the set of host IDs that actually received one or more parked shadow entries. */
+ *  Returns the set of host IDs that received parked shadow entries and those carrying testimony-invalidatable entries. */
 export function attachHostSessionShadow(
   slices: HostSessionSlices,
   shadow: HostSessionSlices | undefined,
   claims: WorktreeHostClaims,
   mode: HostSessionWriteMode
-): Set<ExecutionHostId> {
+): AttachedHostSessionShadowResult {
   const hostsWithAttachedShadow = new Set<ExecutionHostId>()
+  const hostsWithTestimonyInvalidatableShadow = new Set<ExecutionHostId>()
   if (!shadow) {
-    return hostsWithAttachedShadow
+    return { hostsWithAttachedShadow, hostsWithTestimonyInvalidatableShadow }
   }
   for (const [hostId, shadowSlice] of Object.entries(shadow) as [
     ExecutionHostId,
@@ -341,8 +348,11 @@ export function attachHostSessionShadow(
         }
         target[key] = entry
         hostsWithAttachedShadow.add(hostId)
+        if (isShadowRowSubjectToHostTestimony(field, worktreeId ?? key)) {
+          hostsWithTestimonyInvalidatableShadow.add(hostId)
+        }
       }
     }
   }
-  return hostsWithAttachedShadow
+  return { hostsWithAttachedShadow, hostsWithTestimonyInvalidatableShadow }
 }
