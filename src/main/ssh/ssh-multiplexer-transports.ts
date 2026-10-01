@@ -12,32 +12,115 @@ export type SshMultiplexerTransports =
   | readonly MultiplexerTransport[]
   | DualChannelTransports
 
+/**
+ * Work-priority lanes, highest → lowest.
+ * With N transports, lane rank i maps to transport min(i, N-1) so each pipe
+ * carries a distinct priority class instead of dumping all background work
+ * onto one socket.
+ */
+export const MUX_PRIORITY_LANES = [
+  'interactive', // live keystrokes / resize — never share with bulk
+  'control', // rpc.cancel, session grace/config
+  'pty-lifecycle', // spawn / shutdown / attach / signal
+  'session', // resolveHome, registerRoot
+  'ports', // port detect / forwards
+  'git-meta', // status, branch lists
+  'git-bulk', // diff, log, response streams
+  'fs-meta', // readDir, stat, light probes
+  'fs-bulk', // listFiles, readFileStream, heavy walks
+  'history' // pty.history / replay / scrollback dumps
+] as const
+
+export type MuxPriorityLane = (typeof MUX_PRIORITY_LANES)[number]
+
+/** Preferred parallel relay connects: one pipe per priority lane. */
+export const MUX_TARGET_TRANSPORT_COUNT = MUX_PRIORITY_LANES.length
+
+/** Labels a SingleChannelState as interactive (index 0) vs worker. */
 export type ChannelKind = 'interactive' | 'background'
 
-export function selectChannel(method: string): ChannelKind {
-  if (method === 'pty.history' || method === 'pty.replay' || method === 'pty.dumpScrollback') {
-    return 'background'
+export function selectMuxPriorityLane(method: string): MuxPriorityLane {
+  if (
+    method === 'pty.data' ||
+    method === 'pty.resize' ||
+    method === 'pty.ackData' ||
+    method === 'pty.setDeliveryPaused' ||
+    method === 'pty.input'
+  ) {
+    return 'interactive'
   }
-  return method.startsWith('pty.') ? 'interactive' : 'background'
+  if (
+    method === 'rpc.cancel' ||
+    method.startsWith('session.configure') ||
+    method.includes('Grace')
+  ) {
+    return 'control'
+  }
+  if (
+    method === 'pty.spawn' ||
+    method === 'pty.shutdown' ||
+    method === 'pty.attach' ||
+    method === 'pty.kill' ||
+    method === 'pty.signal'
+  ) {
+    return 'pty-lifecycle'
+  }
+  if (method === 'pty.history' || method === 'pty.replay' || method === 'pty.dumpScrollback') {
+    return 'history'
+  }
+  if (method.startsWith('ports.')) {
+    return 'ports'
+  }
+  if (method.startsWith('session.')) {
+    return 'session'
+  }
+  if (
+    method === 'git.diff' ||
+    method === 'git.log' ||
+    (method.startsWith('git.') &&
+      (method.includes('Stream') || method.includes('diff') || method.includes('log')))
+  ) {
+    return 'git-bulk'
+  }
+  if (method.startsWith('git.')) {
+    return 'git-meta'
+  }
+  if (
+    method === 'fs.listFiles' ||
+    method === 'fs.readFileStream' ||
+    method.includes('Stream') ||
+    method === 'fs.workspaceSpaceScan'
+  ) {
+    return 'fs-bulk'
+  }
+  if (method.startsWith('fs.')) {
+    return 'fs-meta'
+  }
+  return 'fs-meta'
 }
 
-/** Map RPC method → transport index for 1..N physical pipes. */
+export function selectChannel(method: string): ChannelKind {
+  return selectMuxPriorityLane(method) === 'interactive' ? 'interactive' : 'background'
+}
+
+/**
+ * Map RPC method → transport index for 1..N physical pipes.
+ * Each priority lane owns its own index when N is large enough (up to 10).
+ */
 export function selectTransportIndex(method: string, transportCount: number): number {
   if (transportCount <= 1) {
     return 0
   }
-  const lane = selectChannel(method)
-  if (lane === 'interactive') {
+  const lane = selectMuxPriorityLane(method)
+  const laneRank = MUX_PRIORITY_LANES.indexOf(lane)
+  const rank = laneRank === -1 ? MUX_PRIORITY_LANES.length - 1 : laneRank
+  if (rank === 0) {
     return 0
   }
-  // count===2: background → 1; count>=3: bulk streams → last, other background → 1
-  if (
-    transportCount >= 3 &&
-    (method.startsWith('fs.') || method.startsWith('git.') || method.includes('Stream'))
-  ) {
-    return transportCount - 1
+  if (transportCount === 2) {
+    return 1
   }
-  return 1
+  return Math.min(rank, transportCount - 1)
 }
 
 export function isDualChannelTransports(value: unknown): value is DualChannelTransports {

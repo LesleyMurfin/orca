@@ -119,12 +119,12 @@ describe('SshChannelMultiplexer dual-transport mode', () => {
   })
 
   describe('interactive routing (PTY, keystrokes, resize)', () => {
-    it('routes a pty.spawn request to the interactive channel only', () => {
+    it('routes pty.spawn (lifecycle) to the background priority channel', () => {
       void mux.request('pty.spawn', { cols: 80, rows: 24 }).catch(() => {})
 
-      expect(interactive.written.length).toBe(1)
-      expect(background.written.length).toBe(0)
-      expect(decodeWrittenPayload(interactive.written[0]).method).toBe('pty.spawn')
+      expect(background.written.length).toBe(1)
+      expect(interactive.written.length).toBe(0)
+      expect(decodeWrittenPayload(background.written[0]).method).toBe('pty.spawn')
     })
 
     it('routes pty.data keystroke notifications to the interactive channel only', () => {
@@ -143,11 +143,11 @@ describe('SshChannelMultiplexer dual-transport mode', () => {
       expect(decodeWrittenPayload(interactive.written[0]).method).toBe('pty.resize')
     })
 
-    it('routes pty.shutdown to the interactive channel only', () => {
+    it('routes pty.shutdown (lifecycle) to the background priority channel', () => {
       void mux.request('pty.shutdown', { id: 'pty-1' }).catch(() => {})
 
-      expect(interactive.written.length).toBe(1)
-      expect(background.written.length).toBe(0)
+      expect(background.written.length).toBe(1)
+      expect(interactive.written.length).toBe(0)
     })
     it('routes bulk PTY methods (pty.replay, pty.history, pty.dumpScrollback) to the background channel', () => {
       void mux.request('pty.history', { id: 'pty-1' }).catch(() => {})
@@ -201,15 +201,17 @@ describe('SshChannelMultiplexer dual-transport mode', () => {
   })
 
   describe('response correlation', () => {
-    it('resolves an interactive request only from a response delivered on the interactive channel', async () => {
+    it('resolves a lifecycle request only from a response on its priority channel', async () => {
       const promise = mux.request('pty.spawn', { cols: 80, rows: 24 })
-      const { id } = decodeWrittenPayload(interactive.written[0])
+      const { id } = decodeWrittenPayload(background.written[0])
       expect(typeof id).toBe('number')
       if (typeof id !== 'number') {
         throw new Error('Expected request id to be a number')
       }
 
-      interactive.dataCallbacks[0](makeResponseFrame(id, { id: 'pty-1' }, 1))
+      // Wrong channel must not resolve
+      interactive.dataCallbacks[0](makeResponseFrame(id, { id: 'wrong' }, 1))
+      background.dataCallbacks[0](makeResponseFrame(id, { id: 'pty-1' }, 1))
       await expect(promise).resolves.toEqual({ id: 'pty-1' })
     })
 
@@ -253,10 +255,10 @@ describe('SshChannelMultiplexer dual-transport mode', () => {
       expect(mux.isDisposed()).toBe(true)
     })
 
-    it('rejects a pending interactive request when the background channel drops', async () => {
-      const promise = mux.request('pty.spawn', { cols: 80, rows: 24 })
+    it('rejects a pending request when either channel drops (whole mux disposes)', async () => {
+      const promise = mux.request('fs.listFiles', { path: '/' })
 
-      background.closeCallbacks[0]()
+      interactive.closeCallbacks[0]()
 
       await expect(promise).rejects.toThrow('SSH connection lost, reconnecting...')
     })
@@ -301,8 +303,8 @@ describe('SshChannelMultiplexer dual-transport mode', () => {
         { cols: 80, rows: 24 },
         { signal: controller.signal }
       )
-      expect(interactive.written.length).toBe(1)
-      const { id } = decodeWrittenPayload(interactive.written[0])
+      expect(background.written.length).toBe(1)
+      const { id } = decodeWrittenPayload(background.written[0])
       expect(typeof id).toBe('number')
 
       controller.abort()
@@ -311,18 +313,18 @@ describe('SshChannelMultiplexer dual-transport mode', () => {
         name: 'AbortError',
         message: 'Request "pty.spawn" was cancelled'
       })
-      // rpc.cancel is routed to the channel of the pending request being cancelled (interactive)
-      expect(interactive.written.length).toBe(2)
-      expect(background.written.length).toBe(0)
-      const cancelFrame = decodeWrittenPayload(interactive.written[1])
+      // rpc.cancel follows the pending request's priority channel (background for spawn)
+      expect(background.written.length).toBe(2)
+      expect(interactive.written.length).toBe(0)
+      const cancelFrame = decodeWrittenPayload(background.written[1])
       expect(cancelFrame.method).toBe('rpc.cancel')
       expect(cancelFrame.params).toEqual({ id })
     })
 
     it('routes rpc.cancel to the channel of a timed out request', async () => {
       const promise = mux.request('pty.spawn', { cols: 80, rows: 24 }, { timeoutMs: 1000 })
-      expect(interactive.written.length).toBe(1)
-      const { id } = decodeWrittenPayload(interactive.written[0])
+      expect(background.written.length).toBe(1)
+      const { id } = decodeWrittenPayload(background.written[0])
       expect(typeof id).toBe('number')
 
       vi.advanceTimersByTime(1000)
@@ -331,24 +333,24 @@ describe('SshChannelMultiplexer dual-transport mode', () => {
         code: 'SSH_MUX_REQUEST_TIMEOUT',
         message: 'Request "pty.spawn" timed out after 1000ms'
       })
-      expect(interactive.written.length).toBe(2)
-      expect(background.written.length).toBe(0)
-      const cancelFrame = decodeWrittenPayload(interactive.written[1])
+      expect(background.written.length).toBe(2)
+      expect(interactive.written.length).toBe(0)
+      const cancelFrame = decodeWrittenPayload(background.written[1])
       expect(cancelFrame.method).toBe('rpc.cancel')
       expect(cancelFrame.params).toEqual({ id })
     })
 
     it('routes direct notify rpc.cancel to originating channel for pending requests', () => {
       void mux.request('pty.spawn', { cols: 80, rows: 24 }).catch(() => {})
-      expect(interactive.written.length).toBe(1)
-      const { id } = decodeWrittenPayload(interactive.written[0])
+      expect(background.written.length).toBe(1)
+      const { id } = decodeWrittenPayload(background.written[0])
       expect(typeof id).toBe('number')
 
       mux.notify('rpc.cancel', { id })
 
-      expect(interactive.written.length).toBe(2)
-      expect(background.written.length).toBe(0)
-      const cancelPayload = decodeWrittenPayload(interactive.written[1])
+      expect(background.written.length).toBe(2)
+      expect(interactive.written.length).toBe(0)
+      const cancelPayload = decodeWrittenPayload(background.written[1])
       expect(cancelPayload.method).toBe('rpc.cancel')
       expect(cancelPayload.params).toEqual({ id })
     })
@@ -370,7 +372,7 @@ describe('SshChannelMultiplexer dual-transport mode', () => {
 
     it('cleans up immediately and prevents orphaned timers if transport write throws synchronously', async () => {
       const writeError = new Error('Transport write failure')
-      interactive.write = vi.fn(() => {
+      background.write = vi.fn(() => {
         throw writeError
       })
 

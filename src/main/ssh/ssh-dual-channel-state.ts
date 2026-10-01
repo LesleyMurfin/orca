@@ -21,10 +21,14 @@ export type {
   DualChannelTransports,
   SshMultiplexerTransports,
   ChannelKind,
+  MuxPriorityLane,
   LivenessWaiter,
   PendingRequest
 } from './ssh-multiplexer-transports'
 export {
+  MUX_PRIORITY_LANES,
+  MUX_TARGET_TRANSPORT_COUNT,
+  selectMuxPriorityLane,
   selectChannel,
   selectTransportIndex,
   isDualChannelTransports,

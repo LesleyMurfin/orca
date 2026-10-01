@@ -93,9 +93,37 @@ describe('createRelaySessionMultiplexer', () => {
       hostPlatform: getRemoteHostPlatform('linux-x64')
     })
 
-    expect(exec).toHaveBeenCalledTimes(1)
+    // Primary + up to 9 additional priority workers (10 lanes total)
+    expect(exec.mock.calls.length).toBe(9)
     expect(String(exec.mock.calls[0]![0])).toContain('relay.js --connect')
-    expect(waitForSentinelMock).toHaveBeenCalled()
+    expect(waitForSentinelMock).toHaveBeenCalledTimes(9)
+    expect(mux.isDisposed()).toBe(false)
+    mux.dispose()
+  })
+
+  it('opens additional connects until MaxSessions stops the loop', async () => {
+    const transport = mockTransport()
+    waitForSentinelMock.mockResolvedValue(mockTransport())
+    let opens = 0
+    const exec = vi.fn().mockImplementation(async () => {
+      opens += 1
+      if (opens > 3) {
+        throw Object.assign(new Error('Channel open failure: open failed'), { reason: 2 })
+      }
+      return { on: vi.fn(), stderr: { on: vi.fn() } }
+    })
+    const conn = mockConn(exec)
+    const mux = await createRelaySessionMultiplexer(conn, {
+      transport,
+      remoteRelayDir: '/relay',
+      nodePath: '/bin/node',
+      sockPath: '/tmp/s.sock',
+      credentialFile: '/tmp/c',
+      hostPlatform: getRemoteHostPlatform('linux-x64'),
+      targetTransportCount: 10
+    })
+    // primary + 3 successful extras = 4 transports
+    expect(opens).toBe(4)
     expect(mux.isDisposed()).toBe(false)
     mux.dispose()
   })

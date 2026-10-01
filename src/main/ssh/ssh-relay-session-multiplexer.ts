@@ -5,6 +5,7 @@ import { shellEscape } from './ssh-connection-utils'
 import { isSshSessionLimitError } from './ssh-session-limit-error'
 import { isWindowsRemoteHost, type RemoteHostPlatform } from './ssh-remote-platform'
 import { powerShellCommand, powerShellLiteral } from './ssh-remote-powershell'
+import { MUX_TARGET_TRANSPORT_COUNT } from './ssh-multiplexer-transports'
 
 export type RelayMuxDeployEndpoints = {
   transport: MultiplexerTransport
@@ -13,12 +14,15 @@ export type RelayMuxDeployEndpoints = {
   sockPath?: string
   credentialFile?: string
   hostPlatform?: RemoteHostPlatform | null
+  /** Cap parallel connects (default = one per priority lane). */
+  targetTransportCount?: number
 }
 
 /**
  * Build the session multiplexer from deploy result.
- * Tries a second relay `--connect` when sock/dir/node/credential are known;
- * falls back to the primary transport alone on MaxSessions or any second-channel failure.
+ * Opens additional relay `--connect` channels up to the priority-lane target
+ * so work is spread by priority instead of dumped on one pipe.
+ * Stops early on MaxSessions or connect failure and keeps whatever opened.
  */
 export async function createRelaySessionMultiplexer(
   conn: SshConnection,
@@ -26,39 +30,55 @@ export async function createRelaySessionMultiplexer(
   signal?: AbortSignal
 ): Promise<SshChannelMultiplexer> {
   const { transport, remoteRelayDir, nodePath, sockPath, credentialFile, hostPlatform } = endpoints
-  if (!remoteRelayDir || !nodePath || !sockPath || !credentialFile) {
+  const targetCount = Math.max(
+    1,
+    Math.min(
+      endpoints.targetTransportCount ?? MUX_TARGET_TRANSPORT_COUNT,
+      MUX_TARGET_TRANSPORT_COUNT
+    )
+  )
+
+  if (!remoteRelayDir || !nodePath || !sockPath || !credentialFile || targetCount <= 1) {
     return new SshChannelMultiplexer(transport)
   }
 
-  signal?.throwIfAborted()
-  try {
-    const connectCmd = buildRelaySecondConnectCommand({
-      remoteRelayDir,
-      nodePath,
-      sockPath,
-      credentialFile,
-      hostPlatform: hostPlatform ?? undefined
-    })
-    const channel = await conn.exec(connectCmd, { signal })
-    const background = await waitForSentinel(channel, signal)
-    console.warn(
-      '[ssh-relay-session] multi-channel mux: interactive + background transports established'
-    )
-    return new SshChannelMultiplexer([transport, background])
-  } catch (err) {
+  const transports: MultiplexerTransport[] = [transport]
+  const connectCmd = buildRelaySecondConnectCommand({
+    remoteRelayDir,
+    nodePath,
+    sockPath,
+    credentialFile,
+    hostPlatform: hostPlatform ?? undefined
+  })
+
+  while (transports.length < targetCount) {
     signal?.throwIfAborted()
-    if (isSshSessionLimitError(err)) {
-      console.warn(
-        '[ssh-relay-session] multi-channel unavailable (MaxSessions); using single transport'
-      )
-    } else {
-      console.warn(
-        '[ssh-relay-session] multi-channel second connect failed; using single transport:',
-        err instanceof Error ? err.message : String(err)
-      )
+    try {
+      const channel = await conn.exec(connectCmd, { signal })
+      const next = await waitForSentinel(channel, signal)
+      transports.push(next)
+    } catch (err) {
+      signal?.throwIfAborted()
+      if (isSshSessionLimitError(err)) {
+        console.warn(
+          `[ssh-relay-session] multi-channel stop at ${transports.length} transport(s) (MaxSessions); priority lanes share remaining pipes`
+        )
+      } else {
+        console.warn(
+          `[ssh-relay-session] multi-channel stop at ${transports.length} transport(s):`,
+          err instanceof Error ? err.message : String(err)
+        )
+      }
+      break
     }
-    return new SshChannelMultiplexer(transport)
   }
+
+  if (transports.length > 1) {
+    console.warn(
+      `[ssh-relay-session] priority mux: ${transports.length} transport(s) (target ${targetCount})`
+    )
+  }
+  return new SshChannelMultiplexer(transports)
 }
 
 export function buildRelaySecondConnectCommand(opts: {
