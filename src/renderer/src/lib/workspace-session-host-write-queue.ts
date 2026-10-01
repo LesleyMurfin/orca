@@ -10,6 +10,7 @@ export type HostPartitionWriteOptions = {
   state?: RemoteWorkspaceTestimonyState
   getLiveState?: () => RemoteWorkspaceTestimonyState
   replaceable?: boolean
+  carriesParkedShadowRows?: boolean
 }
 
 let globalLiveTestimonyProvider: (() => RemoteWorkspaceTestimonyState) | undefined
@@ -71,9 +72,11 @@ export function enqueueHostPartitionWrite<T>(
   const state = options?.state
   const parsed = parseExecutionHostId(hostId)
   const targetId = parsed?.kind === 'ssh' ? parsed.targetId : null
+  const carriesParkedShadowRows = options?.carriesParkedShadowRows ?? true
   const preparedWithoutTestimony =
-    targetId !== null && state ? !hostHasAnsweredForTarget(state, targetId) : false
-
+    targetId !== null && state && carriesParkedShadowRows
+      ? !hostHasAnsweredForTarget(state, targetId)
+      : false
   const currentGen = hostPartitionWriteGenerations.get(hostId) ?? 0
   if (options?.generation !== undefined && options.generation < currentGen) {
     return Promise.resolve(null)

@@ -227,7 +227,7 @@ function splitWorkspaceSessionForWrite(
   payload: WorkspaceSessionState,
   state: HostPersistenceState,
   mode: HostSessionWriteMode
-): HostSessionSlices {
+): { slices: HostSessionSlices; hostsWithAttachedShadow: Set<ExecutionHostId> } {
   const routing = buildHostSessionRouting(state)
   // Why the live catalogs: a debounced patch carries only the fields that changed, so a park
   // capture's layouts-only patch names no tab rows. Routed by the payload alone, every tab-keyed
@@ -237,13 +237,13 @@ function splitWorkspaceSessionForWrite(
   const slices = splitWorkspaceSessionByHost(payload, routing.hostIdByWorktreeId, {
     worktreeIdByTabId
   })
-  attachHostSessionShadow(
+  const hostsWithAttachedShadow = attachHostSessionShadow(
     slices,
     shadowRowsTheHostHasNotAnswered(state.contestedHostWorkspaceSessions, state),
     routing.claims,
     mode
   )
-  return slices
+  return { slices, hostsWithAttachedShadow }
 }
 
 /** Patch path of the debounced session writer: split the partial patch by owner host and patch
@@ -254,7 +254,11 @@ export function patchWorkspaceSessionByHost(
   patch: WorkspaceSessionPatch,
   state: HostPersistenceState
 ): { localWrite: Promise<void>; written: Promise<void> } {
-  const slices = splitWorkspaceSessionForWrite(patch as WorkspaceSessionState, state, 'patch')
+  const { slices, hostsWithAttachedShadow } = splitWorkspaceSessionForWrite(
+    patch as WorkspaceSessionState,
+    state,
+    'patch'
+  )
   const local = (slices[LOCAL_EXECUTION_HOST_ID] ?? patch) as WorkspaceSessionPatch
   const localWrite = api.patch(local)
   const hostWrites = nonLocalHostSessionEntries(slices).map(([hostId, slice]) =>
@@ -267,7 +271,8 @@ export function patchWorkspaceSessionByHost(
       {
         state,
         replaceable: false,
-        getLiveState: state.getLiveTestimonyState
+        getLiveState: state.getLiveTestimonyState,
+        carriesParkedShadowRows: hostsWithAttachedShadow.has(hostId)
       }
     ).catch((err: unknown) => {
       console.warn(`[session] host partition patch failed for ${hostId}:`, err)
@@ -296,14 +301,19 @@ export async function persistWorkspaceSessionByHost(
 ): Promise<void> {
   // Why 'replace': api.set swaps the whole partition, so parked rows must ride along even for
   // fields nothing else routed to this host.
-  const slices = splitWorkspaceSessionForWrite(payload, state, 'replace')
+  const { slices, hostsWithAttachedShadow } = splitWorkspaceSessionForWrite(
+    payload,
+    state,
+    'replace'
+  )
   const writes: Promise<void>[] = [api.set(slices[LOCAL_EXECUTION_HOST_ID] ?? payload)]
   for (const [hostId, slice] of nonLocalHostSessionEntries(slices)) {
     writes.push(
       enqueueHostPartitionWrite(hostId, state, () => api.set(slice, hostId), {
         state,
         replaceable: true,
-        getLiveState: state.getLiveTestimonyState
+        getLiveState: state.getLiveTestimonyState,
+        carriesParkedShadowRows: hostsWithAttachedShadow.has(hostId)
       })
     )
   }
@@ -317,7 +327,7 @@ export function buildWorkspaceSessionHostSnapshots(
   state: HostPersistenceState
 ): WorkspaceSessionHostSnapshot[] {
   // Why 'replace': quit snapshots are applied as full partition sets.
-  const slices = splitWorkspaceSessionForWrite(payload, state, 'replace')
+  const { slices } = splitWorkspaceSessionForWrite(payload, state, 'replace')
   return [
     { state: slices[LOCAL_EXECUTION_HOST_ID] ?? payload },
     ...nonLocalHostSessionEntries(slices).map(([hostId, hostState]) => ({

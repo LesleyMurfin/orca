@@ -275,15 +275,17 @@ function hostStillClaimsKey(
 export type HostSessionWriteMode = 'patch' | 'replace'
 
 /** Write parked entries back into their own host's slice so a write for the primary host cannot
- *  erase a co-claimant's persisted session. Mutates the slices produced by the split. */
+ *  erase a co-claimant's persisted session. Mutates the slices produced by the split.
+ *  Returns the set of host IDs that actually received one or more parked shadow entries. */
 export function attachHostSessionShadow(
   slices: HostSessionSlices,
   shadow: HostSessionSlices | undefined,
   claims: WorktreeHostClaims,
   mode: HostSessionWriteMode
-): void {
+): Set<ExecutionHostId> {
+  const hostsWithAttachedShadow = new Set<ExecutionHostId>()
   if (!shadow) {
-    return
+    return hostsWithAttachedShadow
   }
   for (const [hostId, shadowSlice] of Object.entries(shadow) as [
     ExecutionHostId,
@@ -338,7 +340,9 @@ export function attachHostSessionShadow(
           continue
         }
         target[key] = entry
+        hostsWithAttachedShadow.add(hostId)
       }
     }
   }
+  return hostsWithAttachedShadow
 }
