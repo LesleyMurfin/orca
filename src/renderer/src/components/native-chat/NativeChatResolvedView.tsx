@@ -294,9 +294,10 @@ export function NativeChatResolvedView({
     (text: string, imagePaths?: string[]) => {
       setWorkingInterrupted(false)
       const queued = Boolean(isWorking || liveWorking || streamingText)
-      return record(text, imagePaths, { queued })
+      const queuedBehindWorkingEpoch = queued ? (hookWorkingEpoch ?? null) : null
+      return record(text, imagePaths, { queued, queuedBehindWorkingEpoch })
     },
-    [record, isWorking, liveWorking, streamingText]
+    [record, isWorking, liveWorking, streamingText, hookWorkingEpoch]
   )
   const turnTiming = useNativeChatTerminalTurnTiming(paneKey, session.messages, turnActive)
 

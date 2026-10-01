@@ -566,27 +566,57 @@ describe('pendingSendsAsMessages', () => {
     expect(messages[0]?.queued).toBe(true)
   })
 
-  it('evaluates queued dynamically relative to hookWorkingEpoch and liveWorking', () => {
-    const priorSend = { ...pendingOf('p1', 'active turn prompt'), sentAt: 1_000, queued: true }
-    const laterSend = { ...pendingOf('p2', 'follow-up prompt'), sentAt: 2_500, queued: true }
-    const active = pendingSendsAsMessages([priorSend, laterSend], [], {
+  it('evaluates queued dynamically relative to queuedBehindWorkingEpoch, hookWorkingEpoch, and liveWorking', () => {
+    const triggeringSend = {
+      ...pendingOf('p1', 'active turn prompt'),
+      sentAt: 1_000,
+      queuedBehindWorkingEpoch: null
+    }
+    const followUpSend = {
+      ...pendingOf('p2', 'follow-up prompt'),
+      sentAt: 2_500,
+      queuedBehindWorkingEpoch: 2_000
+    }
+    const active = pendingSendsAsMessages([triggeringSend, followUpSend], [], {
       liveWorking: true,
       hookWorkingEpoch: 2_000
     })
     expect(active[0]?.queued).toBeUndefined()
     expect(active[1]?.queued).toBe(true)
 
-    const noEpoch = pendingSendsAsMessages([laterSend], [], {
+    // When the active turn advances/completes, the follow-up send is no longer queued
+    const advancedEpoch = pendingSendsAsMessages([followUpSend], [], {
+      liveWorking: true,
+      hookWorkingEpoch: 3_000
+    })
+    expect(advancedEpoch[0]?.queued).toBeUndefined()
+
+    const noEpoch = pendingSendsAsMessages([followUpSend], [], {
       liveWorking: true,
       hookWorkingEpoch: null
     })
     expect(noEpoch[0]?.queued).toBeUndefined()
 
-    const notWorking = pendingSendsAsMessages([laterSend], [], {
+    const notWorking = pendingSendsAsMessages([followUpSend], [], {
       liveWorking: false,
       hookWorkingEpoch: 2_000
     })
     expect(notWorking[0]?.queued).toBeUndefined()
+  })
+
+  it('does not flag a triggering prompt as queued when host clock lags client clock', () => {
+    const now = 1_700_000_030_000
+    const laggingHostEpoch = now - 30_000
+    const triggeringPrompt = {
+      ...pendingOf('trigger', 'prompt that triggered turn'),
+      sentAt: now,
+      queuedBehindWorkingEpoch: null
+    }
+    const messages = pendingSendsAsMessages([triggeringPrompt], [], {
+      liveWorking: true,
+      hookWorkingEpoch: laggingHostEpoch
+    })
+    expect(messages[0]?.queued).toBeUndefined()
   })
 
   it('hides a first send while its timestampless transcript turn is visible (grok)', () => {

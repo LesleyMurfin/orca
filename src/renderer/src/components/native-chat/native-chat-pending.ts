@@ -47,6 +47,8 @@ export type NativeChatPendingSend = {
   matchingAfterTimestamp?: number
   /** Queued while the agent was already streaming/working, so it sorts after the streaming preview. */
   queued?: boolean
+  /** The host working epoch (hookWorkingEpoch) that was active when this prompt was queued. */
+  queuedBehindWorkingEpoch?: number | null
 }
 
 export type NativeChatPendingSendScope = {
@@ -128,6 +130,8 @@ function messageIsAfterPendingTimestamp(
     return true
   }
   const boundary = nativeChatPendingMatchingAfter(pending)
+  // A transcript-clock boundary describes an existing message, so exclude ties.
+  // Local send time has no existing record and remains inclusive.
   if (pending.afterMessageTimestamp != null) {
     return message.timestamp > boundary
   }
@@ -277,9 +281,9 @@ export function pendingSendsAsMessages(
         options !== undefined
           ? Boolean(
               options.liveWorking &&
+              entry.queuedBehindWorkingEpoch != null &&
               options.hookWorkingEpoch != null &&
-              entry.sentAt != null &&
-              entry.sentAt >= options.hookWorkingEpoch
+              options.hookWorkingEpoch === entry.queuedBehindWorkingEpoch
             ) || undefined
           : entry.queued
             ? true

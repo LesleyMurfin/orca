@@ -478,4 +478,19 @@ describe('compareMessages', () => {
     const sorted = [followUpPrompt, streaming, activePrompt].sort(compareMessages)
     expect(sorted.map((m) => m.id)).toEqual(['pending:p1', NATIVE_CHAT_STREAMING_ID, 'pending:p2'])
   })
+
+  it('sorts triggering prompt before streaming preview even when host clock lags client clock', () => {
+    const now = 1_700_000_030_000
+    // Triggering prompt was not queued (queued: undefined), sentAt: now
+    const triggeringPrompt = msg({
+      id: 'pending:trigger',
+      role: 'user',
+      timestamp: now,
+      queued: undefined
+    })
+    const streaming = msg({ id: NATIVE_CHAT_STREAMING_ID, role: 'assistant', timestamp: null })
+
+    const sorted = [streaming, triggeringPrompt].sort(compareMessages)
+    expect(sorted.map((m) => m.id)).toEqual(['pending:trigger', NATIVE_CHAT_STREAMING_ID])
+  })
 })
