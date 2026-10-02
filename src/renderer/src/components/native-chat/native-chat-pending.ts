@@ -135,14 +135,8 @@ function messageIsAfterPendingTimestamp(
   if (pending.afterMessageTimestamp != null) {
     return message.timestamp > boundary
   }
-  if (pending.afterMessageId === null) {
-    if (
-      message.timestamp > 1e11 &&
-      boundary > 1e11 &&
-      message.timestamp + LIFECYCLE_CLOCK_SKEW_SLACK_MS >= boundary
-    ) {
-      return true
-    }
+  if (pending.afterMessageId === null && message.timestamp > 1e11 && boundary > 1e11) {
+    return message.timestamp + LIFECYCLE_CLOCK_SKEW_SLACK_MS >= boundary
   }
   return message.timestamp >= boundary
 }
@@ -268,9 +262,14 @@ export function pendingSendsAsMessages(
     stillVisible,
     gluedCandidateRows(existingMessages, stillVisible, matchingNativeChatUserRows)
   )
-  // Why: identify which send became the current turn by its position in incoming pending
-  // BEFORE visibility/glue filtering so an already-matched user row or lingering older echo
-  // does not alter which send is active vs queued.
+  // Why: determine whether each pending send is still queued behind the current active turn.
+  // 1. Initial/triggering prompts (queued === false/undefined) are never queued.
+  // 2. Queued prompts stay queued while the agent is working in the same epoch or when epoch is unknown.
+  // 3. When epoch advances, if a prior user prompt is actively being executed in the transcript (unanswered user turn),
+  //    subsequent queued sends remain queued behind it.
+  // 4. Otherwise, the earliest queued send becomes the active turn (unqueued), and remaining sends stay queued.
+  const lastMessage = existingMessages.at(-1)
+  const isPriorUserTurnActive = lastMessage?.role === 'user'
   const activeQueuedSendIndex =
     options?.liveWorking && options.hookWorkingEpoch != null
       ? pending.findIndex(
@@ -290,17 +289,29 @@ export function pendingSendsAsMessages(
     })
     .map(({ entry, index }) => {
       const isQueued =
-        options !== undefined
-          ? Boolean(
-              options.liveWorking &&
-              options.hookWorkingEpoch != null &&
-              entry.queuedBehindWorkingEpoch != null &&
-              (options.hookWorkingEpoch === entry.queuedBehindWorkingEpoch ||
-                index !== activeQueuedSendIndex)
-            ) || undefined
-          : entry.queued
-            ? true
-            : undefined
+        !entry.queued && entry.queuedBehindWorkingEpoch == null
+          ? undefined
+          : options === undefined
+            ? entry.queued
+              ? true
+              : undefined
+            : !options.liveWorking
+              ? undefined
+              : options.hookWorkingEpoch == null || entry.queuedBehindWorkingEpoch == null
+                ? entry.queued
+                  ? true
+                  : undefined
+                : options.hookWorkingEpoch === entry.queuedBehindWorkingEpoch
+                  ? true
+                  : isPriorUserTurnActive &&
+                      (entry.queuedBehindWorkingEpoch > 1e11
+                        ? (lastMessage.timestamp ?? 0) + LIFECYCLE_CLOCK_SKEW_SLACK_MS >=
+                          entry.queuedBehindWorkingEpoch
+                        : (lastMessage.timestamp ?? 0) >= entry.queuedBehindWorkingEpoch)
+                    ? true
+                    : index === activeQueuedSendIndex
+                      ? undefined
+                      : true
       return {
         id: `pending:${entry.id}`,
         role: 'user' as const,
@@ -335,12 +346,12 @@ export function launchPromptAsMessage(
   // Slack accounts for cross-host clock skew between renderer and host.
   const represented = matchingNativeChatUserContentCounts(
     existingMessages.filter(
-      (message) =>
-        message.timestamp === null ||
-        message.timestamp >= entry.createdAt ||
+      (m) =>
+        m.timestamp === null ||
+        m.timestamp >= entry.createdAt ||
         (entry.createdAt > 1e11 &&
-          message.timestamp > 1e11 &&
-          message.timestamp + LIFECYCLE_CLOCK_SKEW_SLACK_MS >= entry.createdAt)
+          m.timestamp > 1e11 &&
+          m.timestamp + LIFECYCLE_CLOCK_SKEW_SLACK_MS >= entry.createdAt)
     )
   )
   if ((represented.get(nativeChatPendingContentKey(entry)) ?? 0) > 0) {
@@ -363,12 +374,12 @@ export function shouldPruneLaunchPrompt(
   messages: NativeChatMessage[]
 ): boolean {
   const relevant = messages.filter(
-    (message) =>
-      message.timestamp === null ||
-      message.timestamp >= entry.createdAt ||
+    (m) =>
+      m.timestamp === null ||
+      m.timestamp >= entry.createdAt ||
       (entry.createdAt > 1e11 &&
-        message.timestamp > 1e11 &&
-        message.timestamp + LIFECYCLE_CLOCK_SKEW_SLACK_MS >= entry.createdAt)
+        m.timestamp > 1e11 &&
+        m.timestamp + LIFECYCLE_CLOCK_SKEW_SLACK_MS >= entry.createdAt)
   )
   return (
     (advancedNativeChatUserContentCounts(relevant).get(nativeChatPendingContentKey(entry)) ?? 0) > 0

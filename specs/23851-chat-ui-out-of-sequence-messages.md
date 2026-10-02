@@ -8,9 +8,11 @@ The fix unifies user message sorting precedence:
 1. Pending user prompts and authoritative messages sort by timestamp chronologically.
 2. The active streaming preview sits directly after the user prompt that triggered it.
 3. Pending send and launch prompt pruning are tolerant of cross-host clock skew.
+4. Adversarial review identified and resolved two edge cases in `pendingSendsAsMessages`:
+   - Handled post-pruning React state cycle: when a prior follow-up is pruned from `pending` after landing in the transcript, subsequent follow-up sends remain queued behind the in-progress transcript turn.
+   - Handled null `hookWorkingEpoch`: when an agent is live-working (e.g. scrape/terminal turn), explicitly queued sends remain queued even if `hookWorkingEpoch` is not yet available.
 
 All 108 targeted Vitest tests pass, web typecheck is clean, oxlint has 0 issues, and `check:code-quality:changed` passes with 0 findings.
-
 ## Summary
 
 Restore strict chronological ordering in `compareMessages` and message assembly:
@@ -28,6 +30,7 @@ Restore strict chronological ordering in `compareMessages` and message assembly:
 - `src/renderer/src/components/native-chat/native-chat-message-grouping.test.ts`
 - `src/renderer/src/components/native-chat/native-chat-session-assembler.test.ts`
 - `src/renderer/src/components/native-chat/native-chat-pending.test.ts`
+- `src/renderer/src/components/native-chat/native-chat-pending-queued.test.ts`
 - `src/renderer/src/components/native-chat/use-native-chat-pending-delivery.test.tsx`
 
 ## Step-by-Step
@@ -51,8 +54,7 @@ Restore strict chronological ordering in `compareMessages` and message assembly:
 
 ## Verification
 
-- `HUSKY=0 pnpm vitest run --config config/vitest.config.ts src/renderer/src/components/native-chat/native-chat-session-assembler.test.ts src/renderer/src/components/native-chat/native-chat-message-grouping.test.ts src/renderer/src/components/native-chat/native-chat-pending.test.ts src/renderer/src/components/native-chat/use-native-chat-pending-delivery.test.tsx`
-- `pnpm tc:web`
+- `HUSKY=0 pnpm vitest run --config config/vitest.config.ts src/renderer/src/components/native-chat/native-chat-session-assembler.test.ts src/renderer/src/components/native-chat/native-chat-message-grouping.test.ts src/renderer/src/components/native-chat/native-chat-pending.test.ts src/renderer/src/components/native-chat/native-chat-pending-queued.test.ts src/renderer/src/components/native-chat/use-native-chat-pending-delivery.test.tsx`
 - `npx oxlint src/renderer/src/components/native-chat/NativeChatResolvedView.tsx src/renderer/src/components/native-chat/native-chat-pending.ts src/renderer/src/components/native-chat/native-chat-session-assembler.ts src/renderer/src/components/native-chat/use-native-chat-pending-delivery.ts`
 - `pnpm run check:code-quality:changed`
 
