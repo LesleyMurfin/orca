@@ -268,27 +268,36 @@ export function pendingSendsAsMessages(
     stillVisible,
     gluedCandidateRows(existingMessages, stillVisible, matchingNativeChatUserRows)
   )
+  // Why: identify which send became the current turn by its position in incoming pending
+  // BEFORE visibility/glue filtering so an already-matched user row or lingering older echo
+  // does not alter which send is active vs queued.
+  const activeQueuedSendIndex =
+    options?.liveWorking && options.hookWorkingEpoch != null
+      ? pending.findIndex(
+          (entry) =>
+            entry.queuedBehindWorkingEpoch != null &&
+            entry.queuedBehindWorkingEpoch !== options.hookWorkingEpoch
+        )
+      : -1
   return pending
-    .filter((entry, index) => {
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry, index }) => {
       if (!exactVisible[index]) {
         return false
       }
       const openIndex = stillVisible.indexOf(entry)
       return openIndex === -1 || !gluedRepresented.has(openIndex)
     })
-    .map((entry, survivingIndex) => {
-      const isQueuedBehindActiveTurn = Boolean(
-        options?.liveWorking &&
-        entry.queuedBehindWorkingEpoch != null &&
-        options.hookWorkingEpoch != null &&
-        options.hookWorkingEpoch === entry.queuedBehindWorkingEpoch
-      )
-      const isSubsequentQueuedSend = Boolean(
-        options?.liveWorking && entry.queuedBehindWorkingEpoch != null && survivingIndex > 0
-      )
-      const queued =
+    .map(({ entry, index }) => {
+      const isQueued =
         options !== undefined
-          ? isQueuedBehindActiveTurn || isSubsequentQueuedSend || undefined
+          ? Boolean(
+              options.liveWorking &&
+              options.hookWorkingEpoch != null &&
+              entry.queuedBehindWorkingEpoch != null &&
+              (options.hookWorkingEpoch === entry.queuedBehindWorkingEpoch ||
+                index !== activeQueuedSendIndex)
+            ) || undefined
           : entry.queued
             ? true
             : undefined
@@ -301,7 +310,7 @@ export function pendingSendsAsMessages(
         ],
         timestamp: entry.sentAt,
         source: 'scrape' as const,
-        queued
+        queued: isQueued
       }
     })
 }

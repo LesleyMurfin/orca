@@ -597,6 +597,23 @@ describe('pendingSendsAsMessages', () => {
     expect(advancedEpoch[0]?.queued).toBeUndefined()
     expect(advancedEpoch[1]?.queued).toBe(true)
 
+    // Scenario A: first follow-up's user row landed, but second follow-up remains queued
+    const followUp1Landed = [{ ...userMessage('u2', 'follow-up prompt'), timestamp: 2_500 }]
+    const scenarioA = pendingSendsAsMessages([followUpSend, followUpSend2], followUp1Landed, {
+      liveWorking: true,
+      hookWorkingEpoch: 3_000
+    })
+    expect(scenarioA).toHaveLength(1)
+    expect(scenarioA[0]?.queued).toBe(true)
+
+    // Scenario B: older echo lingers ahead of active follow-up
+    const scenarioB = pendingSendsAsMessages([triggeringSend, followUpSend], [], {
+      liveWorking: true,
+      hookWorkingEpoch: 3_000
+    })
+    expect(scenarioB[0]?.queued).toBeUndefined()
+    expect(scenarioB[1]?.queued).toBeUndefined()
+
     const noEpoch = pendingSendsAsMessages([followUpSend], [], {
       liveWorking: true,
       hookWorkingEpoch: null
