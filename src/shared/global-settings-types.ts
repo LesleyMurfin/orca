@@ -203,6 +203,8 @@ export type GlobalSettings = {
   claudeAgentTeamsMode?: ClaudeAgentTeamsMode
   /** Where the repo setup script runs on workspace create; defaults to a background "Setup" tab to keep the main terminal usable. */
   setupScriptLaunchMode: SetupScriptLaunchMode
+  /** Automatically open a new terminal tab when switching to an empty workspace. */
+  autoOpenInitialTerminal: boolean
   terminalScrollbackRows: number
   /** Optional app-level proxy for Electron networking and local PTYs; empty preserves system/inherited proxy env. */
   httpProxyUrl?: string

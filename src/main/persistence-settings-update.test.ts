@@ -114,6 +114,22 @@ describe('Store', () => {
     ).toBe(false)
   })
 
+  it('defaults autoOpenInitialTerminal to true and merges boolean updates', async () => {
+    const store = await createStore()
+    const initial = store.getSettings()
+    expect(initial.autoOpenInitialTerminal).toBe(true)
+
+    const updated = store.updateSettings({ autoOpenInitialTerminal: false })
+    expect(updated.autoOpenInitialTerminal).toBe(false)
+
+    store.flush()
+    const persisted = readDataFile() as { settings?: Record<string, unknown> }
+    expect(persisted.settings?.autoOpenInitialTerminal).toBe(false)
+
+    const restored = store.updateSettings({ autoOpenInitialTerminal: true })
+    expect(restored.autoOpenInitialTerminal).toBe(true)
+  })
+
   it('normalizes bot-author overrides on load and every settings write', async () => {
     writeDataFile({
       settings: {
