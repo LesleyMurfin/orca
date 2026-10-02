@@ -1,14 +1,15 @@
-import type { ExecutionHostId } from '../../../shared/execution-host'
-import { parseExecutionHostId } from '../../../shared/execution-host'
+import { parseExecutionHostId, type ExecutionHostId } from '../../../shared/execution-host'
 import { parseWorkspaceKey } from '../../../shared/workspace-scope'
-import { WORKSPACE_SESSION_FIELD_OWNERSHIP } from '../../../shared/workspace-session-host-field-ownership'
+import {
+  PARKABLE_HOST_SESSION_FIELDS,
+  WORKSPACE_SESSION_FIELD_OWNERSHIP
+} from '../../../shared/workspace-session-host-field-ownership'
 import type { WorkspaceSessionState } from '../../../shared/workspace-session-state-types'
 import {
   buildWorktreeIdByTabId,
   isWorkspaceSessionRecord,
   worktreeIdForPaneKey
 } from '../../../shared/workspace-session-host-records'
-import { PARKABLE_HOST_SESSION_FIELDS } from './workspace-session-host-contention'
 import type { HostSessionSlices } from './workspace-session-host-split'
 import {
   hostHasAnsweredForTarget,

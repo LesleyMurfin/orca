@@ -6,7 +6,10 @@ import {
   type ExecutionHostId
 } from '../../../shared/execution-host'
 import { normalizeWorkspaceSessionKeyToWorkspaceId } from '../../../shared/workspace-scope'
-import { WORKSPACE_SESSION_FIELD_OWNERSHIP } from '../../../shared/workspace-session-host-field-ownership'
+import {
+  PARKABLE_HOST_SESSION_FIELDS,
+  WORKSPACE_SESSION_FIELD_OWNERSHIP
+} from '../../../shared/workspace-session-host-field-ownership'
 import { workspaceSessionPartitionHostId } from '../../../shared/workspace-session-partition-owner'
 import {
   buildWorktreeIdByTabId,
@@ -55,12 +58,7 @@ export const WORKTREE_KEYED_FIELDS = (
  *  `terminalPtyIncarnationsByPaneKey`). `attachHostSessionShadow` restores over this wider set so a
  *  GAP-03 stranded-partition shadow (`partitionRowsTheWriteWontReturn`) can carry a declined tab's
  *  dependent rows back with it, not just its `tabsByWorktree` entry. */
-export const PARKABLE_HOST_SESSION_FIELDS = (
-  Object.keys(WORKSPACE_SESSION_FIELD_OWNERSHIP) as (keyof WorkspaceSessionState)[]
-).filter((field) => {
-  const ownership = WORKSPACE_SESSION_FIELD_OWNERSHIP[field]
-  return ownership === 'worktreeKeyed' || ownership === 'tabKeyed' || ownership === 'paneKeyed'
-})
+export { PARKABLE_HOST_SESSION_FIELDS }
 
 /** Bare worktree id behind a session key. Lives in shared because the partition adoption read needs
  *  the same normalization, and two implementations of it would drift. */
