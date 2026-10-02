@@ -584,12 +584,18 @@ describe('pendingSendsAsMessages', () => {
     expect(active[0]?.queued).toBeUndefined()
     expect(active[1]?.queued).toBe(true)
 
-    // When the active turn advances/completes, the follow-up send is no longer queued
-    const advancedEpoch = pendingSendsAsMessages([followUpSend], [], {
+    // When turn advances to 3_000, follow-up 1 is active, but follow-up 2 stays queued
+    const followUpSend2 = {
+      ...pendingOf('p3', 'second follow-up'),
+      sentAt: 2_600,
+      queuedBehindWorkingEpoch: 2_000
+    }
+    const advancedEpoch = pendingSendsAsMessages([followUpSend, followUpSend2], [], {
       liveWorking: true,
       hookWorkingEpoch: 3_000
     })
     expect(advancedEpoch[0]?.queued).toBeUndefined()
+    expect(advancedEpoch[1]?.queued).toBe(true)
 
     const noEpoch = pendingSendsAsMessages([followUpSend], [], {
       liveWorking: true,

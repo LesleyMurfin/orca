@@ -276,15 +276,19 @@ export function pendingSendsAsMessages(
       const openIndex = stillVisible.indexOf(entry)
       return openIndex === -1 || !gluedRepresented.has(openIndex)
     })
-    .map((entry) => {
+    .map((entry, survivingIndex) => {
+      const isQueuedBehindActiveTurn = Boolean(
+        options?.liveWorking &&
+        entry.queuedBehindWorkingEpoch != null &&
+        options.hookWorkingEpoch != null &&
+        options.hookWorkingEpoch === entry.queuedBehindWorkingEpoch
+      )
+      const isSubsequentQueuedSend = Boolean(
+        options?.liveWorking && entry.queuedBehindWorkingEpoch != null && survivingIndex > 0
+      )
       const queued =
         options !== undefined
-          ? Boolean(
-              options.liveWorking &&
-              entry.queuedBehindWorkingEpoch != null &&
-              options.hookWorkingEpoch != null &&
-              options.hookWorkingEpoch === entry.queuedBehindWorkingEpoch
-            ) || undefined
+          ? isQueuedBehindActiveTurn || isSubsequentQueuedSend || undefined
           : entry.queued
             ? true
             : undefined
