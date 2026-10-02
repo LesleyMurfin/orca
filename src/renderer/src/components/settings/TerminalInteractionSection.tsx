@@ -356,6 +356,35 @@ export function TerminalInteractionSection({
             }
           />
         </SearchableSetting>
+
+        <SearchableSetting
+          title={translate(
+            'components.settings.TerminalInteraction.autoOpenInitialTerminal',
+            'Open terminal on empty workspace'
+          )}
+          description={translate(
+            'components.settings.TerminalInteraction.autoOpenInitialTerminalDescription',
+            'Automatically open a new terminal tab when switching to an empty workspace.'
+          )}
+          keywords={['terminal', 'workspace', 'empty', 'auto open', 'initial', 'tab']}
+        >
+          <SettingsSwitchRow
+            label={translate(
+              'components.settings.TerminalInteraction.autoOpenInitialTerminal',
+              'Open terminal on empty workspace'
+            )}
+            description={translate(
+              'components.settings.TerminalInteraction.autoOpenInitialTerminalDescription',
+              'Automatically open a new terminal tab when switching to an empty workspace.'
+            )}
+            checked={settings.autoOpenInitialTerminal}
+            onChange={() =>
+              updateSettings({
+                autoOpenInitialTerminal: !settings.autoOpenInitialTerminal
+              })
+            }
+          />
+        </SearchableSetting>
       </div>
     </section>
   )

@@ -248,6 +248,45 @@ describe('activating a workspace whose last terminal was closed', () => {
     expect(useAppStore.getState().tabsByWorktree[worktree.id]).toEqual([])
   })
 
+  it('does not re-seed an initial terminal when autoOpenInitialTerminal is false', () => {
+    const worktree = makeWorktree()
+    seedEmptyActivatableWorktree(worktree)
+    seedClosedLastTerminal(worktree.id)
+    useAppStore.setState({
+      settings: {
+        ...useAppStore.getState().settings!,
+        autoOpenInitialTerminal: false
+      }
+    })
+
+    const result = activateAndRevealWorktree(worktree.id, {
+      notifyHostRuntime: false
+    })
+
+    expect(result).not.toBe(false)
+    expect(result === false ? null : result.primaryTabId).toBeNull()
+    expect(useAppStore.getState().tabsByWorktree[worktree.id]).toEqual([])
+  })
+
+  it('does not seed an initial terminal for a fresh empty workspace when autoOpenInitialTerminal is false', () => {
+    const worktree = makeWorktree()
+    seedEmptyActivatableWorktree(worktree)
+    useAppStore.setState({
+      settings: {
+        ...useAppStore.getState().settings!,
+        autoOpenInitialTerminal: false
+      }
+    })
+
+    const result = activateAndRevealWorktree(worktree.id, {
+      notifyHostRuntime: false
+    })
+
+    expect(result).not.toBe(false)
+    expect(result === false ? null : result.primaryTabId).toBeNull()
+    expect(useAppStore.getState().tabsByWorktree[worktree.id] ?? []).toEqual([])
+  })
+
   // Why: this passes ahead of the tombstone check — a renderable browser tab short-circuits
   // `shouldAutoCreateInitialTerminal` — so it guards `renderableTabCount`, not the re-seed flag.
   it('does not add a terminal to a workspace that still renders a browser tab', () => {
