@@ -14,4 +14,12 @@ describe('shouldAutoCreateInitialTerminal', () => {
     expect(shouldAutoCreateInitialTerminal(1)).toBe(false)
     expect(shouldAutoCreateInitialTerminal(2)).toBe(false)
   })
+
+  it('does not create a terminal when autoOpenInitialTerminal is false even if renderableTabCount is 0', () => {
+    expect(shouldAutoCreateInitialTerminal(0, false, false)).toBe(false)
+  })
+
+  it('creates a terminal when autoOpenInitialTerminal is true and workspace has no renderable tabs', () => {
+    expect(shouldAutoCreateInitialTerminal(0, false, true)).toBe(true)
+  })
 })

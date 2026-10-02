@@ -91,5 +91,23 @@ export const getTerminalPaneInteractionSearchEntries = createLocalizedCatalog(()
       ...translateSearchKeyword('auto.components.settings.terminal.search.f036794286', 'active')
     ]
   },
+  {
+    title: translate(
+      'auto.components.settings.terminal.search.autoOpenInitialTerminal.title',
+      'Open terminal on empty workspace'
+    ),
+    description: translate(
+      'auto.components.settings.terminal.search.autoOpenInitialTerminal.description',
+      'Automatically open a new terminal tab when switching to an empty workspace.'
+    ),
+    keywords: [
+      ...translateSearchKeyword('auto.components.settings.terminal.search.39ea7c0d28', 'terminal'),
+      ...translateSearchKeyword('auto.components.settings.terminal.search.workspace', 'workspace'),
+      ...translateSearchKeyword('auto.components.settings.terminal.search.empty', 'empty'),
+      ...translateSearchKeyword('auto.components.settings.terminal.search.auto_open', 'auto open'),
+      ...translateSearchKeyword('auto.components.settings.terminal.search.initial', 'initial'),
+      ...translateSearchKeyword('auto.components.settings.terminal.search.tab', 'tab')
+    ]
+  },
   ...getTerminalClipboardSearchEntries()
 ])

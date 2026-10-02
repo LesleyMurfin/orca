@@ -30,8 +30,8 @@ describe('Terminal auto-create wiring', () => {
       source.split('shouldAutoCreateInitialTerminal(').length - 1,
       'expected exactly one shouldAutoCreateInitialTerminal call in the watcher owner'
     ).toBe(1)
-    expect(source).toContain(
-      'shouldAutoCreateInitialTerminal(renderableTabCount, activeWorktreeHasTerminalState)'
+    expect(source).toMatch(
+      /shouldAutoCreateInitialTerminal\(\s*renderableTabCount,\s*activeWorktreeHasTerminalState,\s*autoOpenInitialTerminal\s*\)/
     )
   })
 })
