@@ -112,6 +112,8 @@ export type RuntimePtyTitleTrackerEntry = {
   lastTitleFactAtMs: number | null
   chunkTouchedSessionTabs: boolean
   pendingFacts: TerminalSideEffectFact[]
+  /** Run once this chunk's facts are emitted: status that readers must see after them. */
+  afterFacts: (() => void)[]
   commandCodeDetector: { observe: (data: string) => boolean } | null
 }
 
@@ -120,6 +122,8 @@ export type RuntimeHeadlessTerminal = {
   outputSequence: number
   writeChain: Promise<void>
   ownership: PtyShellOwnershipMirror
+  /** The grid a reattach reflowed the model onto, until a PTY resize off it repaints the TUI. */
+  unrepaintedReflowGrid?: { cols: number; rows: number }
 }
 
 export type RuntimeVisibleTerminalState = {

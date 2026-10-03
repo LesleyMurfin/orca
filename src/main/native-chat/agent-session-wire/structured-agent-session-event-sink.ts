@@ -12,6 +12,7 @@ import { estimateStructuredAgentSessionItemBytes } from './structured-agent-sess
 import { StructuredAgentSessionSinkQueue } from './structured-agent-session-event-sink-queue'
 import { structuredAgentSessionJournalAppendOptions } from './structured-agent-session-journal-append-options'
 import { createStructuredAgentSessionResolvedAppend } from './structured-agent-session-resolved-append'
+import type { StructuredAgentSessionLogger } from './structured-agent-session-logger'
 
 export type StructuredAgentSessionSinkAdmission =
   | { accepted: true }
@@ -135,6 +136,10 @@ export type StructuredAgentSessionEventSink = {
   journalEpoch?(): string | null
   /** The bound journal's producer linkage; null until bound. */
   journalLinkage?(): StructuredAgentSessionLinkageJournal | null
+  /** Whether the bound journal's Stop rule makes turn `turnId`, ending at `endedAt` with no verdict
+   *  of its own, a person's cancellation (`personStopDecidesTurn`); false until bound. `openedBy`:
+   *  the submission that opened it, for a turn whose rows have yet to land. */
+  journalStopDecidesTurn?(turnId: string, endedAt: number, openedBy?: string): boolean
   appendLifecycleBatch?(
     settlementId: string,
     mutations: readonly JournalLifecycleMutationInput[],
@@ -193,18 +198,28 @@ const DEFAULT_WATERMARKS: StructuredAgentSessionSinkWatermarks = {
   maxLifecycleQueuedOperations: 1_024
 }
 
-export function createDeferredStructuredAgentSessionEventSink(
-  deps: {
-    onError?: (error: unknown) => void
-    watermarks?: Partial<StructuredAgentSessionSinkWatermarks>
-    readingControl?: StructuredAgentSessionReadingControl
-    onBackpressureChange?: (backpressured: boolean, state: StructuredAgentSessionSinkState) => void
-  } = {}
-): DeferredStructuredAgentSessionEventSink {
+export function createDeferredStructuredAgentSessionEventSink(deps: {
+  /** The session this sink writes for, named in every failure it logs. */
+  sessionId: string
+  logger: StructuredAgentSessionLogger
+  /** The sink failed for good; the owner decides what that costs the provider. */
+  onFailed?: (error: unknown) => void
+  watermarks?: Partial<StructuredAgentSessionSinkWatermarks>
+  readingControl?: StructuredAgentSessionReadingControl
+  onBackpressureChange?: (backpressured: boolean, state: StructuredAgentSessionSinkState) => void
+}): DeferredStructuredAgentSessionEventSink {
   const watermarks = { ...DEFAULT_WATERMARKS, ...deps.watermarks }
+  const failed = (error: unknown): void => {
+    deps.logger.error('writing provider events to the chat journal failed', {
+      scope: 'journal-event-sink',
+      sessionId: deps.sessionId,
+      error
+    })
+    deps.onFailed?.(error)
+  }
   const queue = new StructuredAgentSessionSinkQueue({
     watermarks,
-    ...(deps.onError ? { onError: deps.onError } : {}),
+    onFailed: failed,
     ...(deps.readingControl ? { readingControl: deps.readingControl } : {}),
     ...(deps.onBackpressureChange ? { onBackpressureChange: deps.onBackpressureChange } : {})
   })
@@ -277,10 +292,11 @@ export function createDeferredStructuredAgentSessionEventSink(
       ...resolvedAppend,
       journalEpoch: queue.journalEpoch,
       journalLinkage: queue.journalLinkage,
+      journalStopDecidesTurn: queue.journalStopDecidesTurn,
       appendLifecycleBatch: (settlementId, mutations, options = {}) => {
         const admission = appendLifecycleBatch(settlementId, mutations, options)
         if (!admission.accepted) {
-          deps.onError?.(
+          failed(
             new Error(
               `lifecycle journal batch ${settlementId} rejected by sink ${admission.reason}`
             )

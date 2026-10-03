@@ -58,7 +58,11 @@ import type {
   ResolveDispatchInput
 } from './journal-store-contracts'
 import { queuedMessageConsumeHook, type JournalQueuedMessages } from './journal-queued-messages'
-import type { AgentJournalEpochReason } from './journal-row-schema'
+import {
+  journalQueueResumeRowBuilder,
+  journalStopEventRowBuilder
+} from './journal-stop-and-resume-rows'
+import type { AgentJournalEpochReason, JournalStopEvent } from './journal-row-schema'
 import type { JournalRowWriter } from './journal-row-writer'
 import type { JournalEpochController } from './journal-epoch-controller'
 import { JournalWriteQueue } from './journal-write-queue'
@@ -66,6 +70,7 @@ import { createJournalStoreCollaborators } from './journal-store-collaborators'
 import { journalStoreLoadedFields } from './journal-store-open'
 import type { JournalItemAppender } from './journal-item-appender'
 import type { JournalLifecycleBatchAppender } from './journal-lifecycle-batch-appender'
+import type { JournalStopMarks } from './journal-stop-marks'
 
 export { AgentSessionJournalError } from './journal-write-guards'
 
@@ -89,6 +94,7 @@ export class AgentSessionJournal {
   private readonly restore: () => Promise<void>
   /** Draft rows queued while the agent works; never reducer input or owed work. */
   readonly queuedMessages: JournalQueuedMessages
+  readonly stopMarks: JournalStopMarks
 
   constructor(options: AgentSessionJournalOptions) {
     this.identity = options.identity
@@ -137,6 +143,7 @@ export class AgentSessionJournal {
     this.itemAppender = collaborators.itemAppender
     this.lifecycleBatchAppender = collaborators.lifecycleBatchAppender
     this.queuedMessages = collaborators.queuedMessages
+    this.stopMarks = collaborators.stopMarks
     this.restore = collaborators.restore
   }
 
@@ -305,6 +312,16 @@ export class AgentSessionJournal {
     return this.rowWriter.append(
       journalTombstoneRowBuilder(() => this.state, itemId, options.fence)
     )
+  }
+
+  /** A Stop that took effect, timed by its row (`JournalStopEvent`). */
+  appendStopEvent(event: Omit<JournalStopEvent, 'at'>, fence: number): Promise<AgentJournalCursor> {
+    return this.rowWriter.append(journalStopEventRowBuilder(() => this.state, event, fence))
+  }
+
+  /** A person's Resume of the queue. */
+  appendQueueResume(fence: number): Promise<AgentJournalCursor> {
+    return this.rowWriter.append(journalQueueResumeRowBuilder(() => this.state, fence))
   }
 
   appendLifecycleBatch(input: JournalLifecycleBatchInput): Promise<AgentJournalCursor> {

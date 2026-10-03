@@ -36,6 +36,7 @@ export async function rewindStructuredAgentSession(
     const result = await admitAndRunAgentSessionMutation<AgentSessionRewindResult>({
       store,
       adapter: context.deps.adapter,
+      logger: context.deps.logger,
       callerKey: caller.callerKey,
       envelope: params.envelope,
       // Only the provider can do this, so an agent at rest is started first.
@@ -74,7 +75,7 @@ export async function rewindStructuredAgentSession(
           ) {
             return rewindRefusal('outcome-unknown')
           }
-          if (conversationCommandBlocked(ctx, record)) {
+          if (conversationCommandBlocked(ctx, record, context.readChildWork(sessionId))) {
             return rewindRefusal('busy')
           }
           if (ctx.journal.isReadOnly) {
@@ -212,7 +213,7 @@ export async function rewindStructuredAgentSession(
           })
           const journal = context.sessions.get(sessionId)!.journal
           await attachContext.runtimeState.flushEventSink(sessionId)
-          await recoverStructuredRewind(store, sessionId, journal, fence)
+          await recoverStructuredRewind(context.deps, sessionId, journal, fence)
           context.publish(sessionId, journal)
           return { ok: true, value: { itemId: params.itemId, epoch: journal.cursor().epoch } }
         }

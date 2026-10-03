@@ -80,7 +80,9 @@ export function NativeChatStructuredSession(
     isVisible: props.isVisible,
     rootRef,
     composerRef,
-    terminalPaneActions: props.contextMenuActions
+    terminalPaneActions: props.contextMenuActions,
+    sessionId: props.sessionId,
+    target: props.target
   })
   const session = useMemo<NativeChatLiveSession>(
     () => ({
@@ -131,19 +133,19 @@ export function NativeChatStructuredSession(
     () =>
       structuredAgentSessionDeliveryNotices(
         controller.outbox,
-        controller.blockedClientMessageId,
         agentLabel,
         retryDelivery,
         rejectionRows,
-        startFailures
+        startFailures,
+        controller.failedHere
       ),
     [
       controller.outbox,
-      controller.blockedClientMessageId,
       agentLabel,
       retryDelivery,
       rejectionRows,
-      startFailures
+      startFailures,
+      controller.failedHere
     ]
   )
   const viewState = selectNativeChatViewState(session, { readRetries: true })
@@ -270,7 +272,9 @@ export function NativeChatStructuredSession(
           <NativeChatEmptyState
             kind="error"
             retrying={!readFailure?.final}
-            {...(readFailure?.named ? { headline: readFailure.text } : {})}
+            {...(readFailure?.named
+              ? { headline: readFailure.text, headlineSaysUnread: readFailure.saysUnread }
+              : {})}
           />
         ) : viewState.kind === 'empty' ? (
           <NativeChatEmptyState kind="empty" agent={props.agent} />
@@ -314,6 +318,7 @@ export function NativeChatStructuredSession(
         agentLabel={agentLabel}
         startupPhase={hostExecution.phase}
         startupChildKey={hostExecution.childKey}
+        paneKey={paneKey}
         // Said once: on the pane when the failure took it, else here beside the transcript. A
         // failure that names nothing is only the pane reconnecting.
         error={

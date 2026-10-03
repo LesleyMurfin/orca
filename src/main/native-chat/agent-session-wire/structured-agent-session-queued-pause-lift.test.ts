@@ -16,9 +16,10 @@ import {
   type QueuedMessageTestRig
 } from './structured-agent-session-queued-message-rig.test-fixture'
 import { sameQueuePause } from './structured-agent-session-queued-publication'
+import { structuredAgentSessionConversationFence } from './structured-agent-session-provider-child'
 import {
   structuredAgentSessionHostInstance,
-  structuredQueuePause
+  structuredQueuePauses
 } from './structured-agent-session-queued-pause'
 
 let rig: QueuedMessageTestRig
@@ -91,8 +92,9 @@ describe("a Stop's queue pause", () => {
   it('survives a restart, and a send made after the Stop still ends it when its turn starts there', async () => {
     const draftId = await stoppedDraft()
     const inFlight = await handedOverUserSend('sent before the restart')
-    // Derived from the journal, not remembered: a restart forgets nothing it needs.
-    await rig.restartHostProcess()
+    // Derived from the journal, not remembered: a restart forgets nothing it needs. The process
+    // dies with no close, as a quit writes no Stop event to end the pause either.
+    rig.crashRestartHostProcess()
     expect(await rig.queuePause()).toEqual({ reason: 'stopped' })
     await rig.settleAccepted(inFlight, 'after-restart')
     // The Stop's pause is over; the restart's own lasts until a turn asked for since it.
@@ -188,42 +190,24 @@ describe('the pause read', () => {
     }
     const scan = vi.spyOn(journal, 'submissions')
     // Read on every publish, per subscriber: it must not walk the submissions.
-    expect(structuredQueuePause(journal)).toEqual({ reason: 'stopped' })
+    expect(structuredQueuePauses(journal)).toMatchObject([{ reason: 'stopped' }])
     expect(scan).not.toHaveBeenCalled()
     scan.mockRestore()
-    const before = journal.queuedMessages.latestPersonTurnSequence()
     const mail = rig.send('coordinator mail', undefined, { internal: true })
     await mail.result
     await rig.settleAccepted(mail.id, 'mail')
-    // Orca's own turn moves nothing; a person's does, and lifts the pause.
-    expect(journal.queuedMessages.latestPersonTurnSequence()).toBe(before)
+    // Orca's own turn lifts nothing; a person's does.
+    expect(structuredQueuePauses(journal)).toMatchObject([{ reason: 'stopped' }])
     const next = rig.send('user starts a new turn')
     await next.result
     await rig.settleAccepted(next.id, 'next')
-    expect(journal.queuedMessages.latestPersonTurnSequence()).toBe(
-      journal.submission(next.id)?.acceptedSequence
-    )
+    expect(structuredQueuePauses(journal)).toEqual([])
     await eventually(async () => expect(await rig.handoff(draftId)).toBeDefined())
   })
 })
 
-describe('a pause is over the cards it paused', () => {
-  it('a Stop over an empty queue pauses nothing: a card typed during a later mail turn drains', async () => {
-    const working = await rig.workingSend()
-    await rig.stop()
-    await rig.settleAccepted(working, 'stopped')
-    const mail = rig.send('coordinator mail', undefined, { internal: true })
-    await mail.result
-    await eventually(async () =>
-      expect((await rig.submission(mail.id))?.handedOverAt).toBeDefined()
-    )
-    const followUp = await queuedDraft('typed during the mail turn')
-    await rig.settleAccepted(mail.id, 'mail')
-    await eventually(async () => expect(await rig.handoff(followUp)).toBeDefined())
-    expect(await rig.queuePause()).toBeNull()
-  })
-
-  it('a Stop over an empty queue pauses nothing: a correction typed before the turn ends drains', async () => {
+describe('a card queued after a Stop is a new instruction', () => {
+  it('a correction typed after a Stop over an empty queue sends when the stopped turn ends', async () => {
     const working = await rig.workingSend()
     await rig.stop()
     const correction = await queuedDraft('typed right after the stop')
@@ -231,13 +215,16 @@ describe('a pause is over the cards it paused', () => {
     await eventually(async () => expect(await rig.handoff(correction)).toBeDefined())
   })
 
-  it('deleting the last paused card ends the pause, so a card typed later is not held by it', async () => {
+  it('a card sent now before the Stop and taken anyway lifts nothing, and holds nothing typed later', async () => {
     const working = await rig.workingSend()
-    const only = await queuedDraft('paused, then deleted')
+    const sentId = await queuedDraft('sent now into the turn')
+    await rig.sendNow(sentId)
+    await handedOver(sentId)
     await rig.stop()
+    // Nothing waits, so nothing is published; the pause is still derived.
+    expect(await rig.queuePause()).toBeNull()
+    await rig.settleAccepted(await rig.handoffId(sentId), 'sent-now')
     await rig.settleAccepted(working, 'stopped')
-    expect(await rig.queuePause()).toEqual({ reason: 'stopped' })
-    expect(await rig.deleteQueued(only)).toMatchObject({ ok: true, value: { deleted: true } })
     const mail = rig.send('coordinator mail', undefined, { internal: true })
     await mail.result
     await eventually(async () =>
@@ -246,11 +233,36 @@ describe('a pause is over the cards it paused', () => {
     const later = await queuedDraft('typed during the mail turn')
     await rig.settleAccepted(mail.id, 'mail')
     await eventually(async () => expect(await rig.handoff(later)).toBeDefined())
+    const journal = rig.host.collaboratorsForTests().sessions.get(HOST_TEST_SESSION)?.journal
+    expect(journal && structuredQueuePauses(journal)).toMatchObject([{ reason: 'stopped' }])
+  })
+
+  it("deleting the last paused card hides the pause; a person's next turn is what ends it", async () => {
+    const working = await rig.workingSend()
+    const only = await queuedDraft('paused, then deleted')
+    await rig.stop()
+    await rig.settleAccepted(working, 'stopped')
+    expect(await rig.queuePause()).toEqual({ reason: 'stopped' })
+    expect(await rig.deleteQueued(only)).toMatchObject({ ok: true, value: { deleted: true } })
+    expect(await rig.queuePause()).toBeNull()
+    const journal = rig.host.collaboratorsForTests().sessions.get(HOST_TEST_SESSION)?.journal
+    if (!journal) {
+      throw new Error('expected the conversation open')
+    }
+    // Hidden, not ended: with nothing to hold, no card can show the lift, so read the Stop itself.
+    expect(structuredQueuePauses(journal)).toMatchObject([{ reason: 'stopped' }])
+    const next = await rig.workingSend()
+    const later = await queuedDraft('typed during the next turn')
+    expect(structuredQueuePauses(journal)).toMatchObject([{ reason: 'stopped' }])
+    // That send is a person's turn after the Stop: once it starts, the Stop is over.
+    await rig.settleAccepted(next, 'next')
+    expect(structuredQueuePauses(journal)).toEqual([])
+    await eventually(async () => expect(await rig.handoff(later)).toBeDefined())
   })
 })
 
 describe('a pause only over cards Resume could send', () => {
-  it('a Stop that leaves only a returned card publishes no pause and keeps no fact', async () => {
+  it('a Stop that leaves only a returned card publishes no pause', async () => {
     const working = await rig.workingSend()
     const draftId = await queuedDraft('refused before the stop')
     await rig.settleAccepted(working, 'a')
@@ -265,7 +277,7 @@ describe('a pause only over cards Resume could send', () => {
     await rig.settleAccepted(next, 'stopped')
     expect(await rig.queuePause()).toBeNull()
     const journal = rig.host.collaboratorsForTests().sessions.get(HOST_TEST_SESSION)?.journal
-    expect(journal?.queuedMessages.pause()).toBeNull()
+    expect(journal && structuredQueuePauses(journal)).toMatchObject([{ reason: 'stopped' }])
   })
 
   it('a returned card blocking the paused cards hides the pause but keeps it; deleting that card shows it again, and only Resume sends', async () => {
@@ -290,7 +302,7 @@ describe('a pause only over cards Resume could send', () => {
     }
     // Resume would send nothing past the returned card, so no header offers it; the pause stays.
     expect(await rig.queuePause()).toBeNull()
-    expect(journal.queuedMessages.pause()).toMatchObject({ reason: 'stopped' })
+    expect(structuredQueuePauses(journal)).toMatchObject([{ reason: 'stopped' }])
     // Deleting the blocking card shows the pause again: the card behind it does not send unasked.
     expect(await rig.deleteQueued(refusedId)).toMatchObject({ ok: true, value: { deleted: true } })
     await expectPaused(behindId)
@@ -342,7 +354,7 @@ describe("a restart's pause", () => {
     await eventually(async () => expect(await rig.handoff(first)).toBeDefined())
     // Reopened, that turn is "before this open", yet the pause it ended stays ended:
     // the lift adopted the rows into this process.
-    await rig.host.close(HOST_TEST_SESSION)
+    await rig.host.close(HOST_TEST_SESSION, 'evict')
     expect(await rig.queuePause()).toBeNull()
     expect(await rig.drafts()).toContainEqual({ messageId: second, state: 'waiting' })
   })
@@ -378,11 +390,10 @@ describe('a card handed off after a restart', () => {
       structuredAgentSessionHostInstance()
     )
     // With the Stop's pause gone, nothing else holds it: no restart happened since it was sent.
-    await journal.queuedMessages.liftPause({
-      stop: journal.queuedMessages.pause(),
-      adoptInto: null
-    })
-    expect(structuredQueuePause(journal)).toBeNull()
+    await journal.appendQueueResume(
+      structuredAgentSessionConversationFence(rig.store, HOST_TEST_SESSION)
+    )
+    expect(structuredQueuePauses(journal)).toEqual([])
   })
 })
 

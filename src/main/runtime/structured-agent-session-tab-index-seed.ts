@@ -11,14 +11,15 @@ type TabIndexHost = Pick<
 
 /** Best-effort: the tabs publish either way, and an index still absent is seeded again next launch. */
 export async function seedStructuredAgentSessionTabIndex(
-  host: Partial<TabIndexHost> | null | undefined,
+  host: (Partial<TabIndexHost> & Pick<StructuredAgentSessionHost, 'deps'>) | null | undefined,
   targets: readonly string[],
   restored: readonly string[]
 ): Promise<void> {
   if (!host?.getPersistedVisibleSessionTabIndex || !host.showSessionTabs) {
     return
   }
-  const listed = new Set(host.getPersistedVisibleSessionTabIndex().sessionIds)
+  const index = host.getPersistedVisibleSessionTabIndex()
+  const listed = new Set(index.present ? index.sessionIds : [])
   const opened = new Set(restored)
   // In the restore's own order, so the seeded tabs keep the order the profile gave them.
   const unlisted = [...new Set([...targets, ...restored])].filter(
@@ -26,7 +27,8 @@ export async function seedStructuredAgentSessionTabIndex(
   )
   if (unlisted.length > 0) {
     await host.showSessionTabs(unlisted).catch((error: unknown) =>
-      console.warn('[structured-agent-session] recording restored chat tabs failed', {
+      host.deps.logger.warn('recording restored chat tabs failed', {
+        scope: 'tab-index-seed',
         sessionIds: unlisted,
         error
       })
