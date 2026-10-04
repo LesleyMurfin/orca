@@ -10,7 +10,10 @@ import {
 } from './ssh-dual-channel-state'
 import { encodeFrame, MessageType, HEADER_LENGTH } from './relay-protocol'
 
-type MockTransport = MultiplexerTransport & {
+type MockTransport = Omit<MultiplexerTransport, 'write'> & {
+  write: Mock<
+    (data: Buffer, onSettled?: (result: { ok: true } | { ok: false; error: Error }) => void) => void
+  >
   dataCallbacks: ((data: Buffer) => void)[]
   closeCallbacks: (() => void)[]
   written: Buffer[]
@@ -23,13 +26,12 @@ function createMockTransport(): MockTransport {
   const written: Buffer[] = []
 
   return {
-    write: (
-      data: Buffer,
-      onSettled?: (result: { ok: true } | { ok: false; error: Error }) => void
-    ) => {
-      written.push(data)
-      onSettled?.({ ok: true })
-    },
+    write: vi.fn(
+      (data: Buffer, onSettled?: (result: { ok: true } | { ok: false; error: Error }) => void) => {
+        written.push(data)
+        onSettled?.({ ok: true })
+      }
+    ),
     onData: (cb) => dataCallbacks.push(cb),
     onClose: (cb) => closeCallbacks.push(cb),
     close: vi.fn(),
@@ -281,6 +283,28 @@ describe('SshChannelMultiplexer with 2 transports', () => {
     mux.notifyWithSettlement('pty.ackData', { acknowledgements: [] }, settled)
     expect(interactive.written.length).toBe(1)
     expect(settled).toHaveBeenCalledWith({ outcome: 'accepted' })
+  })
+
+  it('settles notifyWithSettlement as refused when write throws', () => {
+    interactive.write.mockImplementationOnce(() => {
+      throw new Error('write failure')
+    })
+    const settled = vi.fn()
+    mux.notifyWithSettlement('pty.ackData', { acknowledgements: [] }, settled)
+    expect(settled).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: 'refused',
+        reason: 'transport_disposed'
+      })
+    )
+  })
+
+  it('resolves probeLiveness as false when keepalive write throws', async () => {
+    interactive.write.mockImplementationOnce(() => {
+      throw new Error('keepalive write failure')
+    })
+    const probe = mux.probeLiveness(5000)
+    await expect(probe).resolves.toBe(false)
   })
 })
 

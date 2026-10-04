@@ -174,7 +174,7 @@ describe('createRelaySessionMultiplexer', () => {
     mux.dispose()
   })
 
-  it('rethrows when the abort signal is already aborted after a failed second connect', async () => {
+  it('rethrows and closes transport when the abort signal is aborted', async () => {
     const transport = mockTransport()
     const controller = new AbortController()
     const exec = vi.fn().mockImplementation(async () => {
@@ -197,5 +197,46 @@ describe('createRelaySessionMultiplexer', () => {
         controller.signal
       )
     ).rejects.toThrow()
+    expect(transport.close).toHaveBeenCalled()
+  })
+
+  it('closes all opened transports when aborted during subsequent connects', async () => {
+    const transport1 = mockTransport()
+    const transport2 = mockTransport()
+    const controller = new AbortController()
+    let execCount = 0
+
+    waitForSentinelMock.mockImplementation(async () => {
+      if (execCount === 1) {
+        return transport2
+      }
+      controller.abort()
+      throw new Error('aborted on third channel')
+    })
+
+    const exec = vi.fn().mockImplementation(async () => {
+      execCount++
+      return {}
+    })
+    const conn = mockConn(exec)
+
+    await expect(
+      createRelaySessionMultiplexer(
+        conn,
+        {
+          transport: transport1,
+          remoteRelayDir: '/relay',
+          nodePath: '/bin/node',
+          sockPath: '/tmp/s.sock',
+          credentialFile: '/tmp/c',
+          hostPlatform: getRemoteHostPlatform('linux-x64'),
+          targetTransportCount: 3
+        },
+        controller.signal
+      )
+    ).rejects.toThrow()
+
+    expect(transport1.close).toHaveBeenCalled()
+    expect(transport2.close).toHaveBeenCalled()
   })
 })

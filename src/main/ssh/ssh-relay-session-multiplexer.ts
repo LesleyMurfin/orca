@@ -30,6 +30,15 @@ export async function createRelaySessionMultiplexer(
   signal?: AbortSignal
 ): Promise<SshChannelMultiplexer> {
   const { transport, remoteRelayDir, nodePath, sockPath, credentialFile, hostPlatform } = endpoints
+  if (signal?.aborted) {
+    try {
+      transport.close?.()
+    } catch {
+      /* empty */
+    }
+    signal.throwIfAborted()
+  }
+
   const targetCount = Math.max(
     1,
     Math.min(
@@ -51,26 +60,37 @@ export async function createRelaySessionMultiplexer(
     hostPlatform: hostPlatform ?? undefined
   })
 
-  while (transports.length < targetCount) {
-    signal?.throwIfAborted()
-    try {
-      const channel = await conn.exec(connectCmd, { signal })
-      const next = await waitForSentinel(channel, signal)
-      transports.push(next)
-    } catch (err) {
+  try {
+    while (transports.length < targetCount) {
       signal?.throwIfAborted()
-      if (isSshSessionLimitError(err)) {
-        console.warn(
-          `[ssh-relay-session] multi-channel stop at ${transports.length} transport(s) (MaxSessions); priority lanes share remaining pipes`
-        )
-      } else {
-        console.warn(
-          `[ssh-relay-session] multi-channel stop at ${transports.length} transport(s):`,
-          err instanceof Error ? err.message : String(err)
-        )
+      try {
+        const channel = await conn.exec(connectCmd, { signal })
+        const next = await waitForSentinel(channel, signal)
+        transports.push(next)
+      } catch (err) {
+        signal?.throwIfAborted()
+        if (isSshSessionLimitError(err)) {
+          console.warn(
+            `[ssh-relay-session] multi-channel stop at ${transports.length} transport(s) (MaxSessions); priority lanes share remaining pipes`
+          )
+        } else {
+          console.warn(
+            `[ssh-relay-session] multi-channel stop at ${transports.length} transport(s):`,
+            err instanceof Error ? err.message : String(err)
+          )
+        }
+        break
       }
-      break
     }
+  } catch (err) {
+    for (const t of transports) {
+      try {
+        t.close?.()
+      } catch {
+        /* empty */
+      }
+    }
+    throw err
   }
 
   if (transports.length > 1) {

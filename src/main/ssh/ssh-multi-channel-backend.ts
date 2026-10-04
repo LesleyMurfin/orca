@@ -152,11 +152,15 @@ export class MultiChannelMuxBackend {
         channelIndex = pendingIndex
       }
     }
-    this.channels[channelIndex]!.sendJsonRpc({
-      jsonrpc: '2.0',
-      method,
-      ...(params !== undefined ? { params } : {})
-    })
+    try {
+      this.channels[channelIndex]!.sendJsonRpc({
+        jsonrpc: '2.0',
+        method,
+        ...(params !== undefined ? { params } : {})
+      })
+    } catch {
+      /* ignore write failure on notifications */
+    }
   }
 
   notifyWithSettlement(
@@ -173,25 +177,33 @@ export class MultiChannelMuxBackend {
       return
     }
     const channelIndex = selectTransportIndex(method, this.channels.length)
-    this.channels[channelIndex]!.sendJsonRpc(
-      {
-        jsonrpc: '2.0',
-        method,
-        ...(params !== undefined ? { params } : {})
-      },
-      (res) => {
-        if (res.ok) {
-          onSettled({ outcome: 'accepted' })
-        } else {
-          onSettled({
-            outcome: 'unverifiable',
-            reason: 'transport_settlement_lost',
-            bytesHandedToTransport: true,
-            error: res.error
-          })
+    try {
+      this.channels[channelIndex]!.sendJsonRpc(
+        {
+          jsonrpc: '2.0',
+          method,
+          ...(params !== undefined ? { params } : {})
+        },
+        (res) => {
+          if (res.ok) {
+            onSettled({ outcome: 'accepted' })
+          } else {
+            onSettled({
+              outcome: 'unverifiable',
+              reason: 'transport_settlement_lost',
+              bytesHandedToTransport: true,
+              error: res.error
+            })
+          }
         }
-      }
-    )
+      )
+    } catch (writeErr) {
+      onSettled({
+        outcome: 'refused',
+        reason: 'transport_disposed',
+        error: writeErr instanceof Error ? writeErr : new Error(String(writeErr))
+      })
+    }
   }
 
   probeLiveness(timeoutMs: number): Promise<boolean> {
@@ -214,7 +226,13 @@ export class MultiChannelMuxBackend {
       remove()
       resolve(false)
     }, timeoutMs)
-    this.channels[0]!.sendKeepAlive()
+    try {
+      this.channels[0]!.sendKeepAlive()
+    } catch {
+      clearTimeout(timer)
+      remove()
+      resolve(false)
+    }
     return promise
   }
 
