@@ -93,16 +93,14 @@ export function isExplainedTerminalError(error: string): boolean {
     )
 }
 
+// Why line comparison: prevent substring false positives when accumulated errors contain remote closed text.
 export function isRemoteTerminalClosedError(error: string): boolean {
-  return (
-    error.includes(REMOTE_TERMINAL_CLOSED_MARKER) ||
-    error.includes(
-      translate(
-        'auto.components.terminal.pane.TerminalErrorToast.remoteTerminalClosed',
-        REMOTE_TERMINAL_CLOSED_MARKER
-      )
-    )
+  const translated = translate(
+    'auto.components.terminal.pane.TerminalErrorToast.remoteTerminalClosed',
+    REMOTE_TERMINAL_CLOSED_MARKER
   )
+  const lines = error.split('\n').map((line) => line.trim())
+  return lines.some((line) => line === REMOTE_TERMINAL_CLOSED_MARKER || line === translated)
 }
 
 export function isPaneOwnerUnverifiedError(error: string): boolean {
@@ -337,13 +335,22 @@ export function TerminalErrorToast({
               : translate('auto.components.terminal.pane.TerminalErrorToast.retry', 'Retry')}
           </Button>
         ) : null}
+        {/* Why explicit button: decouple teardown from dismiss (×) so dismissing preserves scrollback buffer (#21342). */}
+        {isRemoteTerminalClosedError(error) && onClosePane ? (
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={onClosePane}
+            className="ml-3 border-destructive/50 bg-popover text-popover-foreground hover:bg-destructive/20"
+          >
+            {translate(
+              'auto.components.terminal.pane.TerminalErrorToast.closePane',
+              'Close Pane'
+            )}
+          </Button>
+        ) : null}
         <button
-          onClick={() => {
-            onDismiss()
-            if (isRemoteTerminalClosedError(error)) {
-              onClosePane?.()
-            }
-          }}
+          onClick={onDismiss}
           style={{
             background: 'none',
             border: 'none',

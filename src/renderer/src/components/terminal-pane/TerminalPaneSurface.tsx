@@ -168,6 +168,7 @@ export function TerminalPaneSurface({
             <TerminalErrorToast
               error={visibleTerminalError}
               onDismiss={dismissTerminalError}
+              // Why executeClosePane: remote PTY is confirmed dead, bypassing running-work confirmation.
               onClosePane={() => executeClosePane(activePane.id)}
               onRestartDaemon={() => daemonActions.setPending('restart')}
               onRetry={

@@ -418,13 +418,47 @@ describe('TerminalErrorToast environment footer', () => {
   })
 })
 
-describe('TerminalErrorToast teardown on dismiss (#21342)', () => {
+describe('TerminalErrorToast remote closed pane teardown (#21342)', () => {
   it('identifies remote terminal closed error strings', () => {
     expect(isRemoteTerminalClosedError('Remote terminal was closed.')).toBe(true)
+    expect(
+      isRemoteTerminalClosedError('prefix\nRemote terminal was closed.\nsuffix')
+    ).toBe(true)
+    expect(
+      isRemoteTerminalClosedError('Prefix Remote terminal was closed. suffix')
+    ).toBe(false)
     expect(isRemoteTerminalClosedError('Paste failed.')).toBe(false)
   })
 
-  it('triggers onClosePane when dismissing a remote terminal closed error', () => {
+  it('renders a Close Pane button when error is remote terminal closed and onClosePane is provided', () => {
+    const view = render(
+      React.createElement(TerminalErrorToast, {
+        error: 'Remote terminal was closed.',
+        onDismiss: vi.fn(),
+        onClosePane: vi.fn()
+      })
+    )
+
+    expect(view.getByRole('button', { name: 'Close Pane' })).toBeTruthy()
+  })
+
+  it('clicking Close Pane button invokes onClosePane', () => {
+    const onClosePane = vi.fn()
+    const view = render(
+      React.createElement(TerminalErrorToast, {
+        error: 'Remote terminal was closed.',
+        onDismiss: vi.fn(),
+        onClosePane
+      })
+    )
+
+    const closePaneButton = view.getByRole('button', { name: 'Close Pane' })
+    fireEvent.click(closePaneButton)
+
+    expect(onClosePane).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not trigger onClosePane when clicking dismiss button (×) on remote terminal closed error', () => {
     const onDismiss = vi.fn()
     const onClosePane = vi.fn()
     const view = render(
@@ -439,7 +473,19 @@ describe('TerminalErrorToast teardown on dismiss (#21342)', () => {
     fireEvent.click(dismissButton)
 
     expect(onDismiss).toHaveBeenCalledTimes(1)
-    expect(onClosePane).toHaveBeenCalledTimes(1)
+    expect(onClosePane).not.toHaveBeenCalled()
+  })
+
+  it('does not render Close Pane button for non-remote-closed errors', () => {
+    const view = render(
+      React.createElement(TerminalErrorToast, {
+        error: 'Paste failed.',
+        onDismiss: vi.fn(),
+        onClosePane: vi.fn()
+      })
+    )
+
+    expect(view.queryByRole('button', { name: 'Close Pane' })).toBeNull()
   })
 
   it('does not trigger onClosePane when dismissing other errors', () => {
