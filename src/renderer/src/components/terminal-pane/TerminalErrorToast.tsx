@@ -403,12 +403,7 @@ export function TerminalErrorToast({
           </Button>
         ) : null}
         <button
-          onClick={() => {
-            onDismiss()
-            if (isRemoteTerminalClosedError(error)) {
-              onClosePane?.()
-            }
-          }}
+          onClick={() => onDismiss()}
           style={{
             background: 'none',
             border: 'none',
@@ -422,6 +417,17 @@ export function TerminalErrorToast({
         >
           ×
         </button>
+        {isRemoteTerminalClosedError(error) && onClosePane ? (
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => void onClosePane()}
+            className="ml-3 border-red-500/50 bg-popover text-popover-foreground hover:bg-red-500/20"
+          >
+            {translate('auto.components.terminal.pane.TerminalContextMenu.8c17d6786d', 'Close Pane')}
+          </Button>
+        ) : null}
+
       </div>
     </div>
   )

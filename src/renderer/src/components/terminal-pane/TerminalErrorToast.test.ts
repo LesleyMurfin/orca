@@ -569,7 +569,7 @@ describe('TerminalErrorToast teardown on dismiss (#21342)', () => {
     expect(isRemoteTerminalClosedError('Paste failed.')).toBe(false)
   })
 
-  it('triggers onClosePane when dismissing a remote terminal closed error', () => {
+  it('× button dismisses but does not close pane on remote terminal closed error', () => {
     const onDismiss = vi.fn()
     const onClosePane = vi.fn()
     const view = render(
@@ -584,6 +584,24 @@ describe('TerminalErrorToast teardown on dismiss (#21342)', () => {
     fireEvent.click(dismissButton)
 
     expect(onDismiss).toHaveBeenCalledTimes(1)
+    expect(onClosePane).not.toHaveBeenCalled()
+  })
+
+  it('explicit Close Pane button closes pane on remote terminal closed error', () => {
+    const onDismiss = vi.fn()
+    const onClosePane = vi.fn()
+    const view = render(
+      React.createElement(TerminalErrorToast, {
+        error: 'Remote terminal was closed.',
+        onDismiss,
+        onClosePane
+      })
+    )
+
+    const closeButton = view.getByRole('button', { name: 'Close Pane' })
+    fireEvent.click(closeButton)
+
+    expect(onDismiss).not.toHaveBeenCalled()
     expect(onClosePane).toHaveBeenCalledTimes(1)
   })
 
