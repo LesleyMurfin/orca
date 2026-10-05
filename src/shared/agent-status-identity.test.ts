@@ -18,10 +18,15 @@ function existing(
     updatedAt?: number
     restoredUnconfirmed?: boolean
   } = {}
-) {
+): {
+  agentType: AgentType
+  state: AgentStatusState
+  updatedAt: number
+  restoredUnconfirmed?: boolean
+} {
   return {
-    agentType: 'codex' as AgentType,
-    state: 'working' as AgentStatusState,
+    agentType: 'codex',
+    state: 'working',
     updatedAt: NOW - 1000,
     ...overrides
   }
