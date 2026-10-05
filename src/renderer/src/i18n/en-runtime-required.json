@@ -72,6 +72,7 @@
         "af6e02c44a": "page",
         "f5a6b38a14": "sheet"
       },
+
       "NewWorkspaceComposerCard": {
         "0e587e31fb": "yaml",
         "2132b670da": "both",
@@ -2533,7 +2534,8 @@
           },
           "TerminalErrorToast": {
             "ptyAllocationLimit": "Your system cannot allocate any more pty devices. Close some terminals you are not using, in Orca or another program, then try again.",
-            "terminalProcessLimit": "Your system cannot start another terminal process. Close unused terminals or quit unused processes, then try again."
+            "terminalProcessLimit": "Your system cannot start another terminal process. Close unused terminals or quit unused processes, then try again.",
+            "remoteTerminalClosed": "Remote terminal was closed."
           },
           "TerminalRemoteRuntimeReconnectBanner": {
             "retryingBody": "Orca will retry for up to one minute. This terminal will resume if the connection returns."
