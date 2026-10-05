@@ -70,6 +70,22 @@ export function resolveAgentStatusIdentity(args: {
     hookIsLive: true,
     completedHookAgent: args.existing.state === 'done' ? (existingAgentType as TuiAgent) : undefined
   })
+  // TUI-agent replacement: if both existing and incoming are known top-level TUI agents
+  // and they differ, replace immediately (do not inherit stale Codex icon when OMP opens).
+  // This prevents Codex's 30-minute freshness window from outlasting its closure.
+  const isTuiAgent = (agent: AgentType | null): agent is TuiAgent => {
+    return agent === 'omp' || agent === 'codex'
+  }
+  if (
+    isTuiAgent(existingAgentType) &&
+    isTuiAgent(incomingAgentType) &&
+    existingAgentType !== incomingAgentType
+  ) {
+    return {
+      agentType: incomingAgentType,
+      inheritedFromActivePane: false
+    }
+  }
   if (isActiveExistingIdentity(args.existing, args.now, staleAfterMs)) {
     return {
       // Why: child agent CLIs inherit ORCA_PANE_KEY from their parent terminal.
