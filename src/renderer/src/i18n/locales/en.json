@@ -4519,7 +4519,8 @@
           "c760c481c5": "Usage Overview",
           "55c910f4f1": "- some model prices are unavailable",
           "enableMuse": "Enable Muse",
-          "noLocalUsageYet": "No local Claude, Codex, OpenCode, or Muse usage found yet. The overview will populate after the next agent session writes token logs."
+          "noLocalUsageYet": "No local Claude, Codex, OpenCode, or Muse usage found yet. The overview will populate after the next agent session writes token logs.",
+          "60002bb22f": "No local Claude, Codex, or OpenCode usage found yet. The overview will populate after the next agent session writes token logs."
         },
         "share": {
           "card": {
@@ -4591,7 +4592,8 @@
               "statusScanning": "Scanning",
               "statusEnabled": "Enabled",
               "statusOff": "Off",
-              "recentCombinedActivity": "Recent combined Claude, Codex, OpenCode, and Muse token activity."
+              "recentCombinedActivity": "Recent combined Claude, Codex, OpenCode, and Muse token activity.",
+              "f28ff1f852": "Recent combined Claude, Codex, and OpenCode token activity."
             }
           }
         },
@@ -7195,7 +7197,17 @@
           "de9b2f32f3": "Enable",
           "8f2675c2f3": "Imported {{value0}} cookies from file.",
           "5301857d88": "From {{value0}}",
-          "finishSteps": "Let coding agents drive this browser with your logins. Finish the steps below."
+          "finishSteps": "Let coding agents drive this browser with your logins. Finish the steps below.",
+          "c6065d205d": "Enable Orca CLI",
+          "c79eff0213": "Register the Orca CLI so agents can drive the browser.",
+          "9fca1f7f5d": "Registers the Orca CLI command so agents can orchestrate the browser from their shell.",
+          "e9f3f3b488": "Installed at",
+          "8b3054dac7": "Registering...",
+          "0289434ed6": "Enabled",
+          "ad8cb0ee22": "Fix PATH",
+          "180a9abf3a": "Failed to load CLI status.",
+          "721aee31b4": "Registered the Orca CLI in PATH.",
+          "702488a5f7": "Let coding agents drive this browser with your logins. Finish the three steps below."
         },
         "BrowserUseSkillStep": {
           "0871b6998d": "Enables agents to navigate and verify pages in Orca's browser.",
@@ -7240,7 +7252,8 @@
           "installFailureConflictRemedy": "Remove {{value0}} and register again if it is no longer needed.",
           "6f894ef9c2": "Show in Finder",
           "cbe55e4d48": "Show in Explorer",
-          "9fd4023db0": "Show in File Manager"
+          "9fd4023db0": "Show in File Manager",
+          "6930feda9e": "Use Orca from your terminal to open the app, manage worktrees, and interact with Orca terminals."
         },
         "CliSkillRuntimeSetup": {
           "04325573f8": "WSL",
@@ -7865,7 +7878,13 @@
           "67e19ee03c": "Orca CLI skill",
           "ff4b7e65d6": "Let coding agents control the active mobile emulator with Orca CLI commands.",
           "2a674aa810": "Agent Mobile Emulator Control",
-          "cdeaed9e37": "Registered the Orca CLI in PATH."
+          "cdeaed9e37": "Registered the Orca CLI in PATH.",
+          "4f2205f3b6": "Enable Orca CLI",
+          "2fef055608": "Registers the Orca CLI command so agents can control the active emulator from their shell.",
+          "aaf62a3dd2": "Installed at",
+          "3d34423e88": "Registering the Orca CLI",
+          "3be27641c9": "so emulator commands can run from agent shells.",
+          "3941719a56": "Checking Orca CLI before opening skill setup."
         },
         "MobileEmulatorExamples": {
           "edf13dd03b": "Copy",
@@ -7940,7 +7959,8 @@
           "copyPairingCode": "Copy pairing code",
           "diagnosticsCopied": "Diagnostics copied",
           "diagnosticsCopyFailed": "Failed to copy diagnostics",
-          "5e2c7a1f84": "While you're using a terminal on your phone, Orca shrinks it to fit your phone screen. When you close the app or switch away, this controls whether it stays at phone size (so interactive CLI tools don't reflow) or resizes back to your desktop. You can always use Restore or Restore all on the banner to resize manually."
+          "5e2c7a1f84": "While you're using a terminal on your phone, Orca shrinks it to fit your phone screen. When you close the app or switch away, this controls whether it stays at phone size (so interactive CLI tools don't reflow) or resizes back to your desktop. You can always use Restore or Restore all on the banner to resize manually.",
+          "35100bca5d": "While you're using a terminal on your phone, Orca shrinks it to fit your phone screen. When you close the app or switch away, this controls whether it stays at phone size (so interactive CLI tools don't reflow) or resizes back to your desktop. You can always use Restore this terminal or Restore all terminals on the banner to resize manually."
         },
         "MobileSettingsPane": {
           "9a3c280e49": "GitHub Releases",
@@ -8222,7 +8242,8 @@
           "81057d5f71": "Saving...",
           "da37d6f10e": "Copy",
           "3149964b66": "Copied",
-          "waitForSetupBeforeAgent": "Wait for setup to complete before starting agent"
+          "waitForSetupBeforeAgent": "Wait for setup to complete before starting agent",
+          "waitForSetupBeforeAgentHelp": "Turn this on when setup installs dependencies, MCP servers, or config files the agent needs during startup."
         },
         "RepositoryIconPicker": {
           "2b7d27b93c": "Use {{value0}} repo color",
