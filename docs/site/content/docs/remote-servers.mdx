@@ -38,6 +38,26 @@ faster place to start; come back here once the app works locally.
   [Discord](https://discord.gg/fzjDKHxv8Q) — see [Getting help](#getting-help).
 </Callout>
 
+## Agent setup & installation
+
+Any coding agent — Claude Code, Codex, Cursor, Copilot — can do this setup for you. Paste this
+into the agent on the machine you are setting up:
+
+```text
+Fetch and execute the appropriate instructions to set me up for Orca from
+https://orca.run/docs/agent-setup/prompt.md
+```
+
+The prompt file covers OS and architecture detection, desktop install on macOS, Windows, and
+Linux, headless `orca serve` hosts, account and skill configuration, the health checks below, and
+where to go when a step fails. Read it yourself at
+[/docs/agent-setup/prompt.md](https://orca.run/docs/agent-setup/prompt.md).
+
+<Callout title="The agent still needs you">
+  Pairing links, `sudo` for a `.deb`/`.rpm` install, and the Tailscale login are yours to approve.
+  Never let an agent paste a pairing URL or access link into a public channel.
+</Callout>
+
 ## What runs where
 
 ```text
