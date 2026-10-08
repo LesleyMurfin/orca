@@ -1,13 +1,15 @@
 ---
 name: orca-server
 description: >-
-  Run, supervise, and troubleshoot a headless Orca runtime started with `orca serve`: the
-  systemd unit that keeps it up, pairing clients to it, agent accounts and skills on the
-  server, and terminals that must outlive a service restart. Use when the user says
-  "$orca-server", "orca serve", "orca-ide serve", "headless Orca", "remote Orca server",
-  "Orca server won't start", "pairing URL", "orca-serve.service", or "restart the Orca
-  server". Use `orca-cli` for ordinary worktree, terminal, and browser work once a runtime
-  is already reachable.
+  Install, configure, run, supervise, and troubleshoot a headless Orca runtime started with
+  `orca serve`: choosing a host mode, first-run setup and verification, the systemd unit that
+  keeps it up, pairing clients to it, agent accounts and skills on the server, terminals that
+  must outlive a service restart, and where to send someone for docs or community help. Use
+  when the user says "$orca-server", "orca serve", "orca-ide serve", "headless Orca", "remote
+  Orca server", "how do I set up an Orca server", "install Orca on my server", "Orca server
+  won't start", "pairing URL", "orca-serve.service", or "restart the Orca server". Use
+  `orca-cli` for ordinary worktree, terminal, and browser work once a runtime is already
+  reachable.
 ---
 
 # Orca Server
@@ -16,6 +18,13 @@ description: >-
 
 This guide covers the host side: the process that owns the runtime. Everything a client does
 against that runtime once it is reachable belongs to `orca-cli`.
+
+You are often the first thing a new operator talks to. Answer the question they asked, run the
+check that settles it, and name the one next step — do not hand back a reading list. When a
+claim comes from a command, show the command. When it comes from the product docs, link the
+page (https://www.onorca.dev/docs/remote-servers). When you do not know, say so and point at
+`## Where to send someone for help` at the end of this guide rather than guessing at behaviour
+the CLI can report.
 
 Two documents ship beside this guide. At a gate below, run
 `ORCA skills get orca-server --reference references/<file>.md` and read only that document;
@@ -28,6 +37,23 @@ here, and do not guess.
 | ---------------------------------------------------------------------------- | ---------------------------------- |
 | Writing, hardening, or diagnosing the systemd unit that supervises the server | `references/systemd-supervision.md` |
 | Terminals dying on restart, or a long job that must survive one               | `references/daemon-scope.md`        |
+
+## Install Orca on the host
+
+Before any of the host modes below, the server computer needs Orca itself. Install it from
+https://www.onorca.dev/docs/install — packages and direct downloads for macOS, Windows, and
+Linux live there, and https://www.onorca.dev/docs/install#linux covers the Linux build.
+
+Three things to confirm on a fresh host before spending time on configuration:
+
+- **The executable.** On Linux it is `orca-ide`; `/usr/bin/orca` is the GNOME Orca screen
+  reader. Confirm with `command -v orca-ide`.
+- **The version.** `ORCA --version` on the host and on the client. Mismatched protocol
+  versions are the usual cause of a client that pairs and then reports an incompatible server.
+- **The user.** Install and authenticate as the account that will own the runtime, not as
+  `root`. Agents inherit that account's `PATH`, home directory, and credentials.
+
+The client computer needs the same install; a Remote Orca Server is Orca talking to Orca.
 
 ## Pick the host mode first
 
@@ -64,6 +90,21 @@ desktop app's server.
 On Linux the executable is `orca-ide`; `/usr/bin/orca` is the GNOME Orca screen reader. In unit
 files and cron entries always write the absolute path `/usr/bin/orca-ide`, never a bare `orca`
 that a `PATH` change could redirect.
+
+### Verify the first run before pairing anyone
+
+Do this in order; each step rules out the failure the next one would be blamed for.
+
+1. **The runtime answers locally.** `ORCA status --json` on the host.
+2. **The advertised endpoint is the one a client can dial.** Read it from the startup output,
+   not from the bind line, and check it is not `127.0.0.1` or a wildcard.
+3. **The port is reachable from the client.** From the client machine, not the host.
+4. **The host is named.** `ORCA host name --name build-server --json` so paired clients show
+   something recognizable.
+5. **Agent CLIs and accounts exist on the host.** `ORCA account list --json`.
+
+Only then hand over the pairing URL. A link pasted before step 3 produces a client that pairs
+and immediately times out, which reads like a product bug and is not one.
 
 ## Run it under systemd
 
@@ -230,3 +271,23 @@ public internet.
   service cgroup. Check lingering and `XDG_RUNTIME_DIR`, then `references/daemon-scope.md`.
 - **A command reports that Orca is not running.** On a server host, check the unit rather than
   starting a second runtime by hand.
+
+## Where to send someone for help
+
+Give the page or channel, not a general invitation to search:
+
+- **Remote server setup, pairing, host modes** —
+  https://www.onorca.dev/docs/remote-servers
+- **Installing Orca, including the Linux `orca-ide` name** —
+  https://www.onorca.dev/docs/install
+- **App-wide symptoms and log locations** — https://www.onorca.dev/docs/troubleshooting
+- **Choosing between a server, SSH worktrees, and local** —
+  https://www.onorca.dev/docs/ways-to-run
+- **Real-time community help** — Discord, https://discord.gg/fzjDKHxv8Q
+- **Bugs and feature requests** — https://github.com/stablyai/orca/issues
+- **In-app** — **Help → Send Feedback**, which carries build context; attach logs when the
+  problem is hard to reproduce.
+
+Before sending someone to a channel, collect what they will be asked for anyway: host mode,
+server OS, Orca version on both ends, the last 50 journal lines, and what the client reports.
+Redact the pairing URL and any access link first — they are credentials.

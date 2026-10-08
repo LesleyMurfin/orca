@@ -1,18 +1,22 @@
 ---
 name: orca-server
 description: >-
-  Run, supervise, and troubleshoot a headless Orca runtime started with `orca serve`: the
-  systemd unit that keeps it up, pairing clients to it, agent accounts and skills on the
-  server, and terminals that must outlive a service restart. Use when the user says
-  "$orca-server", "orca serve", "orca-ide serve", "headless Orca", "remote Orca server",
-  "Orca server won't start", "pairing URL", "orca-serve.service", or "restart the Orca
-  server". Use `orca-cli` for ordinary worktree, terminal, and browser work once a runtime
-  is already reachable.
+  Install, configure, run, supervise, and troubleshoot a headless Orca runtime started with
+  `orca serve`: choosing a host mode, first-run setup and verification, the systemd unit that
+  keeps it up, pairing clients to it, agent accounts and skills on the server, terminals that
+  must outlive a service restart, and where to send someone for docs or community help. Use
+  when the user says "$orca-server", "orca serve", "orca-ide serve", "headless Orca", "remote
+  Orca server", "how do I set up an Orca server", "install Orca on my server", "Orca server
+  won't start", "pairing URL", "orca-serve.service", or "restart the Orca server". Use
+  `orca-cli` for ordinary worktree, terminal, and browser work once a runtime is already
+  reachable.
 ---
 
 # Orca Server
 
 This discovery stub loads the version-matched guide from the Orca executable used for this session.
+The guide covers installing Orca on a host, choosing a host mode, first-run verification,
+systemd supervision, pairing, and the docs and community channels to point a stuck operator at.
 
 ## Resolve the CLI for this session
 

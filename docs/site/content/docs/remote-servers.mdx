@@ -14,6 +14,30 @@ The easiest setup is the Orca desktop app on both computers, connected through [
   such as the same Tailscale tailnet or LAN.
 </Callout>
 
+## Getting started
+
+New to Orca, or setting up your first server? Work through these in order.
+
+1. **Install Orca on both computers.** Follow [Install](/docs/install) for macOS, Windows, and
+   Linux builds. On Linux the executable is `orca-ide` — see [Install → Linux](/docs/install#linux).
+1. **Update both computers to the same release.** A client and server on different protocol
+   versions refuse to pair.
+1. **Put both computers on one private network path.** [Tailscale](https://tailscale.com/) is the
+   shortest route; a trusted LAN, WireGuard, or SSH forwarding also works.
+1. **Pick a host mode.** Use the [desktop app](#recommended-desktop-app--tailscale) when a human
+   can stay signed in on the server computer. Use [`orca serve`](#alternative-orca-serve) for a
+   headless Linux box, VM, or container. Run only one of them per machine.
+1. **Pair the client**, then confirm the server row reads **Connected**.
+
+If you have never run Orca before, [Your first 3-agent session](/docs/first-session) is the
+faster place to start; come back here once the app works locally.
+
+<Callout title="Stuck at any step?">
+  Jump to [Troubleshooting](#troubleshooting) below, the general
+  [Troubleshooting](/docs/troubleshooting) page, or ask in
+  [Discord](https://discord.gg/fzjDKHxv8Q) — see [Getting help](#getting-help).
+</Callout>
+
 ## What runs where
 
 ```text
@@ -311,6 +335,29 @@ orca serve --pairing-address <reachable-tailscale-ip-or-hostname>
 ```
 
 Do not use a wildcard address or `127.0.0.1` for a remote client.
+
+## Getting help
+
+Remote setups fail for boring, findable reasons — a sleeping server, an unreachable advertised
+address, a tailnet ACL. Collect these before asking, and the answer usually arrives in one round
+trip:
+
+- the host mode (desktop app or `orca serve`) and the server's OS;
+- the Orca version on **both** computers;
+- the startup output or `journalctl -u orca-serve.service -n 50`;
+- what the client shows — **Disconnected**, a timeout, or a protocol-version error.
+
+Then:
+
+- **[Discord](https://discord.gg/fzjDKHxv8Q)** — real-time help from the community and the team.
+- **[GitHub Issues](https://github.com/stablyai/orca/issues)** — bugs and feature requests.
+- **Help → Send Feedback** in the app — attaches context from the running build. Include
+  [logs](/docs/troubleshooting#logs) when the problem is hard to reproduce.
+- **[Troubleshooting](/docs/troubleshooting)** — app-wide fixes beyond the remote-server cases
+  above.
+
+Never paste a pairing URL, access link, or token into a public channel. It grants access to the
+runtime; redact it first, and revoke it under **Shared Server Access** if it leaks.
 
 ## Next steps
 
