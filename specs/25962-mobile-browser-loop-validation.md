@@ -12,6 +12,25 @@
   3. `stablyai/orca#6529` / `#6539` (historical): Parent mobile file-tap design explicitly committed to "preserve HTML browser behavior."
   4. Localhost screencast half (`use-mobile-browser-stream.ts`, `MobileBrowserPane.tsx`) actively maintained by `Jinwoo-H` (#22694, #22392).
 
+## Related Issues & Upstream PR Inventory
+
+### Related Issues
+1. **stablyai/orca#25962** (Primary bug): Can't see Desktop's localhost or HTML files in mobile tab (infinite spinner). Assignee: Jinwoo-H.
+2. **stablyai/orca#13144** (Direct product twin): "Support opening/previewing HTML files on Orca Mobile" by AmethystLiang.
+3. **stablyai/orca#6539** (Parent specification): Mobile terminal file preview — explicitly set the design rule that "HTML files should preserve the existing browser preview behavior."
+4. **stablyai/orca#21806** (Related localhost gap): Open remote workspace's localhost URL in the user's browser.
+5. **stablyai/orca#11492** (Environment cause): Mobile browser screencast freezes/stops when host desktop display sleeps (matches desktop-at-home / phone-on-Wi-Fi scenario).
+6. **stablyai/orca#14274** (Stream reliability): Mobile browser pane freezes on last frame after relay/socket reconnect.
+7. **stablyai/orca#19585** (Adjacent interaction): Mobile link taps miss in streamed browser view.
+
+### Upstream PRs & Collisions
+1. **stablyai/orca#13234** (innocarpe, OPEN): Routes non-local HTML to mobile preview, but deliberately preserves local worktree HTML `openBrowser(file://…)` for relative asset resolution. Direct conflict with deleting that path.
+2. **stablyai/orca#25491** (nwparker, ACTIVE Oct 2026): Edits `mobile-file-tap-open.ts` for headless fallback on `files.open`, keeping `openBrowser` across options and tests.
+3. **stablyai/orca#23357** (Meapri): Predecessor to #25491 for device fallback when host lacks renderer (superseded by #25491).
+4. **stablyai/orca#6529** (MeCKodo): Established the local-HTML-to-browser behavior.
+5. **stablyai/orca#25263** (Fanzzzd, DRAFT): Screencast flow-control (`ackWindow`) for mobile browser stream performance on slow Wi-Fi.
+6. **stablyai/orca#19549** (lqez): Mobile browser stream tap coordinates.
+
 ## Summary
 
 Issue #25962 reports:
