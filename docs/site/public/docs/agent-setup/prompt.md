@@ -21,7 +21,7 @@ Before running any installation command or modifying files, determine the user's
 
 ### Question 3 (If Server): How will it be supervised and accessed?
 - **Systemd service (Recommended)**: Unprivileged background daemon managed via `/etc/systemd/system/orca-serve.service` with `KillMode=mixed` and `RestartPreventExitStatus=3 78`.
-- **User systemd service**: `~/.config/systemd/user/orca-runtime.service` with lingering (`loginctl enable-linger $USER`).
+- **User systemd service**: `~/.config/systemd/user/orca-serve.service` with lingering (`loginctl enable-linger $USER`).
 - **Container / Docker**: Running inside a dedicated container environment.
 - **Network path**: Private LAN, Tailscale tailnet, or SSH tunnel? (Sets `--pairing-address`).
 
