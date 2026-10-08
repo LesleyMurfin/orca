@@ -114,12 +114,15 @@ Useful passes over the newest file:
 # Span names in order, newest last.
 jq -r '[.name // .type, (.attributes | tostring)] | @tsv' main.trace.ndjson
 
-# Only the failure lane.
-jq -c 'select(.status == "error" or .level == "error")' main.trace.ndjson
+# Only the failure lane. Records are `type: "effect-span"` envelopes: the outcome is
+# `exit._tag` (`Success` / `Failure` / `Interrupted`) and the stack is `exit.cause`.
+jq -c 'select(.exit._tag == "Failure")' main.trace.ndjson
 
-# Everything the trace recorded in a window, across the rotated family.
+# Everything the trace recorded in a window, across the rotated family. Times are
+# nanosecond strings, not ISO: compare them numerically.
 cat main.trace.ndjson.3 main.trace.ndjson.2 main.trace.ndjson.1 main.trace.ndjson |
-  jq -c 'select(.timestamp >= "<iso-start>" and .timestamp <= "<iso-end>")'
+  jq -c --argjson from '<start-unix-nano>' --argjson to '<end-unix-nano>' \
+    'select((.startTimeUnixNano | tonumber) >= $from and (.startTimeUnixNano | tonumber) <= $to)'
 ```
 
 A line that fails to parse is a torn final write from a crash, not corruption of the whole file;

@@ -6,11 +6,15 @@ When the Electron UI is wedged, unresponsive, or experiencing white-screen rende
 
 ### 1. Launch with Remote Debugging Port
 
-Start Orca with the debugging port exposed:
+Restart Orca with the debugging port exposed. Use the executable you resolved in the stub —
+on Linux it is `orca-ide`, because `/usr/bin/orca` is the GNOME Orca screen reader:
 
 ```bash
-orca --remote-debugging-port=9222
+ORCA --remote-debugging-port=9222
 ```
+
+The port is only open on a process started this way; a running instance cannot be attached to
+retroactively, so collect the trace file first — the restart destroys the wedged state.
 
 ### 2. Inspect Target Endpoints
 

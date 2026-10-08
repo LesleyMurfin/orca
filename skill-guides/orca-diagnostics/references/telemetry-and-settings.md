@@ -16,9 +16,20 @@ Sockets:
 
 ## 2. Offline Disk Editing Rules
 
-When Orca is closed, global settings can be edited at `orca-data.json` and project settings at `orca.yaml`:
-- **Never edit `orca-data.json` while Orca is running**: Orca will overwrite file changes on shutdown.
-- Validate JSON syntax before restarting the application.
+State is not always JSON. A profile whose `profile-state.db` exists is SQLite-authoritative, and
+`orca-data.json` is then a stale export: edits to it are ignored and silently overwritten.
+Establish which store is live before editing anything:
+
+```bash
+ORCA profile state exports --json   # names the active profile's data file and SQLite family
+```
+
+- SQLite-backed profile: do not hand-edit. Stop Orca and use
+  `ORCA profile state rollback --backup <id>` / `--revision <n>`, which validates and archives
+  before replacing state.
+- JSON-backed profile: `orca-data.json` may be edited, but only while Orca is stopped — a running
+  app rewrites the file from memory on shutdown. Project settings stay in `orca.yaml`.
+- Validate JSON syntax before relaunching.
 
 ---
 
@@ -26,13 +37,16 @@ When Orca is closed, global settings can be edited at `orca-data.json` and proje
 
 If file tabs flicker or repeatedly reopen due to a deleted worktree or reconciliation conflict:
 
-1. Quit Orca completely (`killall orca` or Cmd+Q).
-2. Open the platform-specific `orca-data.json`.
-3. Under `"openFilesByWorktree"`, find the affected workspace/worktree ID and reset its list to empty:
+1. Quit Orca completely (Cmd+Q on macOS; on Linux the process is `orca-ide`, not `orca` — a bare
+   `killall orca` hits the GNOME screen reader instead).
+2. Confirm the profile is JSON-backed (section 2). On a SQLite profile, use
+   `ORCA profile state rollback` instead of the steps below.
+3. Open the platform-specific `orca-data.json`.
+4. Under `"openFilesByWorktree"`, find the affected workspace/worktree ID and reset its list to empty:
    ```json
    "openFilesByWorktree": {
      "<affected-workspace-id>": []
    }
    ```
-4. Reset `"activeFileIdByWorktree"` for that workspace.
-5. Save, validate JSON formatting, and relaunch Orca.
+5. Reset `"activeFileIdByWorktree"` for that workspace.
+6. Save, validate JSON formatting, and relaunch Orca.
