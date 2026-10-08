@@ -30,7 +30,7 @@ Orca can be deployed and supervised in several different ways. Before executing 
 
 Answer the questions they ask, run the checks that settle their configuration, and name the one next step — do not hand back an uncontextualized reading list. When a claim comes from a command, show the command. When it comes from the product docs, link the page (https://www.onorca.dev/docs/remote-servers). When you do not know, say so and point at `## Where to send someone for help` rather than guessing.
 
-Two documents ship beside this guide. At a gate below, run
+Three documents ship beside this guide. At a gate below, run
 `ORCA skills get orca-server --reference references/<file>.md` and read only that document;
 `--references` lists the names. If the CLI rejects `--reference`, run
 `ORCA skills get orca-server --full` once and read only the named section. If `--full` is
@@ -41,7 +41,7 @@ here, and do not guess.
 | ---------------------------------------------------------------------------- | ---------------------------------- |
 | Writing, hardening, or diagnosing the systemd unit that supervises the server | `references/systemd-supervision.md` |
 | Terminals dying on restart, or a long job that must survive one               | `references/daemon-scope.md`        |
-
+| Headless server down, crash loops, port collision, or 4-bucket triage        | `references/server-triage.md`       |
 ## Install Orca on the host
 
 Before any of the host modes below, the server computer needs Orca itself. Install it from
