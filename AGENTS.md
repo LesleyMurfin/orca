@@ -133,3 +133,25 @@ Source-control and review changes must consider GitLab and other supported git p
 ## GitHub CLI Usage
 
 Be mindful of the user's `gh` CLI API rate limit — batch requests where possible and avoid unnecessary calls. All code, commands, and scripts must be compatible with macOS, Linux, and Windows.
+
+# Agent Skills Architecture & Routing
+
+Orca bundles version-matched skills for agents operating inside or with Orca. The skill subsystem is structured across three core directories:
+
+- skill-guides/<name>.md: The canonical, version-matched skill guide served by the binary via orca skills get <name>. Reference material lives in skill-guides/<name>/references/*.md (appended to --full).
+- skill-stubs/<name>.md: Lightweight discovery stubs installed into agent configuration directories (composed with skill-stubs/_shared/cli-resolution.md).
+- skills/<name>/SKILL.md: The generated, installable skill packages bundled with Orca releases.
+
+### Skill Selection & Routing Matrix
+
+| User Goal / Intent | Use Skill | Does NOT Handle |
+| :--- | :--- | :--- |
+| Single-agent tool execution: worktrees, terminals, browser tabs, 1:1 linear handoff | **orca-cli** | Multi-agent coordination, task DAGs, or worker loops |
+| Multi-agent coordination: 2+ workers, DAG decomposition, threaded ask/reply bus | **orchestration** | Single terminal commands, browser control, or server supervision |
+| Headless Linux server operations: systemd units, cgroup scope, user lingering | **orca-server** | Local desktop UI or multi-agent task orchestration |
+| SRE triage: internal trace logs, daemon/PTY desync, dead multiplex sockets | **orca-diagnostics** | Routine worktree creation or application commands |
+
+When adding or modifying skills:
+1. Register canonical names in CANONICAL_GUIDE_NAMES within config/scripts/generate-bundled-skill-guides.mjs.
+2. Generate bundled stubs: node config/scripts/generate-bundled-skill-guides.mjs.
+3. Verify skill runtime and CLI parity: pnpm verify:bundled-skill-guides.
