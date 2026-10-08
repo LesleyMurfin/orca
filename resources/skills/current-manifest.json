@@ -56,6 +56,24 @@
       ]
     },
     {
+      "name": "orca-diagnostics",
+      "sourcePath": "skills/orca-diagnostics",
+      "releaseRevision": 1,
+      "packageDigest": "04a5f2ed4c4b901be0a7ab7bbff1b4d2a79889ddd35322b47cf2a5d2da61b53f",
+      "gitTreeSha": "c1a949e612b3bf68c8edf8d0477093e049dc6bd8",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "size": 2359,
+          "executable": false,
+          "classification": "text",
+          "exactSha256": "cb21daa79362378919ca0bbc76d53e9a58d2f3e28b07e1bfa03e957ab63a01b0",
+          "textNormalizedSha256": "cb21daa79362378919ca0bbc76d53e9a58d2f3e28b07e1bfa03e957ab63a01b0",
+          "identitySha256": "cb21daa79362378919ca0bbc76d53e9a58d2f3e28b07e1bfa03e957ab63a01b0"
+        }
+      ]
+    },
+    {
       "name": "orca-emulator",
       "sourcePath": "skills/orca-emulator",
       "releaseRevision": 8,

@@ -68,6 +68,106 @@ gh api rate_limit --jq '.resources.core'
 
 **Help → Open Logs** opens the directory with Orca's logs. Attach these when filing a bug.
 
+## Deep diagnostics & SRE
+
+When the app itself is the suspect — wedged UI, terminals that never spawn, an SSH worktree that
+will not connect — work outward from Orca's own on-disk evidence. Agents can load the full
+procedure as a skill:
+
+```bash
+orca skills install --skill orca-diagnostics
+```
+
+See the [skills registry](/docs/cli/skills) for install scope and agent targeting.
+
+Everything below lives in the [logs directory](#logs): `~/Library/Application Support/Orca/logs/`
+on macOS, `~/.config/Orca/logs/` on Linux, `%APPDATA%\Orca\logs\` on Windows. A headless host
+writes under `<data-root>/logs/` instead.
+
+### Internal trace (`main.trace.ndjson`)
+
+The main process writes one JSON object per line to `main.trace.ndjson`, synchronously, so the
+last records survive a crash. Rotation is size-based — `main.trace.ndjson` → `.1` → … → `.N`,
+oldest deleted, 10 MB × 10 files by default — so read `.N` as oldest and the unsuffixed file as
+newest. A headless `orcad` host writes `orcad.trace.ndjson` under its own name instead.
+
+```bash
+jq -c 'select(.status == "error" or .level == "error")' main.trace.ndjson
+```
+
+An unparseable final line is a torn write from a crash, not a corrupt file. A record too large for
+the per-line cap is replaced by a marker naming it, so gaps are explicit.
+
+**Help → Send Feedback** collects these files into a diagnostic bundle and shows an editable
+preview before upload — prefer it to hand-copied excerpts. Setting `ORCA_DIAGNOSTICS_DISABLED=1`
+is the privacy switch; it also stops `daemon.log` from being written at all.
+
+### Detached daemon logs
+
+Terminals are hosted by a detached daemon that outlives an app restart. It records lifecycle
+events — never terminal I/O, never tokens — as NDJSON in `daemon.log`. Its runtime files sit in
+`<userData>/daemon/`, versioned by wire protocol: `daemon-v<N>.sock`, `daemon-v<N>.pid` (JSON with
+`pid`, `startedAtMs`, `appVersion`), and `daemon-v<N>.token` (mode `0600`). On Windows the
+endpoint is the named pipe `\\?\pipe\orca-terminal-host-v<N>-<hash>`.
+
+- PID file present and the process alive → the daemon is fine; look above it.
+- PID file present and the process gone → it died without teardown; the replacement cold-restores
+  scrollback by design.
+- Repeated starts seconds apart → a crash loop. Orca stops respawning after 5 failed starts in 60
+  seconds, and only an explicit restart clears that window.
+- `.swap-…` / `.hold-…` files beside the PID or token file are claims in progress. Never delete
+  them; a live one briefly holds the only copy of a real record.
+
+### Zombie PTY sockets
+
+A `daemon-v<N>.sock` left by a dead daemon occupies the endpoint name while serving nothing. Only
+a connect probe tells the states apart — `test -S` cannot:
+
+| Probe result                           | Verdict                                     |
+| -------------------------------------- | ------------------------------------------- |
+| Connects                               | A daemon is live. Leave it alone.           |
+| `ECONNREFUSED`, or `ENOTSOCK` on macOS | Nothing can serve it; safe to replace.      |
+| Path absent                            | Safe to publish.                            |
+| Timeout, `EPERM`, anything else        | **Leave it alone** — no proof of death.     |
+
+Orca replaces a proven-dead endpoint on its next launch, so restarting the app is the normal fix.
+Remove the socket by hand only when the app cannot be restarted and the probe refused or found
+nothing. Note that a dangling symlink still occupies the name while an existence check that
+follows symlinks reports it absent.
+
+### Stale SSH multiplex sockets
+
+System-OpenSSH connections use a private ControlMaster directory: `$XDG_RUNTIME_DIR/orca-ssh/`
+when that variable is an absolute path, otherwise `$TMPDIR/orca-ssh-<uid>/`. It is created `0700`
+and re-validated every time — a directory, owned by your uid, with no group or other bits. If that
+check fails, Orca runs without multiplexing. Socket names are a digest of the target, the freshly
+resolved `ssh -G` config, and whether the session is Kerberos-only, so a route or auth change never
+reuses the wrong master.
+
+A stale master shows up as system SSH exiting `255` with a mux client error while plain `ssh` to
+the host works. Orca already recovers: it removes the socket and retries with ControlMaster
+disabled for that session, so one occurrence is recovery, not a bug. Investigate when it repeats.
+
+```bash
+ls -la "${XDG_RUNTIME_DIR:-/tmp}/orca-ssh"* 2>/dev/null
+ssh -O check -S <socket-path> <host>
+ssh -O exit  -S <socket-path> <host>
+```
+
+Prefer `ssh -O exit` over `rm`: deleting a live master's socket leaves the process running with no
+way to address it, and the next connection quietly starts a second master. Common directory-level
+causes are a `/tmp/orca-ssh-<uid>` left owned by root after a `sudo` run, a group-writable
+`XDG_RUNTIME_DIR`, or a tmpfs cleaner removing the directory mid-session.
+
+### Point-in-time resource sweep
+
+```bash
+orca diagnostics memory --json
+```
+
+Runs the same host process sweep as the Resource Usage popover: app totals split across main,
+renderer, and other processes, per-worktree terminal sessions, and host memory and load.
+
 ## Reporting issues
 
 - **Help → Send Feedback** (in-app) — paste or drag screenshots into the dialog, or pick image files; thumbnails show before you submit. Attach [logs](#logs) when the bug is hard to reproduce.
