@@ -25,7 +25,6 @@ type PaneSpies = {
   webview: FakeWebview
   reload: Mock<(ignoreCache: boolean) => void>
   startGrabIntent: Mock<(intent: GrabIntent) => void>
-  setBrowserDefaultZoomLevel: Mock<(level: number) => void>
 }
 
 let historyNavigate = paneChannel<BrowserHistoryNavigateCommand>()
@@ -43,8 +42,7 @@ function createSpies(): PaneSpies {
       setZoomLevel: vi.fn()
     },
     reload: vi.fn(),
-    startGrabIntent: vi.fn(),
-    setBrowserDefaultZoomLevel: vi.fn()
+    startGrabIntent: vi.fn()
   }
 }
 
@@ -72,7 +70,6 @@ function PaneHarness({
     markupIsActive,
     webviewRef,
     paneZoomLevelRef,
-    setBrowserDefaultZoomLevel: spies.setBrowserDefaultZoomLevel,
     showBrowserZoomFeedback: vi.fn(),
     reloadWebviewOrRecoverGuest: spies.reload,
     startGrabIntent: spies.startGrabIntent,
@@ -301,8 +298,6 @@ describe('useBrowserPageKeyboardShortcuts in a split of two active browser panes
     act(() => zoomRequests.emit({ browserPageId: 'page-b', direction: 'in' }))
 
     expect(b.webview.setZoomLevel).toHaveBeenCalledTimes(1)
-    expect(b.setBrowserDefaultZoomLevel).not.toHaveBeenCalled()
     expect(a.webview.setZoomLevel).not.toHaveBeenCalled()
-    expect(a.setBrowserDefaultZoomLevel).not.toHaveBeenCalled()
   })
 })
