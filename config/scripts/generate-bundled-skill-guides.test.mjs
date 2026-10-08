@@ -27,6 +27,7 @@ const execFileAsync = promisify(execFile)
 const GUIDE_REFERENCES = {
   'orca-diagnostics': [
     'cdp-troubleshooting.md',
+    'sre-playbook.md',
     'ssh-multiplex.md',
     'telemetry-and-settings.md',
     'trace-analysis.md'

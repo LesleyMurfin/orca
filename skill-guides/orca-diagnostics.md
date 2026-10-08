@@ -264,4 +264,5 @@ publish goes through **Help → Send Feedback** instead of a public tracker.
 | Unhandled exceptions or IPC rejections | Extract stack traces with jq | `references/trace-analysis.md` |
 | Reconnecting to SSH host hangs | Triage OpenSSH ControlMaster zombie sockets | `references/ssh-multiplex.md` |
 | Electron UI wedged or renderer unresponsive | Connect via CDP port 9222 and inspect targets | `references/cdp-troubleshooting.md` |
+| App freeze, slow reconnect, or unknown error | Run 4-step SRE triage sequence and telemetry map | `references/sre-playbook.md` |
 | Ghost tabs flicker or reopen in loop | Clear openFilesByWorktree in orca-data.json | `references/telemetry-and-settings.md` |
