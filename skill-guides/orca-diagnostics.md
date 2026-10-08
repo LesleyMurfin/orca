@@ -199,3 +199,10 @@ When the evidence is collected, prefer in-app reporting so the bundle travels wi
 
 Report what you observed and the exact file and line range it came from. Do not paste tokens, and
 do not infer a cause the trace does not record.
+
+## Action gates
+
+| Trigger / Condition | Action / Routing | Reference Document |
+| :--- | :--- | :--- |
+| Unhandled exceptions or IPC rejections | Extract stack traces with jq | `references/trace-analysis.md` |
+| Reconnecting to SSH host hangs | Triage OpenSSH ControlMaster zombie sockets | `references/ssh-multiplex.md` |
