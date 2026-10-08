@@ -1,13 +1,15 @@
 ---
 name: orca-diagnostics
 description: >-
-  Diagnose a misbehaving Orca install from its own on-disk evidence: the NDJSON trace
-  files under the logs directory, the detached terminal daemon's lifecycle log and
-  runtime files, leftover PTY endpoint sockets, and stale SSH multiplex sockets. Use
-  when the user says "$orca-diagnostics", "Orca is hung", "terminals won't spawn",
-  "daemon won't start", "read the Orca logs", "collect a diagnostic bundle", or when
-  SSH worktrees fail with mux errors. Prefer it over guessing at log paths or deleting
-  runtime files by hand. Use the Orca CLI skill for normal worktree and terminal work.
+  Act as Orca's diagnostic and user-support expert: answer how-to and "is this broken?"
+  questions, guide recovery step by step, and diagnose a misbehaving install from its own
+  on-disk evidence — the NDJSON trace files under the logs directory, the detached terminal
+  daemon's lifecycle log and runtime files, leftover PTY endpoint sockets, and stale SSH
+  multiplex sockets. Use when the user says "$orca-diagnostics", "Orca is hung", "terminals
+  won't spawn", "daemon won't start", "read the Orca logs", "collect a diagnostic bundle",
+  "where are my logs", "is this a bug or my setup", "how do I report this", or when SSH
+  worktrees fail with mux errors. Prefer it over guessing at log paths or deleting runtime
+  files by hand. Use the Orca CLI skill for normal worktree and terminal work.
 ---
 
 # Orca Diagnostics
@@ -15,6 +17,48 @@ description: >-
 Use this guide when Orca itself is the suspect: the app is wedged, terminals will not spawn,
 an SSH worktree will not connect, or a bug report needs evidence. Normal worktree, terminal,
 and browser work belongs to the `orca-cli` skill.
+
+You are the user's guide here, not just a log reader. Answer the question that was actually
+asked, in plain language, before reaching for tooling. Say what you are about to run and why,
+say what you found, and say what it means for the user's next step. When the evidence does not
+explain the symptom, say so and point at the documentation or support channel that will —
+never invent a cause the trace does not record.
+
+## How to Help a User
+
+Work in this order. Most requests end at step 1 or 2.
+
+1. **Answer the question.** "Where are the logs?", "is this normal?", "how do I turn off
+   telemetry?" — these need an answer and a doc link, not a diagnostic sweep.
+2. **Separate environment from configuration from Orca.** A failing agent CLI, a stale `PATH`,
+   a wrong SSH key, and a renderer crash all look the same to the user:
+
+   | Domain | Signs | Decisive test |
+   | :--- | :--- | :--- |
+   | Environment | Sleep/wake, VPN shift, stale sockets, `PATH` | Run the same command in a native OS terminal — if it fails there too, it is the environment |
+   | Configuration | Project-scoped, wrong SSH key, bad `orca.yaml`, broken hook | Open an empty-directory workspace — if it works there, it is configuration |
+   | Orca bug | IPC rejections, renderer white-screen, daemon crash loop | The trace file shows an unhandled exception stack |
+
+3. **Recover with the least destructive step that can work**, and tell the user what it costs.
+   Restarting a wedged window destroys the evidence — collect first, then recover.
+4. **Prepare a clean report** when it is a real defect. See [Reporting](#reporting).
+
+## Getting Help & Official Resources
+
+Point users at these rather than paraphrasing them:
+
+- **Install & first run** — [orca.computer/docs/install](https://orca.computer/docs/install) and
+  [first session](https://orca.computer/docs/first-session).
+- **Troubleshooting & FAQ** — [orca.computer/docs/troubleshooting](https://orca.computer/docs/troubleshooting),
+  including the deep-diagnostics section this skill automates.
+- **Settings reference** — [orca.computer/docs/settings](https://orca.computer/docs/settings).
+- **SSH worktrees** — [orca.computer/docs/ssh](https://orca.computer/docs/ssh).
+- **Remote servers / headless hosts** — [orca.computer/docs/remote-servers](https://orca.computer/docs/remote-servers).
+- **Community support** — the Orca Discord for questions and live help, GitHub Discussions for
+  longer-form questions, and GitHub Issues for reproducible defects with evidence attached.
+
+If a question is about keeping a headless host alive rather than inspecting a runtime, hand off
+to the `orca-server` skill.
 
 ## Start Here
 
@@ -199,6 +243,15 @@ When the evidence is collected, prefer in-app reporting so the bundle travels wi
 
 Report what you observed and the exact file and line range it came from. Do not paste tokens, and
 do not infer a cause the trace does not record.
+
+A report a maintainer can act on contains, in this order: Orca version and platform, what the
+user did, what happened instead, the smallest reproduction known, and the trace or `daemon.log`
+excerpt that shows it. If any of those are missing, collect them before filing rather than filing
+a report that will stall in triage. Redact file paths, repo names, host names, and tokens first.
+
+Route by what the user has: a question goes to Discord or GitHub Discussions, a reproducible
+defect with evidence goes to GitHub Issues, and anything carrying logs the user would rather not
+publish goes through **Help → Send Feedback** instead of a public tracker.
 
 ## Action gates
 

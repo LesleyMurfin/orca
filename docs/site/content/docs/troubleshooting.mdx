@@ -197,8 +197,34 @@ If a tab flickers or repeatedly reopens after closing:
 3. Set the affected workspace ID entry to `[]` and clear `"activeFileIdByWorktree"`.
 4. Relaunch Orca.
 
-## Reporting issues
+## Getting help & community support
 
-- **Help → Send Feedback** (in-app) — paste or drag screenshots into the dialog, or pick image files; thumbnails show before you submit. Attach [logs](#logs) when the bug is hard to reproduce.
-- [GitHub Issues](https://github.com/stablyai/orca/issues) — bugs and feature requests.
-- [Discord](https://discord.gg/fzjDKHxv8Q) — real-time help.
+### New to Orca?
+
+Most "something is broken" reports on a fresh machine are setup gaps, not defects. Start with
+**[Install](/docs/install)**, then **[Your first session](/docs/first-session)**, and check
+**[Settings](/docs/settings)** for agent CLI paths. Running Orca on a remote or headless host is
+covered in **[Remote servers](/docs/remote-servers)** and **[SSH worktrees](/docs/ssh)**.
+
+### Where to ask
+
+- **[Discord](https://discord.gg/fzjDKHxv8Q)** — real-time help, setup questions, and "is this
+  expected?" checks. The fastest channel for anything that is not yet a confirmed bug.
+- **[GitHub Discussions](https://github.com/stablyai/orca/discussions)** — longer-form questions,
+  workflow and configuration advice, and feature ideas worth a durable answer.
+- **[GitHub Issues](https://github.com/stablyai/orca/issues)** — reproducible bugs and feature
+  requests, with evidence attached.
+
+### Reporting issues
+
+- **Help → Send Feedback** (in-app) — paste or drag screenshots into the dialog, or pick image files; thumbnails show before you submit. Attach [logs](#logs) when the bug is hard to reproduce. Prefer this over a public issue when the logs contain host names or repo paths.
+
+A report that can be acted on includes:
+
+1. Orca version and platform (macOS / Linux / Windows, and whether the workspace is local, SSH, or a remote server).
+2. What you did, and what happened instead.
+3. The smallest reproduction you have found.
+4. The relevant excerpt from [`main.trace.ndjson` or `daemon.log`](#logs) — redact file paths, repo names, host names, and tokens first.
+
+If you are not sure whether it is a bug, run the [deep diagnostics](#deep-diagnostics--sre)
+evidence sweep above or ask on Discord first — it is usually faster than waiting on issue triage.
