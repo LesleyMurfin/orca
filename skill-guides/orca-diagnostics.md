@@ -43,9 +43,9 @@ Work in this order. Most requests end at step 1 or 2.
    | Configuration | Project-scoped, wrong SSH key, bad `orca.yaml`, broken hook | Open an empty-directory workspace — if it works there, it is configuration |
    | Orca bug | IPC rejections, renderer white-screen, daemon crash loop | The trace file shows an unhandled exception stack |
 
-3. **Recover with the least destructive step that can work**, and tell the user what it costs.
+4. **Recover with the least destructive step that can work**, and tell the user what it costs.
    Restarting a wedged window destroys the evidence — collect first, then recover.
-4. **Prepare a clean report** when it is a real defect. See [Reporting](#reporting).
+5. **Prepare a clean report** when it is a real defect. See [Reporting](#reporting).
 
 ## Getting Help & Official Resources
 

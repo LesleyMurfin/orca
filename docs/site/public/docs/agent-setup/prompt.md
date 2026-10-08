@@ -108,6 +108,39 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now orca-serve.service
 ```
 
+### Path D2: Orca Server (Unprivileged User systemd Service)
+If running under your own user account without root permissions:
+
+1. Enable lingering so the daemon stays alive when you disconnect:
+   ```bash
+   loginctl enable-linger $USER
+   ```
+2. Create `~/.config/systemd/user/orca-serve.service`:
+   ```ini
+   [Unit]
+   Description=Orca runtime server (user)
+   After=network.target
+
+   [Service]
+   Type=simple
+   ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-ip-or-tailscale>
+   Restart=on-failure
+   RestartSec=5
+   RestartPreventExitStatus=3 78
+   KillMode=mixed
+   KillSignal=SIGTERM
+   TimeoutStopSec=120
+
+   [Install]
+   WantedBy=default.target
+   ```
+3. Start and enable:
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable --now orca-serve.service
+   systemctl --user status orca-serve.service
+   ```
+
 ### Path E: Connection & Pairing Commands
 1. Output the pairing URL and QR code for Orca Mobile.
 2. Output the exact command to connect the Orca Desktop app to this server:
