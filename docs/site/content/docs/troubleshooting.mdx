@@ -2,6 +2,7 @@
 title: Troubleshooting & FAQ
 ---
 
+import { CopyPromptButton } from '@/components/docs/CopyPromptButton'
 ## Agent won't start
 
 - Open the terminal and run the agent's CLI manually. If it fails there, it's an auth or install problem in the CLI itself — not Orca.
@@ -209,18 +210,22 @@ covered in **[Remote servers](/docs/remote-servers)** and **[SSH worktrees](/doc
 ### Let an agent set it up
 
 Any coding agent — Claude Code, Codex, Cursor, Copilot — can install and verify Orca for you.
-Paste this into the agent on the machine you are fixing:
+Click below or copy the prompt:
+
+<div className="my-4">
+  <CopyPromptButton />
+</div>
 
 ```text
 Fetch and execute the appropriate instructions to set me up for Orca from
-https://orca.run/docs/agent-setup/prompt.md
+https://www.onorca.dev/docs/agent-setup/prompt.md
 ```
 
 That file walks OS and architecture detection, desktop install on macOS, Windows, and Linux,
 headless `orca serve` hosts, account and skill setup, a health-check pass, and the evidence to
 collect when a step fails — so a broken install usually gets diagnosed before you open a thread.
 It is plain markdown; read it yourself at
-[/docs/agent-setup/prompt.md](https://orca.run/docs/agent-setup/prompt.md).
+[/docs/agent-setup/prompt.md](https://www.onorca.dev/docs/agent-setup/prompt.md).
 
 Pairing links, `sudo` for a `.deb`/`.rpm` install, and provider logins stay yours to approve.
 Never let an agent paste a pairing URL, access link, or token into a public channel.

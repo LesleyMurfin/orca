@@ -1,11 +1,11 @@
 # Orca agent setup prompt
 
-You are an AI coding agent setting up [Orca](https://orca.run/docs) for a human user. Follow this
+You are an AI coding agent setting up [Orca](https://www.onorca.dev/docs) for a human user. Follow this
 file top to bottom. Run one step at a time, show the user what you ran, and stop and ask before
 anything destructive (replacing an existing install, editing system units, opening ports).
 
 Everything here is derived from the Orca documentation. When this file and
-<https://orca.run/docs> disagree, the docs win.
+<https://www.onorca.dev/docs> disagree, the docs win.
 
 ## 0. Decide what to install
 
@@ -17,7 +17,7 @@ Everything here is derived from the Orca documentation. When this file and
 
 Orca Desktop is the only install path — the server mode is the same binary started without a
 window. There is no separate server download. Compare all run modes at
-<https://orca.run/docs/ways-to-run>.
+<https://www.onorca.dev/docs/ways-to-run>.
 
 ## 1. Identify OS and architecture
 
@@ -130,7 +130,7 @@ orca skills update --all
 orca skills list
 ```
 
-Skill install scope and agent targeting: <https://orca.run/docs/cli/skills>.
+Skill install scope and agent targeting: <https://www.onorca.dev/docs/cli/skills>.
 
 On first launch Orca asks for home-directory access so it can add repos, and offers to import
 `~/.claude`, `~/.codex`, and Ghostty settings when present. Let the user answer those prompts.
@@ -151,7 +151,7 @@ public channel, a commit, or an issue, and revoke it under **Shared Server Acces
 Never expose the Orca port directly to the public internet, and never advertise `127.0.0.1` to
 another computer.
 
-Full guide: <https://orca.run/docs/remote-servers>.
+Full guide: <https://www.onorca.dev/docs/remote-servers>.
 
 ## 6. Headless Orca Server
 
@@ -168,7 +168,7 @@ It runs in the foreground until `Ctrl-C`, prints the bound endpoint and a pairin
 never `orca serve` alongside a desktop app that is already sharing the same computer.
 
 To let systemd own it, follow the unit in
-<https://orca.run/docs/remote-servers#running-as-a-systemd-service> rather than writing one from
+<https://www.onorca.dev/docs/remote-servers#running-as-a-systemd-service> rather than writing one from
 scratch. Three settings carry the weight and must not be "simplified": `Type=simple`,
 `KillMode=mixed`, and `RestartPreventExitStatus=3 78` (78 is a configuration fault that restarting
 never repairs). Run it as an unprivileged user that owns the repos and credentials, and enable
@@ -212,9 +212,9 @@ Redact pairing URLs, access links, and tokens from anything you paste or attach.
 
 Then:
 
-- **Troubleshooting & FAQ** — <https://orca.run/docs/troubleshooting>
-- **Remote server troubleshooting** — <https://orca.run/docs/remote-servers#troubleshooting>
-- **GitHub errors (PR panel, checks, rate limits)** — <https://orca.run/docs/github-errors>
+- **Troubleshooting & FAQ** — <https://www.onorca.dev/docs/troubleshooting>
+- **Remote server troubleshooting** — <https://www.onorca.dev/docs/remote-servers#troubleshooting>
+- **GitHub errors (PR panel, checks, rate limits)** — <https://www.onorca.dev/docs/github-errors>
 - **Discord** — <https://discord.gg/fzjDKHxv8Q>
 - **GitHub Discussions** — <https://github.com/stablyai/orca/discussions>
 - **GitHub Issues** — <https://github.com/stablyai/orca/issues>
@@ -229,12 +229,12 @@ orca skills install --skill orca-diagnostics
 
 ## Docs index
 
-- Install — <https://orca.run/docs/install>
-- Ways to run Orca — <https://orca.run/docs/ways-to-run>
-- Your first 3-agent session — <https://orca.run/docs/first-session>
-- Remote Orca Servers — <https://orca.run/docs/remote-servers>
-- SSH worktrees — <https://orca.run/docs/ssh>
-- Orca CLI reference — <https://orca.run/docs/cli/reference>
-- Skills registry — <https://orca.run/docs/cli/skills>
-- Settings — <https://orca.run/docs/settings>
-- Troubleshooting & FAQ — <https://orca.run/docs/troubleshooting>
+- Install — <https://www.onorca.dev/docs/install>
+- Ways to run Orca — <https://www.onorca.dev/docs/ways-to-run>
+- Your first 3-agent session — <https://www.onorca.dev/docs/first-session>
+- Remote Orca Servers — <https://www.onorca.dev/docs/remote-servers>
+- SSH worktrees — <https://www.onorca.dev/docs/ssh>
+- Orca CLI reference — <https://www.onorca.dev/docs/cli/reference>
+- Skills registry — <https://www.onorca.dev/docs/cli/skills>
+- Settings — <https://www.onorca.dev/docs/settings>
+- Troubleshooting & FAQ — <https://www.onorca.dev/docs/troubleshooting>
