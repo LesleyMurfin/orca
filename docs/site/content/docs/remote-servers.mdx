@@ -52,10 +52,11 @@ Fetch and execute the appropriate instructions to set me up for Orca from
 https://www.onorca.dev/docs/agent-setup/prompt.md
 ```
 
-The prompt file covers OS and architecture detection, desktop install on macOS, Windows, and
-Linux, headless `orca serve` hosts, account and skill configuration, the health checks below, and
-where to go when a step fails. Read it yourself at
-[/docs/agent-setup/prompt.md](https://www.onorca.dev/docs/agent-setup/prompt.md).
+The prompt file covers host-role discovery, desktop install on macOS, Windows, and Linux,
+headless `orca serve` hosts and their systemd unit, and where to go when a step fails. It does
+not register agent accounts, install skills, or run the health checks on this page — do those
+yourself with the commands below. Read it yourself at
+[/docs/agent-setup/prompt.md](/docs/agent-setup/prompt.md).
 
 <Callout title="The agent still needs you">
   Pairing links, `sudo` for a `.deb`/`.rpm` install, and the Tailscale login are yours to approve.
@@ -176,10 +177,12 @@ Install Orca and its bundled CLI on the server, then run:
 
 <Callout title="On Linux, start it with orca-ide serve">
   The Linux CLI is named `orca-ide`, because GNOME Orca's screen reader already owns
-  `/usr/bin/orca`. A packaged `orca serve` does write a bare `orca` into `~/.local/bin`, but only
-  while it is starting, so that shim can never be the command that starts the server. Read `orca
-  serve` as `orca-ide serve` throughout this page when the host is Linux. See [Install →
-  Linux](/docs/install#linux).
+  `/usr/bin/orca`. A packaged `orca serve` also drops a bare `orca` dispatcher into
+  `~/.local/bin` on its first Linux start and leaves it there — Orca never removes it. Which
+  binary a later bare `orca` runs then depends entirely on your `PATH` order, so never type bare
+  `orca` on a Linux host: it is either the screen reader or a second Orca runtime refused by the
+  first. Read `orca serve` as `orca-ide serve` throughout this page when the host is Linux, and
+  use an absolute path in service units. See [Install → Linux](/docs/install#linux).
 </Callout>
 
 ```bash
@@ -241,7 +244,7 @@ RestartSec=5
 RestartPreventExitStatus=3 78
 KillMode=mixed
 KillSignal=SIGTERM
-TimeoutStopSec=120
+TimeoutStopSec=45
 
 [Install]
 WantedBy=multi-user.target
@@ -250,10 +253,10 @@ WantedBy=multi-user.target
 Three settings carry the weight:
 
 - `Type=simple` — `orca serve` stays in the foreground and never forks or writes a PID file, so the process systemd starts is the main process. The unit is active as soon as it spawns; the bound endpoint and pairing URL arrive a moment later, in the journal.
-- `KillMode=mixed` — only the main process receives `SIGTERM`, so the runtime shuts its own terminals and agent children down in order. The final `SIGKILL` after `TimeoutStopSec` still sweeps the whole cgroup. `KillMode=control-group` would `SIGTERM` every agent at once.
-- `RestartPreventExitStatus=3 78` — `78` is the status the runtime exits with on a configuration fault: a user-data root held by another Orca runtime, a bind address it cannot use, or an unreadable profile store. Restarting never repairs those, so `Restart=on-failure` alone would crash-loop on them. `3` is reserved for the unit's own preflight (an `ExecStartPre=` script or a wrapper) to report the same "do not retry", so the unit lands in `failed` with a readable journal.
+- `KillMode=mixed` — only the main process receives `SIGTERM`. That matters because `orca serve`'s graceful stop deliberately leaves the terminal daemon running, so a restarted runtime can adopt the PTYs. `KillMode=control-group` would signal the daemon and every agent at once and lose that work; the final `SIGKILL` still sweeps whatever remains in the cgroup.
+- `RestartPreventExitStatus=3 78` — two statuses a restart cannot repair. `78` is a configuration fault: a user-data root held by another runtime, a malformed `--bind` address, an unusable bundled runtime, or an unreadable profile store. `3` means another process already owns this user-data profile — the desktop app, or a `serve` that is still running. A busy port is neither: it exits `1` and `Restart=on-failure` will retry it every `RestartSec` forever, so fix `--port` when the journal shows `EADDRINUSE`.
 
-Write the absolute `/usr/bin/orca-ide` path in the unit rather than a bare `orca`, which resolves to the GNOME Orca screen reader. Replace `1001` with the output of `id -u orca`, then:
+Write an absolute path in the unit rather than a bare `orca`, which resolves to the GNOME Orca screen reader. The deb/rpm install symlinks `/usr/bin/orca-ide`; an AppImage registers `~/.local/bin/orca-ide` instead, so resolve it with `readlink -f "$(command -v orca-ide)"` as the service user. Replace `1001` with the output of `id -u orca`, then:
 
 ```bash
 sudo systemctl daemon-reload
