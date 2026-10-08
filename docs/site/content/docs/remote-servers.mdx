@@ -4,6 +4,7 @@ description: Keep Orca running on another computer and connect from your laptop.
 ---
 
 import { Callout, ImagePlaceholder } from '@/components/docs/prose'
+import { CopyPromptButton } from '@/components/docs/CopyPromptButton'
 
 A Remote Orca Server lets one computer do the work while another computer provides the UI. The server keeps the projects, worktrees, terminals, tabs, provider accounts, and agent sessions. Your laptop connects to that running Orca instance.
 
@@ -40,18 +41,21 @@ faster place to start; come back here once the app works locally.
 
 ## Agent setup & installation
 
-Any coding agent — Claude Code, Codex, Cursor, Copilot — can do this setup for you. Paste this
-into the agent on the machine you are setting up:
+Any coding agent — Claude Code, Codex, Cursor, Copilot — can do this setup for you. Click below or copy the prompt:
+
+<div className="my-4">
+  <CopyPromptButton />
+</div>
 
 ```text
 Fetch and execute the appropriate instructions to set me up for Orca from
-https://orca.run/docs/agent-setup/prompt.md
+https://www.onorca.dev/docs/agent-setup/prompt.md
 ```
 
 The prompt file covers OS and architecture detection, desktop install on macOS, Windows, and
 Linux, headless `orca serve` hosts, account and skill configuration, the health checks below, and
 where to go when a step fails. Read it yourself at
-[/docs/agent-setup/prompt.md](https://orca.run/docs/agent-setup/prompt.md).
+[/docs/agent-setup/prompt.md](https://www.onorca.dev/docs/agent-setup/prompt.md).
 
 <Callout title="The agent still needs you">
   Pairing links, `sudo` for a `.deb`/`.rpm` install, and the Tailscale login are yours to approve.

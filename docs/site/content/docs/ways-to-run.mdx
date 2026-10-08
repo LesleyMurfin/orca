@@ -4,20 +4,24 @@ description: Local desktop, SSH hosts, self-hosted Orca servers, and on-demand p
 ---
 
 import { Callout, ImagePlaceholder } from '@/components/docs/prose'
+import { CopyPromptButton } from '@/components/docs/CopyPromptButton'
 
 Orca is not locked to your laptop. Every worktree runs somewhere — on the machine in front of you, on a box you already own, on a shared always-on server, or on a fresh cloud VM spun up for that one workspace.
 
 This page is the map. Deep dives live on the linked pages.
 
-Any coding agent can install and verify the mode you pick. Paste this into the agent on the
-machine you are setting up:
+Any coding agent can install and verify the mode you pick. Click below or copy the prompt:
+
+<div className="my-4">
+  <CopyPromptButton />
+</div>
 
 ```text
 Fetch and execute the appropriate instructions to set me up for Orca from
-https://orca.run/docs/agent-setup/prompt.md
+https://www.onorca.dev/docs/agent-setup/prompt.md
 ```
 
-The [prompt file](https://orca.run/docs/agent-setup/prompt.md) covers install on macOS, Windows,
+The [prompt file](https://www.onorca.dev/docs/agent-setup/prompt.md) covers install on macOS, Windows,
 and Linux, headless `orca serve` hosts, accounts and skills, health checks, and where to go when
 a step fails.
 
