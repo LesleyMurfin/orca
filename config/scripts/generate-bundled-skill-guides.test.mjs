@@ -25,7 +25,12 @@ const projectDir = path.resolve(import.meta.dirname, '..', '..')
 const temporaryDirectories = []
 const execFileAsync = promisify(execFile)
 const GUIDE_REFERENCES = {
-  'orca-diagnostics': ['cdp-troubleshooting.md', 'ssh-multiplex.md', 'trace-analysis.md'],
+  'orca-diagnostics': [
+    'cdp-troubleshooting.md',
+    'ssh-multiplex.md',
+    'telemetry-and-settings.md',
+    'trace-analysis.md'
+  ],
   orchestration: [
     'coordinator-loop.md',
     'legacy-contract-migration.md',

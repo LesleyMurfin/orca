@@ -182,6 +182,21 @@ When the UI is frozen, wedged, or a renderer process crashes without an error di
    ```
 3. Evaluate renderer health and capture logs over the target WebSocket without revealing or focusing the window.
 
+### Telemetry paths & offline state recovery
+
+When Orca is closed or unresponsive, find its state and settings across platforms:
+
+- **macOS**: `~/Library/Application Support/Orca/` (`logs/` and `orca-data.json`)
+- **Linux**: `~/.config/Orca/` (`logs/` and `orca-data.json`)
+- **Windows**: `%APPDATA%\Orca\` (`logs\` and `orca-data.json`)
+
+#### Recovering from ghost tab reconciliation loops
+If a tab flickers or repeatedly reopens after closing:
+1. Quit Orca completely.
+2. In `orca-data.json`, locate `"openFilesByWorktree"`.
+3. Set the affected workspace ID entry to `[]` and clear `"activeFileIdByWorktree"`.
+4. Relaunch Orca.
+
 ## Reporting issues
 
 - **Help → Send Feedback** (in-app) — paste or drag screenshots into the dialog, or pick image files; thumbnails show before you submit. Attach [logs](#logs) when the bug is hard to reproduce.
