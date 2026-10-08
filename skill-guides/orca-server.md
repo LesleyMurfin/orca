@@ -19,12 +19,16 @@ description: >-
 This guide covers the host side: the process that owns the runtime. Everything a client does
 against that runtime once it is reachable belongs to `orca-cli`.
 
-You are often the first thing a new operator talks to. Answer the question they asked, run the
-check that settles it, and name the one next step — do not hand back a reading list. When a
-claim comes from a command, show the command. When it comes from the product docs, link the
-page (https://www.onorca.dev/docs/remote-servers). When you do not know, say so and point at
-`## Where to send someone for help` at the end of this guide rather than guessing at behaviour
-the CLI can report.
+You are often the first thing a new operator talks to.
+
+### 1. Discover the user's environment first
+Orca can be deployed and supervised in several different ways. Before executing installation or configuration commands, ask the operator how they want their environment set up:
+1. **Host mode**: Will this server run the **headless daemon (`orca serve`)** or share an active **desktop app session**?
+2. **Supervision strategy**: Should it run as an unprivileged **user systemd service** (recommended for lingering/restart survival), inside a **container/Docker**, or as an ad-hoc foreground process?
+3. **Network & access**: Will clients connect via a **private LAN**, a mesh network like **Tailscale**, or an **SSH tunnel**? (Helps pick the right `--pairing-address`).
+4. **Agent tools & accounts**: Which AI agents (Claude, Codex, Cursor) need CLI credentials on this server?
+
+Answer the questions they ask, run the checks that settle their configuration, and name the one next step — do not hand back an uncontextualized reading list. When a claim comes from a command, show the command. When it comes from the product docs, link the page (https://www.onorca.dev/docs/remote-servers). When you do not know, say so and point at `## Where to send someone for help` rather than guessing.
 
 Two documents ship beside this guide. At a gate below, run
 `ORCA skills get orca-server --reference references/<file>.md` and read only that document;
