@@ -146,12 +146,19 @@ lifecycle events — never terminal input/output and never tokens — to `daemon
 directory, as NDJSON with the same rotation discipline.
 
 Its runtime files live in `<userData>/daemon/`, versioned by wire protocol so an older build's
-daemon is never reused after a breaking change:
+daemon is never reused after a breaking change. One exception: when `<userData>` is long enough
+that the socket path would overflow the kernel's `sockaddr_un.sun_path` (104 bytes on macOS, 108
+on Linux), only the socket moves to `/tmp/.orca-daemon-<uid>/<12-hex of the runtime dir>/`; the
+token, PID record, and history stay under `<userData>`. Resolve the real endpoint before probing:
+
+```bash
+ls -la "<userData>/daemon/" "/tmp/.orca-daemon-$(id -u)/"*/ 2>/dev/null
+```
 
 | File                   | Meaning                                                             |
 | ---------------------- | ------------------------------------------------------------------- |
-| `daemon-v<N>.sock`     | Unix domain socket the app connects to (the PTY endpoint).           |
-| `daemon-v<N>.pid`      | JSON record: `pid`, `startedAtMs`, `appVersion`, and launch details. |
+| `daemon-v<N>.sock`     | Unix domain socket the app connects to (the PTY endpoint). Relocated under `/tmp/.orca-daemon-<uid>/<hash>/` on long data roots. |
+| `daemon-v<N>.pid`      | JSON record, mode `0600`: `pid`, `startedAtMs`, `entryPath`, `appVersion`, `launchNonce`, `linuxStartTicks`, `bootId`, `spawnerExecPath`, `cgroupUnit`. The last five are what prove the record belongs to the process in front of you. Very old records are a bare integer. |
 | `daemon-v<N>.token`    | Connection token; mode `0600`. Never quote it in a report.           |
 
 On Windows the endpoint is a named pipe, `\\?\pipe\orca-terminal-host-v<N>-<hash>`, not a file.
@@ -160,39 +167,76 @@ What to read, in order:
 
 ```bash
 tail -n 200 "<logs>/daemon.log" | jq -c .
-cat "<userData>/daemon/daemon-v<N>.pid" | jq .
-ps -p "$(jq -r .pid "<userData>/daemon/daemon-v<N>.pid")" -o pid,etime,command
+jq -c 'select(.event == "startup" or .event == "ready" or .event == "shutdown")' "<logs>/daemon.log"
+jq . "<userData>/daemon/daemon-v<N>.pid"
+PID=$(jq -r 'if type == "object" then .pid else . end' "<userData>/daemon/daemon-v<N>.pid")
+ps -p "$PID" -o pid,lstart,etime,args
 ```
 
 Interpretations that hold:
 
-- PID file present, process alive, socket accepts a connection → the daemon is healthy; the fault
-  is above it, in the app or the agent CLI.
+- PID file present, the process alive **and** its command line carrying `daemon-entry` with this
+  endpoint's `.sock` and `.token` paths **and** its start time matching the record's `startedAtMs`,
+  socket accepts a connection → the daemon is healthy; the fault is above it, in the app or the
+  agent CLI. Liveness alone is not identity: a recycled PID passes `ps` and proves nothing, and a
+  PID owned by another user is inconclusive, not dead.
 - PID file present, process gone → the daemon died without teardown. Session metadata is left
   unclean on purpose, which is what makes the replacement daemon cold-restore scrollback.
-- Repeated start records seconds apart → a crash loop. Orca's respawn throttle gives up after 5
-  failed starts inside 60 seconds, and only an explicit restart clears that window. Read the
-  records between the starts; a fork that succeeds proves nothing about the daemon that follows it.
-- `.swap-<pid>-<uuid>` or `.hold-<pid>-<uuid>` scratch names beside the PID or token file are a
-  claim in progress. A live one briefly holds the only copy of a real record — never delete these.
+- Repeated `startup` records seconds apart, with no matching `ready` → a crash loop. Orca admits at
+  most 5 daemon starts in any 60-second sliding window; the 6th is refused as `daemon_crash_loop`
+  with the seconds left. The window drains on its own — fix the environment and wait it out. A UI
+  restart also clears it, but costs every persistent terminal. Read the records between the starts;
+  a fork that succeeds proves nothing about the daemon that follows it.
+- `.swap-<pid>-<uuid>` and `.hold-<pid>-<uuid>` beside the PID or token file, and `.p<10-hex>`
+  beside the socket, are work in progress: the first two briefly hold the only copy of a real
+  record, the third is the private name a starting daemon binds before it publishes the endpoint.
+  Never delete any of them.
 
 ## Zombie PTY Endpoint Sockets
 
-A `daemon-v<N>.sock` left behind by a dead daemon is a *zombie endpoint*: the name is occupied, so
-nothing new can publish there, but nothing serves it either. Classify it before acting; connecting
-is the only test that distinguishes the four states:
+A `daemon-v<N>.sock` left behind by a dead daemon is a *zombie endpoint*: the name is occupied and
+nothing serves it, and a new daemon may only take it after proving it dead. Classify it before
+acting; connecting is the only test that distinguishes the four states:
 
-| Probe result                             | State       | Meaning                                       |
-| ---------------------------------------- | ----------- | --------------------------------------------- |
-| Connect succeeds                          | `connected` | A daemon is live. Leave it alone.             |
-| `ECONNREFUSED`, or `ENOTSOCK` on macOS    | `refused`   | Nothing can ever serve it. Safe to replace.   |
-| Path does not exist                       | `missing`   | Safe to publish.                              |
-| Timeout, `EPERM`, anything else           | `unknown`   | **Leave it alone.** No proof of death.        |
+| Probe result                                           | State       | Meaning                                       |
+| ------------------------------------------------------ | ----------- | --------------------------------------------- |
+| Connect succeeds                                        | `connected` | A daemon is live. Leave it alone.             |
+| `ECONNREFUSED`, or `ENOTSOCK` on macOS                  | `refused`   | Nothing can ever serve it. Safe to replace.   |
+| `lstat` saw nothing                                     | `missing`   | Safe to publish.                              |
+| Timeout, `EPERM`, anything else                         | `unknown`   | **Leave it alone.** No proof of death.        |
+
+An entry `lstat` saw that `connect` then cannot resolve is a dangling symlink: `refused`, not
+`missing`. This probe mirrors Orca's own classifier, including the lstat-before-connect step:
 
 ```bash
 # A connect probe, not an existence check: `test -S` cannot tell a zombie from a live endpoint.
-python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(0.5); s.connect(sys.argv[1]); print("connected")' \
-  "<userData>/daemon/daemon-v<N>.sock"
+python3 - "<resolved sock path>" <<'PY'
+import errno, os, socket, sys
+path = sys.argv[1]
+try:
+    os.lstat(path)            # lstat, not exists(): a dangling symlink occupies the name
+    occupied = True
+except FileNotFoundError:
+    print("missing"); raise SystemExit
+except OSError:
+    print("unknown"); raise SystemExit
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(0.5)
+try:
+    s.connect(path)
+    print("connected")
+except (socket.timeout, TimeoutError):
+    print("unknown")
+except OSError as e:
+    if e.errno in (errno.ECONNREFUSED, errno.ENOTSOCK):
+        print("refused")
+    elif e.errno == errno.ENOENT:
+        print("refused" if occupied else "missing")
+    else:
+        print("unknown")
+finally:
+    s.close()
+PY
 ```
 
 Rules:
@@ -201,8 +245,13 @@ Rules:
   loaded host proves nothing, and deleting on that basis can unlink a live daemon's endpoint.
 - Use `lstat`, not an existence test that follows symlinks: a dangling symlink reads as absent while
   still occupying the name.
-- Orca recovers from a proven-dead endpoint on its own at the next launch. Delete the socket by hand
-  only when the app cannot be restarted, and only after a `refused`/`missing` probe.
+- Orca recovers from a proven-dead endpoint on its own at the next launch: a starting daemon binds a
+  private `.p<hex>` name beside the endpoint, re-proves the incumbent dead twice, and renames over
+  it. Restarting Orca is the fix; hand-deletion is almost never needed.
+- If you delete the socket anyway, do it only with Orca fully stopped. A live daemon polls that name
+  every 30s and treats two consecutive "entry is gone" readings as lost ownership: it retires itself
+  and every persistent terminal on the machine dies within about a minute. `endpoint-ownership-lost`
+  in `daemon.log` is the trace of that having already happened.
 - Never delete the token or PID file to "reset" a daemon you have not proven dead.
 
 ## Stale SSH Multiplex Sockets

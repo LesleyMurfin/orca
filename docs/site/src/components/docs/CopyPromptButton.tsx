@@ -16,6 +16,7 @@ export function CopyPromptButton({
   className?: string
 }) {
   const [copied, setCopied] = useState(false)
+  const [failed, setFailed] = useState(false)
   const resetTimer = useRef<number | null>(null)
 
   // Why: the reset fires 2s later; an unmount (or a second click) in between would
@@ -23,13 +24,20 @@ export function CopyPromptButton({
   useEffect(() => () => window.clearTimeout(resetTimer.current ?? undefined), [])
 
   const handleCopy = async () => {
+    // Why: in an insecure context navigator.clipboard is undefined, so the user needs a
+    // visible failure rather than a button that does nothing.
     try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard API unavailable in this context')
+      }
       await navigator.clipboard.writeText(prompt)
+      setFailed(false)
       setCopied(true)
       window.clearTimeout(resetTimer.current ?? undefined)
       resetTimer.current = window.setTimeout(() => setCopied(false), 2000)
-    } catch (err) {
-      console.error('Failed to copy prompt: ', err)
+    } catch {
+      setCopied(false)
+      setFailed(true)
     }
   }
 
@@ -39,12 +47,18 @@ export function CopyPromptButton({
         type="button"
         onClick={handleCopy}
         className={cn(
-          'group flex w-max shrink-0 items-center font-medium select-none border-0 shadow-xs focus:ring-ring/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer disabled:cursor-not-allowed disabled:text-muted-foreground h-9 gap-1.5 px-3 text-sm bg-card hover:bg-muted text-foreground ring-1 ring-border rounded-full transition-colors',
+          'group flex w-max shrink-0 items-center font-medium select-none border-0 shadow-xs focus:ring-ring/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer h-9 gap-1.5 px-3 text-sm bg-card hover:bg-muted text-foreground ring-1 ring-border rounded-full transition-colors',
           className
         )}
       >
         <span className="contents">
-          <span>{copied ? 'Copied prompt to clipboard!' : label}</span>
+          <span>
+            {copied
+              ? 'Copied prompt to clipboard!'
+              : failed
+                ? 'Copy failed — select the prompt below'
+                : label}
+          </span>
           <span className="flex items-center gap-1" aria-hidden="true">
             {/* Claude Icon */}
             <svg viewBox="0 0 256 257" className="h-5 w-5 shrink-0" aria-hidden="true">
@@ -97,7 +111,11 @@ export function CopyPromptButton({
         </span>
       </button>
       <span className="sr-only" aria-live="polite">
-        {copied ? 'Prompt copied to clipboard' : ''}
+        {copied
+          ? 'Prompt copied to clipboard'
+          : failed
+            ? 'Copy failed. Select and copy the prompt text shown on this page.'
+            : ''}
       </span>
     </div>
   )

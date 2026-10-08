@@ -152,6 +152,9 @@ Orca bundles version-matched skills for agents operating inside or with Orca. Th
 | SRE triage: internal trace logs, daemon/PTY desync, dead multiplex sockets | **orca-diagnostics** | Routine worktree creation or application commands |
 
 When adding or modifying skills:
-1. Register canonical names in CANONICAL_GUIDE_NAMES within config/scripts/generate-bundled-skill-guides.mjs.
-2. Generate bundled stubs: node config/scripts/generate-bundled-skill-guides.mjs.
-3. Verify skill runtime and CLI parity: pnpm verify:bundled-skill-guides.
+1. Add `skill-guides/<name>.md` (its frontmatter `name` must equal `<name>`) and `skill-stubs/<name>.md`.
+2. Register `<name>` in `CANONICAL_GUIDE_NAMES`, `GUIDE_ALIASES` (empty array unless renaming), and `STUB_TOPICS` in `config/scripts/generate-bundled-skill-guides.mjs`. Omitting either of the last two throws in the generator's own contract checks.
+3. Regenerate the embedded table and installable packages: `pnpm generate:bundled-skill-guides`. The bare script without `--write` only verifies.
+4. Regenerate the freshness artifacts: `pnpm generate:skill-bundle-manifest`.
+5. Verify: `pnpm verify:bundled-skill-guides && pnpm verify:skill-bundle-manifest`.
+6. Add the skill to the registry table, frontmatter keywords, and a section in `docs/site/content/docs/cli/skills.mdx`.

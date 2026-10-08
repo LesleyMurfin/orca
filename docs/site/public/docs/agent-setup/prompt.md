@@ -21,7 +21,7 @@ Before running any installation command or modifying files, determine the user's
 
 ### Question 3 (If Server): How will it be supervised and accessed?
 - **Systemd service (Recommended)**: Unprivileged background daemon managed via `/etc/systemd/system/orca-serve.service` with `KillMode=mixed` and `RestartPreventExitStatus=3 78`.
-- **User systemd service**: `~/.config/systemd/user/orca-runtime.service` with lingering (`loginctl enable-linger $USER`).
+- **User systemd service**: `~/.config/systemd/user/orca-serve.service` with lingering (`loginctl enable-linger $USER`).
 - **Container / Docker**: Running inside a dedicated container environment.
 - **Network path**: Private LAN, Tailscale tailnet, or SSH tunnel? (Sets `--pairing-address`).
 
@@ -61,13 +61,16 @@ Download and run the installer from GitHub Releases:
 - [Windows Installer (x64)](https://github.com/stablyai/orca/releases/latest/download/orca-windows-setup.exe)
 
 ### Path C: Orca Desktop (Linux Desktop)
+Detect the architecture first: `uname -m` (`x86_64` → x64, `aarch64`/`arm64` → arm64).
 - **Self-updating AppImage**:
   ```bash
-  curl -LO https://github.com/stablyai/orca/releases/latest/download/orca-linux.AppImage
-  chmod +x orca-linux.AppImage
+  arch=$([ "$(uname -m)" = x86_64 ] && echo orca-linux || echo orca-linux-arm64)
+  curl -LO "https://github.com/stablyai/orca/releases/latest/download/$arch.AppImage"
+  chmod +x "$arch.AppImage"
+  # On hosts without FUSE, run it as: ./$arch.AppImage --appimage-extract-and-run
   ```
-- **Debian / Ubuntu (.deb)**: Download `orca-ide_*_amd64.deb` from GitHub releases and run `sudo apt install ./orca-ide_*_amd64.deb`.
-- **Fedora / RHEL (.rpm)**: Download `orca-ide-*.x86_64.rpm` from GitHub releases and run `sudo dnf install ./orca-ide-*.x86_64.rpm`.
+- **Debian / Ubuntu (.deb)**: Download `orca-ide_*_amd64.deb` (x64) or `orca-ide_*_arm64.deb` (arm64) from GitHub releases and run `sudo apt install ./orca-ide_*.deb`.
+- **Fedora / RHEL (.rpm)**: Download `orca-ide-*.x86_64.rpm` (x64) or `orca-ide-*.aarch64.rpm` (arm64) from GitHub releases and run `sudo dnf install ./orca-ide-*.rpm`.
 
 ### Path D: Orca Server (Headless Linux systemd)
 Install the binary (`/usr/bin/orca-ide`), create an unprivileged `orca` user, and supervise with `/etc/systemd/system/orca-serve.service`:
@@ -93,7 +96,7 @@ RestartSec=5
 RestartPreventExitStatus=3 78
 KillMode=mixed
 KillSignal=SIGTERM
-TimeoutStopSec=120
+TimeoutStopSec=45
 StandardOutput=journal
 StandardError=journal
 
@@ -111,9 +114,11 @@ sudo systemctl enable --now orca-serve.service
 ### Path D2: Orca Server (Unprivileged User systemd Service)
 If running under your own user account without root permissions:
 
-1. Enable lingering so the daemon stays alive when you disconnect:
+1. Enable lingering so the daemon stays alive when you disconnect. It needs a polkit
+   affirmative, so use `sudo` when running headless or over SSH:
    ```bash
-   loginctl enable-linger $USER
+   sudo loginctl enable-linger "$USER"
+   loginctl show-user "$USER" --property=Linger   # must print Linger=yes
    ```
 2. Create `~/.config/systemd/user/orca-serve.service`:
    ```ini
@@ -129,7 +134,7 @@ If running under your own user account without root permissions:
    RestartPreventExitStatus=3 78
    KillMode=mixed
    KillSignal=SIGTERM
-   TimeoutStopSec=120
+   TimeoutStopSec=45
 
    [Install]
    WantedBy=default.target
@@ -145,7 +150,10 @@ If running under your own user account without root permissions:
 1. Output the pairing URL and QR code for Orca Mobile.
 2. Output the exact command to connect the Orca Desktop app to this server:
    ```bash
+   # macOS / Windows
    orca environment add --name LocalServer --pairing-code '<URL>'
+   # Linux (the CLI is orca-ide; bare `orca` is the GNOME screen reader)
+   orca-ide environment add --name LocalServer --pairing-code '<URL>'
    ```
 
 ---
@@ -164,9 +172,15 @@ If running under your own user account without root permissions:
   ssh -O exit -S <socket-path> <hostname>
   ```
 - **Wedged UI / Renderer Crash**:
-  Inspect non-invasively via Chrome DevTools Protocol: `http://127.0.0.1:9222/json`.
-- **Ghost Tab Flicker Loop (#21189)**:
-  Quit Orca completely. Clear `"openFilesByWorktree"` and `"activeFileIdByWorktree"` in `orca-data.json`, validate JSON syntax, and relaunch.
+  Orca does not expose a renderer debugging port. Read the main-process trace instead —
+  `tail -n 200 "<logs>/main.trace.ndjson"` (see Telemetry Locations), where failures are spans with
+  `exit._tag == "Failure"` — and collect a diagnostic bundle with **Help → Send Feedback**. Port
+  9222, when open, belongs to Orca's agent-browser CDP proxy, not to the app window.
+- **Ghost Tab Flicker Loop**:
+  Do not hand-edit `orca-data.json`: on current builds `profile-state.db` beside it is
+  authoritative and the JSON is a regenerated mirror, so the edit is discarded on the next start.
+  Quit Orca, then close the offending tabs from the sidebar or remove the workspace; if it
+  persists, file an issue with a diagnostic bundle rather than editing state by hand.
 
 ---
 
