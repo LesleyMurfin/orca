@@ -44,6 +44,8 @@ export type NativeChatPendingSend = {
   matchingOccurrence?: number
   /** Shared time boundary when that message boundary is unavailable. */
   matchingAfterTimestamp?: number
+  /** Queued while the agent was already streaming/working — sorts after the live reply. */
+  queued?: boolean
 }
 
 export type NativeChatPendingSendScope = {
@@ -218,10 +220,11 @@ export function prunePendingSends(
 }
 
 /**
- * Turn pending sends into chat messages so they render in the list as queued
+ * Turn pending sends into chat messages so they render in the list as optimistic
  * user bubbles. They carry the `scrape` source (lowest priority) so the real
  * transcript turn always supersedes them if both are briefly present, and the
- * send time as the timestamp so they sort to the end (most recent) of the list.
+ * send time as the timestamp so they sort with ordinary transcript order.
+ * Mid-turn follow-ups set `queued: true` so they wait behind the streaming preview.
  */
 export function pendingSendsAsMessages(
   pending: NativeChatPendingSend[],
@@ -266,7 +269,8 @@ export function pendingSendsAsMessages(
         ...(entry.text.trim().length > 0 ? [{ type: 'text' as const, text: entry.text }] : [])
       ],
       timestamp: entry.sentAt,
-      source: 'scrape' as const
+      source: 'scrape' as const,
+      ...(entry.queued ? { queued: true as const } : {})
     }))
 }
 
