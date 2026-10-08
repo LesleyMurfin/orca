@@ -6,10 +6,22 @@ const projectDir = path.resolve(import.meta.dirname, '..', '..')
 const docPath = path.join(projectDir, 'docs', 'site', 'content', 'docs', 'remote-servers.mdx')
 
 // Why: the supervision guidance is the part operators copy verbatim. A silent edit that drops a
-// directive leaves a unit that crash-loops or kills every agent child, so each one is pinned here.
+// directive leaves a unit that crash-loops or kills every agent child. Assertions run against the
+// fenced unit block alone — a whole-file substring search passes on the surrounding prose that
+// merely names the same directive, which is no proof the copyable unit still carries it.
+function unitBlock(content) {
+  const block = content
+    .split(/^```/m)
+    .find((section) => section.startsWith('ini') && section.includes('[Service]'))
+  if (!block) {
+    throw new Error('remote-servers.mdx no longer contains an ```ini systemd unit block')
+  }
+  return block
+}
+
 describe('remote servers doc', () => {
   it('documents the supervised systemd unit and its load-bearing directives', async () => {
-    const content = await readFile(docPath, 'utf8')
+    const unit = unitBlock(await readFile(docPath, 'utf8'))
 
     for (const directive of [
       '# /etc/systemd/system/orca-serve.service',
@@ -18,7 +30,7 @@ describe('remote servers doc', () => {
       'RestartPreventExitStatus=3 78',
       'ExecStart=/usr/bin/orca-ide serve'
     ]) {
-      expect(content, directive).toContain(directive)
+      expect(unit, directive).toContain(`\n${directive}`)
     }
   })
 

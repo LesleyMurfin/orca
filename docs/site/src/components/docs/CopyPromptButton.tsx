@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/class-names'
 
 const DEFAULT_PROMPT =
@@ -16,12 +16,18 @@ export function CopyPromptButton({
   className?: string
 }) {
   const [copied, setCopied] = useState(false)
+  const resetTimer = useRef<number | null>(null)
+
+  // Why: the reset fires 2s later; an unmount (or a second click) in between would
+  // otherwise leave a timer that calls setState on a dead component.
+  useEffect(() => () => window.clearTimeout(resetTimer.current ?? undefined), [])
 
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(prompt)
       setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      window.clearTimeout(resetTimer.current ?? undefined)
+      resetTimer.current = window.setTimeout(() => setCopied(false), 2000)
     } catch (err) {
       console.error('Failed to copy prompt: ', err)
     }
