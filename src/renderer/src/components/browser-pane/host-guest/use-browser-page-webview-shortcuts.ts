@@ -26,7 +26,6 @@ export function useBrowserPageWebviewShortcuts({
   isActiveRef,
   webviewRef,
   paneZoomLevelRef,
-  setBrowserDefaultZoomLevel: _setBrowserDefaultZoomLevel,
   showBrowserZoomFeedback,
   reloadWebviewOrRecoverGuest
 }: {
@@ -37,7 +36,6 @@ export function useBrowserPageWebviewShortcuts({
   isActiveRef: MutableRefObject<boolean>
   webviewRef: MutableRefObject<Electron.WebviewTag | null>
   paneZoomLevelRef: MutableRefObject<number>
-  setBrowserDefaultZoomLevel?: (level: number) => void
   showBrowserZoomFeedback: (level: number) => void
   reloadWebviewOrRecoverGuest: (ignoreCache: boolean) => void
 }): void {
