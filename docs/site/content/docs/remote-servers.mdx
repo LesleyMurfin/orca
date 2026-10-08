@@ -40,7 +40,7 @@ orca account list
 Install or refresh agent skills without a Settings UI:
 
 ```bash
-orca skills install --skill orca-cli --skill orchestration
+orca skills install --skill orca-cli --skill orca-server --skill orchestration
 orca skills update --all
 ```
 
@@ -168,6 +168,89 @@ orca-ide serve --port 6768 --pairing-address 100.64.1.20
 Use only one host mode at a time. If the Orca desktop app is already sharing that computer, do not start a second `orca serve` process for the same setup.
 
 `orca serve` runs on Orca's own Node server (orcad) by default. If orcad can't serve on this computer, it uses the desktop app's server instead and prints one line saying why. On a packaged macOS app it currently always uses the desktop app's server, so paired clients can still update it. To always use the desktop app's server, set `ORCA_SERVE_RUNTIME=electron`.
+
+### Running as a systemd service
+
+On a Linux server, let systemd own the process so it starts at boot and comes back after a crash. Give it an unprivileged user that owns the repos, agent CLIs, and provider credentials—agents run as that user.
+
+```ini
+# /etc/systemd/system/orca-serve.service
+[Unit]
+Description=Orca remote server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=orca
+Group=orca
+WorkingDirectory=/home/orca
+Environment=HOME=/home/orca
+Environment=XDG_RUNTIME_DIR=/run/user/1001
+ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address 100.64.1.20
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=3 78
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Three settings carry the weight:
+
+- `Type=simple` — `orca serve` stays in the foreground and never forks or writes a PID file, so the process systemd starts is the main process. The unit is active as soon as it spawns; the bound endpoint and pairing URL arrive a moment later, in the journal.
+- `KillMode=mixed` — only the main process receives `SIGTERM`, so the runtime shuts its own terminals and agent children down in order. The final `SIGKILL` after `TimeoutStopSec` still sweeps the whole cgroup. `KillMode=control-group` would `SIGTERM` every agent at once.
+- `RestartPreventExitStatus=3 78` — `78` is the status the runtime exits with on a configuration fault: a user-data root held by another Orca runtime, a bind address it cannot use, or an unreadable profile store. Restarting never repairs those, so `Restart=on-failure` alone would crash-loop on them. `3` is reserved for the unit's own preflight (an `ExecStartPre=` script or a wrapper) to report the same "do not retry", so the unit lands in `failed` with a readable journal.
+
+Write the absolute `/usr/bin/orca-ide` path in the unit rather than a bare `orca`, which resolves to the GNOME Orca screen reader. Replace `1001` with the output of `id -u orca`, then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now orca-serve.service
+journalctl -u orca-serve.service -f
+```
+
+The pairing URL is printed once at startup. Read it back from the journal instead of restarting the service to see it again.
+
+Agents working on this host can load the server-side runbook—unit layout, account registration, troubleshooting—with:
+
+```bash
+orca skills install --skill orca-server
+# Linux
+orca-ide skills install --skill orca-server
+```
+
+### Preserving live terminals across service restarts
+
+`systemctl restart orca-serve.service` kills whatever is still in the service cgroup. On Linux, Orca already keeps its terminal daemon out of that cgroup: it launches the daemon through `systemd-run --user --scope` as an `orca-daemon-<nonce>.scope` unit, a sibling of the service that no unit-scoped kill reaches. When that is not possible, Orca forks the daemon directly inside the service cgroup—and then every live terminal dies on restart.
+
+The scope needs a reachable user systemd manager, which a service account only gets when you ask for one. Lingering starts the `orca` user's manager at boot and provisions `/run/user/<uid>`, the bus the unit's `XDG_RUNTIME_DIR` points at:
+
+```bash
+sudo loginctl enable-linger orca
+```
+
+Long jobs you start yourself are protected the same way. Run them in a transient scope instead of as a plain child of the service:
+
+```bash
+systemd-run --user --scope --unit orca-build-1 -- tmux new-session -d -s build 'pnpm build'
+systemctl --user status orca-build-1
+```
+
+`--scope` registers the process with the user manager, so it is tracked by `orca-build-1.scope` rather than `orca-serve.service` and survives both the stop sweep and the restart. Without lingering, `/run/user/<uid>` is absent, the capability check fails closed, and `systemd-run --user` cannot connect.
+
+The PTY still belongs to the runtime that restarted, so Orca cannot reattach the old terminal pane. Run the work inside `tmux` as above and reattach from a fresh terminal once the service is back:
+
+```bash
+tmux attach -t build
+```
+
+Scopes are transient: they disappear when their process exits. Stop a finished one with `systemctl --user stop orca-build-1`.
+
+Confirm the daemon escaped with `systemctl --user list-units 'orca-daemon-*.scope'`; a daemon listed inside `orca-serve.service`'s cgroup instead will not survive a restart.
 
 ### Mobile from a headless server
 

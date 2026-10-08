@@ -10,6 +10,7 @@ keywords:
   - orca-linear skill
   - orca-emulator skill
   - orca-emulator-android skill
+  - orca-server skill
 ---
 
 Orca ships **skills** that agents install into their skill directories. Public install packages are **hybrid discovery stubs**: short `SKILL.md` files that tell the agent _when_ to engage Orca and how to load the full guide from the running CLI. Command flags live in the binary so they cannot drift from the app version.
@@ -27,6 +28,7 @@ Use `npx skills add` with the public Orca repo and the skill name. Default agent
 | [`orca-emulator`](#orca-emulator)                   | `npx skills add https://github.com/stablyai/orca --skill orca-emulator --global`          | iOS Simulator control.                                        |
 | [`orca-emulator-android`](#orca-emulator-android)   | `npx skills add https://github.com/stablyai/orca --skill orca-emulator-android --global`  | Android emulator/device via adb.                              |
 | [`orca-per-workspace-env`](#orca-per-workspace-env) | `npx skills add https://github.com/stablyai/orca --skill orca-per-workspace-env --global` | Per-workspace environment recipes (`orca.yaml`).              |
+| [`orca-server`](#orca-server)                       | `npx skills add https://github.com/stablyai/orca --skill orca-server --global`            | Headless `orca serve` hosts: systemd unit, pairing, accounts. |
 
 ## Hybrid stubs vs the live guide
 
@@ -158,6 +160,14 @@ npx skills add https://github.com/stablyai/orca --skill orca-per-workspace-env -
 ```
 
 Use when setting up or debugging per-workspace environment recipes in `orca.yaml`. See [Ways to run Orca](/docs/ways-to-run#4-cloud-vms-per-workspace-environments).
+
+## orca-server
+
+```bash
+npx skills add https://github.com/stablyai/orca --skill orca-server --global
+```
+
+Use when an agent runs or repairs a headless Orca host: the `orca serve` flags, the systemd unit that supervises it, keeping long jobs alive across service restarts, and registering agent accounts and skills on the server. See [Remote Orca Servers](/docs/remote-servers#running-as-a-systemd-service).
 
 ## Discovery sources
 
