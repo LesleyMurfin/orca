@@ -168,6 +168,20 @@ orca diagnostics memory --json
 Runs the same host process sweep as the Resource Usage popover: app totals split across main,
 renderer, and other processes, per-worktree terminal sessions, and host memory and load.
 
+### Chrome DevTools Protocol (CDP) troubleshooting
+
+When the UI is frozen, wedged, or a renderer process crashes without an error dialog, inspect the window state directly via CDP:
+
+1. Launch Orca with a remote debugging port:
+   ```bash
+   orca --remote-debugging-port=9222
+   ```
+2. Query active targets and find the wedged window or webview:
+   ```bash
+   curl -s http://127.0.0.1:9222/json | jq ".[ ] | {title: .title, type: .type, id: .id}"
+   ```
+3. Evaluate renderer health and capture logs over the target WebSocket without revealing or focusing the window.
+
 ## Reporting issues
 
 - **Help → Send Feedback** (in-app) — paste or drag screenshots into the dialog, or pick image files; thumbnails show before you submit. Attach [logs](#logs) when the bug is hard to reproduce.

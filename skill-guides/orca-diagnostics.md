@@ -206,3 +206,4 @@ do not infer a cause the trace does not record.
 | :--- | :--- | :--- |
 | Unhandled exceptions or IPC rejections | Extract stack traces with jq | `references/trace-analysis.md` |
 | Reconnecting to SSH host hangs | Triage OpenSSH ControlMaster zombie sockets | `references/ssh-multiplex.md` |
+| Electron UI wedged or renderer unresponsive | Connect via CDP port 9222 and inspect targets | `references/cdp-troubleshooting.md` |
