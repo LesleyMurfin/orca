@@ -20,9 +20,9 @@ Before running any installation command or modifying files, determine the user's
 - **Per-Workspace Cloud VMs**: Launching on-demand disposable cloud sandboxes per task.
 
 ### Question 3 (If Server): How will it be supervised and accessed?
-- **User systemd service (Recommended)**: Unprivileged background daemon that persists across SSH disconnects and survives restarts without killing terminals (`KillMode=mixed` + `loginctl enable-linger`).
+- **Systemd service (Recommended)**: Unprivileged background daemon managed via `/etc/systemd/system/orca-serve.service` with `KillMode=mixed` and `RestartPreventExitStatus=3 78`.
+- **User systemd service**: `~/.config/systemd/user/orca-runtime.service` with lingering (`loginctl enable-linger $USER`).
 - **Container / Docker**: Running inside a dedicated container environment.
-- **Manual foreground / screen / tmux**: For temporary pairing or testing.
 - **Network path**: Private LAN, Tailscale tailnet, or SSH tunnel? (Sets `--pairing-address`).
 
 ### Question 4: Which AI coding agents do you want configured?
@@ -35,12 +35,16 @@ Before running any installation command or modifying files, determine the user's
 
 When a user reports an issue, ask the diagnostic classification questions before running fixes:
 
-### Diagnostic Gate 0: Classify the Domain
-| Domain | Symptoms | Decisive Verification Question / Test |
-| :--- | :--- | :--- |
-| **Environment** | Sleep/wake hangs, VPN/Tailscale shifts, zombie SSH sockets, missing PATH. | *"Does the identical command fail in your native OS terminal outside Orca?"* If yes -> Environment. |
-| **Configuration** | Scoped to one project, bad SSH key, broken `orca.yaml`, broken hook. | *"Does Orca work when opening an empty directory workspace?"* If yes -> Configuration. |
-| **Orca Bug** | Electron IPC rejections, renderer white-screen, daemon crash loops. | Inspect `main.trace.ndjson` and `daemon.log` for unhandled exception stack traces. |
+### Diagnostic Gate 0: Discover Environment & Classify Domain
+1. **Operating Environment**:
+   - Are you running **Orca Desktop** (macOS, Windows, Linux) or a headless **Orca Server (`orca-ide serve`)**?
+   - If remote, are you connecting over a local LAN, Tailscale, or an OpenSSH multiplexed connection?
+2. **Domain Classification**:
+   | Domain | Symptoms | Decisive Verification Question / Test |
+   | :--- | :--- | :--- |
+   | **Environment** | Sleep/wake hangs, VPN/Tailscale shifts, zombie SSH sockets, missing PATH. | *"Does the identical command fail in your native OS terminal outside Orca?"* If yes -> Environment. |
+   | **Configuration** | Scoped to one project, bad SSH key, broken `orca.yaml`, broken hook. | *"Does Orca work when opening an empty directory workspace?"* If yes -> Configuration. |
+   | **Orca Bug** | Electron IPC rejections, renderer white-screen, daemon crash loops. | Inspect `main.trace.ndjson` and `daemon.log` for unhandled exception stack traces. |
 
 ---
 
@@ -65,34 +69,50 @@ Download and run the installer from GitHub Releases:
 - **Debian / Ubuntu (.deb)**: Download `orca-ide_*_amd64.deb` from GitHub releases and run `sudo apt install ./orca-ide_*_amd64.deb`.
 - **Fedora / RHEL (.rpm)**: Download `orca-ide-*.x86_64.rpm` from GitHub releases and run `sudo dnf install ./orca-ide-*.x86_64.rpm`.
 
-### Path D: Orca Server (Headless Linux)
-1. Install binary via AppImage, `.deb`, or `.rpm` as above.
-2. Enable unprivileged lingering so the service survives user disconnects:
-   ```bash
-   loginctl enable-linger $USER
-   ```
-3. Supervise under systemd (`~/.config/systemd/user/orca.service`):
-   ```ini
-   [Unit]
-   Description=Orca Headless Server
-   After=network.target
+### Path D: Orca Server (Headless Linux systemd)
+Install the binary (`/usr/bin/orca-ide`), create an unprivileged `orca` user, and supervise with `/etc/systemd/system/orca-serve.service`:
 
-   [Service]
-   Type=simple
-   ExecStart=/usr/bin/orca serve --headless
-   Restart=always
-   RestartSec=5
-   RestartPreventExitStatus=3 78
-   KillMode=mixed
-   TimeoutStopSec=30
+```ini
+[Unit]
+Description=Orca runtime server
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
-   [Install]
-   WantedBy=default.target
-   ```
-4. Start the service:
+[Service]
+Type=simple
+User=orca
+Group=orca
+WorkingDirectory=/home/orca
+Environment=HOME=/home/orca
+Environment=XDG_RUNTIME_DIR=/run/user/1001
+ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=3 78
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=120
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+*(Replace `1001` with `id -u orca` and set `--pairing-address` to the reachable LAN/Tailscale address).*
+
+Enable and start:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now orca-serve.service
+```
+
+### Path E: Connection & Pairing Commands
+1. Output the pairing URL and QR code for Orca Mobile.
+2. Output the exact command to connect the Orca Desktop app to this server:
    ```bash
-   systemctl --user daemon-reload
-   systemctl --user enable --now orca.service
+   orca environment add --name LocalServer --pairing-code '<URL>'
    ```
 
 ---
@@ -106,9 +126,9 @@ Download and run the installer from GitHub Releases:
 
 ### Common Remediation Recipes
 - **Post-Sleep SSH Hang**:
+  Gracefully terminate stale multiplex masters via OpenSSH socket control:
   ```bash
-  find /tmp -name "orca-ssh*" -exec rm -rf {} + 2>/dev/null
-  pkill -f "ssh.*ControlMaster"
+  ssh -O exit -S <socket-path> <hostname>
   ```
 - **Wedged UI / Renderer Crash**:
   Inspect non-invasively via Chrome DevTools Protocol: `http://127.0.0.1:9222/json`.

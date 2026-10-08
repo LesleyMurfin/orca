@@ -19,10 +19,10 @@ ORCA skills get orca-diagnostics
 
 Answer the user's question from the official documentation rather than guessing:
 
-- Troubleshooting & FAQ — <https://orca.computer/docs/troubleshooting>
-- Install & first run — <https://orca.computer/docs/install>
-- Settings reference — <https://orca.computer/docs/settings>
-- SSH worktrees — <https://orca.computer/docs/ssh>
+- Troubleshooting & FAQ — <https://www.onorca.dev/docs/troubleshooting>
+- Install & first run — <https://www.onorca.dev/docs/install>
+- Settings reference — <https://www.onorca.dev/docs/settings>
+- SSH worktrees — <https://www.onorca.dev/docs/ssh>
 
 For questions, the Orca Discord and GitHub Discussions are the live support channels; file a
 GitHub Issue only with a reproduction and evidence attached. Never delete daemon sockets, PID

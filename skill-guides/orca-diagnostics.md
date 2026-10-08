@@ -28,9 +28,13 @@ never invent a cause the trace does not record.
 
 Work in this order. Most requests end at step 1 or 2.
 
-1. **Answer the question.** "Where are the logs?", "is this normal?", "how do I turn off
-   telemetry?" — these need an answer and a doc link, not a diagnostic sweep.
-2. **Separate environment from configuration from Orca.** A failing agent CLI, a stale `PATH`,
+1. **Discover the environment first.** Before running commands or triaging, determine the user's setup:
+   - **Operating role**: Are they running **Orca Desktop** (macOS, Windows, Linux) or a headless **Orca Server (`orca serve`)**?
+   - **Connection topology**: Is the session local, over an **SSH tunnel / multiplexer**, or connected via **Tailscale/LAN**?
+   - **Operating system**: Paths and socket mechanics differ between macOS (`~/Library/Application Support`), Linux (`~/.config`), and Windows (`%APPDATA%`).
+2. **Answer the question directly.** "Where are the logs?", "is this normal?", "how do I turn off
+   telemetry?" — these need a direct answer and a doc link, not a diagnostic sweep.
+3. **Separate environment from configuration from Orca.** A failing agent CLI, a stale `PATH`,
    a wrong SSH key, and a renderer crash all look the same to the user:
 
    | Domain | Signs | Decisive test |
@@ -47,13 +51,13 @@ Work in this order. Most requests end at step 1 or 2.
 
 Point users at these rather than paraphrasing them:
 
-- **Install & first run** — [orca.computer/docs/install](https://orca.computer/docs/install) and
-  [first session](https://orca.computer/docs/first-session).
-- **Troubleshooting & FAQ** — [orca.computer/docs/troubleshooting](https://orca.computer/docs/troubleshooting),
+- **Install & first run** — [https://www.onorca.dev/docs/install](https://www.onorca.dev/docs/install) and
+  [first session](https://www.onorca.dev/docs/first-session).
+- **Troubleshooting & FAQ** — [https://www.onorca.dev/docs/troubleshooting](https://www.onorca.dev/docs/troubleshooting),
   including the deep-diagnostics section this skill automates.
-- **Settings reference** — [orca.computer/docs/settings](https://orca.computer/docs/settings).
-- **SSH worktrees** — [orca.computer/docs/ssh](https://orca.computer/docs/ssh).
-- **Remote servers / headless hosts** — [orca.computer/docs/remote-servers](https://orca.computer/docs/remote-servers).
+- **Settings reference** — [https://www.onorca.dev/docs/settings](https://www.onorca.dev/docs/settings).
+- **SSH worktrees** — [https://www.onorca.dev/docs/ssh](https://www.onorca.dev/docs/ssh).
+- **Remote servers / headless hosts** — [https://www.onorca.dev/docs/remote-servers](https://www.onorca.dev/docs/remote-servers).
 - **Community support** — the Orca Discord for questions and live help, GitHub Discussions for
   longer-form questions, and GitHub Issues for reproducible defects with evidence attached.
 
