@@ -13,10 +13,10 @@ import { z } from 'zod'
 import type { GlobalSettings } from '../../../../shared/types'
 import { defineMethod, type RpcMethod } from '../core'
 
-// Why: keeping the shape as a plain object (rather than reading `.shape` off the
-// built schema) gives one canonical key list that both the zod validator and the
-// runtime read-projection derive from, so they cannot drift apart.
-const portableSettingsShape = {
+// Why: declaring the allowlist as a plain object (rather than reading `.shape`
+// off the built schema) gives one canonical key list that both the zod validator
+// and the runtime read-projection derive from, so they cannot drift apart.
+const portableSettingsAllowlist = {
   // Appearance / editor
   theme: z.enum(['system', 'dark', 'light']).optional(),
   appFontFamily: z.string().optional(),
@@ -87,7 +87,7 @@ const portableSettingsShape = {
   compactWorktreeCards: z.boolean().optional()
 } as const
 
-export const PortableSettingsUpdate = z.object(portableSettingsShape).strict()
+export const PortableSettingsUpdate = z.object(portableSettingsAllowlist).strict()
 
 export type PortableSettingsPatch = z.infer<typeof PortableSettingsUpdate>
 
@@ -97,7 +97,9 @@ export type PortableSettings = Partial<Pick<GlobalSettings, PortableSettingsKey>
 
 // Why: the runtime read-projection iterates this list to return only allowlisted
 // keys, so it stays in lockstep with the write-side validator above.
-export const PORTABLE_SETTINGS_KEYS = Object.keys(portableSettingsShape) as PortableSettingsKey[]
+export const PORTABLE_SETTINGS_KEYS = Object.keys(
+  portableSettingsAllowlist
+) as PortableSettingsKey[]
 
 export const ENVIRONMENT_CONFIG_METHODS: RpcMethod[] = [
   defineMethod({
