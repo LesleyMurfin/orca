@@ -144,7 +144,9 @@ export function activateAndRevealFolderWorkspace(
     (workspaceHasSleepingAgentSessions(state, workspaceKey) ||
       (canInspectAgentActivationInventory() &&
         shouldAutoCreateInitialTerminal(
-          state.reconcileWorktreeTabModel(workspaceKey).renderableTabCount
+          state.reconcileWorktreeTabModel(workspaceKey).renderableTabCount,
+          false,
+          state.settings?.autoOpenInitialTerminal !== false
         )))
   if (!shouldGateAgentActivation) {
     resumeSleepingAgentSessionsForWorktree(workspaceKey)
@@ -249,7 +251,9 @@ export function activateAndRevealWorktree(
     (workspaceHasSleepingAgentSessions(postActivationState, worktreeId) ||
       (canInspectAgentActivationInventory() &&
         shouldAutoCreateInitialTerminal(
-          postActivationState.reconcileWorktreeTabModel(worktreeId).renderableTabCount
+          postActivationState.reconcileWorktreeTabModel(worktreeId).renderableTabCount,
+          false,
+          postActivationState.settings?.autoOpenInitialTerminal !== false
         )))
   if (!shouldGateAgentActivation) {
     // Why: sleeping destroys the local PTY but preserves the provider session id, so waking should

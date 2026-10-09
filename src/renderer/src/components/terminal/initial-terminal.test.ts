@@ -3,15 +3,23 @@ import { shouldAutoCreateInitialTerminal } from './initial-terminal'
 
 describe('shouldAutoCreateInitialTerminal', () => {
   it('creates a terminal when the tab-group model has no renderable tabs', () => {
-    expect(shouldAutoCreateInitialTerminal(0)).toBe(true)
+    expect(shouldAutoCreateInitialTerminal(0, false, true)).toBe(true)
   })
 
   it('preserves an explicitly persisted empty terminal list', () => {
-    expect(shouldAutoCreateInitialTerminal(0, true)).toBe(false)
+    expect(shouldAutoCreateInitialTerminal(0, true, true)).toBe(false)
   })
 
   it('does not create a terminal when the tab-group model already has content', () => {
-    expect(shouldAutoCreateInitialTerminal(1)).toBe(false)
-    expect(shouldAutoCreateInitialTerminal(2)).toBe(false)
+    expect(shouldAutoCreateInitialTerminal(1, false, true)).toBe(false)
+    expect(shouldAutoCreateInitialTerminal(2, false, true)).toBe(false)
+  })
+
+  it('does not create a terminal when autoOpenInitialTerminal is false even if renderableTabCount is 0', () => {
+    expect(shouldAutoCreateInitialTerminal(0, false, false)).toBe(false)
+  })
+
+  it('creates a terminal when autoOpenInitialTerminal is true and workspace has no renderable tabs', () => {
+    expect(shouldAutoCreateInitialTerminal(0, false, true)).toBe(true)
   })
 })

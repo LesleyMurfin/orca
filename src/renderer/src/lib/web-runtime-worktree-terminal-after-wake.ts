@@ -72,7 +72,8 @@ export function ensureWebRuntimeWorktreeTerminalAfterWake(
       if (
         !shouldAutoCreateInitialTerminal(
           renderableTabCount,
-          Object.hasOwn(state.tabsByWorktree, worktreeId)
+          Object.hasOwn(state.tabsByWorktree, worktreeId),
+          state.settings?.autoOpenInitialTerminal !== false
         )
       ) {
         return

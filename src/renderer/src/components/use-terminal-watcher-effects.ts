@@ -246,7 +246,15 @@ export function useTerminalWatcherEffects(controller: TerminalWatcherController)
         useAppStore.getState(),
         activeWorktreeId
       )
-      if (shouldAutoCreateInitialTerminal(renderableTabCount, activeWorktreeHasTerminalState)) {
+      const autoOpenInitialTerminal =
+        useAppStore.getState().settings?.autoOpenInitialTerminal !== false
+      if (
+        shouldAutoCreateInitialTerminal(
+          renderableTabCount,
+          activeWorktreeHasTerminalState,
+          autoOpenInitialTerminal
+        )
+      ) {
         // Why: tag this never-visited-worktree tab so its PTY spawn doesn't count as activity and reshuffle the sidebar (explicit New Tab still bumps).
         createTab(activeWorktreeId, undefined, undefined, { pendingActivationSpawn: true })
       }

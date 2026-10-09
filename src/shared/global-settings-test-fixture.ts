@@ -22,6 +22,7 @@ export function createGlobalSettingsFixture(
       notifications: getDefaultNotificationSettings(),
       voice: getDefaultVoiceSettings()
     }),
+    autoOpenInitialTerminal: true,
     ...overrides
   }
 }

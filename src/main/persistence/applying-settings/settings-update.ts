@@ -78,6 +78,9 @@ export function updateSettings(
   if ('agentSkillSharingEnabled' in updates) {
     sanitizedUpdates.agentSkillSharingEnabled = updates.agentSkillSharingEnabled === true
   }
+  if ('autoOpenInitialTerminal' in updates) {
+    sanitizedUpdates.autoOpenInitialTerminal = updates.autoOpenInitialTerminal !== false
+  }
   if ('nestedWorkerMaxDepth' in updates) {
     sanitizedUpdates.nestedWorkerMaxDepth = resolveNestedWorkerMaxDepth({
       nestedWorkerMaxDepth: updates.nestedWorkerMaxDepth

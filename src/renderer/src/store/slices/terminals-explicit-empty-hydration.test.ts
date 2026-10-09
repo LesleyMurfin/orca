@@ -80,6 +80,6 @@ describe('hydrated active workspace with a terminal tombstone', () => {
     // The exact inputs Terminal.tsx's auto-create effect feeds shouldAutoCreateInitialTerminal.
     expect(renderableTabCount).toBe(0)
     expect(Object.hasOwn(state.tabsByWorktree, worktreeId)).toBe(true)
-    expect(shouldAutoCreateInitialTerminal(renderableTabCount, true)).toBe(false)
+    expect(shouldAutoCreateInitialTerminal(renderableTabCount, true, true)).toBe(false)
   })
 })

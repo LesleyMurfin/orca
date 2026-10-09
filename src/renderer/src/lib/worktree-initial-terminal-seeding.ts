@@ -184,7 +184,11 @@ export function ensureWorktreeHasInitialTerminal(
   // a terminal now, so it stays ungated.
   const shouldAutoCreate =
     hostAuthority === 'none' &&
-    shouldAutoCreateInitialTerminal(renderableTabCount, shouldHonourClosedTerminalTombstone)
+    shouldAutoCreateInitialTerminal(
+      renderableTabCount,
+      shouldHonourClosedTerminalTombstone,
+      store.settings?.autoOpenInitialTerminal !== false
+    )
   const shouldCreateForExplicitWork = renderableTabCount === 0 && hasExplicitLaunchWork
   const shouldCreateNewStartupTerminal =
     opts?.createNewTerminalForStartup === true && sequencedStartup !== undefined

@@ -738,7 +738,8 @@ describe('ssh host partition and the closed-last-terminal tombstone', () => {
     expect(
       shouldAutoCreateInitialTerminal(
         restored.tabsByWorktree[WORKTREE_ID]?.length ?? 0,
-        Object.hasOwn(restored.tabsByWorktree, WORKTREE_ID)
+        Object.hasOwn(restored.tabsByWorktree, WORKTREE_ID),
+        true
       )
     ).toBe(false)
   })
@@ -781,7 +782,8 @@ describe('ssh host partition and the closed-last-terminal tombstone', () => {
     expect(
       shouldAutoCreateInitialTerminal(
         secondBoot.tabsByWorktree[WORKTREE_ID]?.length ?? 0,
-        Object.hasOwn(secondBoot.tabsByWorktree, WORKTREE_ID)
+        Object.hasOwn(secondBoot.tabsByWorktree, WORKTREE_ID),
+        true
       )
     ).toBe(false)
   })
