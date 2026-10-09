@@ -1,5 +1,6 @@
 import { createAgentSessionKeyboardOptions } from '@/runtime/agent-session-keyboard-capability'
 import { withRemoteReattachInputBuffer } from './remote-reattach-input-buffer'
+import { REMOTE_TERMINAL_CLOSED_MARKER } from './terminal-error-accumulation'
 import {
   createRemoteRuntimeRecoveryInputHold,
   type RemoteRuntimeInputEndpoint
@@ -1019,7 +1020,7 @@ export function createRemoteRuntimePtyTransport(
     if (!hostHandle) {
       connecting = false
       emitRecoveryState()
-      surfaceErrorMessage('Remote terminal was closed.')
+      surfaceErrorMessage(REMOTE_TERMINAL_CLOSED_MARKER)
       return undefined
     }
 
@@ -2394,7 +2395,7 @@ export function createRemoteRuntimePtyTransport(
         await adoptPersistedHandle()
         return
       }
-      surfaceErrorMessage('Remote terminal was closed.')
+      surfaceErrorMessage(REMOTE_TERMINAL_CLOSED_MARKER)
       if (resolution.kind === 'absent') {
         // Why: the host answered, but its pane registry may still be rebuilding after a restart,
         // so retire with the host-loss sentinel instead of closing the tab outright (#21344).
