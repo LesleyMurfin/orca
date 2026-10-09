@@ -55,6 +55,7 @@ import { STRUCTURED_AGENT_SESSION_AGENTS_METHODS } from './structured-agent-sess
 import { ARTIFACT_METHODS } from './artifacts'
 import { AGENT_HOOK_METHODS } from './agent-hooks'
 import { AGENT_LAUNCH_METHODS } from './agent-launch'
+import { ENVIRONMENT_CONFIG_METHODS } from './environment-config'
 
 // Why: a flat manifest keeps registration order explicit and provides one
 // grep-point for "what methods does the RPC server expose?" — useful when
@@ -116,5 +117,6 @@ export const ALL_RPC_METHODS = [
   ...CLIENT_UI_METHODS,
   ...EMULATOR_METHODS,
   ...PAIRING_METHODS,
-  ...UPDATER_METHODS
+  ...UPDATER_METHODS,
+  ...ENVIRONMENT_CONFIG_METHODS
 ]
