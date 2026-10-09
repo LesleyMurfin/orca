@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { AGENT_STATUS_STATES } from '../../../shared/agent-status-types'
-import type { AgentRowState } from './agent-row-tool-preview'
+import type { AgentRowState } from './agent-row-decay-state'
 import { formatAgentToolPreview, showsAgentToolPreview } from './agent-row-tool-preview'
 
 const TOOL = { toolName: 'bash', toolInput: 'rm -rf build/' }
-const ROW_STATES: readonly AgentRowState[] = [...AGENT_STATUS_STATES, 'idle']
+const ROW_STATES: readonly AgentRowState[] = [...AGENT_STATUS_STATES, 'idle', 'unverifiable']
 
 describe('showsAgentToolPreview', () => {
   it('covers exactly the two states whose tool fields describe live work', () => {
@@ -28,12 +28,6 @@ describe('formatAgentToolPreview', () => {
 
   it('names the running tool while working', () => {
     expect(formatAgentToolPreview(TOOL, 'working')).toBe('bash: rm -rf build/')
-  })
-
-  it('keeps a resolved tool off every other state', () => {
-    for (const state of ROW_STATES.filter((candidate) => !showsAgentToolPreview(candidate))) {
-      expect(formatAgentToolPreview(TOOL, state)).toBe('')
-    }
   })
 
   it('shows nothing on a wait that carries no tool', () => {

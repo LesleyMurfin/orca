@@ -161,8 +161,6 @@ export function useChecksPanelControllerState() {
   // fetched against the MR's own project rather than this repo's default remote.
   const gitLabProjectRefRef = useRef<GitLabProjectRef | null>(null)
   const conflictSummaryRefreshKeyRef = useRef<string | null>(null)
-  const panelVisibleSinceRef = useRef<number | null>(null)
-  const foregroundedUnrenderedReviewKeyRef = useRef<string | null>(null)
   commentsRef.current = comments
   const prGenerationRecords = useAppStore((s) => s.pullRequestGenerationRecords)
   const allocatePullRequestGenerationRequestId = useAppStore(
@@ -204,8 +202,6 @@ export function useChecksPanelControllerState() {
   const asyncResultKeyRef = useRef<string>('')
   const refreshRequestKeyRef = useRef<string | null>(null)
   const refreshContextKeyRef = useRef<string | null>(null)
-  const gitStatusSnapshotInFlightContextRef = useRef<string | null>(null)
-  const gitStatusSnapshotRerunContextRef = useRef<string | null>(null)
   const gitStatusSnapshotRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const gitIdentityDisplay = activeWorktree ? getWorktreeGitIdentityDisplay(activeWorktree) : null
   const detachedHeadDisplay = gitIdentityDisplay?.kind === 'detached' ? gitIdentityDisplay : null
@@ -364,8 +360,6 @@ export function useChecksPanelControllerState() {
     prevChecksRef,
     gitLabProjectRefRef,
     conflictSummaryRefreshKeyRef,
-    panelVisibleSinceRef,
-    foregroundedUnrenderedReviewKeyRef,
     prGenerationRecords,
     allocatePullRequestGenerationRequestId,
     setPullRequestGenerationRecord,
@@ -374,8 +368,6 @@ export function useChecksPanelControllerState() {
     asyncResultKeyRef,
     refreshRequestKeyRef,
     refreshContextKeyRef,
-    gitStatusSnapshotInFlightContextRef,
-    gitStatusSnapshotRerunContextRef,
     gitStatusSnapshotRetryTimerRef,
     gitIdentityDisplay,
     detachedHeadDisplay,

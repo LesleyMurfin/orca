@@ -1,3 +1,4 @@
+import { ImeInput } from '@/lib/ime-text-field'
 import React, { useCallback, useMemo, useRef, useState } from 'react'
 import { ArrowRight, LoaderCircle, Plus } from 'lucide-react'
 import { toast } from 'sonner'
@@ -6,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useMountedRef } from '@/hooks/useMountedRef'
 import { translate } from '@/i18n/i18n'
-import { linearCreateSubIssue } from '@/runtime/runtime-linear-client'
+import { linearCreateSubIssue } from '@/runtime/runtime-linear-issue-mutations'
 import { useAppStore } from '@/store'
 import type { LinearIssue, LinearIssueChildSummary } from '../../../shared/linear/issue-types'
 import type { TaskSourceContext } from '../../../shared/task-source-context'
@@ -187,7 +188,7 @@ export function LinearIssueSubIssues({
         </PopoverTrigger>
         <PopoverContent className="w-80 p-3" align="start">
           <div className="space-y-3">
-            <input
+            <ImeInput
               value={title}
               onChange={(event) => setTitle(event.target.value)}
               onKeyDown={(event) => {

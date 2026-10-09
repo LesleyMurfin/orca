@@ -20,6 +20,7 @@ import { useWorkspaceKanbanBoardProjection } from './use-workspace-kanban-board-
 import { useWorkspaceKanbanNativeDrag } from './use-workspace-kanban-native-drag'
 import { useWorkspaceKanbanRenderLifecycle } from './use-workspace-kanban-render-lifecycle'
 import { useWorkspaceKanbanDrawerLingering } from './use-workspace-kanban-drawer-lingering'
+import { buildWorktreeManualOrderCatalog } from './worktree-manual-order-catalog'
 
 type WorkspaceKanbanDrawerProps = {
   leftSidebarStyle?: React.CSSProperties
@@ -52,6 +53,7 @@ function WorkspaceKanbanDrawerContent({
   onMenuOpenChange
 }: WorkspaceKanbanDrawerProps): React.JSX.Element {
   const allWorktrees = useAllWorktrees()
+  const folderWorkspaces = useAppStore((s) => s.folderWorkspaces)
   const repoMap = useRepoMap()
   const activeWorktreeId = useAppStore((s) => s.activeWorktreeId)
   const activeWorkspaceExecutionHostId = useAppStore((s) => s.activeWorkspaceExecutionHostId)
@@ -66,13 +68,16 @@ function WorkspaceKanbanDrawerContent({
   const workspaceBoardColumnWidth = useAppStore((s) => s.workspaceBoardColumnWidth)
   const setWorkspaceBoardColumnWidth = useAppStore((s) => s.setWorkspaceBoardColumnWidth)
   const sortBy = useAppStore((s) => s.sortBy)
-  const setSortBy = useAppStore((s) => s.setSortBy)
   const sidebarOpen = useAppStore((s) => s.sidebarOpen)
   const sidebarWidth = useAppStore((s) => s.sidebarWidth)
   const boardRef = useRef<HTMLDivElement>(null)
   const laneScrollerRef = useRef<HTMLDivElement>(null)
   const areaSelectionOverlayRef = useRef<HTMLDivElement>(null)
   const { createWorktreeForStatus } = useWorkspaceKanbanCreateWorktree()
+  const manualOrderCatalog = useMemo(
+    () => buildWorktreeManualOrderCatalog({ worktrees: allWorktrees, folderWorkspaces }),
+    [allWorktrees, folderWorkspaces]
+  )
   const {
     activeWorktreeIdentity,
     boardDragGroups,
@@ -129,12 +134,12 @@ function WorkspaceKanbanDrawerContent({
     laneFullWorktreeIds,
     laneViews,
     maybeSyncTaskStatuses: maybeSyncWorkspaceBoardTaskStatuses,
-    setSortBy,
     sortBy,
     updateWorktreeMeta,
     updateWorktreesMeta,
     workspaceStatuses,
     worktreeById,
+    manualOrderCatalog,
     worktreesByStatus
   })
   // Why: dragging or right-clicking one visible match must not silently move

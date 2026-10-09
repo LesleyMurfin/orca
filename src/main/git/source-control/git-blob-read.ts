@@ -1,8 +1,9 @@
 import { readFile, stat } from 'node:fs/promises'
 import * as path from 'node:path'
 import { isBinaryBuffer } from '../../../shared/binary-buffer'
+import { isMissingGitBlobPath } from '../../../shared/git-blob-absence'
 import type { GitRuntimeOptions } from '../git-runtime-options'
-import { gitOptionsForWorktree } from '../git-runtime-options'
+import { gitReadOptionsForWorktree } from '../git-runtime-options'
 import { gitExecFileAsyncBuffer } from '../runner'
 import { isMaxBufferOverflowError } from '../max-buffer-overflow'
 import { MAX_GIT_SHOW_BYTES } from './git-show-max-bytes'
@@ -12,6 +13,12 @@ export type GitBlobReadResult = {
   content: string
   isBinary: boolean
   exists: boolean
+  /**
+   * The read did not complete: the blob is neither known-present nor proven
+   * absent. Callers must not persist a diff built on one, because the empty side
+   * it produces is indistinguishable from a genuinely new file.
+   */
+  failed?: boolean
 }
 
 export async function readUnstagedLeftBlob(
@@ -20,7 +27,7 @@ export async function readUnstagedLeftBlob(
   options: GitRuntimeOptions = {}
 ): Promise<GitBlobReadResult> {
   const indexBlob = await readGitBlobAtIndexPath(worktreePath, filePath, options)
-  if (indexBlob.exists) {
+  if (indexBlob.exists || indexBlob.failed) {
     return indexBlob
   }
 
@@ -36,7 +43,7 @@ export async function readGitBlobAtIndexPath(
   const gitPath = filePath.replace(/\\/g, '/')
   try {
     const { stdout } = await gitExecFileAsyncBuffer(['show', `:${gitPath}`], {
-      ...gitOptionsForWorktree(worktreePath, options),
+      ...gitReadOptionsForWorktree(worktreePath, options),
       maxBuffer: MAX_GIT_SHOW_BYTES
     })
 
@@ -45,7 +52,12 @@ export async function readGitBlobAtIndexPath(
     if (isMaxBufferOverflowError(error)) {
       return { content: '', isBinary: true, exists: true }
     }
-    return { content: '', isBinary: false, exists: false }
+    return {
+      content: '',
+      isBinary: false,
+      exists: false,
+      failed: !isMissingGitBlobPath(error, gitPath)
+    }
   }
 }
 
@@ -61,7 +73,7 @@ export async function readGitBlobAtOidPath(
     const { stdout } = await gitExecFileAsyncBuffer(
       ['show', '--end-of-options', `${oid}:${gitPath}`],
       {
-        ...gitOptionsForWorktree(worktreePath, options),
+        ...gitReadOptionsForWorktree(worktreePath, options),
         maxBuffer: MAX_GIT_SHOW_BYTES
       }
     )
@@ -71,7 +83,12 @@ export async function readGitBlobAtOidPath(
     if (isMaxBufferOverflowError(error)) {
       return { content: '', isBinary: true, exists: true }
     }
-    return { content: '', isBinary: false, exists: false }
+    return {
+      content: '',
+      isBinary: false,
+      exists: false,
+      failed: !isMissingGitBlobPath(error, gitPath, oid)
+    }
   }
 }
 
@@ -81,11 +98,8 @@ export async function readWorkingTreeFile(filePath: string): Promise<GitBlobRead
     fileStat = await stat(filePath)
   } catch (error) {
     // Why: only ENOENT is a real deletion; other stat errors are read failures, not absence.
-    return {
-      content: '',
-      isBinary: false,
-      exists: (error as NodeJS.ErrnoException)?.code !== 'ENOENT'
-    }
+    const missing = (error as NodeJS.ErrnoException)?.code === 'ENOENT'
+    return { content: '', isBinary: false, exists: !missing, ...(missing ? {} : { failed: true }) }
   }
   if (!fileStat.isFile()) {
     return { content: '', isBinary: false, exists: false }
@@ -99,7 +113,7 @@ export async function readWorkingTreeFile(filePath: string): Promise<GitBlobRead
     return bufferToBlob(buffer, filePath)
   } catch {
     // Why: the file exists but could not be read — a read failure, not a deletion.
-    return { content: '', isBinary: false, exists: true }
+    return { content: '', isBinary: false, exists: true, failed: true }
   }
 }
 

@@ -1,3 +1,5 @@
+import type { WorkspaceAttachmentMutation } from '../../../../shared/workspace-attachment-mutation'
+import type { GhAccountBinding } from '../../../../shared/github/account-binding'
 import type { SshRepoReadoption } from '../../../../shared/ssh-types'
 import type { FolderWorkspace } from '../../../../shared/folder-workspace-types'
 import type {
@@ -55,6 +57,7 @@ export type RepoUpdate = Partial<
   agentWorktreeVisibility?: Repo['agentWorktreeVisibility'] | null
   sourceControlAi?: Repo['sourceControlAi'] | null
   externalWorktreeDiscoverySuppressedAt?: Repo['externalWorktreeDiscoverySuppressedAt'] | null
+  ghAccount?: GhAccountBinding | null
 }
 
 export type ProjectUpdate = ProjectUpdateArgs['updates']
@@ -65,6 +68,7 @@ export type FolderWorkspaceUpdates = Partial<
     | 'name'
     | 'folderPath'
     | 'linkedTask'
+    | 'linkedItems'
     | 'linkedTaskSourceContext'
     | 'comment'
     | 'isArchived'
@@ -79,7 +83,8 @@ export type FolderWorkspaceUpdates = Partial<
     | 'lastActivityAt'
     | 'diffComments'
   >
->
+> &
+  WorkspaceAttachmentMutation
 
 export type NestedRepoScanControls = {
   scanId?: string
@@ -130,7 +135,11 @@ export type DeleteProjectGroupWithContainedProjectsResult =
 
 export type FolderWorkspacePathStatusRouteOptions = { runtimeEnvironmentId?: string | null }
 
-export type AddRepoPathRouteOptions = { runtimeEnvironmentId?: string | null }
+export type AddRepoPathOptions = {
+  runtimeEnvironmentId?: string | null
+  /** Overrides the host's basename naming for the new project. */
+  displayName?: string
+}
 
 export type RuntimeCatalogFetchOptions = { runtimeEnvironmentId?: string | null }
 
@@ -141,6 +150,9 @@ export type RepoSlice = {
   projectGroups: readonly ProjectGroup[]
   folderWorkspaces: readonly FolderWorkspace[]
   folderWorkspacePathStatuses: Record<string, FolderWorkspacePathStatusCacheEntry>
+  /** Host-resolved floating workspace directory; null until the host has answered. */
+  floatingWorkspacePath: string | null
+  setFloatingWorkspacePath: (path: string) => void
   activeRepoId: string | null
   // Monotonic sequence so overlapping catalog fetches can drop stale same-host results (#7020).
   reposFetchGeneration: number
@@ -158,7 +170,7 @@ export type RepoSlice = {
   addRepoPath: (
     path: string,
     kind?: 'git' | 'folder',
-    options?: AddRepoPathRouteOptions
+    options?: AddRepoPathOptions
   ) => Promise<Repo | null>
   setupProjectExistingFolder: (
     args: ProjectHostSetupExistingFolderArgs
@@ -173,7 +185,7 @@ export type RepoSlice = {
     args: ProjectHostSetupDeleteArgs
   ) => Promise<ProjectHostSetupDeleteResult | null>
   setupProjectClone: (args: ProjectHostSetupCloneArgs) => Promise<ProjectHostSetupResult | null>
-  addNonGitFolder: (path: string, options?: AddRepoPathRouteOptions) => Promise<Repo | null>
+  addNonGitFolder: (path: string, options?: AddRepoPathOptions) => Promise<Repo | null>
   scanNestedRepos: (
     path: string,
     connectionId?: string,
@@ -197,6 +209,7 @@ export type RepoSlice = {
       folderPath?: string | null
       connectionId?: string | null
       linkedTask?: FolderWorkspace['linkedTask']
+      linkedItems?: FolderWorkspace['linkedItems']
       linkedTaskSourceContext?: FolderWorkspace['linkedTaskSourceContext']
       createdWithAgent?: FolderWorkspace['createdWithAgent']
       pendingFirstAgentMessageRename?: boolean
@@ -240,11 +253,11 @@ export type RepoSlice = {
     groupId: string | null,
     order?: number
   ) => Promise<boolean>
-  // options.hostId disambiguates which host's row to remove when the id exists on multiple hosts; else the focused host is assumed.
+  // options.hostId is required: a bare id can resolve to another host's row (#13071). Removes nothing when that host has no row.
   // options.errorFeedback defaults to 'silent' so bulk/background callers keep their own aggregate reporting.
   removeProject: (
     projectId: string,
-    options?: { hostId?: ExecutionHostId; errorFeedback?: 'toast' | 'silent' }
+    options: { hostId: ExecutionHostId; errorFeedback?: 'toast' | 'silent' }
   ) => Promise<void>
   updateProject: (projectId: string, updates: ProjectUpdate) => Promise<boolean>
   // options.hostId targets a specific host's row + RPC target when the id exists on multiple hosts; else the focused host is assumed.

@@ -314,7 +314,7 @@ test.describe('Codex hidden startup composer background', () => {
       }
       const state = store.getState()
       state.setActiveTab(tabId)
-      state.setActiveTabType('terminal')
+      state.setActiveTabType('terminal', store.getState().activeWorktreeId)
     }, hiddenTabId)
     await ensureTerminalVisible(orcaPage)
     await waitForActiveTerminalManager(orcaPage, 30_000)

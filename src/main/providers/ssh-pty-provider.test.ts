@@ -17,12 +17,15 @@ describe('SshPtyProvider', () => {
     provider = new SshPtyProvider('conn-1', mux as never)
   })
 
-  it('returns the connectionId', () => {
-    expect(provider.getConnectionId()).toBe('conn-1')
-  })
-
   it('reports that SSH panes cannot restore from authoritative provider snapshots', () => {
     expect(provider.canProvideAuthoritativeBufferSnapshot(scopedPty1)).toBe(false)
+  })
+
+  it('fails closed without foreground-shell proof on direct SSH', () => {
+    expect(
+      (provider as { confirmShellForeground?: unknown }).confirmShellForeground
+    ).toBeUndefined()
+    expect(mux.request).not.toHaveBeenCalled()
   })
 
   it('keeps a shared claim probe alive when one waiter disconnects', async () => {
@@ -177,6 +180,24 @@ describe('SshPtyProvider', () => {
     )
   })
 
+  it('shutdown forwards the expected PTY incarnation over the relay', async () => {
+    await provider.shutdown(scopedPty1, {
+      immediate: true,
+      expectedIncarnationId: 'incarnation-1'
+    })
+    expectRequest(
+      mux.request,
+      'pty.shutdown',
+      {
+        id: 'pty-1',
+        immediate: true,
+        keepHistory: false,
+        expectedIncarnationId: 'incarnation-1'
+      },
+      undefined
+    )
+  })
+
   it('shutdown bounds the relay RPC by the teardown deadline', async () => {
     // Why: freeze Date.now() so the leaf conversion deadline -> remaining relative
     // timeout is exact and the mux receives precisely the leftover budget.
@@ -211,6 +232,13 @@ describe('SshPtyProvider', () => {
     expectRequest(mux.request, 'pty.clearBuffer', { id: 'pty-1' })
   })
 
+  it('pushes host colours as a notification an older relay can ignore', () => {
+    const colors = { foreground: '#ffffff', background: '#282c34' }
+    provider.setColorQueryReplyColors(colors)
+    expect(mux.notify).toHaveBeenCalledWith('pty.setColorQueryReplyColors', { colors })
+    expect(mux.request).not.toHaveBeenCalledWith('pty.setColorQueryReplyColors', expect.anything())
+  })
+
   it('acknowledgeDataEvent sends pty.ackData notification', () => {
     provider.acknowledgeDataEvent(scopedPty1, 1024)
     expect(mux.notify).toHaveBeenCalledWith('pty.ackData', { id: 'pty-1', charCount: 1024 })
@@ -230,16 +258,41 @@ describe('SshPtyProvider', () => {
     expectRequest(mux.request, 'pty.getForegroundProcess', { id: 'pty-1' })
   })
 
-  it('preserves unavailable process inspection', async () => {
+  it('preserves client-only unverifiable process inspection', async () => {
     const inspection = {
       foregroundProcess: null,
-      hasChildProcesses: true,
-      unavailable: true as const
+      hasChildProcesses: false,
+      verdict: 'unverifiable' as const,
+      reason: 'transport_loss' as const
     }
     mux.request.mockResolvedValue(inspection)
 
     await expect(provider.inspectProcess(scopedPty1)).resolves.toEqual(inspection)
     expectRequest(mux.request, 'pty.inspectProcess', { id: 'pty-1' })
+  })
+
+  it('forwards the expected incarnation for fenced remote inspection', async () => {
+    const inspection = {
+      foregroundProcess: 'codex',
+      hasChildProcesses: true,
+      foregroundProcessEvidence: { verdict: 'live' }
+    }
+    mux.request.mockResolvedValue(inspection)
+
+    await expect(
+      provider.inspectProcess(scopedPty1, { expectedIncarnationId: 'incarnation-1' })
+    ).resolves.toEqual(inspection)
+    expectRequest(mux.request, 'pty.inspectProcess', {
+      id: 'pty-1',
+      expectedIncarnationId: 'incarnation-1'
+    })
+  })
+
+  it('probes the additive foreground-evidence capability', async () => {
+    mux.request.mockResolvedValue({ foregroundProcessEvidenceVersion: 1 })
+
+    await expect(provider.supportsForegroundProcessEvidence()).resolves.toBe(true)
+    expectRequest(mux.request, 'pty.getCapabilities', undefined, { timeoutMs: 5_000 })
   })
 
   it('serializes scoped app ids using raw relay ids', async () => {

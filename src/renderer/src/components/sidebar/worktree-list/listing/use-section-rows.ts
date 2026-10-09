@@ -16,9 +16,11 @@ import type { ProjectGroupingModel } from '../grouping/project-grouping'
 import type { PinnedWorktreeDisplayPolicy, Row, WorktreeGroupBy } from '../grouping/row-types'
 import { getLogicalRepoOrderRankById } from '../../project-header-drop'
 import { getEmptyProjectPlaceholderRepoIds } from '../../empty-project-placeholder-repos'
+import { deferHostSectionCollapse, scopeHostSectionCollapse } from '../../host-section-collapse'
 import { addHostSectionRows } from '../../host-section-rows'
 import { orderHostSectionOptions } from '../../host-section-order'
 import { buildSidebarHostOptions } from '../../sidebar-host-options'
+import { selectPendingWorktreeCreationKeys } from './pending-worktree-creation-keys'
 
 type SectionRowsArgs = {
   groupBy: WorktreeGroupBy
@@ -96,19 +98,17 @@ export function useSidebarSectionRows(args: SectionRowsArgs) {
   )
 
   // Why: subscribe on a flat key array (useShallow) so progress ticks don't rebuild the whole row model.
-  // Split on first space — creationId is a UUID (no space) so a space-containing repoId stays intact.
   const pendingCreationKeys = useAppStore(
-    useShallow((s) =>
-      Object.values(s.pendingWorktreeCreations ?? {}).map(
-        (creation) => `${creation.creationId} ${creation.request.repoId}`
-      )
-    )
+    useShallow((s) => selectPendingWorktreeCreationKeys(s.pendingWorktreeCreations))
   )
   const pendingCreations = useMemo(
     () =>
       pendingCreationKeys.map((key) => {
         const separator = key.indexOf(' ')
-        return { creationId: key.slice(0, separator), repoId: key.slice(separator + 1) }
+        return {
+          creationId: key.slice(0, separator),
+          repoId: key.slice(separator + 1)
+        }
       }),
     [pendingCreationKeys]
   )
@@ -142,6 +142,17 @@ export function useSidebarSectionRows(args: SectionRowsArgs) {
     [hostOptions]
   )
 
+  const hostScopedGroups =
+    args.workspaceHostScope !== 'all' || args.visibleWorkspaceHostIds !== null
+  // Host sections apply lane collapse after splitting the rows by owner.
+  const rowCollapsedGroups = useMemo(
+    () =>
+      hostScopedGroups
+        ? deferHostSectionCollapse(effectiveCollapsedGroups)
+        : effectiveCollapsedGroups,
+    [effectiveCollapsedGroups, hostScopedGroups]
+  )
+
   const rows: Row[] = useMemo(
     () =>
       buildRows(
@@ -149,7 +160,7 @@ export function useSidebarSectionRows(args: SectionRowsArgs) {
         worktrees,
         repoMap,
         args.prCache,
-        effectiveCollapsedGroups,
+        rowCollapsedGroups,
         repoOrder,
         args.workspaceStatuses,
         args.projectOrderBy,
@@ -173,7 +184,7 @@ export function useSidebarSectionRows(args: SectionRowsArgs) {
       worktrees,
       repoMap,
       args.prCache,
-      effectiveCollapsedGroups,
+      rowCollapsedGroups,
       defaultHostId,
       repoOrder,
       args.workspaceStatuses,
@@ -216,29 +227,34 @@ export function useSidebarSectionRows(args: SectionRowsArgs) {
     },
     [orderedHostOptions, setWorkspaceHostOrder, workspaceHostOrder]
   )
-  const sectionRows = useMemo(
-    () =>
-      addHostSectionRows({
-        rows,
-        hostOptions: orderedHostOptions,
-        workspaceHostScope: args.workspaceHostScope,
-        visibleWorkspaceHostIds: args.visibleWorkspaceHostIds,
-        defaultHostId,
-        collapsedHostKeys: effectiveCollapsedGroups,
-        forceCollapseHosts: hostDragActive,
-        // Why: projects/workspaces are the primary sidebar object; host sections are only an explicit host-filter view.
-        preferProjectGrouping: true
-      }),
-    [
-      args.visibleWorkspaceHostIds,
-      args.workspaceHostScope,
+  const sectionRows = useMemo(() => {
+    const sectioned = addHostSectionRows({
+      rows,
+      hostOptions: orderedHostOptions,
+      workspaceHostScope: args.workspaceHostScope,
+      visibleWorkspaceHostIds: args.visibleWorkspaceHostIds,
       defaultHostId,
-      effectiveCollapsedGroups,
-      hostDragActive,
-      orderedHostOptions,
-      rows
-    ]
-  )
+      collapsedHostKeys: effectiveCollapsedGroups,
+      forceCollapseHosts: hostDragActive,
+      // Why: projects/workspaces are the primary sidebar object; host sections are only an explicit host-filter view.
+      preferProjectGrouping: true
+    })
+    return hostScopedGroups
+      ? scopeHostSectionCollapse({
+          rows: sectioned,
+          collapsedGroups: effectiveCollapsedGroups
+        })
+      : sectioned
+  }, [
+    args.visibleWorkspaceHostIds,
+    args.workspaceHostScope,
+    defaultHostId,
+    effectiveCollapsedGroups,
+    hostDragActive,
+    hostScopedGroups,
+    orderedHostOptions,
+    rows
+  ])
   const renderedSidebarRowKeys = useMemo(
     () => collectRenderedSidebarRowKeys(sectionRows),
     [sectionRows]

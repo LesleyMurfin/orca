@@ -48,6 +48,9 @@ export type GitHubSlice = {
   prRefreshSequences: Record<string, number>
   prRefreshStates: Record<string, PRRefreshState>
   prVisibleRefreshGeneration: number
+  visibleReviewWorktreeIds: readonly string[]
+  visibleReviewCardWorktreeIds: readonly string[]
+  setVisibleReviewCardWorktreeIds: (ids: readonly string[]) => void
   // Why: keyed by repoId + limit + query so same-path repos on different SSH targets don't share results.
   workItemsCache: Record<string, CacheEntry<readonly GitHubWorkItem[]>>
   fetchPRForBranch: (
@@ -58,6 +61,7 @@ export type GitHubSlice = {
       linkedPRNumber?: number | null
       fallbackPRNumber?: number | null
       fallbackPRSource?: GitHubPRFallbackSource | null
+      reason?: GitHubPRRefreshReason
     }
   ) => Promise<PRInfo | null>
   fetchIssue: (
@@ -71,7 +75,7 @@ export type GitHubSlice = {
     branch?: string,
     headSha?: string,
     prRepo?: GitHubOwnerRepo | null,
-    options?: RepoScopedFetchOptions
+    options?: RepoScopedFetchOptions & { throwOnError?: boolean }
   ) => Promise<PRCheckDetail[]>
   fetchPRCheckDetails: (
     repoPath: string,
@@ -131,7 +135,10 @@ export type GitHubSlice = {
     reason: GitHubPRRefreshReason,
     priority?: number
   ) => void
-  reportVisibleGitHubPRRefreshCandidates: (worktreeIds: string[], generation: number) => void
+  reportVisibleGitHubPRRefreshCandidates: (
+    worktreeIds: string[],
+    generation: number
+  ) => Promise<void>
   bumpGitHubPRVisibleRefreshGeneration: () => void
   applyGitHubPRRefreshEvent: (event: GitHubPRRefreshEvent) => void
   getEffectiveGitHubPRRefreshState: (cacheKey: string, now?: number) => PRRefreshState | undefined

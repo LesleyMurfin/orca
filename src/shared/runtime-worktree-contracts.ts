@@ -1,4 +1,5 @@
 import type { AgentStatusState, AgentType, AgentWorkingMode } from './agent-status-types'
+import type { AgentMainAgentStatus } from './main-agent-status'
 import type { BaseRefSearchResult, Repo } from './repo-types'
 import type { CreateWorktreeResult, RemoveWorktreeResult } from './worktree/create-types'
 import type {
@@ -6,6 +7,7 @@ import type {
   WorktreeLineage,
   WorktreeLineageWarning
 } from './worktree/lineage-types'
+import type { RuntimeListingHostScope } from './runtime-listing-host-scope'
 import type { GitWorktreeInfo, Worktree } from './worktree/types'
 
 export type RuntimeWorktreeAgentRow = {
@@ -21,9 +23,16 @@ export type RuntimeWorktreeAgentRow = {
   toolName: string | null
   toolInput: string | null
   interrupted: boolean
+  /** The main agent's own state, verdict and clock, sent whenever the host row has one, including
+   *  while subagents hold the row `working`. Optional on the wire: old hosts never send it, and a
+   *  reader without it falls back to `interrupted`. */
+  mainAgent?: AgentMainAgentStatus
   stateStartedAt: number
   updatedAt: number
   restoredUnconfirmed?: boolean
+  /** The structured session host still runs this row's provider child, so it is fresh regardless
+   *  of age. Optional on the wire: old hosts never send it. */
+  structuredHostOwned?: true
 }
 
 export type RuntimeWorktreePsSummary = {
@@ -61,12 +70,21 @@ export type RuntimeWorktreePsSummary = {
   unread: boolean
   liveTerminalCount: number
   hasAttachedPty: boolean
+  /**
+   * Terminals whose host lost contact; they are not in `liveTerminalCount`, and not exited either.
+   * Always sent by current hosts, 0 included; absent only from hosts that predate the field.
+   */
+  unverifiableTerminalCount?: number
   lastOutputAt: number | null
   preview: string
   status: RuntimeWorktreeStatus
   /** Optional discriminator for a working workspace; older clients fall back to ordinary working. */
   workingMode?: AgentWorkingMode
   agents: RuntimeWorktreeAgentRow[]
+  /** See `Worktree.removing`; sent only to clients that advertise background removal. */
+  removing?: true
+  /** See `GitWorktreeInfo.removalError`. */
+  removalError?: string
 }
 
 export type RuntimeGitLocalBranches = {
@@ -125,6 +143,8 @@ export type RuntimeWorktreePsResult = {
   worktrees: RuntimeWorktreePsSummary[]
   totalCount: number
   truncated: boolean
+  /** Absent from hosts that predate the field; treat that scope as unverifiable. */
+  hostScope?: RuntimeListingHostScope
 }
 
 export type RuntimeWorktreePsSnapshotResult = RuntimeWorktreePsResult & { snapshotId: string }
@@ -150,4 +170,6 @@ export type RuntimeWorktreeListResult = {
   worktrees: RuntimeWorktreeRecord[]
   totalCount: number
   truncated: boolean
+  /** Absent from hosts that predate the field; treat that scope as unverifiable. */
+  hostScope?: RuntimeListingHostScope
 }

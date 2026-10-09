@@ -9,6 +9,7 @@
  * gracefully degraded.
  */
 import { build } from 'esbuild'
+import { JSONC_PARSER_ESM_ALIAS } from '../build-plugins/jsonc-parser-esm.ts'
 import { createHash } from 'node:crypto'
 import {
   copyFileSync,
@@ -23,9 +24,16 @@ import { join } from 'node:path'
 import {
   RELAY_BUILD_PLATFORMS,
   RELAY_VERSION_FILENAME,
+  RELAY_OPENCODE_SQLITE_READER_FILENAME,
+  WSL_CLAUDE_PROFILE_HELPER_FILENAME,
+  relayOptionalArtifactFilenames,
   isWindowsRelayPlatform,
   relayArtifactFilenames
 } from '../../src/shared/relay-artifacts.ts'
+import {
+  parseRequiredRelayAddonArches,
+  stageRelayWindowsProcessTreeAddon
+} from './relay-windows-process-tree-staging.mjs'
 
 const __dirname = import.meta.dirname
 // Why: the script lives under config/scripts, so go two levels up to reach the repo root.
@@ -33,6 +41,13 @@ const ROOT = join(__dirname, '..', '..')
 const RELAY_ENTRY = join(ROOT, 'src', 'relay', 'relay.ts')
 const WATCHER_ENTRY = join(ROOT, 'src', 'main', 'ipc', 'parcel-watcher-process-entry.ts')
 const AI_VAULT_SERVICE_ENTRY = join(ROOT, 'src', 'relay', 'ai-vault-service-entry.ts')
+const OPENCODE_SQLITE_READER_ENTRY = join(
+  ROOT,
+  'src',
+  'main',
+  'ai-vault',
+  'session-scanner-opencode-sqlite-process-entry.ts'
+)
 const WSL_TRANSCRIPT_FS_PROCESS_ENTRY = join(
   ROOT,
   'src',
@@ -47,13 +62,36 @@ const MANAGED_HOOK_RUNTIME_ENTRY = join(
   'agent-hooks',
   'managed-hook-runtime.ts'
 )
-const JSONC_PARSER_ESM_ENTRY = join(ROOT, 'node_modules', 'jsonc-parser', 'lib', 'esm', 'main.js')
 const NODE_PTY_CONSOLE_LIST_PATCH_FILENAME = 'node-pty-1.1.0-console-list-agent-patch.cjs'
 const NODE_PTY_CONSOLE_LIST_PATCH_SOURCE = join(
   ROOT,
   'config',
   'relay-assets',
   NODE_PTY_CONSOLE_LIST_PATCH_FILENAME
+)
+const NODE_PTY_WINDOWS_TEARDOWN_PATCH_FILENAME = 'node-pty-1.1.0-windows-pty-teardown-patch.cjs'
+const NODE_PTY_WINDOWS_TEARDOWN_PATCH_SOURCE = join(
+  ROOT,
+  'config',
+  'relay-assets',
+  NODE_PTY_WINDOWS_TEARDOWN_PATCH_FILENAME
+)
+const NODE_PTY_MASTER_CLOEXEC_PATCH_FILENAME = 'node-pty-1.1.0-master-cloexec-patch.cjs'
+const NODE_PTY_MASTER_CLOEXEC_PATCH_SOURCE = join(
+  ROOT,
+  'config',
+  'relay-assets',
+  NODE_PTY_MASTER_CLOEXEC_PATCH_FILENAME
+)
+// Written by build-windows-process-tree-relay-addon.mjs on Windows, or downloaded
+// from CI's relay-windows-process-tree artifact on other OSes.
+const WINDOWS_PROCESS_TREE_BUILD_DIR = join(ROOT, '.build', 'windows-process-tree')
+
+// Per-arch rather than a flag because arm64 needs the MSVC ARM64 cross toolset,
+// an optional VS component: where it is absent that relay should fall back to
+// the scan, not fail the release the x64 relay is riding on.
+const REQUIRED_ADDON_ARCHES = parseRequiredRelayAddonArches(
+  process.env.ORCA_REQUIRE_RELAY_NATIVE_ADDONS
 )
 
 // Why: lets the packaging contract test build into a temp tree instead of
@@ -62,15 +100,10 @@ const OUT_ROOT = process.env.ORCA_RELAY_OUT_ROOT ?? join(ROOT, 'out', 'relay')
 
 const RELAY_VERSION = '0.1.0'
 
-for (const platform of RELAY_BUILD_PLATFORMS) {
-  const outDir = join(OUT_ROOT, platform)
-  // Why: a stale companion left by an earlier build would otherwise satisfy the
-  // manifest check and be hashed into .version, shipping mixed-generation bytes.
-  rmSync(outDir, { recursive: true, force: true })
-  mkdirSync(outDir, { recursive: true })
-
+async function buildRelayBundles(outDir) {
   await build({
     entryPoints: [RELAY_ENTRY],
+    alias: JSONC_PARSER_ESM_ALIAS,
     bundle: true,
     platform: 'node',
     target: 'node18',
@@ -85,13 +118,6 @@ for (const platform of RELAY_BUILD_PLATFORMS) {
       'process.env.NODE_ENV': '"production"'
     }
   })
-
-  if (isWindowsRelayPlatform(platform)) {
-    copyFileSync(
-      NODE_PTY_CONSOLE_LIST_PATCH_SOURCE,
-      join(outDir, NODE_PTY_CONSOLE_LIST_PATCH_FILENAME)
-    )
-  }
 
   await build({
     entryPoints: [WATCHER_ENTRY],
@@ -123,6 +149,19 @@ for (const platform of RELAY_BUILD_PLATFORMS) {
     }
   })
 
+  await build({
+    entryPoints: [OPENCODE_SQLITE_READER_ENTRY],
+    bundle: true,
+    platform: 'node',
+    target: 'node18',
+    format: 'cjs',
+    outfile: join(outDir, RELAY_OPENCODE_SQLITE_READER_FILENAME),
+    external: ['electron'],
+    sourcemap: false,
+    minify: true,
+    define: { 'process.env.NODE_ENV': '"production"' }
+  })
+
   // Why beside the service: the spawn resolves this child next to its own
   // bundle, and a relay host has no desktop out/main to fall back to.
   await build({
@@ -149,12 +188,55 @@ for (const platform of RELAY_BUILD_PLATFORMS) {
     outfile: join(outDir, 'managed-hook-runtime.js'),
     // Why: jsonc-parser's default UMD build keeps relative dynamic requires
     // that break after bundling; its ESM entry is equivalent and self-contained.
-    alias: { 'jsonc-parser': JSONC_PARSER_ESM_ENTRY },
+    alias: JSONC_PARSER_ESM_ALIAS,
     sourcemap: false,
     minify: true,
     define: {
       'process.env.NODE_ENV': '"production"'
     }
+  })
+}
+
+let bundledSourceDir
+let bundledFilenames = []
+
+for (const platform of RELAY_BUILD_PLATFORMS) {
+  const outDir = join(OUT_ROOT, platform)
+  // Why: a stale companion left by an earlier build would otherwise satisfy the
+  // manifest check and be hashed into .version, shipping mixed-generation bytes.
+  rmSync(outDir, { recursive: true, force: true })
+  mkdirSync(outDir, { recursive: true })
+
+  // The JavaScript selects its host at runtime; only native addons and patches vary.
+  if (bundledSourceDir) {
+    for (const filename of bundledFilenames) {
+      copyFileSync(join(bundledSourceDir, filename), join(outDir, filename))
+    }
+  } else {
+    await buildRelayBundles(outDir)
+    bundledSourceDir = outDir
+    bundledFilenames = readdirSync(outDir)
+  }
+
+  if (isWindowsRelayPlatform(platform)) {
+    copyFileSync(
+      NODE_PTY_CONSOLE_LIST_PATCH_SOURCE,
+      join(outDir, NODE_PTY_CONSOLE_LIST_PATCH_FILENAME)
+    )
+    copyFileSync(
+      NODE_PTY_WINDOWS_TEARDOWN_PATCH_SOURCE,
+      join(outDir, NODE_PTY_WINDOWS_TEARDOWN_PATCH_FILENAME)
+    )
+  }
+  copyFileSync(
+    NODE_PTY_MASTER_CLOEXEC_PATCH_SOURCE,
+    join(outDir, NODE_PTY_MASTER_CLOEXEC_PATCH_FILENAME)
+  )
+  stageRelayWindowsProcessTreeAddon({
+    platform,
+    outDir,
+    buildDir: WINDOWS_PROCESS_TREE_BUILD_DIR,
+    requiredArches: REQUIRED_ADDON_ARCHES
   })
 
   // Why: include a content hash so the deploy check detects code changes even
@@ -172,12 +254,25 @@ for (const platform of RELAY_BUILD_PLATFORMS) {
     }
     hash.update(readFileSync(artifactPath))
   }
+  // Why hashed only when present: a relay carrying the native addon answers
+  // differently from one that falls back to the scan, so the two must not share
+  // an immutable directory -- but a build without it is still valid.
+  for (const filename of relayOptionalArtifactFilenames(isWindowsRelayPlatform(platform))) {
+    const artifactPath = join(outDir, filename)
+    if (existsSync(artifactPath)) {
+      hash.update(readFileSync(artifactPath))
+    }
+  }
   const contentHash = hash.digest('hex').slice(0, 12)
 
   // Close the loop: an artifact emitted here but absent from the manifest would
   // ship unhashed and unprobed — exactly how the WSL helper went missing.
   const emitted = readdirSync(outDir).filter((name) => name !== RELAY_VERSION_FILENAME)
-  const undeclared = emitted.filter((name) => !expected.includes(name))
+  const declared = [
+    ...expected,
+    ...relayOptionalArtifactFilenames(isWindowsRelayPlatform(platform))
+  ]
+  const undeclared = emitted.filter((name) => !declared.includes(name))
   if (undeclared.length > 0) {
     throw new Error(
       `Relay ${platform} emitted undeclared artifacts: ${undeclared.join(', ')}. ` +
@@ -194,11 +289,13 @@ for (const platform of RELAY_BUILD_PLATFORMS) {
 // so a single platform-independent bundle suffices; it ships inside the
 // Windows app via the same out/relay extraResources mapping.
 {
-  const wslEntry = join(ROOT, 'src', 'relay', 'wsl-agent-hook-relay.ts')
+  const wslHookEntry = join(ROOT, 'src', 'relay', 'wsl-agent-hook-relay.ts')
+  const wslBrowserNetworkEntry = join(ROOT, 'src', 'relay', 'wsl-browser-network-relay.ts')
   const outDir = join(OUT_ROOT, 'wsl')
   mkdirSync(outDir, { recursive: true })
   await build({
-    entryPoints: [wslEntry],
+    entryPoints: [wslHookEntry],
+    alias: JSONC_PARSER_ESM_ALIAS,
     bundle: true,
     platform: 'node',
     target: 'node18',
@@ -214,6 +311,39 @@ for (const platform of RELAY_BUILD_PLATFORMS) {
   const hash = createHash('sha256').update(content).digest('hex').slice(0, 12)
   writeFileSync(join(outDir, '.version'), `${RELAY_VERSION}+${hash}`)
   console.log(`Built WSL hook relay → ${outDir}/wsl-agent-hook-relay.js`)
+
+  await build({
+    entryPoints: [wslBrowserNetworkEntry],
+    bundle: true,
+    platform: 'node',
+    target: 'node18',
+    format: 'cjs',
+    outfile: join(outDir, 'wsl-browser-network-relay.js'),
+    sourcemap: false,
+    minify: true,
+    define: {
+      'process.env.NODE_ENV': '"production"'
+    }
+  })
+  const browserNetworkContent = readFileSync(join(outDir, 'wsl-browser-network-relay.js'))
+  const browserNetworkHash = createHash('sha256')
+    .update(browserNetworkContent)
+    .digest('hex')
+    .slice(0, 12)
+  writeFileSync(join(outDir, '.browser-network-version'), `${RELAY_VERSION}+${browserNetworkHash}`)
+  console.log(`Built WSL browser network relay → ${outDir}/wsl-browser-network-relay.js`)
+
+  // Why here, not the relay dirs: only the desktop runs it, inside WSL; SSH hosts never upload it.
+  await build({
+    entryPoints: [join(ROOT, 'src/main/claude-accounts/claude-profile-wsl-entry.ts')],
+    bundle: true,
+    platform: 'node',
+    target: 'node18',
+    format: 'cjs',
+    outfile: join(outDir, WSL_CLAUDE_PROFILE_HELPER_FILENAME),
+    minify: true,
+    define: { 'process.env.NODE_ENV': '"production"' }
+  })
 }
 
 console.log('Relay build complete.')

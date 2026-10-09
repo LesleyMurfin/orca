@@ -1,3 +1,5 @@
+import { withClaudeProfileTerminalEnv } from '../../../claude-accounts/claude-profile-installed-router'
+import { inheritOmpLaunchEnvironment } from '../host-env/omp-launch-environment'
 import { getAppEnvironment } from '../../../../shared/app-environment'
 import type { PtySpawnResult } from '../../../providers/types'
 import { LocalPtyProvider } from '../../../providers/local-pty-provider'
@@ -11,7 +13,6 @@ import {
   resolveCodexHomeAfterManagedAuthReadiness,
   shouldSkipCodexHomeEnvForWindowsShell,
   shouldStripInheritedOrcaCodexHome,
-  isCodexStatusHooksEnabled,
   codexHomePathsEqual
 } from '../host-env/codex-home'
 import { promoteAgentTeamsShimPath } from '../host-env/path'
@@ -23,7 +24,11 @@ import {
 import { stripRemotePaneEnvWhenHooksDisabled } from '../provider/liveness'
 import { isTuiAgent } from '../../../../shared/tui-agent-config'
 import { isClaudeAuthSwitchInProgress } from '../../../claude-accounts/live-pty-gate'
-import { hasClaudeAuthEnvConflict } from '../../../claude-accounts/environment'
+import {
+  CLAUDE_AUTH_ENV_CONFLICT_MESSAGE,
+  CLAUDE_AUTH_SWITCH_IN_PROGRESS_MESSAGE,
+  hasClaudeAuthEnvConflict
+} from '../../../claude-accounts/environment'
 import {
   isSafePtySessionId,
   mintPtySessionId,
@@ -37,6 +42,7 @@ import { resolvePathEnvKey } from '../../../pty/windows-environment-path'
 import { stampWslOrchestrationCompatibilityHost } from '../../../pty/wsl-orca-env'
 import { ensureCodexStateDbBackfillRecoveryStarted } from '../../../codex/codex-state-db-backfill-recovery'
 import { clearProviderPtyState } from '../provider/state-cleanup'
+import { awaitExplicitPiOmpGuestReadiness } from '../../../agent-hooks/wsl-pi-omp-guest-readiness'
 import type { RuntimePtySpawnState } from './spawn-state'
 
 export async function prepareRuntimePtySpawn(
@@ -65,18 +71,30 @@ export async function prepareRuntimePtySpawn(
   ctx.isClaudeLaunch =
     !ctx.preAdoptedStablePane && !args.connectionId && isClaudeLaunchCommand(args.command)
   if (ctx.isClaudeLaunch && isClaudeAuthSwitchInProgress()) {
-    throw new Error('A Claude account switch is in progress. Try again after it finishes.')
+    throw new Error(CLAUDE_AUTH_SWITCH_IN_PROGRESS_MESSAGE)
   }
   // Why: runtime-created terminals carry no renderer-computed projectRuntime; resolve from worktreeId to honor the project's Windows runtime.
+  // `args.shellOverride` is the per-request pick (`terminal create --shell`), read here the way
+  // the renderer twin (ipc/spawn-preflight.ts) reads a tab's override. Without it a runtime create
+  // could only ever get the host default shell, so a caller asking for cmd/PowerShell got the
+  // default shell with the request typed into it. Still Windows-only: the override names a
+  // Windows shell, and spawn-options applies it under the same platform gate.
   ctx.terminalRuntimeOptions =
     process.platform === 'win32' && !args.connectionId
       ? resolveLocalWindowsTerminalRuntimeOptions({
-          requestedShellOverride: undefined,
+          requestedShellOverride: args.shellOverride,
           settings: ctx.deps.getSettings?.(),
           projectRuntime: resolveLocalProjectRuntimeForWorktreeId(ctx.deps.store, args.worktreeId),
           fallbackHostShell: process.env.COMSPEC || 'powershell.exe'
         })
-      : { shellOverride: undefined, terminalWindowsWslDistro: null }
+      : {
+          shellOverride:
+            args.shellOverride ??
+            (process.platform === 'win32'
+              ? undefined
+              : ctx.deps.getSettings?.()?.terminalDefaultShell || undefined),
+          terminalWindowsWslDistro: null
+        }
   ctx.daemonShellOverride = ctx.terminalRuntimeOptions.shellOverride
   ctx.isDaemonHostSpawn =
     !args.connectionId &&
@@ -119,8 +137,7 @@ export async function prepareRuntimePtySpawn(
         launchAgent: args.launchAgent,
         providerSession: args.resumeProviderSession,
         target: ctx.codexSelectionTarget,
-        launchEnv: args.env,
-        workspacePath: ctx.cwd
+        launchEnv: args.env
       })
   const codexResumeLaunch = codexResumePreparation
     ? await ctx.deps.resolveCodexResumeLaunch(args.command, codexResumePreparation)
@@ -129,17 +146,16 @@ export async function prepareRuntimePtySpawn(
   // Why: the drop still applies here, but this controller's result has no field for
   // notifyResumeUnavailable — runtime/relay panes start fresh without the notice.
   ctx.launchCommand = codexResumeLaunch.command
+  args.env = withClaudeProfileTerminalEnv(args.env, args.connectionId, ctx.codexSelectionTarget)
   ctx.claudeAuth =
     ctx.isClaudeLaunch && ctx.deps.prepareClaudeAuth
       ? await ctx.deps.prepareClaudeAuth(ctx.codexSelectionTarget)
       : null
   if (ctx.isClaudeLaunch && isClaudeAuthSwitchInProgress()) {
-    throw new Error('A Claude account switch is in progress. Try again after it finishes.')
+    throw new Error(CLAUDE_AUTH_SWITCH_IN_PROGRESS_MESSAGE)
   }
   if (ctx.claudeAuth?.stripAuthEnv && hasClaudeAuthEnvConflict(args.env)) {
-    throw new Error(
-      'This Claude launch defines explicit Anthropic auth environment variables. Remove those overrides before using a managed Claude account.'
-    )
+    throw new Error(CLAUDE_AUTH_ENV_CONFLICT_MESSAGE)
   }
 
   ctx.shouldPersistHostSessionBinding = args.persistHostSessionBinding === true
@@ -159,7 +175,8 @@ export async function prepareRuntimePtySpawn(
       worktreeId: args.worktreeId,
       tabId: args.tabId,
       leafId: args.leafId,
-      ...(args.expectedSourceBinding ? { expectedSourceBinding: args.expectedSourceBinding } : {})
+      ...(args.expectedSourceBinding ? { expectedSourceBinding: args.expectedSourceBinding } : {}),
+      ...(args.placement ? { placement: args.placement } : {})
     }
   }
   const sshScopedEnv = stripRemotePaneEnvWhenHooksDisabled(args.connectionId, args.env)
@@ -171,24 +188,23 @@ export async function prepareRuntimePtySpawn(
   if (args.preAllocatedHandle) {
     ctx.env = { ...ctx.env, ORCA_TERMINAL_HANDLE: args.preAllocatedHandle }
   }
+  const launchesCodex = args.launchAgent === 'codex'
+  const selectLaunchCodexHome = async (): Promise<string | null> =>
+    (await ctx.deps.getSelectedCodexHomePath?.(ctx.codexSelectionTarget, ctx.env, {
+      launchesCodex
+    })) ?? null
   ctx.selectedCodexHomePath =
     !ctx.preAdoptedStablePane && !args.connectionId
       ? getCompatibleSelectedCodexHomePath(
           ctx.codexSelectionTarget,
           codexResumeHome
-            ? ctx.deps.reconcileSharedRuntimeResumeHome(codexResumeHome, () =>
+            ? await ctx.deps.reconcileSharedRuntimeResumeHome(codexResumeHome, async () =>
                 getCompatibleSelectedCodexHomePath(
                   ctx.codexSelectionTarget,
-                  ctx.deps.getSelectedCodexHomePath?.(ctx.codexSelectionTarget, ctx.env, {
-                    workspacePath: ctx.cwd,
-                    launchAgent: isTuiAgent(args.launchAgent) ? args.launchAgent : undefined
-                  }) ?? null
+                  await selectLaunchCodexHome()
                 )
               )
-            : (ctx.deps.getSelectedCodexHomePath?.(ctx.codexSelectionTarget, ctx.env, {
-                workspacePath: ctx.cwd,
-                launchAgent: isTuiAgent(args.launchAgent) ? args.launchAgent : undefined
-              }) ?? null)
+            : await selectLaunchCodexHome()
         )
       : null
   if (
@@ -201,22 +217,20 @@ export async function prepareRuntimePtySpawn(
       getSettings: () => ctx.deps.getSettings?.(),
       requiredCodexHomePath: codexResumeHome?.codexHomePath,
       target: ctx.codexSelectionTarget,
-      resolveCurrent: () =>
+      resolveCurrent: async () =>
         getCompatibleSelectedCodexHomePath(
           ctx.codexSelectionTarget,
-          ctx.deps.getSelectedCodexHomePath?.(ctx.codexSelectionTarget, ctx.env, {
-            workspacePath: ctx.cwd,
-            launchAgent: 'codex'
-          }) ?? null
+          (await ctx.deps.getSelectedCodexHomePath?.(ctx.codexSelectionTarget, ctx.env, {
+            launchesCodex
+          })) ?? null
         ),
-      resolveAfterUnavailable: (unavailableManagedHomePath) =>
+      resolveAfterUnavailable: async (unavailableManagedHomePath) =>
         getCompatibleSelectedCodexHomePath(
           ctx.codexSelectionTarget,
-          ctx.deps.getSelectedCodexHomePath?.(ctx.codexSelectionTarget, ctx.env, {
-            workspacePath: ctx.cwd,
-            launchAgent: 'codex',
-            unavailableManagedHomePath
-          }) ?? null
+          (await ctx.deps.getSelectedCodexHomePath?.(ctx.codexSelectionTarget, ctx.env, {
+            unavailableManagedHomePath,
+            launchesCodex
+          })) ?? null
         )
     })
     ctx.selectedCodexHomePath = resolution instanceof Promise ? await resolution : resolution
@@ -245,6 +259,19 @@ export async function prepareRuntimePtySpawn(
       throw new Error('Invalid PTY session id')
     }
     try {
+      ctx.env ??= {}
+      await inheritOmpLaunchEnvironment(ctx.env, {
+        isWsl: shouldSkipCodexHomeEnvForWindowsShell(ctx.daemonShellOverride, ctx.cwd),
+        launchAgent: args.launchAgent,
+        launchCommand: ctx.launchCommand
+      })
+      await awaitExplicitPiOmpGuestReadiness({
+        isWsl: shouldSkipCodexHomeEnvForWindowsShell(ctx.daemonShellOverride, ctx.cwd),
+        distro: ctx.codexSelectionTarget.runtime === 'wsl' ? ctx.expectedWslDistro : null,
+        codexHomePath: ctx.selectedCodexHomePath,
+        launchAgent: isTuiAgent(args.launchAgent) ? args.launchAgent : undefined,
+        launchCommand: ctx.launchCommand
+      })
       ctx.env = buildPtyHostEnv(ctx.sessionId, ctx.env ?? {}, {
         isPackaged: getAppEnvironment().isPackaged(),
         resourcesPath: process.resourcesPath,
@@ -254,11 +281,13 @@ export async function prepareRuntimePtySpawn(
         stripInheritedOrcaCodexHome: ctx.stripInheritedOrcaCodexHome,
         launchCommand: ctx.launchCommand,
         launchAgent: isTuiAgent(args.launchAgent) ? args.launchAgent : undefined,
+        shellPath: ctx.daemonShellOverride,
         isWsl: shouldSkipCodexHomeEnvForWindowsShell(ctx.daemonShellOverride, ctx.cwd),
         wslDistro: ctx.codexSelectionTarget.runtime === 'wsl' ? ctx.expectedWslDistro : null,
         agentStatusHooksEnabled: isAgentStatusHooksEnabled(ptySettings),
-        codexStatusHooksEnabled: isCodexStatusHooksEnabled(ptySettings),
+        disabledTuiAgents: ptySettings?.disabledTuiAgents,
         networkProxySettings: ptySettings,
+        routeBrowserOpensToClient: ctx.deps.runtime?.shouldRelayTerminalBrowserOpens?.(),
         deferGitConfigGuardToDaemon:
           ctx.provider.supportsGitCredentialGuardHost?.(ctx.sessionId) === true
       })

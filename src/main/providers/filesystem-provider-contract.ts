@@ -1,5 +1,10 @@
+import type { PathExistenceResult } from '../../shared/path-existence-batch'
 import type { SearchOptions, SearchResult } from '../../shared/code-search-types'
-import type { DirEntry, FsChangeEvent } from '../../shared/filesystem-entry-types'
+import type {
+  DocPreviewFileAccessRequest,
+  DocPreviewFileAccessResult
+} from '../../shared/doc-preview-file-access'
+import type { DirEntry, FsChangeEvent, MarkdownDocument } from '../../shared/filesystem-entry-types'
 import type { WorkspaceSpaceDirectoryScanResult } from '../../shared/workspace-space-types'
 
 export type FileStat = {
@@ -46,8 +51,9 @@ export class FileRangeReadUnsupportedError extends Error {
 }
 
 export type IFilesystemProvider = {
-  readDir(dirPath: string): Promise<DirEntry[]>
+  readDir(dirPath: string, options?: { followSymlinks?: boolean }): Promise<DirEntry[]>
   readFile(filePath: string, limits?: FileReadLimits): Promise<FileReadResult>
+  readDocPreviewFile?(request: DocPreviewFileAccessRequest): Promise<DocPreviewFileAccessResult>
   /** Positional read. Optional because an older remote host cannot serve one.
    *  Strict by design: it throws `FileRangeReadUnsupportedError` rather than
    *  silently degrading, so a caller cannot accidentally pay a whole-file
@@ -81,6 +87,7 @@ export type IFilesystemProvider = {
   ): Promise<FileStat>
   writeFileBase64(filePath: string, contentBase64: string): Promise<void>
   writeFileBase64Chunk(filePath: string, contentBase64: string, append: boolean): Promise<void>
+  pathsExist?(filePaths: string[]): Promise<PathExistenceResult[]>
   stat(filePath: string): Promise<FileStat>
   lstat?(filePath: string): Promise<FileStat>
   deletePath(targetPath: string, recursive?: boolean): Promise<void>
@@ -91,7 +98,7 @@ export type IFilesystemProvider = {
   renameNoClobber(oldPath: string, newPath: string): Promise<void>
   copy(source: string, destination: string): Promise<void>
   realpath(filePath: string): Promise<string>
-  search(opts: SearchOptions): Promise<SearchResult>
+  search(opts: SearchOptions, options?: { signal?: AbortSignal }): Promise<SearchResult>
   listFiles(
     rootPath: string,
     options?: {
@@ -99,9 +106,19 @@ export type IFilesystemProvider = {
       signal?: AbortSignal
       maxResults?: number
       searchQuery?: string
+      candidatePaths?: string[]
+      includeIgnored?: boolean
+      followSymlinks?: boolean
     }
   ): Promise<string[]>
-  supportsQuickOpenSearch?(options?: { signal?: AbortSignal }): Promise<boolean>
+  listMarkdownDocuments?(
+    rootPath: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<MarkdownDocument[]>
+  supportsQuickOpenSearch?(options?: {
+    signal?: AbortSignal
+    minimumVersion?: number
+  }): Promise<boolean>
   scanWorkspaceSpace?(
     rootPath: string,
     options?: { signal?: AbortSignal }

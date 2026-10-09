@@ -3,6 +3,7 @@ import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ConfirmationDialogProvider } from './components/confirmation-dialog'
 import { BrowserWebAuthnAccountDialog } from './components/browser-webauthn-account-dialog'
+import { DocPreviewExternalLinkConfirmation } from './components/browser-pane/workspace-doc/doc-preview-external-link-confirmation'
 import { LinkRoutingPreferenceDialogProvider } from './components/link-routing-preference-dialog'
 import { SkillFreshnessNudge } from './components/skills/SkillFreshnessNudge'
 import PinnedTabCloseDialog from './components/terminal-pane/PinnedTabCloseDialog'
@@ -23,6 +24,7 @@ import { useAppChromeLayout } from './app-shell/use-app-chrome-layout'
 import { useAppSessionPersistence } from './app-shell/use-app-session-persistence'
 import { useAppShellServices } from './app-shell/use-app-shell-services'
 import { useAppStartupHydration } from './app-shell/use-app-startup-hydration'
+import { startNativeChatDraftLoad } from './app-shell/native-chat-draft-startup'
 import { useDocumentAppearance } from './app-shell/use-document-appearance'
 import { useFloatingWorkspacePanel } from './app-shell/use-floating-workspace-panel'
 import { useGlobalKeybindings } from './app-shell/use-global-keybindings'
@@ -35,13 +37,11 @@ function App(): React.JSX.Element {
   const layout = useAppChromeLayout()
   const floatingWorkspace = useFloatingWorkspacePanel()
   const onboardingGate = useOnboardingAndFeatureTips()
-  const clearUnreadDockBadge = useUnreadDockBadge()
+  const clearUnreadDockBadge = useUnreadDockBadge(floatingWorkspace.open)
 
-  // Why enabled && open: the overlay only renders while the feature is on, and its panel is
-  // aria-hidden while closed — so that pair is what "on screen" means for the floating workspace.
-  useAppShellServices({
-    floatingPanelVisible: floatingWorkspace.enabled && floatingWorkspace.open
-  })
+  useAppShellServices()
+  // Why before the startup chain: its effect runs first, and no startup step can skip the load.
+  useEffect(startNativeChatDraftLoad, [])
   useAppStartupHydration(onboardingGate.applyStartupOnboardingState)
   useAppSessionPersistence()
   useRuntimeGraphSync()
@@ -90,6 +90,7 @@ function App(): React.JSX.Element {
     >
       <TooltipProvider delayDuration={400}>
         <ConfirmationDialogProvider>
+          <DocPreviewExternalLinkConfirmation />
           <LinkRoutingPreferenceDialogProvider>
             <AppBackgroundServices />
             <AppWorkspaceShell layout={layout} floatingWorkspace={floatingWorkspace} />
@@ -100,8 +101,8 @@ function App(): React.JSX.Element {
             <BrowserWebAuthnAccountDialog />
           </LinkRoutingPreferenceDialogProvider>
         </ConfirmationDialogProvider>
+        <Toaster closeButton toastOptions={{ className: 'font-sans text-sm' }} />
       </TooltipProvider>
-      <Toaster closeButton toastOptions={{ className: 'font-sans text-sm' }} />
       <SkillFreshnessNudge />
       <WorktreeBaseFallbackDialog />
       <PinnedTabCloseDialog />

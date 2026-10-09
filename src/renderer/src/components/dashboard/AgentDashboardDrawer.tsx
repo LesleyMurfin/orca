@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppStore } from '@/store'
+import type { AgentSubjectReadIntent } from '@/attention/agent-subject-read-actions'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
-import { activateTabAndFocusPane } from '@/lib/activate-tab-and-focus-pane'
+import { revealDashboardAgent } from './reveal-dashboard-agent'
 import { AgentKanbanBoard } from '../dashboard-popout/AgentKanbanBoard'
 import type { AgentRevealArgs } from '../dashboard-popout/AgentTerminalDialog'
 import {
@@ -42,13 +43,12 @@ function AgentDashboardDrawerBody({
 
   // In-window ack/reveal act on the local store directly — the pop-out's IPC
   // relay is gated to the pop-out renderer and would reject calls from here.
-  const handleAckAgent = useCallback((paneKey: string) => {
-    useAppStore.getState().acknowledgeAgents([paneKey])
+  const handleAckAgent = useCallback((paneKey: string, intent: AgentSubjectReadIntent) => {
+    useAppStore.getState().acknowledgeAgents([paneKey], undefined, intent)
   }, [])
   const handleRevealAgent = useCallback(
     (args: AgentRevealArgs) => {
-      useAppStore.getState().setActiveWorktree(args.worktreeId, args.executionHostId)
-      activateTabAndFocusPane(args.tabId, args.leafId, { flashFocusedPane: true })
+      revealDashboardAgent(args)
       onClose()
     },
     [onClose]

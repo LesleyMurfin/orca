@@ -13,7 +13,15 @@ const COLOR_SCHEME_REPLY = mode2031SequenceFor('dark')
 const OSC_COLOR_REPLY = '\x1b]11;rgb:00/00/00\x07'
 const CPR_REPLY = '\x1b[6;1R'
 const DA1_REPLY = '\x1b[?1;2c'
-const caretEcho = (reply: string): string => reply.replaceAll('\x1b', '^[')
+// ECHOCTL carets every C0 control, so an OSC reply's trailing BEL prints as `^G`. This
+// modelled ESC alone, which is not a shape any tty produces — see the live-pty transcript
+// in pty-startup-reply-echo-shapes.test.ts.
+const caretEcho = (reply: string): string =>
+  [...reply]
+    .map((ch) =>
+      ch.charCodeAt(0) < 0x20 ? `^${String.fromCharCode(ch.charCodeAt(0) + 0x40)}` : ch
+    )
+    .join('')
 const readlineEcho = (reply: string): string =>
   reply.replaceAll('\x1b]', '\x07').replaceAll('\x1b\\', '')
 
@@ -146,6 +154,60 @@ describe('live query replies', () => {
     ingress.drainAndClose()
   })
 
+  // The private-DSR readline needle is only 7 bytes (`BEL 997;1n`), so it is the shortest
+  // span suppression can ever delete. These pin that the exposure is one exact match in an
+  // armed window — not a standing filter over ordinary output.
+  describe('the short readline needle does not eat ordinary output', () => {
+    const armed = (chunks: readonly string[]): string => {
+      const emissions: PtyIngressEmission[] = []
+      const ingress = new PtyStartupIngress({
+        ownerBackend: 'posix-pty',
+        write: () => {},
+        onEmission: (emission) => void emissions.push(emission)
+      })
+      ingress.answerLiveQueryReply(COLOR_SCHEME_REPLY)
+      for (const chunk of chunks) {
+        ingress.accept(chunk)
+      }
+      ingress.drainAndClose()
+      return visible(emissions)
+    }
+
+    it.each([
+      { name: 'BEL then a bare number', text: '\x07997 files changed\n' },
+      { name: 'BEL then a near-miss final byte', text: '\x07997;1m not a reply\n' },
+      { name: 'the digits without the BEL', text: '  45% ==== 997;1n bytes\n' },
+      { name: 'a bell mid-word', text: 'ding\x07 done\n' },
+      { name: 'ls colour output', text: '\x1b[01;34msrc\x1b[0m  \x1b[01;32mrun.sh\x1b[0m\n' },
+      { name: 'a stack trace carrying 997:1', text: 'Error: boom\n    at f (/a/b.js:997:1)\n' }
+    ])('passes $name through untouched', ({ text }) => {
+      expect(armed([text])).toBe(text)
+      // Same, torn at every byte boundary: a partial hold must still release intact.
+      for (let split = 1; split < text.length; split += 1) {
+        expect(armed([text.slice(0, split), text.slice(split)])).toBe(text)
+      }
+    })
+
+    it('suppresses the echo once, then stops', () => {
+      const echo = '\x07997;1n'
+      expect(armed([echo])).toBe('')
+      // One reply written, one span consumed — a repeat is ordinary output.
+      expect(armed([echo, echo])).toBe(echo)
+    })
+
+    it('suppresses nothing when no reply was written', () => {
+      const emissions: PtyIngressEmission[] = []
+      const ingress = new PtyStartupIngress({
+        ownerBackend: 'posix-pty',
+        write: () => {},
+        onEmission: (emission) => void emissions.push(emission)
+      })
+      ingress.accept('\x07997;1n')
+      ingress.drainAndClose()
+      expect(visible(emissions)).toBe('\x07997;1n')
+    })
+  })
+
   it('bounds unmatched echo projections instead of shadowing the session', () => {
     const { ingress, writes, emissions } = harness()
     for (let index = 0; index < 200; index += 1) {
@@ -163,9 +225,8 @@ describe('live query replies', () => {
   // queries while cooked and then arms raw mode with TCSAFLUSH discards the reply along
   // with the rest of its input queue. Measured on a real pty; TCSANOW/TCSADRAIN (libuv,
   // so every Node agent) keep it. Such a program re-queries after its own timeout, and
-  // the re-query must NOT be swallowed as already-answered — it is passed downstream so
-  // the renderer's emulator answers it, by which point the program is raw.
-  it('passes a duplicate query downstream instead of swallowing it', () => {
+  // the owner answers the re-query too, by which point the program is raw.
+  it('answers a re-query itself instead of treating it as already answered', () => {
     const writes: string[] = []
     const emissions: PtyIngressEmission[] = []
     const ingress = new PtyStartupIngress({
@@ -177,14 +238,10 @@ describe('live query replies', () => {
 
     ingress.accept('\x1b]11;?\x07')
     expect(writes).toEqual(['\x1b]11;rgb:ffff/ffff/ffff\x1b\\'])
-    // Answered here, so the query itself is consumed and never rendered.
-    expect(visible(emissions)).toBe('')
-
     ingress.accept('\x1b]11;?\x07')
-    // Not answered twice — a duplicate reply corrupts a parser already mid-read — but
-    // forwarded verbatim, so the downstream emulator can answer the retry.
-    expect(writes).toHaveLength(1)
-    expect(visible(emissions)).toBe('\x1b]11;?\x07')
+    // One reply per query, and neither query reaches a view that could answer it again.
+    expect(writes).toEqual(['\x1b]11;rgb:ffff/ffff/ffff\x1b\\', '\x1b]11;rgb:ffff/ffff/ffff\x1b\\'])
+    expect(visible(emissions)).toBe('')
     ingress.drainAndClose()
   })
 })

@@ -16,7 +16,19 @@
     "../src/renderer/src/env.d.ts",
     "../src/types/**/*"
   ],
-  "exclude": ["../tests/e2e/.cross-version-checkouts/**"],
+  "exclude": [
+    "../tests/e2e/.cross-version-checkouts/**",
+    // These three reach into the `cloud/` and `mobile/` workspaces, which have their own
+    // lockfiles, their own tsconfigs and their own typecheck jobs, and which the desktop
+    // install deliberately does not provide (see pnpm-workspace.yaml and the dedicated
+    // "Install relay integration dependencies" step in unit-tests.yml). Compiling them here
+    // would report missing `@orca-cloud/*`, `pg` and `expo-crypto` modules that are a property
+    // of this install, not of the code. They are typechecked where their dependencies exist.
+    "../tests/e2e/relay-region-compatibility.unit.test.ts",
+    "../tests/e2e/relay-region-correction.unit.test.ts",
+    "../tests/e2e/native-chat-ssh-delivery.unit.test.ts",
+    "../tests/e2e/__mocks__/native-chat-ssh-delivery.ts"
+  ],
   "compilerOptions": {
     // Why: specs run browser code inside page.evaluate, so the DOM lib has to be visible here
     // even though the harness itself is Node.

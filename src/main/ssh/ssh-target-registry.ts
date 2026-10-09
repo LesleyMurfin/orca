@@ -1,5 +1,6 @@
 import type { SshConnectionStore } from './ssh-connection-store'
 import type { SshChannelMultiplexer } from './ssh-channel-multiplexer'
+import type { SshConnectionManager } from './ssh-connection-manager'
 import type { SshConnectionState, SshTarget } from '../../shared/ssh-types'
 
 /**
@@ -86,4 +87,36 @@ export function getActiveMultiplexer(connectionId: string): SshChannelMultiplexe
     throw new Error('ssh_active_multiplexer_resolver_not_installed')
   }
   return registeredGetActiveMultiplexer(connectionId)
+}
+
+let registeredGetSshConnectionManager: (() => SshConnectionManager | null) | null = null
+let registeredHasDirectSshAuthority: ((targetId: string) => boolean) | null = null
+
+export function setSshConnectionManagerResolver(
+  resolve: (() => SshConnectionManager | null) | null
+): void {
+  registeredGetSshConnectionManager = resolve
+}
+
+/**
+ * The live SSH connection manager, or null when the handler layer has not registered
+ * one. Null means "this host has no SSH stack", never "the connection died" — callers
+ * must not read absence as an `exited` verdict (docs/reference/ssh-execution-boundary.md).
+ *
+ * Why a resolver rather than the manager itself: `registerSshHandlers` may re-run and
+ * replace the instance, so callers must resolve the current generation.
+ */
+export function getSshConnectionManager(): SshConnectionManager | null {
+  return registeredGetSshConnectionManager?.() ?? null
+}
+
+export function setDirectSshAuthorityResolver(
+  resolve: ((targetId: string) => boolean) | null
+): void {
+  registeredHasDirectSshAuthority = resolve
+}
+
+/** Whether this process currently holds the target's relay session; false when unregistered. */
+export function hasRegisteredDirectSshAuthority(targetId: string): boolean {
+  return registeredHasDirectSshAuthority?.(targetId) ?? false
 }

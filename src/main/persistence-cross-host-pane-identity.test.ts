@@ -1,3 +1,12 @@
+import {
+  closeTestStores,
+  testState,
+  createStore,
+  writeDataFile,
+  readDataFile,
+  makeRepo,
+  makeTerminalTab
+} from './persistence-test-harness'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { rmSync, mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
@@ -5,13 +14,6 @@ import { tmpdir } from 'node:os'
 import type { WorkspaceSessionState } from '../shared/workspace-session-state-types'
 import { getDefaultWorkspaceSession } from '../shared/constants'
 import { isTerminalLeafId } from '../shared/stable-pane-id'
-import {
-  testState,
-  createStore,
-  writeDataFile,
-  readDataFile,
-  makeTerminalTab
-} from './persistence-test-harness'
 
 vi.mock('electron', () => ({
   app: { getPath: () => testState.dir },
@@ -46,13 +48,19 @@ describe('cross-host pane identity migration', () => {
     testState.dir = mkdtempSync(join(tmpdir(), 'orca-test-'))
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeTestStores()
     rmSync(testState.dir, { recursive: true, force: true })
   })
 
   it('refuses hostless alias and acknowledgement rewrites for a tab id two partitions share', async () => {
     writeDataFile({
       schemaVersion: 1,
+      // Registered on purpose: rows owned by an unregistered repo id are swept as orphans on load.
+      repos: [
+        makeRepo({ id: 'repo-local', path: '/repo-local' }),
+        makeRepo({ id: 'repo-a', path: '/repo-a' })
+      ],
       workspaceSession: makeLegacyPaneSession('repo-local', 'local-pty'),
       workspaceSessionsByHostId: {
         'ssh:host-a': makeLegacyPaneSession('repo-a', 'pty-a')

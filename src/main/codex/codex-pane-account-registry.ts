@@ -8,10 +8,6 @@ import type {
   CodexPaneAccountRegistryFile,
   CodexPaneHomeRoute
 } from './codex-pane-account-registry-types'
-import type {
-  CodexEnvironmentHomeOverride,
-  CodexShellStartupHomeOverride
-} from './codex-real-home-path'
 
 export type {
   CodexPaneAccountRecord,
@@ -29,6 +25,7 @@ export type {
  */
 
 let cachedRegistry: CodexPaneAccountRegistryFile | null = null
+let cachedRegistryIsAuthoritative = true
 
 function getRegistryPath(): string {
   return join(getOrcaUserDataPath(), 'codex-pane-accounts.json')
@@ -58,7 +55,12 @@ function readRegistryOrNull(): CodexPaneAccountRegistryFile | null {
   // Why: a corrupt registry still degrades to empty and IS cached — rebuilding
   // unparseable state is the intent, and re-reading it every call would only
   // repeat the parse failure.
-  cachedRegistry = parseRegistry(parseRegistryJson(rawRegistry))
+  const parsedRegistry = parseRegistryJson(rawRegistry)
+  cachedRegistryIsAuthoritative = isAuthoritativeRegistry(parsedRegistry)
+  cachedRegistry = parseRegistry(parsedRegistry)
+  if (!cachedRegistryIsAuthoritative) {
+    cachedRegistry.legacyWslAttributionUnknown = true
+  }
   return cachedRegistry
 }
 
@@ -85,10 +87,28 @@ function readRegistry(): CodexPaneAccountRegistryFile {
 function readRegistryOrThrow(): CodexPaneAccountRegistryFile {
   mutations.flush()
   const registry = readRegistryOrNull()
-  if (!registry) {
+  if (!registry || !cachedRegistryIsAuthoritative) {
     throw new Error('Codex pane account registry could not be read')
   }
   return registry
+}
+
+function isAuthoritativeRegistry(parsed: unknown): boolean {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return false
+  }
+  const panes = (parsed as Partial<CodexPaneAccountRegistryFile>).panes
+  const version = (parsed as Partial<CodexPaneAccountRegistryFile>).version
+  const legacyWslAttributionUnknown = (parsed as Partial<CodexPaneAccountRegistryFile>)
+    .legacyWslAttributionUnknown
+  return (
+    version === 2 &&
+    Boolean(panes) &&
+    typeof panes === 'object' &&
+    !Array.isArray(panes) &&
+    Object.values(panes).every(isPaneAccountRecord) &&
+    (legacyWslAttributionUnknown === undefined || legacyWslAttributionUnknown === true)
+  )
 }
 
 function parseRegistry(parsed: unknown): CodexPaneAccountRegistryFile {
@@ -100,45 +120,20 @@ function parseRegistry(parsed: unknown): CodexPaneAccountRegistryFile {
   if (!panes || typeof panes !== 'object' || Array.isArray(panes)) {
     return empty
   }
+  if ((parsed as Partial<CodexPaneAccountRegistryFile>).legacyWslAttributionUnknown === true) {
+    empty.legacyWslAttributionUnknown = true
+  }
   for (const [ptyId, record] of Object.entries(panes)) {
     if (isPaneAccountRecord(record)) {
+      const homeRoute = readPaneHomeRoute(record.homeRoute)
       empty.panes[ptyId] = {
         selectionKey: record.selectionKey,
         accountId: record.accountId,
-        ...(isPaneHomeRoute(record.homeRoute) ? { homeRoute: record.homeRoute } : {}),
-        ...(isShellStartupHomeOverride(record.shellStartupHomeOverride)
-          ? { shellStartupHomeOverride: record.shellStartupHomeOverride }
-          : {}),
-        ...(isEnvironmentHomeOverride(record.environmentHomeOverride)
-          ? { environmentHomeOverride: record.environmentHomeOverride }
-          : {})
+        ...(homeRoute ? { homeRoute } : {})
       }
     }
   }
   return empty
-}
-
-function isEnvironmentHomeOverride(value: unknown): value is CodexEnvironmentHomeOverride {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return false
-  }
-  const context = value as Partial<CodexEnvironmentHomeOverride>
-  return typeof context.codexHome === 'string' && context.codexHome.length > 0
-}
-
-function isShellStartupHomeOverride(value: unknown): value is CodexShellStartupHomeOverride {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return false
-  }
-  const context = value as Partial<CodexShellStartupHomeOverride>
-  return (
-    typeof context.home === 'string' &&
-    context.home.length > 0 &&
-    (context.shell === undefined || typeof context.shell === 'string') &&
-    (context.configHome === undefined || typeof context.configHome === 'string') &&
-    typeof context.codexHome === 'string' &&
-    context.codexHome.length > 0
-  )
 }
 
 function isPaneAccountRecord(value: unknown): value is CodexPaneAccountRecord {
@@ -147,19 +142,23 @@ function isPaneAccountRecord(value: unknown): value is CodexPaneAccountRecord {
   }
   const record = value as Partial<CodexPaneAccountRecord>
   return (
-    typeof record.selectionKey === 'string' &&
+    (record.selectionKey === 'host' ||
+      (typeof record.selectionKey === 'string' && /^wsl:.+/.test(record.selectionKey))) &&
     (record.accountId === null || typeof record.accountId === 'string')
   )
 }
 
-function isPaneHomeRoute(value: unknown): value is CodexPaneHomeRoute {
-  return (
-    value === 'real-home' ||
+// Why: older builds wrote 'custom-home' for a shared-home pane with a pane-local CODEX_HOME.
+function readPaneHomeRoute(value: unknown): CodexPaneHomeRoute | undefined {
+  if (value === 'custom-home') {
+    return 'shared-home'
+  }
+  return value === 'real-home' ||
     value === 'shared-home' ||
     value === 'account-home' ||
-    value === 'custom-home' ||
     value === 'wsl-home'
-  )
+    ? value
+    : undefined
 }
 
 function writeRegistry(registry: CodexPaneAccountRegistryFile): boolean {
@@ -172,6 +171,7 @@ function writeRegistry(registry: CodexPaneAccountRegistryFile): boolean {
       mode: 0o600
     })
     renameSync(temporaryPath, registryPath)
+    cachedRegistryIsAuthoritative = true
     return true
   } catch (error) {
     // Why: this record only powers a restart hint; losing it must never break a
@@ -213,7 +213,6 @@ export function getCodexPaneAccount(ptyId: string): CodexPaneAccountRecord | nul
   return readRegistry().panes[ptyId] ?? null
 }
 
-/** `custom-home` stays conservative because it can mask a non-comparable shared-home route. */
 export function isCodexPaneHomeRouteProvenAwayFromSharedHome(
   route: CodexPaneHomeRoute | undefined
 ): boolean {
@@ -260,9 +259,42 @@ export function hasRecordedLegacySharedCodexPane(): boolean {
   return Object.values(readRegistry().panes).some(
     (record) =>
       record.selectionKey === 'host' &&
-      (record.homeRoute === undefined ||
-        record.homeRoute === 'shared-home' ||
-        record.homeRoute === 'custom-home')
+      (record.homeRoute === undefined || record.homeRoute === 'shared-home')
+  )
+}
+
+/** True when a retained WSL pane may still read the retired per-distro runtime home. */
+export function hasRecordedLegacyWslCodexPane(selectionKey: string): boolean {
+  const registry = readRegistryOrThrow()
+  return (
+    Boolean(registry.legacyWslAttributionUnknown) ||
+    Object.values(registry.panes).some(
+      (record) =>
+        (wslSelectionKeysMatch(record.selectionKey, selectionKey) ||
+          record.selectionKey === 'wsl:__default__') &&
+        (record.homeRoute === undefined || record.homeRoute === 'wsl-home')
+    )
+  )
+}
+
+function wslSelectionKeysMatch(left: string, right: string): boolean {
+  return (
+    left.startsWith('wsl:') &&
+    right.startsWith('wsl:') &&
+    left.slice('wsl:'.length).toLowerCase() === right.slice('wsl:'.length).toLowerCase()
+  )
+}
+
+/** True when startup should reconcile a retained legacy WSL record with daemon inventory. */
+export function hasAnyRecordedLegacyWslCodexPane(): boolean {
+  const registry = readRegistry()
+  return (
+    Boolean(registry.legacyWslAttributionUnknown) ||
+    Object.values(registry.panes).some(
+      (record) =>
+        record.selectionKey.startsWith('wsl:') &&
+        (record.homeRoute === undefined || record.homeRoute === 'wsl-home')
+    )
   )
 }
 
@@ -273,7 +305,6 @@ export function hasRecordedManagedHostCodexPane(): boolean {
       record.selectionKey === 'host' &&
       (record.homeRoute === undefined ||
         record.homeRoute === 'shared-home' ||
-        record.homeRoute === 'custom-home' ||
         (record.homeRoute === 'account-home' && record.accountId !== null))
   )
 }
@@ -290,6 +321,13 @@ export function reconcileCodexPaneAccountsWithLivePtys(livePtyIds: readonly stri
   }
   const livePtyIdSet = new Set(livePtyIds)
   let changed = false
+  if (
+    registry.legacyWslAttributionUnknown &&
+    livePtyIds.every((ptyId) => ptyId in registry.panes)
+  ) {
+    delete registry.legacyWslAttributionUnknown
+    changed = true
+  }
   for (const ptyId of Object.keys(registry.panes)) {
     if (!livePtyIdSet.has(ptyId)) {
       delete registry.panes[ptyId]
@@ -302,6 +340,7 @@ export function reconcileCodexPaneAccountsWithLivePtys(livePtyIds: readonly stri
 export const _internals = {
   resetCache: (): void => {
     cachedRegistry = null
+    cachedRegistryIsAuthoritative = true
     mutations.reset()
   }
 }

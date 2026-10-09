@@ -13,6 +13,9 @@ import type {
   AgentStatusBatchEvent,
   PendingAgentStatusEvent
 } from './agent-status-bridge-types'
+import { shouldRetryPendingAgentStatusesAfterStoreUpdate } from './agent-status-pending-retry-gate'
+
+import { registerAgentStatusStartupSnapshot } from './agent-status-startup-snapshot'
 
 const PENDING_AGENT_STATUS_RETRY_MS = 100
 const PENDING_AGENT_STATUS_TTL_MS = 15_000
@@ -94,8 +97,8 @@ export function registerAgentStatusIpcBridge(unsubs: (() => void)[]): AgentStatu
       }
     } finally {
       isFlushingAgentStatuses = false
+      schedulePendingAgentStatusFlush()
     }
-    schedulePendingAgentStatusFlush()
   }
 
   const applyAgentStatus = createAgentStatusEventApplicator({
@@ -103,11 +106,15 @@ export function registerAgentStatusIpcBridge(unsubs: (() => void)[]): AgentStatu
     transientClearWatermarkByConnectionId,
     enqueuePendingAgentStatus
   })
+  const startupSnapshot = registerAgentStatusStartupSnapshot()
   let snapshotRequestedForReadyWindow = false
   let snapshotRequestId = 0
   const requestAgentStatusSnapshotIfReady = (): void => {
     const store = useAppStore.getState()
     if (!store.workspaceSessionReady) {
+      if (snapshotRequestedForReadyWindow) {
+        startupSnapshot.reset()
+      }
       snapshotRequestedForReadyWindow = false
       return
     }
@@ -116,6 +123,7 @@ export function registerAgentStatusIpcBridge(unsubs: (() => void)[]): AgentStatu
     }
     const getSnapshot = window.api.agentStatus.getSnapshot
     if (typeof getSnapshot !== 'function') {
+      startupSnapshot.settle()
       return
     }
     snapshotRequestedForReadyWindow = true
@@ -130,6 +138,7 @@ export function registerAgentStatusIpcBridge(unsubs: (() => void)[]): AgentStatu
           return
         }
         applyAgentStatusBatch(entries.map((data) => ({ data, replay: true })))
+        startupSnapshot.settle()
         const getMigrationUnsupportedSnapshot =
           window.api.agentStatus.getMigrationUnsupportedSnapshot
         if (typeof getMigrationUnsupportedSnapshot !== 'function') {
@@ -156,6 +165,9 @@ export function registerAgentStatusIpcBridge(unsubs: (() => void)[]): AgentStatu
       })
       .catch((err) => {
         // Why: stay latched on failure; the store subscriber fires on every update, so resetting here would turn a persistent IPC failure into a retry storm (flag clears on workspaceSessionReady toggle).
+        if (!disposed && requestId === snapshotRequestId) {
+          startupSnapshot.settle()
+        }
         console.warn('[agent-status] failed to load startup snapshot:', err)
       })
   }
@@ -261,13 +273,20 @@ export function registerAgentStatusIpcBridge(unsubs: (() => void)[]): AgentStatu
   requestAgentStatusSnapshotIfReady()
   const unsubscribeAgentStatusStore = useAppStore.subscribe((state, previousState) => {
     requestAgentStatusSnapshotIfReady()
-    flushPendingAgentStatuses()
+    // Why: the timer covers module-owned rekeys; unrelated store writes cannot change attribution and must not rebuild its routing index.
+    if (
+      pendingAgentStatusEvents.length > 0 &&
+      shouldRetryPendingAgentStatusesAfterStoreUpdate(state, previousState)
+    ) {
+      flushPendingAgentStatuses()
+    }
     syncAgentHookCompletionNotificationsForStoreUpdate(state, previousState)
   })
 
   return {
     disposeAsyncState: () => {
       disposed = true
+      startupSnapshot.dispose()
       snapshotRequestId += 1
       if (pendingAgentStatusRetryTimer !== null) {
         globalThis.clearTimeout(pendingAgentStatusRetryTimer)

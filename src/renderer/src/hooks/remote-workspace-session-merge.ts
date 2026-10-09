@@ -1,8 +1,13 @@
 import type { TerminalTab } from '../../../shared/terminal-tab-types'
 import type { WorkspaceSessionState } from '../../../shared/workspace-session-state-types'
+import {
+  hasClosedTerminalTabRecord,
+  type ClosedTerminalTabTombstonesByTabId
+} from '../../../shared/closed-terminal-tab-tombstones'
 import type { ExecutionHostId } from '../../../shared/execution-host'
 import { worktreeWorkspaceKey } from '../../../shared/workspace-scope'
 import { splitWorktreeId } from '../../../shared/worktree/id'
+import { retainLocalScrollbackInRemoteLayout } from '@/components/terminal-pane/remote-layout-scrollback-retention'
 import {
   getWorktreeIdFromHostIdentity,
   isWorktreeHostIdentity
@@ -13,7 +18,11 @@ function preserveNewerLocalTerminalFields(remote: TerminalTab, local: TerminalTa
   const preserved = {
     ...remote,
     generation: local.generation,
-    ptyId: local.ptyId
+    ptyId: local.ptyId,
+    // Why: the recovery ledger is client-local and travels with generation —
+    // a remote snapshot that dropped it would hand the tab a fresh remount
+    // allowance on every republication, which is the storm again (b5cfc6ca).
+    ...(local.recovery ? { recovery: local.recovery } : {})
   }
   return local.pendingActivationSpawn
     ? { ...preserved, pendingActivationSpawn: local.pendingActivationSpawn }
@@ -26,8 +35,22 @@ export function mergeDirectSshRemoteWorkspaceSession(
   replaceWorktreeIds: ReadonlySet<string>,
   liveTabsByWorktree: AppState['tabsByWorktree'],
   preserveLocalTerminalTabIds: ReadonlySet<string>,
-  replaceExecutionHostId?: ExecutionHostId
+  replaceExecutionHostId?: ExecutionHostId,
+  closedTabRecords?: ClosedTerminalTabTombstonesByTabId,
+  preserveLocalLayoutTabIds: ReadonlySet<string> = new Set()
 ): WorkspaceSessionState {
+  // Live tabs across the worktrees this snapshot replaces. Close-suppression consults it so a tab
+  // that is still live locally always beats its own tombstone.
+  // What actually keeps suppression from deleting a tab the user did not close — the earlier claim
+  // that "every use is inside replaceWorktreeIds" was wrong, since the tabsByWorktree pass below
+  // walks all of orderedWorktreeIds and the layout/session sweeps cover the whole remote maps:
+  //   1. closeTab strips the id from EVERY worktree row before recording the tombstone
+  //      (terminal-tab-close.ts), so a tombstoned id is not live anywhere;
+  //   2. isSuppressedByClose matches the tombstone's own worktreeId, so it cannot reach another
+  //      workspace's tab even if an id somehow recurred;
+  //   3. only a tab close writes a record; nothing infers one from a tab's absence.
+  // A final sweep of suppression over the assembled tabsByWorktree — including worktrees
+  // omitTargetWorktrees passes through verbatim — is still deliberately absent.
   const currentTabsById = new Map(
     [...replaceWorktreeIds]
       .flatMap((worktreeId) => liveTabsByWorktree[worktreeId] ?? [])
@@ -36,12 +59,19 @@ export function mergeDirectSshRemoteWorkspaceSession(
   const locallyPreservedTabIds = new Set<string>()
   const localTabsFor = (worktreeId: string): TerminalTab[] =>
     liveTabsByWorktree[worktreeId] ?? current.tabsByWorktree[worktreeId] ?? []
+  // Why presence and not length: an explicit empty row, with a close record for the worktree, is how
+  // a workspace the user emptied reads (initial-terminal.ts), and localTabsFor cannot tell it from an
+  // absent one. Admitting only non-empty rows dropped the key, which reads downstream as "never
+  // initialized" and seeds a fresh terminal on every reconnect.
+  const hasLocalTabsRow = (worktreeId: string): boolean =>
+    Object.hasOwn(liveTabsByWorktree, worktreeId) ||
+    Object.hasOwn(current.tabsByWorktree, worktreeId)
   // Why the union and not just the remote keys: a host snapshot that has never been told about this
   // worktree carries no entry for it at all, and iterating only its keys would drop every local tab
   // through the omit below.
   const mergedWorktreeIds = new Set([
     ...Object.keys(remote.tabsByWorktree),
-    ...[...replaceWorktreeIds].filter((worktreeId) => localTabsFor(worktreeId).length > 0)
+    ...[...replaceWorktreeIds].filter(hasLocalTabsRow)
   ])
   // The active worktree is walked FIRST so that when one tab id is held locally under two of them,
   // the copy that survives below is the one the user is looking at. That matches what
@@ -89,22 +119,41 @@ export function mergeDirectSshRemoteWorkspaceSession(
       .filter(([tabId]) => remoteKnownTabIds.has(tabId))
       .map(([, sessionId]) => sessionId)
   )
+  // The other half of the trade below. Absence still cannot say "closed", so main's close record
+  // says it instead. Read only here: main alone writes records, and nothing acknowledges them away.
+  // Scoped to the record's own worktree, so suppression cannot reach another workspace's tab.
+  // Why a live local tab still overrides its record: an id that is live here means the record is
+  // stale, not a revival. Deleting a live pane is the one outcome this function exists to avoid.
+  const isSuppressedByClose = (tabId: string, worktreeId: string): boolean =>
+    hasClosedTerminalTabRecord(closedTabRecords, tabId, worktreeId) && !currentTabsById.has(tabId)
+  // Ids this merge actually suppressed, recorded as it walks the worktrees. The layout and
+  // session-id sweeps below have no worktree in scope, so they consult decisions already made
+  // rather than re-deriving one without the scope that makes it safe.
+  const suppressedTabIds = new Set<string>()
   const tabsByWorktree = Object.fromEntries(
     orderedWorktreeIds.map((worktreeId) => {
       const remoteTabs = remote.tabsByWorktree[worktreeId] ?? []
-      const reconciled = remoteTabs.map((tab) => {
-        const local = currentTabsById.get(tab.id)
-        if (
-          !local ||
-          ((local.generation ?? 0) <= (tab.generation ?? 0) &&
-            !local.pendingActivationSpawn &&
-            !preserveLocalTerminalTabIds.has(tab.id))
-        ) {
-          return tab
-        }
-        locallyPreservedTabIds.add(tab.id)
-        return preserveNewerLocalTerminalFields(tab, local)
-      })
+      const reconciled = remoteTabs
+        .filter((tab) => {
+          if (!isSuppressedByClose(tab.id, worktreeId)) {
+            return true
+          }
+          suppressedTabIds.add(tab.id)
+          return false
+        })
+        .map((tab) => {
+          const local = currentTabsById.get(tab.id)
+          if (
+            !local ||
+            ((local.generation ?? 0) <= (tab.generation ?? 0) &&
+              !local.pendingActivationSpawn &&
+              !preserveLocalTerminalTabIds.has(tab.id))
+          ) {
+            return tab
+          }
+          locallyPreservedTabIds.add(tab.id)
+          return preserveNewerLocalTerminalFields(tab, local)
+        })
       for (const tab of reconciled) {
         emittedTabIds.add(tab.id)
       }
@@ -126,6 +175,10 @@ export function mergeDirectSshRemoteWorkspaceSession(
       // been told about the tab, so it is not host-unknown.
       const hostUnknown = localTabsFor(worktreeId).filter((tab) => {
         if (remoteKnownTabIds.has(tab.id) || emittedTabIds.has(tab.id)) {
+          return false
+        }
+        if (isSuppressedByClose(tab.id, worktreeId)) {
+          suppressedTabIds.add(tab.id)
           return false
         }
         const localSessionId = current.remoteSessionIdsByTabId?.[tab.id]
@@ -171,16 +224,23 @@ export function mergeDirectSshRemoteWorkspaceSession(
         )
       })
     )
+  const preservedLayoutTabIds = new Set([...locallyPreservedTabIds, ...preserveLocalLayoutTabIds])
   const terminalLayoutsByTabId = {
     ...Object.fromEntries(
       Object.entries(current.terminalLayoutsByTabId).filter(
-        ([tabId]) => !replacedTabIds.has(tabId) || locallyPreservedTabIds.has(tabId)
+        ([tabId]) => !replacedTabIds.has(tabId) || preservedLayoutTabIds.has(tabId)
       )
     ),
     ...Object.fromEntries(
-      Object.entries(remote.terminalLayoutsByTabId).filter(
-        ([tabId]) => !locallyPreservedTabIds.has(tabId)
-      )
+      Object.entries(remote.terminalLayoutsByTabId)
+        .filter(([tabId]) => !preservedLayoutTabIds.has(tabId) && !suppressedTabIds.has(tabId))
+        // Why: this replace is wholesale, and a park capture does not bump tab.generation, so a
+        // just-parked tab is not locally preserved and the only client-side copy of its remote
+        // scrollback would go with its layout. Structure stays the host's.
+        .map(([tabId, layout]) => [
+          tabId,
+          retainLocalScrollbackInRemoteLayout(current.terminalLayoutsByTabId[tabId], layout)
+        ])
     )
   }
   const activeOutsideTarget =
@@ -191,10 +251,13 @@ export function mergeDirectSshRemoteWorkspaceSession(
   // the workspace or its path did not resolve to a local id, and taking that literally drops the
   // user onto the home screen while their terminals keep running. So it is only overridden when the
   // workspace they are standing in demonstrably still exists in the merged result.
+  // Why presence and not length, the same reading `hasLocalTabsRow` above already gives: a
+  // workspace the user emptied keeps an explicit empty row, so it still exists in the merged
+  // result. Counting rows sent them to the home screen for having closed their last tab.
   const localActiveWorkspaceSurvives =
     current.activeWorktreeId != null &&
     replaceWorktreeIds.has(current.activeWorktreeId) &&
-    (tabsByWorktree[current.activeWorktreeId]?.length ?? 0) > 0
+    Object.hasOwn(tabsByWorktree, current.activeWorktreeId)
   const preservedActiveWorktreeId = localActiveWorkspaceSurvives ? current.activeWorktreeId : null
   // The three active-* fields have to describe ONE workspace, so they are all derived from whichever
   // worktree wins rather than each choosing a source. Taking the repo from the host while the
@@ -236,6 +299,9 @@ export function mergeDirectSshRemoteWorkspaceSession(
           return localActiveTabId == null ? [] : [[worktreeId, localActiveTabId] as const]
         })
       ),
+      // Why a suppressed id is left in place here: hydration validates both active-tab pointers
+      // against the tab rows it just built and nulls anything they no longer name, so nulling twice
+      // would only add a second rule that has to stay in step with that one.
       ...remote.activeTabIdByWorktree
     },
     remoteSessionIdsByTabId: {
@@ -246,7 +312,7 @@ export function mergeDirectSshRemoteWorkspaceSession(
       ),
       ...Object.fromEntries(
         Object.entries(remote.remoteSessionIdsByTabId ?? {}).filter(
-          ([tabId]) => !locallyPreservedTabIds.has(tabId)
+          ([tabId]) => !locallyPreservedTabIds.has(tabId) && !suppressedTabIds.has(tabId)
         )
       )
     },
@@ -255,7 +321,11 @@ export function mergeDirectSshRemoteWorkspaceSession(
       ...remote.lastVisitedAtByWorktreeId
     },
     defaultTerminalTabsAppliedByWorktreeId: {
-      ...omitTargetWorktrees(current.defaultTerminalTabsAppliedByWorktreeId),
+      // Why no omit here: the marker is write-once and is the only guard on applyDefaultTerminalTabs,
+      // so a snapshot that omits it is a host that was never told rather than one reporting the tabs
+      // were never applied — omitting the local entry re-applies the whole template over the user's
+      // tabs. Removal is the worktree-teardown path's job, not a reconnect's.
+      ...current.defaultTerminalTabsAppliedByWorktreeId,
       ...remote.defaultTerminalTabsAppliedByWorktreeId
     }
   }

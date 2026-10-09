@@ -1,8 +1,25 @@
 import { rememberLiveBrowserUrl } from '@/components/browser-pane/describe-page/live-browser-url-registry'
 import { getRuntimeEnvironmentIdForWorktree } from '@/lib/worktree-runtime-owner'
+import { resolveBrowserSourceUnifiedTab } from '@/lib/browser-workspace-source-resolution'
 import { redactKagiSessionToken } from '../../../../shared/browser-url'
 import { useAppStore } from '../../store'
+import {
+  acquireBrowserAutomationVisibility,
+  releaseBrowserAutomationVisibility
+} from '@/components/browser-pane/host-guest/browser-automation-visibility'
 import { acquireBrowserAutomationBootstrapLease } from './browser-automation-bootstrap-lease'
+
+/**
+ * A client-hosted page is a local Electron webview on this desktop that happens to belong to a
+ * remote runtime. Its guest events come from this main process, not from the host's tab sync, so
+ * the blanket runtime-active guard on those channels would drop them on the floor.
+ */
+function isClientHostedBrowserPage(browserPageId: string): boolean {
+  return (
+    useAppStore.getState().remoteBrowserPageHandlesByPageId[browserPageId]?.placement?.kind ===
+    'client'
+  )
+}
 
 export function registerBrowserStateIpcBridge(
   unsubs: (() => void)[],
@@ -28,7 +45,7 @@ export function registerBrowserStateIpcBridge(
   )
   const unsubscribeCertificateFailure = window.api.browser.onCertificateFailureChanged?.(
     ({ browserPageId, failure }) => {
-      if (isRuntimeEnvironmentActive()) {
+      if (isRuntimeEnvironmentActive() && !isClientHostedBrowserPage(browserPageId)) {
         return
       }
       useAppStore.getState().setBrowserPageCertificateFailure(browserPageId, failure)
@@ -56,6 +73,29 @@ export function registerBrowserStateIpcBridge(
       }
     })
   )
+  // Why: main owns capture holds and sends each page's first hold and last release; no reply is awaited.
+  const capturePaintHoldTokens = new Map<string, string>()
+  const unsubscribeCapturePaintHold = window.api.browser.onCapturePaintHold?.(
+    ({ browserPageId, held }) => {
+      const token = capturePaintHoldTokens.get(browserPageId)
+      if (held && !token) {
+        capturePaintHoldTokens.set(browserPageId, acquireBrowserAutomationVisibility(browserPageId))
+      } else if (!held && token) {
+        capturePaintHoldTokens.delete(browserPageId)
+        releaseBrowserAutomationVisibility(token)
+      }
+    }
+  )
+  if (unsubscribeCapturePaintHold) {
+    unsubs.push(() => {
+      unsubscribeCapturePaintHold()
+      // Why: the release for a live hold can no longer arrive, so it must not leave the page drawn.
+      for (const token of capturePaintHoldTokens.values()) {
+        releaseBrowserAutomationVisibility(token)
+      }
+      capturePaintHoldTokens.clear()
+    })
+  }
   unsubs.push(
     window.api.browser.onPaneFocus(({ worktreeId, browserPageId }) => {
       if (isRuntimeEnvironmentActive()) {
@@ -69,7 +109,7 @@ export function registerBrowserStateIpcBridge(
     })
   )
   unsubs.push(
-    window.api.browser.onOpenLinkInOrcaTab(({ browserPageId, url }) => {
+    window.api.browser.onOpenLinkInOrcaTab(({ browserPageId, url, activate }) => {
       const store = useAppStore.getState()
       const sourcePage = Object.values(store.browserPagesByWorkspace)
         .flat()
@@ -77,7 +117,30 @@ export function registerBrowserStateIpcBridge(
       if (!sourcePage || getRuntimeEnvironmentIdForWorktree(store, sourcePage.worktreeId)) {
         return
       }
-      store.createBrowserTab(sourcePage.worktreeId, url, { title: url })
+      // Why: the link inherits the opener's cookie jar. Falling back to the default profile would let
+      // a page in an isolated session hand its links to the default one, silently crossing profiles.
+      const sourceTab = (store.browserTabsByWorktree[sourcePage.worktreeId] ?? []).find(
+        (tab) => tab.id === sourcePage.workspaceId
+      )
+      const sourceUnifiedTab = resolveBrowserSourceUnifiedTab(
+        store,
+        browserPageId,
+        sourcePage.worktreeId
+      )
+      store.createBrowserTab(sourcePage.worktreeId, url, {
+        title: url,
+        activate: activate ?? true,
+        ...(sourceUnifiedTab ? { afterTabId: sourceUnifiedTab.id } : {}),
+        ...(sourceUnifiedTab?.executionHostId
+          ? { executionHostId: sourceUnifiedTab.executionHostId }
+          : {}),
+        ...(sourceTab
+          ? {
+              sessionProfileId: sourceTab.sessionProfileId,
+              sessionPartition: sourceTab.sessionPartition
+            }
+          : {})
+      })
     })
   )
 }

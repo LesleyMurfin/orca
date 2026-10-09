@@ -38,7 +38,7 @@ export function installMultiplexSlotFrames(
     }
     if (frame.opcode === TerminalStreamOpcode.Unsubscribe) {
       state.cancelPendingPtyWaits(stream.streamId)
-      state.detachStream(stream.streamId, false)
+      state.detachStream(stream.streamId, null)
       return
     }
     if (frame.opcode === TerminalStreamOpcode.Ack) {
@@ -235,10 +235,13 @@ export function installMultiplexSlotFrames(
         cwd: serialized?.cwd,
         source: serialized?.source,
         kittyKeyboardFlags: serialized?.kittyKeyboardFlags,
+        alternateScreen: serialized?.alternateScreen,
+        terminalOwner: serialized?.terminalOwner,
         oscLinks: serialized?.oscLinks,
         pendingEscapeTailAnsi: serialized?.pendingEscapeTailAnsi,
         truncated: false,
         truncatedByByteBudget: serialized?.truncatedByByteBudget,
+        scrollbackRows: serialized?.scrollbackRows,
         // Why: no serializer answered, which is not proof the pane is empty — say so instead of passing off '' as the buffer.
         unavailable: serialized ? undefined : 'no-serializable-buffer',
         data: serialized?.data ?? ''

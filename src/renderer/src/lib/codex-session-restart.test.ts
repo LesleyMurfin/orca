@@ -12,6 +12,7 @@ import {
   type RuntimeEnvironmentCallRequest
 } from '@/runtime/runtime-compatibility-test-fixture'
 import { clearRuntimeCompatibilityCacheForTests } from '@/runtime/runtime-rpc-client'
+import { liveRemoteEvidence } from './codex-session-restart-test-fixture'
 
 const ACCOUNT_A = 'account-a@example.com'
 const ACCOUNT_B = 'account-b@example.com'
@@ -402,7 +403,11 @@ describe('markLiveCodexSessionsForRestart', () => {
       id: 'rpc-1',
       ok: true,
       result: {
-        process: { foregroundProcess: 'codex', hasChildProcesses: true }
+        process: {
+          foregroundProcess: 'codex',
+          hasChildProcesses: true,
+          foregroundProcessEvidence: liveRemoteEvidence('term-1')
+        }
       },
       _meta: { runtimeId: 'remote-runtime' }
     })
@@ -482,7 +487,13 @@ describe('markLiveCodexSessionsForRestart lane scoping', () => {
     runtimeEnvironmentCall.mockResolvedValue({
       id: 'rpc-1',
       ok: true,
-      result: { process: { foregroundProcess: 'codex', hasChildProcesses: true } },
+      result: {
+        process: {
+          foregroundProcess: 'codex',
+          hasChildProcesses: true,
+          foregroundProcessEvidence: liveRemoteEvidence('term-1')
+        }
+      },
       _meta: { runtimeId: 'remote-runtime' }
     })
     ;(globalThis as { window: typeof window }).window = {
@@ -672,8 +683,7 @@ describe('markLiveCodexSessionsForRestart lane scoping', () => {
         {
           ptyId: 'pty-1',
           launchAccountId: 'account-a',
-          activeAccountId: 'account-b',
-          reason: 'account-change'
+          activeAccountId: 'account-b'
         }
       ])
 
@@ -723,8 +733,7 @@ describe('markLiveCodexSessionsForRestart lane scoping', () => {
         {
           ptyId: 'pty-stale',
           launchAccountId: 'account-a',
-          activeAccountId: 'account-b',
-          reason: 'account-change'
+          activeAccountId: 'account-b'
         }
       ])
 
@@ -883,27 +892,6 @@ describe('markRestoredStaleCodexSessionsForRestart', () => {
       nextAccountLabel: ACCOUNT_B,
       previousAccountId: 'account-a',
       nextAccountId: 'account-b'
-    })
-  })
-
-  it('keeps a system-default home-route change as a restart notice', async () => {
-    vi.mocked(window.api.codexAccounts.listStalePanes).mockResolvedValue([
-      {
-        ptyId: 'pty-1',
-        launchAccountId: null,
-        activeAccountId: null,
-        reason: 'home-route-change'
-      }
-    ])
-
-    await markRestoredStaleCodexSessionsForRestart()
-
-    expect(useAppStore.getState().codexRestartNoticeByPtyId['pty-1']).toEqual({
-      previousAccountLabel: 'System default',
-      nextAccountLabel: 'System default',
-      previousAccountId: null,
-      nextAccountId: null,
-      homeRouteChanged: true
     })
   })
 

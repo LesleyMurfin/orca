@@ -4,14 +4,13 @@ import {
   getGitUpstreamStatusForUpstreamName,
   splitRemoteBranchName
 } from '../../../shared/git-effective-upstream'
-import { createGitConfigSnapshotRunner } from '../../../shared/git-config-snapshot-runner'
 import type { GitRuntimeOptions } from '../git-runtime-options'
-import { gitStatusReadOptionsForWorktree } from '../git-runtime-options'
+import { gitReadOptionsForWorktree } from '../git-runtime-options'
 import { gitExecFileAsync } from '../runner'
 import {
   MAX_EFFECTIVE_UPSTREAM_NEGATIVE_CACHE_ENTRIES,
   effectiveUpstreamStatusInFlight,
-  effectiveUpstreamStatusWriteGeneration,
+  getEffectiveUpstreamStatusWriteGeneration,
   readCachedEffectiveUpstreamStatus,
   rememberEffectiveUpstreamStatus,
   trimEffectiveUpstreamStatusGeneration
@@ -46,7 +45,7 @@ export async function readOrProbeEffectiveUpstreamStatus(
   }
 
   // Why: overlapping refreshes at startup — coalesce the upstream probe so a stable missing ref fails once.
-  const writeGeneration = effectiveUpstreamStatusWriteGeneration.get(cacheKey) ?? 0
+  const writeGeneration = getEffectiveUpstreamStatusWriteGeneration(cacheKey)
   const probe = probeOrRevalidateEffectiveUpstreamStatus(
     cacheKey,
     worktreePath,
@@ -90,7 +89,7 @@ async function probeOrRevalidateEffectiveUpstreamStatus(
   } else if (cached) {
     try {
       const status = await getGitUpstreamStatusForUpstreamName(
-        (args) => gitExecFileAsync(args, gitStatusReadOptionsForWorktree(worktreePath, options)),
+        (args) => gitExecFileAsync(args, gitReadOptionsForWorktree(worktreePath, options)),
         cached.upstreamName
       )
       return { status, probedSameNameOriginRef: false }
@@ -126,14 +125,11 @@ async function probeEffectiveUpstreamStatus(
   options: GitRuntimeOptions = {}
 ): Promise<{ status: GitUpstreamStatus; probedSameNameOriginRef: boolean }> {
   let probedSameNameOriginRef = false
-  const snapshotRunner = createGitConfigSnapshotRunner((args) =>
-    gitExecFileAsync(args, gitStatusReadOptionsForWorktree(worktreePath, options))
-  )
   const status = await getEffectiveGitUpstreamStatus((args) => {
     if (args[0] === 'rev-parse' && args.includes(`refs/remotes/origin/${branchName}`)) {
       probedSameNameOriginRef = true
     }
-    return snapshotRunner(args)
+    return gitExecFileAsync(args, gitReadOptionsForWorktree(worktreePath, options))
   })
   return { status, probedSameNameOriginRef }
 }

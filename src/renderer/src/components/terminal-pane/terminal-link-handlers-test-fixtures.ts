@@ -14,7 +14,9 @@ export type TerminalLinkStoreState = {
   setPendingEditorReveal: Mock
   setMarkdownViewMode: Mock
   activeFileIdByWorktree: Record<string, string | null>
+  openFiles: { filePath: string; worktreeId: string }[]
   worktreesByRepo: Record<string, { id: string; path: string }[]>
+  folderWorkspaces: []
 }
 
 export type TerminalLinkTestDoubles = {
@@ -22,7 +24,6 @@ export type TerminalLinkTestDoubles = {
   openFileUriMock: Mock
   openFilePathMock: Mock
   openFileMock: Mock
-  authorizeExternalPathMock: Mock
   statMock: Mock
   fsPathExistsMock: Mock
   runtimeEnvironmentCallMock: Mock
@@ -41,7 +42,6 @@ export function createTerminalLinkTestDoubles(): TerminalLinkTestDoubles {
   const openFileUriMock = vi.fn()
   const openFilePathMock = vi.fn()
   const openFileMock = vi.fn()
-  const authorizeExternalPathMock = vi.fn()
   const statMock = vi.fn().mockResolvedValue({ isDirectory: false })
   const fsPathExistsMock = vi.fn().mockResolvedValue(true)
   const runtimeEnvironmentCallMock = vi.fn()
@@ -60,7 +60,9 @@ export function createTerminalLinkTestDoubles(): TerminalLinkTestDoubles {
     setPendingEditorReveal: setPendingEditorRevealMock,
     setMarkdownViewMode: setMarkdownViewModeMock,
     activeFileIdByWorktree: {} as Record<string, string | null>,
-    worktreesByRepo: {} as Record<string, { id: string; path: string }[]>
+    openFiles: [] as { filePath: string; worktreeId: string }[],
+    worktreesByRepo: {} as Record<string, { id: string; path: string }[]>,
+    folderWorkspaces: [] as []
   }
 
   return {
@@ -68,7 +70,6 @@ export function createTerminalLinkTestDoubles(): TerminalLinkTestDoubles {
     openFileUriMock,
     openFilePathMock,
     openFileMock,
-    authorizeExternalPathMock,
     statMock,
     fsPathExistsMock,
     runtimeEnvironmentCallMock,

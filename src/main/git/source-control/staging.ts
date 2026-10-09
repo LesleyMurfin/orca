@@ -2,7 +2,8 @@ import type { GitRuntimeOptions } from '../git-runtime-options'
 import { gitOptionsForWorktree } from '../git-runtime-options'
 import { gitExecFileAsync } from '../runner'
 import { invalidateGitReadCaches } from './git-read-cache-invalidation'
-import { BULK_CHUNK_SIZE, literalPathspec } from './git-pathspec'
+import { literalPathspec } from './git-pathspec'
+import { encodeGitPathspecs } from '../../../shared/git-pathspec-stdin'
 
 /**
  * Stage a file.
@@ -33,7 +34,8 @@ export async function unstageFile(
 ): Promise<void> {
   invalidateGitReadCaches()
   try {
-    await gitExecFileAsync(['restore', '--staged', '--', literalPathspec(filePath, options)], {
+    // Reset treats an unborn HEAD as an empty tree, preserving the working file.
+    await gitExecFileAsync(['reset', '--quiet', '--', literalPathspec(filePath, options)], {
       ...gitOptionsForWorktree(worktreePath, options)
     })
   } finally {
@@ -42,7 +44,7 @@ export async function unstageFile(
 }
 
 /**
- * Bulk stage files in batches to avoid E2BIG.
+ * Stage selected files through stdin to avoid argv limits and repeated index writes.
  */
 export async function bulkStageFiles(
   worktreePath: string,
@@ -54,20 +56,17 @@ export async function bulkStageFiles(
     return
   }
   try {
-    for (let i = 0; i < filePaths.length; i += BULK_CHUNK_SIZE) {
-      const chunk = filePaths.slice(i, i + BULK_CHUNK_SIZE)
-      await gitExecFileAsync(
-        ['add', '--', ...chunk.map((filePath) => literalPathspec(filePath, options))],
-        gitOptionsForWorktree(worktreePath, options)
-      )
-    }
+    await gitExecFileAsync(['add', '--pathspec-from-file=-', '--pathspec-file-nul'], {
+      ...gitOptionsForWorktree(worktreePath, options),
+      stdin: encodeGitPathspecs(filePaths.map((filePath) => literalPathspec(filePath, options)))
+    })
   } finally {
     invalidateGitReadCaches()
   }
 }
 
 /**
- * Bulk unstage files in batches to avoid E2BIG.
+ * Unstage selected files through stdin to avoid argv limits and repeated index writes.
  */
 export async function bulkUnstageFiles(
   worktreePath: string,
@@ -79,20 +78,10 @@ export async function bulkUnstageFiles(
     return
   }
   try {
-    for (let i = 0; i < filePaths.length; i += BULK_CHUNK_SIZE) {
-      const chunk = filePaths.slice(i, i + BULK_CHUNK_SIZE)
-      await gitExecFileAsync(
-        [
-          'restore',
-          '--staged',
-          '--',
-          ...chunk.map((filePath) => literalPathspec(filePath, options))
-        ],
-        {
-          ...gitOptionsForWorktree(worktreePath, options)
-        }
-      )
-    }
+    await gitExecFileAsync(['reset', '--quiet', '--pathspec-from-file=-', '--pathspec-file-nul'], {
+      ...gitOptionsForWorktree(worktreePath, options),
+      stdin: encodeGitPathspecs(filePaths.map((filePath) => literalPathspec(filePath, options)))
+    })
   } finally {
     invalidateGitReadCaches()
   }

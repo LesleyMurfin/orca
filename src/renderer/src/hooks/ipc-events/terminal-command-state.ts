@@ -25,15 +25,28 @@ export function resolveTerminalPresentation(data: {
   return undefined
 }
 
-export function focusTerminalInitiatedTab(tabId: string, leafId?: string | null): void {
-  if (!focusRuntimeTerminalSurface(tabId, leafId)) {
+export function focusTerminalInitiatedTab(
+  tabId: string,
+  leafId?: string | null,
+  worktreeId?: string
+): void {
+  if (!focusRuntimeTerminalSurface(tabId, leafId, worktreeId)) {
     focusTerminalTabSurface(tabId, leafId)
   }
 }
 
-export function activateTerminalInitiatedWorktree(store: AppState, worktreeId: string): void {
+export function activateTerminalInitiatedWorktree(
+  store: AppState,
+  worktreeId: string,
+  // Activate after creating into a requested group: activation prunes a workspace's empty groups.
+  createdTabIds?: readonly string[]
+): void {
   store.setActiveView('terminal')
-  store.setActiveWorktree(worktreeId)
+  if (createdTabIds) {
+    store.setActiveWorktree(worktreeId, undefined, { createdTabIds })
+  } else {
+    store.setActiveWorktree(worktreeId)
+  }
   store.markWorktreeVisited(worktreeId)
   if (!store.isNavigatingHistory) {
     store.recordWorktreeVisit(worktreeId)

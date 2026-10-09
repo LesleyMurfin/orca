@@ -66,12 +66,19 @@ async function expectWrapperFiles(transport: string, root: string): Promise<void
  * markers register through.
  */
 const CONTRACT_GLOBALS = new Set([
+  'BUFFER',
   'CODEX_HOME',
   'HISTFILE',
   'MIMOCODE_HOME',
   'OPENCODE_CONFIG_DIR',
+  'OPENCODE_AUTH_CONTENT',
+  'OPENCODE_DB',
+  'XDG_DATA_HOME',
+  'XDG_STATE_HOME',
   'PATH',
   'PROMPT_COMMAND',
+  'PS1', // Bash appends its non-printing Readline readiness marker.
+  'CURSOR',
   'ZDOTDIR',
   'precmd_functions',
   'preexec_functions'

@@ -17,17 +17,13 @@ export function createReposApi(): NonNullable<Partial<PreloadApi>['repos']> {
       const owned = await callRuntimeResultWithOwner<{ repos: Repo[] }>('repo.list')
       return owned.result.repos.map((repo) => withRuntimeRepoOwner(repo, owned.hostId))
     },
-    add: async ({ path, kind }) => {
+    add: async ({ path, kind, displayName }) => {
       invalidateRuntimeWorktreeCaches()
       const owned = await callRuntimeResultWithOwner<{ repo: Repo } | { error: string }>(
         'repo.add',
-        { path, kind }
+        { path, kind, displayName }
       )
       return withRuntimeRepoMutationOwner(owned.result, owned.hostId)
-    },
-    remove: async ({ repoId }) => {
-      await callRuntimeResult('repo.rm', { repo: repoId })
-      invalidateRuntimeWorktreeCaches()
     },
     // Why: host-scoped forget targets a desktop-owned SSH host; a paired web client has one runtime and no ghost-host state.
     removeForHost: () => {

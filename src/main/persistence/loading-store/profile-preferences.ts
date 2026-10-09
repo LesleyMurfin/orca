@@ -1,7 +1,7 @@
 import type { GlobalSettings } from '../../../shared/global-settings-types'
 import type { OnboardingChecklistState } from '../../../shared/onboarding-state-types'
 import type { PersistedState } from '../../../shared/persisted-state-types'
-import { getDefaultOnboardingState } from '../../../shared/constants'
+import { getDefaultOnboardingState } from '../../../shared/onboarding-defaults'
 import type { FeatureInteractionId } from '../../../shared/feature-interactions'
 import {
   updateSettings as updateSettingsOperation,
@@ -17,6 +17,7 @@ import {
 import type { StoreRuntimeState } from './store-runtime-state'
 import type { WriteSchedulingOperations } from './write-scheduling'
 import { scheduleSave } from './write-scheduling'
+import { bumpLocalWorktreeScanGeneration } from '../../local-worktree-scan-generation'
 
 type ProfilePreferencesRuntime = Pick<
   StoreRuntimeState,
@@ -24,6 +25,7 @@ type ProfilePreferencesRuntime = Pick<
   | 'githubCacheDirty'
   | 'githubCacheGeneration'
   | 'protectedSecrets'
+  | 'runDurableMutation'
   | 'settingsChangeListeners'
   | 'state'
   | 'uiChangeListeners'
@@ -71,6 +73,52 @@ export class ProfilePreferences {
     options: { notifyListeners?: boolean; originWebContentsId?: number } = {}
   ): GlobalSettings {
     return updateSettingsOperation(getSettingsMutationOperations(this), updates, options)
+  }
+
+  async updateSettingsAndFlush(
+    updates: Partial<GlobalSettings>,
+    options: { notifyListeners?: boolean; originWebContentsId?: number } = {}
+  ): Promise<GlobalSettings> {
+    const { runtime } = this[profilePreferencesContext]
+    let changedUpdates: Partial<GlobalSettings> = {}
+    await runtime.runDurableMutation(() => {
+      const previous = runtime.state.settings
+      const next = this.updateSettings(updates)
+      const previousEntries = new Map(Object.entries(previous))
+      const updateKeys = new Set(Object.keys(updates))
+      changedUpdates = Object.fromEntries(
+        Object.entries(next).filter(
+          ([key, value]) => updateKeys.has(key) && !Object.is(previousEntries.get(key), value)
+        )
+      )
+      return {
+        value: undefined,
+        rollback: () => {
+          const currentEntries = new Map(Object.entries(runtime.state.settings))
+          const nextEntries = new Map(Object.entries(next))
+          const restoredUpdates = Object.fromEntries(
+            Object.entries(previous).filter(
+              ([key]) =>
+                updateKeys.has(key) && Object.is(currentEntries.get(key), nextEntries.get(key))
+            )
+          )
+          const restoredSettings = { ...runtime.state.settings, ...restoredUpdates }
+          for (const key of updateKeys) {
+            if (
+              !previousEntries.has(key) &&
+              Object.is(currentEntries.get(key), nextEntries.get(key))
+            ) {
+              Reflect.deleteProperty(restoredSettings, key)
+            }
+          }
+          runtime.state.settings = restoredSettings
+        }
+      }
+    })
+    if (options.notifyListeners && Object.keys(changedUpdates).length > 0) {
+      notifySettingsChanged(this, changedUpdates, options.originWebContentsId)
+    }
+    return this.getSettings()
   }
 
   getUI(): PersistedState['ui'] {
@@ -155,9 +203,10 @@ export function getSettingsMutationOperations(
 ): SettingsMutationOperations {
   return {
     state: owner[profilePreferencesContext].runtime.state,
+    bumpLocalWorktreeScanGeneration,
     removeRetainedBlob: (slot) =>
       owner[profilePreferencesContext].runtime.protectedSecrets.removeRetainedBlob(slot),
-    scheduleSave: () => scheduleSave(owner[profilePreferencesContext].scheduling),
+    scheduleSave: () => scheduleSave(owner[profilePreferencesContext].scheduling, ['settings']),
     notifySettingsChanged: (updates, originWebContentsId) =>
       notifySettingsChanged(owner, updates, originWebContentsId)
   }
@@ -181,13 +230,16 @@ export function getFeatureInteractionOperations(
 ): FeatureInteractionOperations {
   return {
     state: owner[profilePreferencesContext].runtime.state,
-    scheduleSave: () => scheduleSave(owner[profilePreferencesContext].scheduling),
+    scheduleSave: (domains) => scheduleSave(owner[profilePreferencesContext].scheduling, domains),
     notifyUIChanged: () => notifyUIChanged(owner),
     getUI: () => owner.getUI()
   }
 }
 
-export function installProfilePreferencesContext(target: object, source: ProfilePreferences): void {
+export function installProfilePreferencesContext(
+  target: ProfilePreferences,
+  source: ProfilePreferences
+): void {
   Object.defineProperty(target, profilePreferencesContext, {
     value: source[profilePreferencesContext]
   })

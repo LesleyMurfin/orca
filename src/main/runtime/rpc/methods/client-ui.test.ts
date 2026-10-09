@@ -1,3 +1,4 @@
+import '../unused-default-rpc-methods.test-fixture'
 import { describe, expect, it, vi } from 'vitest'
 import { getDefaultUIState } from '../../../../shared/constants'
 import { omitPairingLocalUiFields } from '../../../../shared/pairing-local-ui-fields'
@@ -34,6 +35,7 @@ describe('client UI RPC methods', () => {
       compactWorktreeCards: true,
       minimaxGroupId: 'group-42',
       minimaxUsageModels: 'general,abab6.5',
+      minimaxEndpoint: 'cn',
       githubProjects: {
         pinned: [
           {
@@ -58,6 +60,24 @@ describe('client UI RPC methods', () => {
 
     expect(runtime.getClientSettings).toHaveBeenCalledTimes(1)
     expect(response).toMatchObject({ ok: true, result: { settings } })
+  })
+
+  it('rejects paired attempts to mutate the host-owned structured chat setting', async () => {
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      updateClientSettings: vi.fn()
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: CLIENT_UI_METHODS })
+
+    const response = await dispatcher.dispatch(
+      makeRequest('settings.update', { experimentalNativeChat: true })
+    )
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: { code: 'invalid_argument' }
+    })
+    expect(runtime.updateClientSettings).not.toHaveBeenCalled()
   })
 
   it('persists the runtime host task source settings for mobile Tasks', async () => {
@@ -114,6 +134,7 @@ describe('client UI RPC methods', () => {
         compactWorktreeCards: true,
         minimaxGroupId: 'group-42',
         minimaxUsageModels: 'general,abab6.5',
+        minimaxEndpoint: 'cn',
         defaultRepoSelection: settings.defaultRepoSelection,
         defaultLinearTeamSelection: ['team-1', 'team-2'],
         githubProjects: settings.githubProjects
@@ -138,6 +159,7 @@ describe('client UI RPC methods', () => {
       compactWorktreeCards: true,
       minimaxGroupId: 'group-42',
       minimaxUsageModels: 'general,abab6.5',
+      minimaxEndpoint: 'cn',
       defaultRepoSelection: settings.defaultRepoSelection,
       defaultLinearTeamSelection: ['team-1', 'team-2'],
       githubProjects: settings.githubProjects
@@ -443,24 +465,6 @@ describe('client UI RPC methods', () => {
     })
   })
 
-  it('does not let a paired client replace the host workspace origin filter', async () => {
-    const runtime = {
-      getRuntimeId: () => 'test-runtime',
-      updateUIState: vi.fn(() => getDefaultUIState())
-    } as unknown as OrcaRuntimeService
-    const dispatcher = new RpcDispatcher({ runtime, methods: CLIENT_UI_METHODS })
-
-    const response = await dispatcher.dispatch(
-      makeRequest('ui.set', {
-        hideWorkspacesFromOtherDevices: true,
-        sidebarWidth: 280
-      })
-    )
-
-    expect(response).toMatchObject({ ok: true })
-    expect(runtime.updateUIState).toHaveBeenCalledWith({ sidebarWidth: 280 })
-  })
-
   it('accepts persisted literal UI arrays and nested UI state', async () => {
     const updated: PersistedUIState = {
       ...getDefaultUIState(),
@@ -585,6 +589,8 @@ describe('client UI RPC methods', () => {
     ],
     ['taskResumeState.jiraPreset', { taskResumeState: { jiraPreset: 'assigned' } }],
     ['taskResumeState.jiraQuery', { taskResumeState: { jiraQuery: 'ENG' } }],
+    ['dismissedUnexpectedSignoutVersion', { dismissedUnexpectedSignoutVersion: '1.2.3' }],
+    ['dismissedUnexpectedSignoutVersion null', { dismissedUnexpectedSignoutVersion: null }],
     ['activeView', { activeView: 'tasks' }],
     ['showDotfilesByWorktree', { showDotfilesByWorktree: { 'repo::/worktree': true } }],
     ['setupGuideSidebarDismissed', { setupGuideSidebarDismissed: true }],
@@ -762,28 +768,6 @@ describe('client UI RPC methods', () => {
       expect(runtime.updateUIState).toHaveBeenCalledWith({ rightSidebarTab, sidebarWidth: 280 })
     }
   )
-
-  it('rejects star-nag persisted state mutations from remote clients', async () => {
-    const runtime = {
-      getRuntimeId: () => 'test-runtime',
-      updateUIState: vi.fn()
-    } as unknown as OrcaRuntimeService
-    const dispatcher = new RpcDispatcher({ runtime, methods: CLIENT_UI_METHODS })
-
-    const response = await dispatcher.dispatch(
-      makeRequest('ui.set', {
-        starNagBaselineAgents: 10,
-        starNagAppVersion: '1.2.3',
-        starNagAgentValueMomentAppVersion: '1.2.3',
-        starNagNextThreshold: 70,
-        starNagCompleted: true,
-        starNagDeferredUntil: null
-      })
-    )
-
-    expect(response).toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
-    expect(runtime.updateUIState).not.toHaveBeenCalled()
-  })
 
   it('strips retired worktree card properties from legacy clients', async () => {
     const updated: PersistedUIState = {

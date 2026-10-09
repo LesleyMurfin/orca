@@ -59,6 +59,13 @@ export function readLegacyTerminalScrollbackSettings(
 type RetiredGlobalSettings = {
   terminalScrollbackBytes?: unknown
   enableGitHubAttribution?: unknown
+  showAgentsSidebar?: unknown
+  // Managed servers are the default SSH path now; an older build reads a missing key as off.
+  experimentalManagedServers?: unknown
+  // Why: #22551 kept this key in settings; it now lives in a main-owned store and must never ride along.
+  opencodeGoApiKey?: unknown
+  experimentalStructuredNativeChat?: unknown
+  openAgentTabsInChatByDefault?: unknown
 }
 
 export function stripRetiredGlobalSettings(
@@ -67,10 +74,20 @@ export function stripRetiredGlobalSettings(
   const {
     terminalScrollbackBytes: _legacyScrollbackBytes,
     enableGitHubAttribution: _legacyGitHubAttribution,
+    showAgentsSidebar: _legacyShowAgentsSidebar,
+    experimentalManagedServers: _retiredManagedServersExperiment,
+    opencodeGoApiKey: _legacyOpenCodeGoApiKey,
+    experimentalStructuredNativeChat: _legacyStructuredNativeChat,
+    openAgentTabsInChatByDefault: _legacyChatDefaultView,
     ...rest
   } = (settings ?? {}) as Partial<GlobalSettings> & RetiredGlobalSettings
   void _legacyScrollbackBytes
   void _legacyGitHubAttribution
+  void _legacyShowAgentsSidebar
+  void _retiredManagedServersExperiment
+  void _legacyOpenCodeGoApiKey
+  void _legacyStructuredNativeChat
+  void _legacyChatDefaultView
   return rest
 }
 
@@ -123,7 +140,22 @@ export function migrateAgentYoloDefaults(
 ): Pick<GlobalSettings, 'agentDefaultArgs' | 'agentDefaultEnv' | 'agentYoloDefaultsMigrated'> {
   const existingArgs = normalizeTuiAgentArgsRecord(settings?.agentDefaultArgs)
   const existingEnv = normalizeTuiAgentEnvRecord(settings?.agentDefaultEnv)
+  if (existingArgs.devin === '--permission-mode bypass') {
+    existingArgs.devin = DEFAULT_TUI_AGENT_ARGS.devin
+  }
   if (settings?.agentYoloDefaultsMigrated === true) {
+    // Keep newly added agents manual for profiles migrated by an older build.
+    // Missing keys otherwise fall through to the current (possibly yolo) defaults.
+    for (const agent of Object.keys(DEFAULT_TUI_AGENT_ARGS)) {
+      if (!(agent in existingArgs)) {
+        existingArgs[agent as keyof typeof DEFAULT_TUI_AGENT_ARGS] = ''
+      }
+    }
+    for (const agent of Object.keys(DEFAULT_TUI_AGENT_ENV)) {
+      if (!(agent in existingEnv)) {
+        existingEnv[agent as keyof typeof DEFAULT_TUI_AGENT_ENV] = {}
+      }
+    }
     return {
       agentDefaultArgs: existingArgs,
       agentDefaultEnv: existingEnv,

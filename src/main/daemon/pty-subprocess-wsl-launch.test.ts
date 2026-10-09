@@ -72,8 +72,9 @@ vi.mock('../providers/agent-foreground-process', () => ({
 // fake timers; default to "shell-only" so the degraded-scan guard falls through
 // to its existing retirement logic (the degraded-scan behavior itself is
 // covered in pty-subprocess-foreground-degraded-scan.test.ts).
-vi.mock('../providers/windows-conpty-process-membership', () => ({
-  readWindowsConptyProcessIds: () => Promise.resolve(new Set([12345]))
+vi.mock('../providers/windows-pty-job-membership', () => ({
+  readWindowsPtyJobProcessIds: () => new Set([12345]),
+  isWindowsPtyJobReadable: () => true
 }))
 
 import { createPtySubprocess } from './pty-subprocess'
@@ -411,6 +412,42 @@ describe('createPtySubprocess', () => {
         'ORCA_HERMES_STARTUP_QUERY',
         POWERLEVEL10K_WIZARD_DISABLE_ENV
       ])
+    )
+  })
+
+  it('imports the guest-relative Claude pointer and profile home verbatim into daemon WSL terminals', async () => {
+    spawnMock.mockReturnValue(mockPtyProcess())
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    const home = '/home/jin/.local/share/orca/claude-profiles/a/home'
+    try {
+      await createPtySubprocess({
+        sessionId: 'test',
+        cols: 80,
+        rows: 24,
+        cwd: '\\\\wsl.localhost\\Ubuntu\\home\\jin\\repo',
+        env: {
+          CLAUDE_CONFIG_DIR: home,
+          ORCA_CLAUDE_INJECTED_CONFIG_DIR: home,
+          ORCA_CLAUDE_PROFILE_POINTER: '~/.local/share/orca/claude-profiles/selected-wsl-orca'
+        }
+      })
+    } finally {
+      if (platform) {
+        Object.defineProperty(process, 'platform', platform)
+      }
+    }
+    const env = spawnMock.mock.calls.at(-1)?.[2].env
+    // Why no flag: /p or /u would translate a guest path as if it were a Windows one.
+    expect(env.WSLENV.split(':')).toEqual(
+      expect.arrayContaining([
+        'CLAUDE_CONFIG_DIR',
+        'ORCA_CLAUDE_PROFILE_POINTER',
+        'ORCA_CLAUDE_INJECTED_CONFIG_DIR'
+      ])
+    )
+    expect(env.ORCA_CLAUDE_PROFILE_POINTER).toBe(
+      '~/.local/share/orca/claude-profiles/selected-wsl-orca'
     )
   })
 

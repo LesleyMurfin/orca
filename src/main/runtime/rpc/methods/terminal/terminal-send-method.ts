@@ -1,4 +1,5 @@
-import { InvalidArgumentError, defineMethod, type RpcAnyMethod } from '../../core'
+import { assertLegacyAiVaultResumeCommandAllowed } from '../../../../ai-vault/structured-session-ownership'
+import { InvalidArgumentError, defineMethod } from '../../core'
 import { isTerminalQueryReply } from '../../../../../shared/terminal-query-reply'
 import { assertTerminalAgentSendable } from '../../terminal-agent-send-guard'
 import { TerminalSend } from './unary-schemas'
@@ -13,14 +14,40 @@ import {
   type MobileInputFloorClaimHolder
 } from './terminal-input-delivery'
 import { updateViewportForClient } from './terminal-viewport-update'
+import {
+  ensureUnsupportedTerminalPromptReceipt,
+  observeReplayedTerminalPrompt
+} from './terminal-prompt-receipt'
 
-export const TERMINAL_SEND_METHODS: RpcAnyMethod[] = [
+export const TERMINAL_SEND_METHODS = [
   defineMethod({
     name: 'terminal.send',
+    permission: 'workspace',
     params: TerminalSend,
-    handler: async (params, { runtime, clientId, signal }) => {
+    handler: async (
+      params,
+      {
+        runtime,
+        clientId,
+        signal,
+        orchestrationMutation,
+        recordMutationReceipt,
+        markMutationEffectPossible,
+        replayedMutationReceipt
+      }
+    ) => {
       await assertTerminalSendTextWithinLimit(params.text)
       await assertTerminalSendTextWithinLimit(params.resolvedLaunchDraft?.text)
+      if (params.text) {
+        await assertLegacyAiVaultResumeCommandAllowed(params.text, () =>
+          runtime.ensureStructuredAgentSessionHost()
+        )
+      }
+      if (params.resolvedLaunchDraft?.text) {
+        await assertLegacyAiVaultResumeCommandAllowed(params.resolvedLaunchDraft.text, () =>
+          runtime.ensureStructuredAgentSessionHost()
+        )
+      }
       const queryReplyClientId = clientId ?? params.client?.id
       if (
         params.inputKind === 'query-reply' &&
@@ -35,6 +62,16 @@ export const TERMINAL_SEND_METHODS: RpcAnyMethod[] = [
           (clientId !== undefined && params.client.id !== clientId))
       ) {
         throw new InvalidArgumentError('Invalid terminal query reply')
+      }
+      const replayObservation = await observeReplayedTerminalPrompt(
+        runtime,
+        params.terminal,
+        replayedMutationReceipt,
+        params.waitSubmitMs,
+        signal
+      )
+      if (replayObservation) {
+        return replayObservation
       }
       // Why: a stale handle must fail with terminal_handle_stale, not evaluate driver/lock state against the wrong PTY (#7718).
       const leaf = runtime.resolveLiveLeafForHandle(params.terminal)
@@ -145,7 +182,13 @@ export const TERMINAL_SEND_METHODS: RpcAnyMethod[] = [
       }
       const mobileFloorClientId = resolveMobileFloorClientId(driver, params.client)
       const mobileFloorClaim: MobileInputFloorClaimHolder = { current: null }
-      const beforeWrite = assertSendPreconditions
+      const beforeWrite =
+        orchestrationMutation && params.agentPrompt === true
+          ? async (ptyId?: string): Promise<void> => {
+              await assertSendPreconditions?.(ptyId)
+              markMutationEffectPossible?.()
+            }
+          : assertSendPreconditions
       const useSettledAgentPrompt =
         params.agentPrompt === true &&
         hasText &&
@@ -164,11 +207,24 @@ export const TERMINAL_SEND_METHODS: RpcAnyMethod[] = [
             }
           : undefined
       let result
+      let acceptedPromptCheckpoint: unknown
       try {
         result = useSettledAgentPrompt
           ? await runtime.sendTerminalAgentPrompt(params.terminal, params.text!, {
+              inputKind: 'driving',
               beforeWrite,
-              signal
+              signal,
+              ...(orchestrationMutation
+                ? {
+                    acceptQueued: true,
+                    observationTimeoutMs: params.waitSubmitMs ?? 0,
+                    requestId: orchestrationMutation.requestId,
+                    onInputAccepted: (send) => {
+                      acceptedPromptCheckpoint = { send }
+                      recordMutationReceipt?.(acceptedPromptCheckpoint)
+                    }
+                  }
+                : {})
             })
           : await runtime.sendTerminal(
               params.terminal,
@@ -179,6 +235,10 @@ export const TERMINAL_SEND_METHODS: RpcAnyMethod[] = [
               },
               {
                 beforeWrite,
+                signal,
+                // Why: a wire write carries no provenance beyond a client's own query reply.
+                inputKind: params.inputKind === 'query-reply' ? 'query-reply' : 'driving',
+                ...(params.requireWriteSettlement ? { requireWriteSettlement: true as const } : {}),
                 ...(reserveWrite ? { reserveWrite } : {}),
                 ...(params.inputKind !== 'query-reply' && mobileFloorClientId
                   ? { afterWrite: () => commitMobileInputFloorClaim(mobileFloorClaim) }
@@ -187,6 +247,9 @@ export const TERMINAL_SEND_METHODS: RpcAnyMethod[] = [
             )
       } catch (error) {
         mobileFloorClaim.current?.rollback()
+        if (acceptedPromptCheckpoint) {
+          return acceptedPromptCheckpoint
+        }
         const refusedReason = getTerminalSendGuardRefusedReason(error)
         if (refusedReason) {
           return {
@@ -219,6 +282,14 @@ export const TERMINAL_SEND_METHODS: RpcAnyMethod[] = [
         params.resolvedLaunchDraft
       ) {
         runtime.notifyNativeChatLaunchDraftResolved(params.terminal, params.resolvedLaunchDraft)
+      }
+      if (orchestrationMutation && params.agentPrompt === true && !result.prompt) {
+        result = ensureUnsupportedTerminalPromptReceipt(
+          runtime,
+          params.terminal,
+          orchestrationMutation.requestId,
+          result
+        )
       }
       // Why: deliberate mobile input takes the floor (drives `* → mobile{clientId}`); clientless sends fall back to the current mobile driver.
       return { send: result }

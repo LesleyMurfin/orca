@@ -6,7 +6,9 @@ import {
   getPowerShellOsc133Bootstrap,
   isPowerShellExecutableName
 } from '../powershell-osc133-bootstrap'
-import { getFishCodexShellLaunchPreflight } from '../pty/codex-shell-launch-preflight'
+import { getFishCodexShellLaunchPreflight } from '../../shared/codex-shell-function'
+import { getFishClaudeShellFunction } from '../../shared/claude-shell-function'
+import { getFishXdgDataDirsLaunchEnv } from '../fish-xdg-data-dirs-handoff'
 import { getFishShellReadyInitCommand } from '../shell-templates'
 import {
   encodeShellStartupFeatures,
@@ -15,7 +17,10 @@ import {
 } from '../shell-startup-features'
 import { resolveShellWrapperRoot } from '../shell-wrapper-content-address'
 import { writeShellWrapperFiles } from '../shell-wrapper-file-writer'
-import { buildDaemonShellReadyWrapperFiles } from './daemon-shell-ready-wrapper-fileset'
+import {
+  buildDaemonShellReadyWrapperFiles,
+  getDaemonShellReadyWrapperPaths
+} from './daemon-shell-ready-wrapper-fileset'
 import { inheritedZdotdirEnv, resolveInheritedZdotdir } from '../zsh-wrapper-dir-ownership'
 import { SHELL_READY_MARKER } from './daemon-shell-ready-marker'
 
@@ -50,8 +55,8 @@ export function getShellReadyWrapperRoot(): string {
   return cachedShellReadyWrapperRoot.root
 }
 
-function getRequiredShellReadyWrapperPaths(root = getShellReadyWrapperRoot()): string[] {
-  return buildDaemonShellReadyWrapperFiles(root).map(([path]) => path)
+function getRequiredShellReadyWrapperPaths(root = getShellReadyWrapperRoot()): readonly string[] {
+  return getDaemonShellReadyWrapperPaths(root)
 }
 
 // Why non-empty and not just present: a partial write leaves a zero-byte
@@ -105,13 +110,6 @@ export function shellPathSupportsPtyStartupBarrier(shellPath: string): boolean {
   return shellName === 'zsh' || shellName === 'bash' || shellName === 'fish'
 }
 
-export function supportsPtyStartupBarrier(env: Record<string, string>): boolean {
-  if (process.platform === 'win32') {
-    return false
-  }
-  return shellPathSupportsPtyStartupBarrier(resolvePtyShellPath(env))
-}
-
 export type ShellLaunchConfig = {
   args: string[] | null
   env: Record<string, string>
@@ -130,7 +128,12 @@ const UNWRAPPED: ShellLaunchConfig = {
  */
 export function getShellLaunchConfig(
   shellPath: string,
-  features: readonly ShellStartupFeature[]
+  features: readonly ShellStartupFeature[],
+  options?: {
+    hasStartupCommand?: boolean
+    inheritedXdgDataDirs: string | undefined
+    shellArgs?: readonly string[]
+  }
 ): ShellLaunchConfig {
   const shellName = pathWin32.basename(basename(shellPath)).toLowerCase()
 
@@ -172,6 +175,7 @@ export function getShellLaunchConfig(
       args: [
         '-NoLogo',
         '-NoExit',
+        // Why base64 and not -Command: see powershell-osc133-bootstrap.ts (MDE review).
         '-EncodedCommand',
         encodePowerShellCommand(getPowerShellOsc133Bootstrap())
       ],
@@ -180,17 +184,30 @@ export function getShellLaunchConfig(
     }
   }
 
-  // Why: mirrors local-pty-shell-ready.ts; markerless fish stays unwrapped. The
-  // selection is baked into the init command, so fish needs no feature env var.
-  if (shellName === 'fish' && features.includes('ready')) {
+  // Why: mirrors local-pty-shell-ready.ts; only these need the -C init, plain fish gets
+  // the env-only handoff below. The selection is baked in, so no feature env var.
+  if (shellName === 'fish' && (features.includes('ready') || options?.hasStartupCommand)) {
     return {
       args: [
         '-l',
         '-C',
-        `${getFishShellReadyInitCommand(SHELL_READY_MARKER)}\n${getFishCodexShellLaunchPreflight()}`
+        `${getFishShellReadyInitCommand(SHELL_READY_MARKER, features.includes('ready'))}\n${getFishCodexShellLaunchPreflight() + getFishClaudeShellFunction()}`
       ],
       env: {},
-      supportsReadyMarker: true
+      supportsReadyMarker: features.includes('ready')
+    }
+  }
+
+  // Why env only: mirrors local-pty-shell-ready.ts; a plain fish pane keeps fish's own argv.
+  if (shellName === 'fish' && ensureShellReadyWrappers()) {
+    return {
+      args: null,
+      env: getFishXdgDataDirsLaunchEnv(
+        getShellReadyWrapperRoot(),
+        options?.inheritedXdgDataDirs,
+        options?.shellArgs
+      ),
+      supportsReadyMarker: false
     }
   }
 

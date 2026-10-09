@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { emitBrowserCookieImportToast } from '@/lib/browser-cookie-import-toast'
 import { Button } from '@/components/ui/button'
 import { BrowserCookieImportDisclosure } from '@/components/BrowserCookieImportDisclosure'
+import { BrowserCookieImportMachineNotice } from '@/components/BrowserCookieImportMachineNotice'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,10 +26,12 @@ import { translate } from '@/i18n/i18n'
 
 type BrowserImportHintButtonProps = {
   profileId: string | null
+  compact?: boolean
 }
 
 export function BrowserImportHintButton({
-  profileId
+  profileId,
+  compact = false
 }: BrowserImportHintButtonProps): React.JSX.Element | null {
   const [open, setOpen] = useState(false)
   const [importMenuOpen, setImportMenuOpen] = useState(false)
@@ -102,7 +105,7 @@ export function BrowserImportHintButton({
               value2: browserProfile ? ` (${browserProfile})` : ''
             }
           ),
-          result.executionHostLabel
+          result
         )
         return
       }
@@ -123,7 +126,7 @@ export function BrowserImportHintButton({
           'Imported {{value0}} cookies from file.',
           { value0: result.summary.importedCookies }
         ),
-        result.executionHostLabel
+        result
       )
       return
     }
@@ -177,7 +180,12 @@ export function BrowserImportHintButton({
           data-contextual-tour-target="browser-import-hint"
         >
           <Import className="size-3.5" />
-          {translate('auto.components.browser.pane.BrowserImportHintButton.b24fef25be', 'Import')}
+          {compact
+            ? null
+            : translate(
+                'auto.components.browser.pane.BrowserImportHintButton.b24fef25be',
+                'Import'
+              )}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" side="bottom" sideOffset={6} className="w-80 p-3">
@@ -215,6 +223,7 @@ export function BrowserImportHintButton({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-52">
+                <BrowserCookieImportMachineNotice />
                 {detectedBrowsers.map((browser) =>
                   browser.profiles.length > 1 ? (
                     <DropdownMenuSub key={browser.family}>

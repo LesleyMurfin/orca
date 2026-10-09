@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
 import { test, expect } from './helpers/orca-app'
 import {
   execInTerminal,
@@ -27,7 +29,42 @@ test.describe('Terminal Codex runtime home', () => {
     await ensureTerminalVisible(orcaPage)
   })
 
-  test('terminal process receives the Orca-managed Codex home', async ({ orcaPage }) => {
+  test('terminal process receives the selected account Codex home', async ({
+    electronApp,
+    orcaPage
+  }) => {
+    const userData = await electronApp.evaluate(({ app }) => app.getPath('userData'))
+    const accountId = 'e2e-terminal-home'
+    const managedHomePath = path.join(userData, 'codex-accounts', accountId, 'home')
+    mkdirSync(managedHomePath, { recursive: true })
+    writeFileSync(path.join(managedHomePath, '.orca-managed-home'), `${accountId}\n`)
+    writeFileSync(
+      path.join(managedHomePath, 'auth.json'),
+      JSON.stringify({ OPENAI_API_KEY: 'e2e-placeholder' })
+    )
+    await orcaPage.evaluate(
+      async ({ accountId, managedHomePath }) => {
+        const state = window.__store!.getState()
+        await state.updateSettings({
+          codexManagedAccounts: [
+            {
+              id: accountId,
+              email: 'terminal-home@example.invalid',
+              managedHomePath,
+              createdAt: 1,
+              updatedAt: 1,
+              lastAuthenticatedAt: 1
+            }
+          ],
+          activeCodexManagedAccountId: accountId,
+          activeCodexManagedAccountIdsByRuntime: { host: accountId, wsl: {} }
+        })
+        const tab = state.createTab(state.activeWorktreeId!)
+        state.setActiveTab(tab.id)
+        state.setActiveTabType('terminal', window.__store?.getState().activeWorktreeId ?? null)
+      },
+      { accountId, managedHomePath }
+    )
     await waitForActiveTerminalManager(orcaPage)
     const ptyId = await waitForActivePanePtyId(orcaPage)
     const marker = `__ORCA_CODEX_HOME_E2E_${Date.now()}__`
@@ -38,26 +75,15 @@ test.describe('Terminal Codex runtime home', () => {
 
     await execInTerminal(orcaPage, ptyId, command)
 
-    // Why: the poll records each read so the final assertion can use the last
-    // probe — an outer `let` assigned only inside the callback stays typed null.
-    const probeReads: (CodexHomeProbe | null)[] = []
+    let probe: CodexHomeProbe | null = null
     await expect
       .poll(
         async () => {
-          const probe = readCodexHomeProbe(await getTerminalContent(orcaPage), marker)
-          probeReads.push(probe)
-          return Boolean(
-            probe?.codexHome &&
-            probe.orcaCodexHome &&
-            probe.codexHome === probe.orcaCodexHome &&
-            /[\\/]codex-runtime-home[\\/]home$/.test(probe.codexHome)
-          )
+          probe = readCodexHomeProbe(await getTerminalContent(orcaPage), marker)
+          return probe
         },
-        { timeout: 15_000, message: 'Terminal did not expose Orca-managed Codex home env' }
+        { timeout: 15_000, message: 'Terminal did not expose the selected Codex account home' }
       )
-      .toBe(true)
-
-    const probe = probeReads.at(-1) ?? null
-    expect(probe?.codexHome).toBe(probe?.orcaCodexHome)
+      .toEqual({ codexHome: managedHomePath, orcaCodexHome: managedHomePath })
   })
 })

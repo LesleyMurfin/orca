@@ -40,7 +40,8 @@ export const runtimeEnvironmentSubscribe: Mock<
 export const mockApi = {
   gh: {
     prForBranch: stubMock().mockResolvedValue(null),
-    refreshPRNow: stubMock<[{ candidate: GitHubPRRefreshCandidate }]>(),
+    refreshPRNow:
+      stubMock<[{ candidate: GitHubPRRefreshCandidate; reason?: GitHubPRRefreshReason }]>(),
     enqueuePRRefresh:
       stubMock<
         [{ candidate: GitHubPRRefreshCandidate; reason: GitHubPRRefreshReason; priority?: number }]
@@ -73,7 +74,8 @@ export const mockApi = {
   },
   runtimeEnvironments: {
     call: runtimeEnvironmentTransportCall,
-    subscribe: runtimeEnvironmentSubscribe
+    subscribe: runtimeEnvironmentSubscribe,
+    cancelSubscription: stubMock<[{ subscriptionId: string }]>().mockResolvedValue(undefined)
   },
   cache: {
     getGitHub: stubMock().mockResolvedValue(null),

@@ -58,6 +58,33 @@ describe('probing', () => {
     await getWslGuestEnvironment('Debian')
     expect(runProcessMock).toHaveBeenCalledTimes(2)
   })
+
+  it('does not retain deadline timers after a concurrent probe settles', async () => {
+    vi.useFakeTimers()
+    try {
+      respondWithPayload(GOOD)
+      await Promise.all(Array.from({ length: 32 }, () => getWslGuestEnvironment('Ubuntu')))
+      expect(vi.getTimerCount()).toBe(0)
+      expect(runProcessMock).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reads a warm cache without allocating deadline timers', async () => {
+    respondWithPayload(GOOD)
+    const environment = await getWslGuestEnvironment('Ubuntu')
+    const timeout = vi.spyOn(globalThis, 'setTimeout')
+    try {
+      for (let index = 0; index < 100; index++) {
+        expect(await getWslGuestEnvironment('Ubuntu')).toBe(environment)
+      }
+      expect(timeout).not.toHaveBeenCalled()
+      expect(runProcessMock).toHaveBeenCalledTimes(1)
+    } finally {
+      timeout.mockRestore()
+    }
+  })
 })
 
 describe('bad answers are not cached as good ones', () => {
@@ -156,7 +183,7 @@ describe('a failed verdict does not outlive its usefulness', () => {
     expect(await getWslGuestEnvironment('Ubuntu', 9_000)).not.toBeNull()
   })
 
-  it('bounds a joiner by its own budget, not the starter\'s', async () => {
+  it("bounds a joiner by its own budget, not the starter's", async () => {
     // Joining used to mean waiting out the starter's probe, so a joiner could
     // reach its own command with 1ms left.
     let release: (v: unknown) => void = () => {}

@@ -11,6 +11,7 @@ import {
   shouldHandleTextControlPaste
 } from '@/lib/text-control-paste'
 import { translate } from '@/i18n/i18n'
+import { ComposerParentWorktreePicker } from './ComposerParentWorktreePicker'
 import type { NewWorkspaceComposerCardProps } from './new-workspace-composer-card-props'
 
 function SetupCommandPreview({
@@ -37,6 +38,11 @@ type NewWorkspaceComposerAdvancedSectionProps = Pick<
   | 'branchesEnabled'
   | 'branchNameOverride'
   | 'onBranchNameOverrideChange'
+  | 'parentWorktreeId'
+  | 'onParentWorktreeIdChange'
+  | 'selectedRepoExecutionHostId'
+  | 'selectedRepoProjectId'
+  | 'activeFolderWorkspaceId'
   | 'note'
   | 'onNoteChange'
   | 'setupControlsEnabled'
@@ -55,6 +61,8 @@ type NewWorkspaceComposerAdvancedSectionProps = Pick<
   | 'onSparseSelectPreset'
   | 'canUseSparseCheckout'
 > & {
+  sparseEditing?: boolean
+  onSparseEditingChange: (editing: boolean) => void
   branchNameInputId: string
   setupConfigLabel: string
   setupRunLabel: string
@@ -66,6 +74,8 @@ type NewWorkspaceComposerAdvancedSectionProps = Pick<
 
 export function NewWorkspaceComposerAdvancedSection({
   advancedOpen,
+  sparseEditing,
+  onSparseEditingChange,
   smartNameSelection,
   name,
   onNameValueChange,
@@ -74,6 +84,11 @@ export function NewWorkspaceComposerAdvancedSection({
   branchNameInputId,
   branchNameOverride,
   onBranchNameOverrideChange,
+  parentWorktreeId = null,
+  onParentWorktreeIdChange,
+  selectedRepoExecutionHostId,
+  selectedRepoProjectId,
+  activeFolderWorkspaceId = null,
   note,
   onNoteChange,
   setupControlsEnabled = true,
@@ -133,7 +148,8 @@ export function NewWorkspaceComposerAdvancedSection({
   return (
     <div
       className={cn(
-        'grid overflow-hidden transition-[grid-template-rows] duration-200 ease-out',
+        'grid transition-[grid-template-rows] duration-200 ease-out',
+        advancedOpen && sparseEditing ? 'overflow-visible' : 'overflow-hidden',
         !advancedOpen && '!mt-2',
         advancedOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
       )}
@@ -189,6 +205,18 @@ export function NewWorkspaceComposerAdvancedSection({
                 className="w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-xs transition-[color,box-shadow] outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
               />
             </div>
+          ) : null}
+
+          {selectedRepoIsGit && branchesEnabled && onParentWorktreeIdChange ? (
+            <ComposerParentWorktreePicker
+              repoId={repoId}
+              executionHostId={selectedRepoExecutionHostId}
+              projectId={selectedRepoProjectId}
+              value={parentWorktreeId}
+              onChange={onParentWorktreeIdChange}
+              activeFolderWorkspaceId={activeFolderWorkspaceId}
+              disabled={!advancedOpen}
+            />
           ) : null}
 
           <div className="space-y-1">
@@ -249,7 +277,7 @@ export function NewWorkspaceComposerAdvancedSection({
                     <div className="flex items-start justify-between gap-3 p-3">
                       <span
                         className={cn(
-                          'min-w-0 space-y-1',
+                          'min-w-0',
                           resolvedSetupDecision === 'run' ? '' : 'opacity-50'
                         )}
                       >
@@ -257,12 +285,6 @@ export function NewWorkspaceComposerAdvancedSection({
                           {translate(
                             'auto.components.NewWorkspaceComposerCard.waitForSetupBeforeAgent',
                             'Wait for setup to complete before starting agent'
-                          )}
-                        </span>
-                        <span className="block text-[11px] text-muted-foreground">
-                          {translate(
-                            'auto.components.NewWorkspaceComposerCard.waitForSetupBeforeAgentHelp',
-                            'Turn this on when setup installs dependencies, MCP servers, or config files the agent needs during startup.'
                           )}
                         </span>
                       </span>
@@ -336,7 +358,9 @@ export function NewWorkspaceComposerAdvancedSection({
                 )}
               </label>
               <SparseCheckoutPresetSelect
+                key={repoId}
                 repoId={repoId}
+                onEditingChange={onSparseEditingChange}
                 presets={sparsePresets}
                 selectedPresetId={sparseSelectedPresetId}
                 onSelectPreset={onSparseSelectPreset}

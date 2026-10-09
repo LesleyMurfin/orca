@@ -1,3 +1,4 @@
+import { resetRuntimeEnvironmentStatusOwners } from './runtime-environment-request-connections'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -17,7 +18,8 @@ const {
   getRemoteRuntimeSharedControlDiagnosticsMock,
   reconnectRemoteRuntimeSharedControlConnectionMock,
   retryRemoteRuntimeSharedControlConnectionsNowMock,
-  closeRemoteRuntimeRequestConnectionMock
+  closeRemoteRuntimeRequestConnectionMock,
+  retirePairedRuntimeBrowserClientHostEnvironmentMock
 } = vi.hoisted(() => ({
   handleMock: vi.fn(),
   onMock: vi.fn(),
@@ -32,10 +34,12 @@ const {
   getRemoteRuntimeSharedControlDiagnosticsMock: vi.fn(),
   reconnectRemoteRuntimeSharedControlConnectionMock: vi.fn(),
   retryRemoteRuntimeSharedControlConnectionsNowMock: vi.fn(),
-  closeRemoteRuntimeRequestConnectionMock: vi.fn()
+  closeRemoteRuntimeRequestConnectionMock: vi.fn(),
+  retirePairedRuntimeBrowserClientHostEnvironmentMock: vi.fn()
 }))
 
 vi.mock('electron', () => ({
+  BrowserWindow: { getAllWindows: () => [] },
   app: { getPath: getPathMock },
   ipcMain: {
     handle: handleMock,
@@ -50,14 +54,26 @@ vi.mock('../../shared/remote-runtime-client', () => ({
   subscribeRemoteRuntimeRequest: subscribeRemoteRuntimeRequestMock
 }))
 
-vi.mock('./runtime-environment-request-connections', () => ({
-  sendRemoteRuntimeConnectionRequest: sendRemoteRuntimeConnectionRequestMock,
-  sendRemoteRuntimeSharedControlRequest: sendRemoteRuntimeSharedControlRequestMock,
-  subscribeRemoteRuntimeSharedControlRequest: subscribeRemoteRuntimeSharedControlRequestMock,
-  getRemoteRuntimeSharedControlDiagnostics: getRemoteRuntimeSharedControlDiagnosticsMock,
-  reconnectRemoteRuntimeSharedControlConnection: reconnectRemoteRuntimeSharedControlConnectionMock,
-  retryRemoteRuntimeSharedControlConnectionsNow: retryRemoteRuntimeSharedControlConnectionsNowMock,
-  closeRemoteRuntimeRequestConnection: closeRemoteRuntimeRequestConnectionMock
+vi.mock('./runtime-environment-request-connections', async () => {
+  const { withRuntimeStatusOwners } = await import('./runtime-environments-ipc-test-harness')
+  return withRuntimeStatusOwners({
+    sendRemoteRuntimeConnectionRequest: sendRemoteRuntimeConnectionRequestMock,
+    sendRemoteRuntimeSharedControlRequest: sendRemoteRuntimeSharedControlRequestMock,
+    subscribeRemoteRuntimeSharedControlRequest: subscribeRemoteRuntimeSharedControlRequestMock,
+    getRemoteRuntimeSharedControlDiagnostics: getRemoteRuntimeSharedControlDiagnosticsMock,
+    reconnectRemoteRuntimeSharedControlConnection:
+      reconnectRemoteRuntimeSharedControlConnectionMock,
+    retryRemoteRuntimeSharedControlConnectionsNow:
+      retryRemoteRuntimeSharedControlConnectionsNowMock,
+    retryRemoteRuntimeSharedControlConnectionNow: vi.fn(),
+    ensureRemoteRuntimeSharedControlConnection: vi.fn(),
+    pauseRemoteRuntimeSharedControlRetry: vi.fn(),
+    closeRemoteRuntimeRequestConnection: closeRemoteRuntimeRequestConnectionMock
+  })
+})
+vi.mock('../browser/paired-runtime-browser-client-host-runtime', () => ({
+  retirePairedRuntimeBrowserClientHostEnvironment:
+    retirePairedRuntimeBrowserClientHostEnvironmentMock
 }))
 
 import {
@@ -74,6 +90,7 @@ describe('registerRuntimeEnvironmentHandlers', () => {
   let store: {
     getSettings: () => { activeRuntimeEnvironmentId: string | null }
     updateSettings: ReturnType<typeof vi.fn>
+    removeWorkspaceSessionHost: ReturnType<typeof vi.fn>
   }
 
   beforeEach(() => {
@@ -81,6 +98,7 @@ describe('registerRuntimeEnvironmentHandlers', () => {
     activeRuntimeEnvironmentId = null
     store = {
       getSettings: () => ({ activeRuntimeEnvironmentId }),
+      removeWorkspaceSessionHost: vi.fn(),
       updateSettings: vi.fn((updates: { activeRuntimeEnvironmentId: string | null }) => {
         activeRuntimeEnvironmentId = updates.activeRuntimeEnvironmentId
       })
@@ -101,9 +119,12 @@ describe('registerRuntimeEnvironmentHandlers', () => {
     reconnectRemoteRuntimeSharedControlConnectionMock.mockReset()
     retryRemoteRuntimeSharedControlConnectionsNowMock.mockReset()
     closeRemoteRuntimeRequestConnectionMock.mockReset()
+    retirePairedRuntimeBrowserClientHostEnvironmentMock.mockReset()
+    retirePairedRuntimeBrowserClientHostEnvironmentMock.mockResolvedValue(false)
   })
 
   afterEach(() => {
+    resetRuntimeEnvironmentStatusOwners()
     rmSync(userDataPath, { recursive: true, force: true })
   })
 
@@ -466,7 +487,7 @@ describe('registerRuntimeEnvironmentHandlers', () => {
     expect(deliveredCloses).toEqual([])
   })
 
-  it('suppresses stale payloads from a retired transport but never re-sends its close', async () => {
+  it('fences late payloads and duplicate close after full retirement', async () => {
     registerRuntimeEnvironmentHandlers(store as never)
     let transportCallbacks: {
       onResponse: (response: Record<string, unknown>) => void
@@ -514,7 +535,16 @@ describe('registerRuntimeEnvironmentHandlers', () => {
       }
     )
 
-    invalidateRuntimeEnvironmentTransport(added.environment.id)
+    await invalidateRuntimeEnvironmentTransport(added.environment.id)
+    expect(retirePairedRuntimeBrowserClientHostEnvironmentMock).toHaveBeenCalledWith(
+      added.environment.id,
+      expect.objectContaining({ message: 'Runtime environment transport was invalidated' })
+    )
+    expect(closeRemoteRuntimeRequestConnectionMock).toHaveBeenCalledWith(added.environment.id)
+    expect(senderSend).toHaveBeenCalledWith('runtimeEnvironments:subscriptionEvent', {
+      subscriptionId: 'multiplex-stale',
+      type: 'close'
+    })
     senderSend.mockClear()
     // A late frame from the retired socket must not reach the renderer...
     transportCallbacks!.onResponse({

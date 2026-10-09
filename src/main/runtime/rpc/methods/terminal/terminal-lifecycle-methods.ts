@@ -1,4 +1,4 @@
-import { defineMethod, type RpcAnyMethod } from '../../core'
+import { defineMethod } from '../../core'
 import {
   navigationTargetsHost,
   resolveRuntimeNavigationTarget
@@ -7,6 +7,7 @@ import { withTerminalCloseAttribution } from '../../terminal-close-attribution'
 import {
   AgentTeamsPrepareLaunch,
   AgentTeamsTmuxCompat,
+  TerminalCloseAll,
   TerminalCreateParams,
   TerminalFocus,
   TerminalHandle,
@@ -18,9 +19,10 @@ import {
 } from './unary-schemas'
 import { TerminalResizeForClient } from './stream-schemas'
 
-export const TERMINAL_LIFECYCLE_METHODS: RpcAnyMethod[] = [
+export const TERMINAL_LIFECYCLE_METHODS = [
   defineMethod({
     name: 'terminal.wait',
+    permission: 'workspace',
     params: TerminalWait,
     handler: async (params, { runtime, signal }) => ({
       wait: await runtime.waitForTerminal(params.terminal, {
@@ -32,42 +34,59 @@ export const TERMINAL_LIFECYCLE_METHODS: RpcAnyMethod[] = [
   }),
   defineMethod({
     name: 'terminal.create',
+    permission: 'workspace',
     params: TerminalCreateParams,
-    handler: async (params, { runtime, pairedDeviceId, clientId }) => ({
-      terminal: await runtime.dedupeTerminalCreate(
-        pairedDeviceId ?? clientId ?? 'local',
-        params.worktree,
-        params.clientMutationId,
-        params.reconcileExisting === true,
-        (canonicalWorktreeSelector, preAllocatedHandle) =>
-          runtime.createTerminal(canonicalWorktreeSelector, {
-            command: params.command,
-            startupCommandDelivery: params.startupCommandDelivery,
-            env: params.env,
-            envToDelete: params.envToDelete,
-            ...(params.launchConfig ? { launchConfig: params.launchConfig } : {}),
-            ...(params.resumeProviderSession
-              ? { resumeProviderSession: params.resumeProviderSession }
-              : {}),
-            ...(params.launchToken ? { launchToken: params.launchToken } : {}),
-            ...(params.launchAgent ? { launchAgent: params.launchAgent } : {}),
-            ...(params.terminalColorQueryReplies
-              ? { terminalColorQueryReplies: params.terminalColorQueryReplies }
-              : {}),
-            title: params.title,
-            focus: params.focus === true,
-            rendererBacked: params.rendererBacked === true,
-            activate: params.activate === true,
-            presentation: params.presentation,
-            tabId: params.tabId,
-            leafId: params.leafId,
-            ...(preAllocatedHandle ? { preAllocatedHandle } : {})
-          })
-      )
-    })
+    handler: async (params, { runtime, pairedDeviceId, clientId, clientKind }) => {
+      // A focused terminal create predates paired-client navigation. Keep the
+      // authority boundary here so a remote caller cannot activate the host
+      // renderer. This legacy RPC remains a background create for paired viewers;
+      // caller-local selection belongs to the session-tab RPC flow.
+      const pairedViewer = clientKind !== undefined
+      const focus = pairedViewer ? false : params.focus === true
+      const activate = pairedViewer ? false : params.activate === true
+      const presentation =
+        pairedViewer && params.presentation === 'focused' ? 'background' : params.presentation
+      return {
+        terminal: await runtime.dedupeTerminalCreate(
+          pairedDeviceId ?? clientId ?? 'local',
+          params.worktree,
+          params.clientMutationId,
+          params.reconcileExisting === true,
+          (canonicalWorktreeSelector, preAllocatedHandle) =>
+            runtime.createTerminal(canonicalWorktreeSelector, {
+              command: params.command,
+              ...(params.shell ? { shellOverride: params.shell } : {}),
+              startupCommandDelivery: params.startupCommandDelivery,
+              env: params.env,
+              envToDelete: params.envToDelete,
+              ...(params.launchConfig ? { launchConfig: params.launchConfig } : {}),
+              ...(params.resumeProviderSession
+                ? { resumeProviderSession: params.resumeProviderSession }
+                : {}),
+              ...(params.launchToken ? { launchToken: params.launchToken } : {}),
+              ...(params.launchAgent ? { launchAgent: params.launchAgent } : {}),
+              ...(params.terminalKittyKeyboardProtocol === true
+                ? { terminalKittyKeyboardProtocol: true }
+                : {}),
+              ...(params.terminalColorQueryReplies
+                ? { terminalColorQueryReplies: params.terminalColorQueryReplies }
+                : {}),
+              title: params.title,
+              focus,
+              rendererBacked: params.rendererBacked === true,
+              activate,
+              presentation,
+              tabId: params.tabId,
+              leafId: params.leafId,
+              ...(preAllocatedHandle ? { preAllocatedHandle } : {})
+            })
+        )
+      }
+    }
   }),
   defineMethod({
     name: 'terminal.split',
+    permission: 'workspace',
     params: TerminalSplit,
     handler: async (params, { runtime }) => ({
       split: await runtime.splitTerminal(params.terminal, {
@@ -80,16 +99,25 @@ export const TERMINAL_LIFECYCLE_METHODS: RpcAnyMethod[] = [
   }),
   defineMethod({
     name: 'terminal.stop',
+    permission: 'workspace',
     params: TerminalStop,
     handler: async (params, { runtime }) => runtime.stopTerminalsForWorktree(params.worktree)
   }),
   defineMethod({
+    name: 'terminal.closeAll',
+    permission: 'workspace',
+    params: TerminalCloseAll,
+    handler: async (params, { runtime }) => runtime.closeTerminalsForWorktree(params.worktree)
+  }),
+  defineMethod({
     name: 'terminal.sleep',
+    permission: 'workspace',
     params: TerminalSleep,
     handler: async (params, { runtime }) => runtime.sleepTerminalsForWorktree(params.worktree)
   }),
   defineMethod({
     name: 'terminal.stopExact',
+    permission: 'workspace',
     params: TerminalStopExact,
     handler: async (params, { runtime }) =>
       runtime.stopExactTerminalsForWorktree(params.worktree, params.expectedPtyIds, {
@@ -99,6 +127,7 @@ export const TERMINAL_LIFECYCLE_METHODS: RpcAnyMethod[] = [
   }),
   defineMethod({
     name: 'terminal.resizeForClient',
+    permission: 'workspace',
     params: TerminalResizeForClient,
     handler: async (params, { runtime }) => {
       // Why: a stale handle must fail with terminal_handle_stale, not resize the wrong PTY (#7718).
@@ -123,6 +152,7 @@ export const TERMINAL_LIFECYCLE_METHODS: RpcAnyMethod[] = [
   }),
   defineMethod({
     name: 'terminal.focus',
+    permission: 'workspace',
     params: TerminalFocus,
     handler: async (params, { runtime, clientKind }) => ({
       focus: await runtime.focusTerminal(params.terminal, {
@@ -134,6 +164,7 @@ export const TERMINAL_LIFECYCLE_METHODS: RpcAnyMethod[] = [
   }),
   defineMethod({
     name: 'terminal.close',
+    permission: 'workspace',
     params: TerminalHandle,
     handler: async (params, context) => ({
       close: await withTerminalCloseAttribution(
@@ -147,6 +178,7 @@ export const TERMINAL_LIFECYCLE_METHODS: RpcAnyMethod[] = [
   }),
   defineMethod({
     name: 'terminal.closeTab',
+    permission: 'workspace',
     params: TerminalHandle,
     handler: async (params, context) => ({
       close: await withTerminalCloseAttribution(
@@ -160,6 +192,7 @@ export const TERMINAL_LIFECYCLE_METHODS: RpcAnyMethod[] = [
   }),
   defineMethod({
     name: 'agentTeams.tmuxCompat',
+    permission: 'workspace',
     params: AgentTeamsTmuxCompat,
     handler: async (params, { runtime }) => ({
       tmux: await runtime.handleAgentTeamsTmuxCompat(params)
@@ -167,11 +200,13 @@ export const TERMINAL_LIFECYCLE_METHODS: RpcAnyMethod[] = [
   }),
   defineMethod({
     name: 'agentTeams.prepareLaunch',
+    permission: 'workspace',
     params: AgentTeamsPrepareLaunch,
     handler: async (params, { runtime }) => ({
       launch: await runtime.prepareClaudeAgentTeamsLeader({
         paneKey: params.paneKey,
-        baseEnv: params.env
+        baseEnv: params.env,
+        prepareAuth: params.prepareAuth
       })
     })
   })

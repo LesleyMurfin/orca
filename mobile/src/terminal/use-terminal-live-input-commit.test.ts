@@ -6,6 +6,13 @@ import type { TerminalLiveInputSender } from './terminal-live-input-sender'
 import { TERMINAL_LIVE_HELD_PREEDIT_COMMIT_DELAY_MS } from './terminal-live-preedit-mirror'
 import { useTerminalLiveInputCommit } from './use-terminal-live-input-commit'
 
+// The host's report is the seam's subject; here only whether it reports a range at all matters.
+const composingRange = vi.hoisted(() => ({ hostReportsNone: false }))
+vi.mock('../platform/live-input-composing-range', () => ({
+  reportedLiveInputComposing: (isComposing: boolean | undefined) =>
+    composingRange.hostReportsNone ? undefined : isComposing
+}))
+
 type TerminalLiveInputCommitHandlers = ReturnType<typeof useTerminalLiveInputCommit<string>>
 
 /** `isComposing` omitted models a platform that reports no marked-text range. */
@@ -19,6 +26,7 @@ function changeLiveInput(
 
 type TerminalLiveInputCommitHarness = {
   readonly captures: readonly string[]
+  readonly getHandlers: () => TerminalLiveInputCommitHandlers
   readonly handlers: TerminalLiveInputCommitHandlers
   readonly sent: readonly string[]
   readonly setActiveSessionTabType: (next: string | undefined) => void
@@ -85,6 +93,12 @@ function createTerminalLiveInputCommitHarness({
 
   return {
     captures,
+    getHandlers: () => {
+      if (!handlers) {
+        throw new Error('terminal live input hook is not mounted')
+      }
+      return handlers
+    },
     handlers,
     sent,
     setActiveSessionTabType: (next: string | undefined): void => {
@@ -114,6 +128,7 @@ function createTerminalLiveInputCommitHarness({
 describe('terminal live input commit hook', () => {
   afterEach(() => {
     vi.useRealTimers()
+    composingRange.hostReportsNone = false
   })
 
   it('Given Hangul composition and no marked-text report When steps arrive Then no jamo leaks', async () => {
@@ -161,6 +176,84 @@ describe('terminal live input commit hook', () => {
     expect(sent).toEqual([])
   })
 
+  it('Given an Android WebView composing each word When letters follow a slash Then each reaches the terminal as typed', async () => {
+    // Given: the page's field event is the DOM's, and an Android keyboard composes Latin words
+    composingRange.hostReportsNone = true
+    const { handlers, sent } = createTerminalLiveInputCommitHarness()
+
+    // When
+    changeLiveInput(handlers, '/', false)
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    for (const fieldText of ['/t', '/tu', '/tui']) {
+      changeLiveInput(handlers, fieldText, true)
+      // Each keystroke on its own, so a held letter cannot hide inside a later batch.
+      await vi.waitFor(() => expect(sent).toHaveLength(fieldText.length))
+    }
+
+    // Then: what native Android sends for the same keys, which report no range there
+    await vi.waitFor(() => expect(sent).toEqual(['/', 't', 'u', 'i']))
+  })
+
+  it('Given an Android WebView composing Hangul When steps arrive Then the non-ASCII run still settles on the timer', async () => {
+    // Given
+    vi.useFakeTimers()
+    composingRange.hostReportsNone = true
+    const { handlers, sent } = createTerminalLiveInputCommitHarness()
+
+    // When
+    for (const fieldText of ['ㅎ', '하', '한']) {
+      changeLiveInput(handlers, fieldText, true)
+      await vi.advanceTimersByTimeAsync(50)
+    }
+    await vi.advanceTimersByTimeAsync(TERMINAL_LIVE_HELD_PREEDIT_COMMIT_DELAY_MS)
+
+    // Then
+    await vi.waitFor(() => expect(sent).toEqual(['한']))
+  })
+
+  it('Given an iOS pinyin preedit When accessory Backspace edits it Then only the candidate reaches the terminal', async () => {
+    // Given
+    vi.useFakeTimers()
+    const { handlers, sent } = createTerminalLiveInputCommitHarness()
+    changeLiveInput(handlers, 'ni hao', true)
+
+    // When
+    await handlers.handleLiveInputAccessoryBytes({ bytes: '\x7f', localEdit: 'backspace' })
+    await vi.advanceTimersByTimeAsync(TERMINAL_LIVE_HELD_PREEDIT_COMMIT_DELAY_MS * 2)
+    changeLiveInput(handlers, '你好', false)
+
+    // Then
+    await vi.waitFor(() => expect(sent).toEqual(['你好']))
+  })
+
+  it('Given an Android heuristic hold When accessory Backspace edits it Then the remaining text still settles', async () => {
+    // Given
+    vi.useFakeTimers()
+    const { handlers, sent } = createTerminalLiveInputCommitHarness()
+    changeLiveInput(handlers, '한글')
+
+    // When
+    await handlers.handleLiveInputAccessoryBytes({ bytes: '\x7f', localEdit: 'backspace' })
+    await vi.advanceTimersByTimeAsync(TERMINAL_LIVE_HELD_PREEDIT_COMMIT_DELAY_MS)
+
+    // Then
+    await vi.waitFor(() => expect(sent).toEqual(['한']))
+  })
+
+  it('Given a failed mirrored Backspace When accessory input commits Then reports failure', async () => {
+    const { handlers, sent } = createTerminalLiveInputCommitHarness({ sendResult: false })
+    changeLiveInput(handlers, 'a', false)
+    await vi.waitFor(() => expect(sent).toEqual(['a']))
+
+    const result = await handlers.handleLiveInputAccessoryBytes({
+      bytes: '\x7f',
+      localEdit: 'backspace'
+    })
+
+    expect(sent).toEqual(['a', '\x7f'])
+    expect(result).toEqual({ kind: 'suppress-raw' })
+  })
+
   it('Given a held syllable When the settle timer elapses Then commits it to the terminal', async () => {
     // Given
     vi.useFakeTimers()
@@ -196,9 +289,10 @@ describe('terminal live input commit hook', () => {
     changeLiveInput(handlers, '한')
 
     // When
-    handlers.handleLiveInputSubmit()
+    const accepted = await handlers.handleLiveInputSubmit()
 
     // Then
+    expect(accepted).toBe(true)
     await vi.waitFor(() => expect(sent).toEqual(['한', '\r']))
   })
 
@@ -207,10 +301,30 @@ describe('terminal live input commit hook', () => {
     const { handlers, sent } = createTerminalLiveInputCommitHarness()
 
     // When
-    handlers.handleLiveInputSubmit()
+    const accepted = await handlers.handleLiveInputSubmit()
 
     // Then
+    expect(accepted).toBe(true)
     await vi.waitFor(() => expect(sent).toEqual(['\r']))
+  })
+
+  it('increments a stable interaction generation for typing, submit, and accessory Enter', async () => {
+    const { getHandlers, handlers, setActiveSessionTabType } =
+      createTerminalLiveInputCommitHarness()
+    const getter = handlers.getLiveInputInteractionGeneration
+    const initialGeneration = getter()
+
+    changeLiveInput(handlers, 'newer text')
+    const typedGeneration = getter()
+    await handlers.handleLiveInputSubmit()
+    const submitGeneration = getter()
+    await handlers.handleLiveInputAccessoryBytes({ bytes: '\r' })
+    setActiveSessionTabType(undefined)
+
+    expect(getHandlers().getLiveInputInteractionGeneration).toBe(getter)
+    expect(typedGeneration).toBe(initialGeneration + 1)
+    expect(submitGeneration).toBeGreaterThan(typedGeneration)
+    expect(getter()).toBeGreaterThan(submitGeneration)
   })
 
   it('Given a rejected held-text send When submit is requested Then suppresses the carriage return', async () => {
@@ -219,12 +333,20 @@ describe('terminal live input commit hook', () => {
     changeLiveInput(handlers, '한')
 
     // When
-    handlers.handleLiveInputSubmit()
-    await Promise.resolve()
-    await Promise.resolve()
+    const accepted = await handlers.handleLiveInputSubmit()
 
     // Then: the held commit went out but was not accepted, so no \r follows
+    expect(accepted).toBe(false)
     await vi.waitFor(() => expect(sent).toEqual(['한']))
+  })
+
+  it('Given a rejected carriage return When submit is requested Then reports rejection', async () => {
+    const { handlers, sent } = createTerminalLiveInputCommitHarness({ sendResult: false })
+
+    const accepted = await handlers.handleLiveInputSubmit()
+
+    expect(accepted).toBe(false)
+    expect(sent).toEqual(['\r'])
   })
 
   it('Given ASCII typing When changes arrive Then mirrors immediately', async () => {

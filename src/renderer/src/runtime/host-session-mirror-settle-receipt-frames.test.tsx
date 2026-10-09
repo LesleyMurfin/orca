@@ -18,7 +18,10 @@ vi.mock('./web-session-terminal-handle-events', async (importOriginal) => {
 vi.mock('./use-runtime-session-mirror-environment-key', async () => {
   const { frameOrderingMocks } = await import('./host-session-mirror-frame-fixtures')
   return {
-    useRuntimeSessionMirrorEnvironmentKey: frameOrderingMocks.runtimeSessionMirrorEnvironmentKey
+    useRuntimeSessionMirrorEnvironmentKeys: () => ({
+      environmentKey: frameOrderingMocks.runtimeSessionMirrorEnvironmentKey(),
+      resubscribeSignal: ''
+    })
   }
 })
 
@@ -70,6 +73,7 @@ import {
 } from './host-session-mirror-hydration'
 import { refreshWebRuntimeSessionTabsSnapshot } from './web-runtime-session'
 import {
+  clearWebSessionTabsTrackingForEnvironment,
   useWebSessionTabsSync,
   WEB_SESSION_TABS_VISIBILITY_RESUME_STAGGER_MS
 } from './web-session-tabs-sync'
@@ -217,7 +221,8 @@ describe('a deferred visibility-resume repair patch', () => {
       type: 'snapshots',
       snapshots: [
         { ...makeHostSnapshot(WT, HOST_SURFACE_ID, HOST_PARENT_TAB_ID), snapshotVersion: 2 }
-      ]
+      ],
+      authoritative: true
     })
 
     // The tombstone repair DID reach the store: the background mirror retracted,
@@ -255,6 +260,53 @@ describe('the eager post-create list answers for its worktree', () => {
     expectReplayedResume(paneKey, WT, 'codex-session-eager-refresh')
   })
 
+  it('does not resurrect a worktree the stream retracted while the list was in flight', async () => {
+    // The refresh path is a production apply path (close, create, activation, split, PTY
+    // reconnect) that reached `decide` with no place in receipt order at all. A list the host
+    // answered before the close then landed after the retraction and put the tab back.
+    renderHook(() => useWebSessionTabsSync())
+    await act(settle)
+
+    let resolveList!: (response: unknown) => void
+    runtimeCall.mockImplementation((request: { method: string }) =>
+      request.method === 'session.tabs.list'
+        ? new Promise((resolve) => {
+            resolveList = resolve
+          })
+        : new Promise(() => {})
+    )
+    const refreshed = refreshWebRuntimeSessionTabsSnapshot(ENV, WT)
+    await act(settle)
+
+    // The close lands on the stream while that list is still out.
+    await publish(findSubscription('session.tabs.subscribeAll'), {
+      type: 'snapshot',
+      worktree: WT,
+      publicationEpoch: `removed:${(1_700_000_000_000).toString(36)}`,
+      snapshotVersion: 0,
+      removed: true,
+      activeGroupId: null,
+      activeTabId: null,
+      activeTabType: null,
+      tabs: []
+    })
+    expect(tabIds(WT)).not.toContain(MIRROR_TAB_ID)
+
+    // The pre-close answer arrives last, at a higher version than anything since.
+    resolveList({
+      id: 'list',
+      ok: true as const,
+      result: { ...makeHostSnapshot(WT, HOST_SURFACE_ID, HOST_PARENT_TAB_ID), snapshotVersion: 9 },
+      _meta: { runtimeId: 'runtime-a' }
+    })
+    await act(async () => {
+      await refreshed
+      await settle()
+    })
+
+    expect(tabIds(WT)).not.toContain(MIRROR_TAB_ID)
+  })
+
   it('settles nothing when the list answers for a workspace the mirror never writes', async () => {
     runtimeCall.mockImplementation((request: { method: string }) =>
       request.method === 'session.tabs.list'
@@ -277,6 +329,36 @@ describe('the eager post-create list answers for its worktree', () => {
 
     expect(useAppStore.getState().tabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID]).toBeUndefined()
     expect(hasHostSessionMirrorHydrated(ENV, FLOATING_TERMINAL_WORKTREE_ID)).toBe(false)
+  })
+
+  it('does not let a pre-reset eager list settle in the new tracking epoch', async () => {
+    let resolveList!: (response: unknown) => void
+    runtimeCall.mockImplementation((request: { method: string }) =>
+      request.method === 'session.tabs.list'
+        ? new Promise((resolve) => {
+            resolveList = resolve
+          })
+        : new Promise(() => {})
+    )
+    const paneKey = seedSleepingRecord(MIRROR_TAB_ID, WT, 'codex-session-eager-old-tracking')
+    expect(resumeSleepingAgentSessionsForWorktree(WT)).toBe(0)
+
+    const refresh = refreshWebRuntimeSessionTabsSnapshot(ENV, WT)
+    await act(settle)
+    clearWebSessionTabsTrackingForEnvironment(ENV)
+    resolveList({
+      id: 'list',
+      ok: true as const,
+      result: makeHostSnapshot(WT, OTHER_HOST_SURFACE_ID, OTHER_HOST_PARENT_TAB_ID),
+      _meta: { runtimeId: 'runtime-a' }
+    })
+    await act(async () => {
+      await refresh
+      await settle()
+    })
+
+    expect(useAppStore.getState().sleepingAgentSessionsByPaneKey[paneKey]).toBeDefined()
+    expect(hasHostSessionMirrorHydrated(ENV, WT)).toBe(false)
   })
 })
 

@@ -15,7 +15,9 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { POSIX_SHELL_STARTUP_COMMAND_ENV } from './pty/posix-shell-startup-command'
 import { selectShellStartupFeatures } from './shell-startup-features'
+import { prependOrcaCliDirToChildPath } from './cli/orca-cli-child-path'
 import { runZshPty } from './zsh-startup-hook-pty-harness'
 import { ZSH_WRAPPER_DIR_MARKER_FILE } from './shell-templates'
 import {
@@ -118,6 +120,46 @@ describePosix('zsh launch config', () => {
     rmSync(userDataPath, { recursive: true, force: true })
   })
 
+  itWithZsh.each([false, true])(
+    'restores this app CLI after zsh startup resets PATH and replaces prompt hooks %s',
+    async (replacePromptHooks) => {
+      const cliBin = join(userDataPath, 'cli', 'bin')
+      const ambientBin = join(userDataPath, 'ambient-bin')
+      mkdirSync(cliBin, { recursive: true })
+      mkdirSync(ambientBin)
+      for (const bin of [cliBin, ambientBin]) {
+        const launcher = join(bin, 'orca-dev')
+        writeFileSync(launcher, '#!/bin/sh\nexit 0\n')
+        chmodSync(launcher, 0o755)
+      }
+      writeFileSync(
+        join(userDataPath, '.zshrc'),
+        `export PATH="$HOME/ambient-bin:/usr/bin:/bin:$HOME/cli/bin"\n${replacePromptHooks ? 'precmd_functions=()\n' : ''}`
+      )
+      const env: Record<string, string> = {
+        ...process.env,
+        HOME: userDataPath,
+        USERPROFILE: userDataPath,
+        PATH: `${ambientBin}:/usr/bin:/bin`
+      }
+      const launcher = prependOrcaCliDirToChildPath(env, { isPackaged: false, userDataPath })
+      const features = selectShellStartupFeatures({
+        shellPath: ZSH_PATH,
+        env,
+        ...PLAIN_PANE,
+        hasStartupCommand: true
+      })
+      const { getShellLaunchConfig } = await importFreshLocalPtyShellReady()
+      const config = getShellLaunchConfig(ZSH_PATH, features)
+      const result = await runZshPty({
+        env: { ...env, ...config.env },
+        commands: ['ORCA_LOOKUP=$(command -v orca-dev)'],
+        report: ['ORCA_LOOKUP']
+      })
+      expect(result.values.ORCA_LOOKUP).toBe(launcher)
+    }
+  )
+
   it('publishes exactly the selected features, whatever process.env holds', async () => {
     process.env.ORCA_SHELL_FEATURES = 'overlay,markers,ready,identity'
     const { getShellLaunchConfig } = await importFreshLocalPtyShellReady()
@@ -125,6 +167,16 @@ describePosix('zsh launch config', () => {
     const config = getShellLaunchConfig('/bin/zsh', ['history'])
 
     expect(config.env.ORCA_SHELL_FEATURES).toBe('history')
+  })
+
+  it('wraps a startup-only command without enabling shell readiness', async () => {
+    const { getShellLaunchConfig } = await importFreshLocalPtyShellReady()
+
+    const config = getShellLaunchConfig('/bin/zsh', [], 'codex')
+
+    expect(config.env.ORCA_SHELL_FEATURES).toBe('startup')
+    expect(config.env[POSIX_SHELL_STARTUP_COMMAND_ENV]).toBe('codex')
+    expect(config.supportsReadyMarker).toBe(false)
   })
 
   it('falls back to plain login zsh when the wrapper tree cannot be written', async () => {

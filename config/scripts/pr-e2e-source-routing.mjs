@@ -1,9 +1,104 @@
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
+import { isUnitTestSupportSource } from './pr-code-change-scope.mjs'
 
-const isProductSource = (file) => !/\.test\.tsx?$/.test(file)
+const isProductSource = (file) => !/\.test\.tsx?$/.test(file) && !isUnitTestSupportSource(file)
+
+// Why config/patches: the xterm fork owns the helper textarea an input method attaches to, so a
+// patch edit can break composition without touching a file named "ime".
+const NATIVE_IME_PRODUCT_SOURCE =
+  /^(?:config\/patches\/|src\/shared\/terminal-unicode-provider\.ts$|src\/renderer\/src\/lib\/pane-manager\/terminal-ime-|src\/renderer\/src\/components\/terminal-pane\/(?:terminal-ime-|terminal-ios-hangul-|xterm-bypass-policy))/
+
+/** The harness itself: the session runner, the boundary probes, and the native specs. */
+const NATIVE_IME_HARNESS =
+  /^(?:config\/scripts\/focus-nested-wayland-terminal\.sh$|config\/scripts\/(?:run-terminal-ibus-hangul-e2e|terminal-ime-engagement-receipt)\.mjs$|tests\/e2e\/terminal-ime-(?:boundary-probe|byte-reader|engagement-receipt)\.ts$|tests\/e2e\/terminal-(?:ibus-hangul|hangul-terminating-digit|macos-2set-korean)-native\.spec\.ts$)/
 
 export const PR_E2E_SOURCE_ROUTES = [
+  {
+    id: 'serve.orcad-mode-switch',
+    specs: ['tests/e2e/orcad-serve-mode-switch.spec.ts'],
+    matches: (file) =>
+      /^tests\/e2e\/helpers\/(?:orca-serve-cli-host|headless-paired-runtime-host)\.ts$/.test(
+        file
+      ) ||
+      (isProductSource(file) &&
+        /^src\/(?:cli\/runtime\/(?:launch|serve-)|main\/orcad\/(?:main|orcad-entry|orcad-instance-lock|orcad-command-arguments|orcad-lifecycle)\.ts$|main\/startup\/desktop-profile-instance-lock\.ts$|main\/daemon\/daemon-(?:spawner|endpoint-adoption|init)|main\/server\/serve-)/.test(
+          file
+        ))
+  },
+  {
+    id: 'startup.windows-missing-appdata',
+    specs: ['tests/e2e/windows-missing-appdata-startup.spec.ts'],
+    matches: (file) =>
+      file === 'tests/e2e/helpers/orca-serve-cli-host.ts' ||
+      (isProductSource(file) &&
+        /^src\/main\/startup\/(?:windows-app-data-path|main-process-preflight)\.ts$/.test(file))
+  },
+  {
+    id: 'ssh.orcad-auto-convert',
+    specs: ['tests/e2e/ssh-orcad-auto-convert.spec.ts'],
+    matches: (file) =>
+      /^tests\/e2e\/helpers\/(?:orcad-convert-(?:flow|host)|orcad-template-variant|orcad-upgrade-profile)\.ts$/.test(
+        file
+      ) ||
+      (isProductSource(file) &&
+        /^src\/main\/(?:ipc\/ssh-host-server-|ssh\/(?:ssh-host-server-|orcad-runtime-conversion|orcad-migration-|orcad-retained-source|orcad-runtime-deployment))/.test(
+          file
+        ))
+  },
+  {
+    id: 'ssh.orcad-idle-exit',
+    specs: ['tests/e2e/ssh-orcad-idle-exit.spec.ts'],
+    matches: (file) =>
+      /^tests\/e2e\/helpers\/orcad-convert-(?:flow|host)\.ts$/.test(file) ||
+      (isProductSource(file) &&
+        /^src\/(?:main\/(?:orcad\/orcad-(?:idle-|managed-idle-)|ssh\/orcad-(?:managed-wake|managed-tunnel|recovery-slot|remote-launch))|shared\/orcad-idle-exit)/.test(
+          file
+        ))
+  },
+  {
+    id: 'ssh.localhost-agent-hooks',
+    specs: ['tests/e2e/ssh-localhost.spec.ts'],
+    matches: (file) =>
+      isProductSource(file) &&
+      /^src\/(?:relay\/(?:agent-hook|relay-agent-hook-runtime|plugin-overlay)|main\/(?:agent-hooks\/|ssh\/ssh-relay-session\.ts$)|shared\/agent-hook)/.test(
+        file
+      )
+  },
+  {
+    id: 'browser-network.ssh-docker-route',
+    specs: ['tests/e2e/ssh-browser-network-execution-route.docker.unit.test.ts'],
+    matches: (file) =>
+      file === 'tests/e2e/ssh-browser-network-execution-route.docker.unit.test.ts' ||
+      /^tests\/e2e\/helpers\/docker-ssh-relay-(?:image|target)\.ts$/.test(file) ||
+      (isProductSource(file) &&
+        /^src\/main\/(?:browser\/(?:ssh-browser-network-execution-route|browser-network-deferred-socket|browser-network-execution-route|system-ssh-socks-client-socket)|ssh\/system-ssh-dynamic-forward-process)\.ts$/.test(
+          file
+        ))
+  },
+  {
+    // Why the host-connection phase: the route gate waits on it, so a phase change can strand the
+    // SSH-unavailable card without touching a browser file.
+    id: 'browser.local-ssh-workspace-route',
+    specs: ['tests/e2e/local-ssh-browser-routing.spec.ts'],
+    matches: (file) =>
+      isProductSource(file) &&
+      /^src\/(?:main\/browser\/local-ssh-browser-(?:route|partitions)\.ts|renderer\/src\/(?:components\/browser-pane\/(?:use-ssh-workspace-browser-route\.ts|assemble-chrome\/ssh-routed-browser-page-gate\.tsx)|lib\/worktree-host-connection-phase\.ts))$/.test(
+        file
+      )
+  },
+  {
+    id: 'terminal.windows-wsl-launch-and-paste',
+    specs: [
+      'tests/e2e/golden-tab-bar-agent-launch.spec.ts',
+      'tests/e2e/terminal-windows-shell-paste-ownership.spec.ts'
+    ],
+    matches: (file) =>
+      isProductSource(file) &&
+      /^(?:config\/scripts\/(?:verify-wsl-e2e-participation|verify-playwright-participation)\.mjs$|src\/main\/(?:wsl[/-]|pty\/.*wsl|providers\/wsl)|src\/shared\/(?:wsl-|windows-terminal-shell)|src\/renderer\/src\/.*(?:terminal-paste|pty-paste)|tests\/e2e\/(?:golden-tab-bar-agent-launch\.spec|terminal-windows-shell-paste-ownership\.spec|helpers\/(?:wsl-golden-stub-agent|golden-stub-agent))|\.github\/(?:actions\/setup-wsl-test-runtime\/|workflows\/windows-wsl-e2e\.yml))/.test(
+        file
+      )
+  },
   {
     id: 'ephemeral-vm-runtime.rollback-readable-sidecar',
     specs: ['tests/e2e/ephemeral-vm-provisioned-root.spec.ts'],
@@ -16,14 +111,40 @@ export const PR_E2E_SOURCE_ROUTES = [
     id: 'ssh-terminal-source',
     specs: [
       'tests/e2e/pty-input-write-queue-ssh.spec.ts',
+      'tests/e2e/ssh-codex-display-artifacts-repro.spec.ts',
       'tests/e2e/ssh-cold-activation-restore.spec.ts',
+      'tests/e2e/ssh-docker-half-open-link.spec.ts',
       'tests/e2e/ssh-docker-reconnect-pane-restore.spec.ts',
+      'tests/e2e/ssh-docker-relay-stall-credential.spec.ts',
+      'tests/e2e/ssh-docker-resource-accumulation.spec.ts',
+      'tests/e2e/ssh-docker-transport-drop-recovery.spec.ts',
+      'tests/e2e/ssh-port-forward-lifecycle.spec.ts',
+      'tests/e2e/ssh-reconnect-tab-destruction.spec.ts',
       'tests/e2e/ssh-startup-exec-readiness.spec.ts',
       'tests/e2e/ssh-terminal-window-wake-stale-grid-repro.spec.ts'
     ],
+    // Why the store/startup/shared additions: the SSH-named authorities stop at the main
+    // process and the pane component, but the reconnect ledgers and retained-payload
+    // admission that decide whether a pane rebinds live in the renderer store.
     matches: (file) =>
       isProductSource(file) &&
-      /^(?:src\/main\/ssh\/|src\/main\/providers\/ssh-|src\/main\/ipc\/(?:ssh-|pty)|src\/relay\/|src\/renderer\/src\/components\/terminal-pane\/(?:pty-|ssh-|remote-runtime-|terminal-parked-pty))/.test(
+      /^(?:src\/main\/ssh\/|src\/main\/providers\/ssh-|src\/main\/ipc\/(?:ssh-|pty)|src\/main\/runtime\/(?:public-ssh-state|ssh-file-explorer-chunk-read)\.ts|src\/relay\/|src\/shared\/(?:ssh-|skill-ssh-relay-contract)|src\/renderer\/src\/startup\/(?:ssh-startup-reconnect|startup-ssh-connection-restore)\.ts|src\/renderer\/src\/store\/slices\/(?:ssh|direct-ssh-)|src\/renderer\/src\/components\/terminal-pane\/(?:pty-|ssh-|remote-runtime-|terminal-parked-pty))/.test(
+        file
+      )
+  },
+  {
+    // Why a sibling route rather than more paths on ssh-terminal-source: these modules carry
+    // no "ssh" in their names, and only the two restore specs gate them. Folding them in
+    // would run the whole SSH terminal list for a tab-tombstone edit.
+    id: 'ssh-workspace-session-restore',
+    specs: [
+      'tests/e2e/ssh-cold-activation-restore.spec.ts',
+      'tests/e2e/ssh-reconnect-tab-destruction.spec.ts'
+    ],
+    matches: (file) =>
+      isProductSource(file) &&
+      !file.endsWith('-test-harness.ts') &&
+      /^(?:src\/main\/ipc\/remote-workspace|src\/shared\/remote-workspace-|src\/renderer\/src\/hooks\/remote-workspace-|src\/renderer\/src\/lib\/worktree-(?:initial-terminal-seeding|default-terminal-tabs)\.ts|src\/renderer\/src\/components\/terminal\/initial-terminal)/.test(
         file
       )
   },
@@ -45,6 +166,18 @@ export const PR_E2E_SOURCE_ROUTES = [
       )
   },
   {
+    // Why a route beside terminal-input.ime-and-synthetic-forwarding rather than more specs on
+    // it: that route selects the CDP-synthetic specs, which drive composition through
+    // Input.imeSetComposition and so prove Orca's handling without an input method existing.
+    // This one names the surface only a real ibus-hangul session can judge, and is the sole
+    // trigger that puts the real-IME lane on a PR.
+    id: 'terminal-ime.native-input-method',
+    specs: ['tests/e2e/terminal-ibus-hangul-native.spec.ts'],
+    matches: (file) =>
+      (isProductSource(file) && NATIVE_IME_PRODUCT_SOURCE.test(file)) ||
+      NATIVE_IME_HARNESS.test(file)
+  },
+  {
     id: 'terminal-startup.quick-command-pre-bind-recovery',
     specs: ['tests/e2e/terminal-quick-command-pre-bind-recovery.spec.ts'],
     matches: (file) =>
@@ -58,7 +191,7 @@ export const PR_E2E_SOURCE_ROUTES = [
     specs: ['tests/e2e/paired-quick-open-large-tree.spec.ts'],
     matches: (file) =>
       isProductSource(file) &&
-      /^(?:src\/main\/ipc\/(?:filesystem-(?:list-files|search-file-paths)|rg-availability)\.ts|src\/main\/providers\/(?:filesystem-provider-contract|ssh-filesystem-provider(?:-capabilities)?)\.ts|src\/main\/runtime\/(?:orca-runtime-files|rpc\/methods\/files)\.ts|src\/relay\/(?:fs-handler(?:-install-rg|-list-files|-ripgrep-fallback)?|fs-list-files-fallback-chain)\.ts|src\/renderer\/src\/(?:components\/(?:QuickOpen|quick-open-file-list|quick-open-search)\.tsx?|runtime\/(?:runtime-file-client|runtime-legacy-quick-open-inventory)\.ts)|src\/shared\/(?:quick-open-(?:install-rg|path-search|transport-budget)|ripgrep-process-availability)\.ts)$/.test(
+      /^(?:src\/main\/ipc\/filesystem-(?:list-files|search-file-paths)\.ts|src\/main\/ripgrep\/bundled-ripgrep-path\.ts|src\/main\/providers\/(?:filesystem-provider-contract|ssh-filesystem-provider(?:-capabilities)?)\.ts|src\/main\/runtime\/(?:orca-runtime-files|rpc\/methods\/files)\.ts|src\/relay\/(?:fs-handler(?:-install-rg|-list-files|-ripgrep-fallback)?|fs-list-files-fallback-chain|relay-bundled-ripgrep)\.ts|src\/renderer\/src\/(?:components\/(?:QuickOpen|quick-open-file-list|quick-open-search)\.tsx?|runtime\/(?:runtime-file-client|runtime-legacy-quick-open-inventory)\.ts)|src\/shared\/(?:quick-open-(?:install-rg|path-search|transport-budget)|ripgrep-process-availability|bundled-ripgrep)\.ts)$/.test(
         file
       )
   },
@@ -68,6 +201,49 @@ export const PR_E2E_SOURCE_ROUTES = [
     matches: (file) =>
       isProductSource(file) &&
       /^(?:src\/renderer\/src\/components\/terminal-pane\/(?:terminal-hidden-view-parking|terminal-tab-park-candidates|terminal-tab-activation-order|terminal-parked-pty-watcher|terminal-parked-tab-watchers|terminal-parked-watcher-registry)\.ts|src\/renderer\/src\/runtime\/sync-runtime-graph\.ts)$/.test(
+        file
+      )
+  },
+  {
+    // Why a route of its own: every other terminal-pane route names what BINDS a pane — the pty
+    // transports, the ssh reconnect ledgers, the park watchers. Nothing named what unbinds one,
+    // so the close/retire lifecycle reached main with e2e skipped outright. Unbinding is the half
+    // that can strand a PTY or leave a retired leaf mounted as a blank pane.
+    //
+    // Deliberately absent: src/renderer/src/runtime/runtime-rpc-client.ts, the transport these
+    // retirements call out through. It carries no close decision and churns ~3x these files, so
+    // routing on it would run this lane on unrelated runtime work.
+    id: 'terminal-pane.close-and-retirement',
+    specs: [
+      // Closing a tab whose pane is parked (never mounted) must retire that exact PTY.
+      'tests/e2e/terminal-parked-close-retirement.spec.ts',
+      // Closing one leaf of a split must leave root leaves, leaf→pty bindings, and live panes
+      // agreeing — the ghost-blank-pane shape a bad unbind produces.
+      'tests/e2e/terminal-pane-close-layout-consistency.spec.ts',
+      // The runtime half: a leaf the host retires must stop being mounted on a paired client.
+      'tests/e2e/paired-remote-split-pane-host-retired-ghost.spec.ts'
+    ],
+    matches: (file) =>
+      isProductSource(file) &&
+      /^(?:src\/renderer\/src\/components\/terminal-pane\/(?:retire-unbound-(?:ipc|runtime)-terminal-pane|terminal-pane-(?:close-admission|close-identity|lifecycle-close|pane-closed|retirement-ownership)|use-terminal-pane-close-actions)|src\/renderer\/src\/store\/(?:terminals\/terminal-tab-close(?:-providers)?|slices\/(?:terminal-tab-retirement|terminal-retirement-teardown-reservation|retired-terminal-tab-state-sweep)))\.ts$/.test(
+        file
+      )
+  },
+  {
+    id: 'terminal-session.parked-cli-split',
+    specs: ['tests/e2e/terminal-parked-cli-split.spec.ts'],
+    matches: (file) =>
+      isProductSource(file) &&
+      /^(?:src\/main\/window\/attach-main-window-services\.ts|src\/preload\/(?:index|api\/ui-command-event-api)\.ts|src\/renderer\/src\/components\/terminal-pane\/(?:terminal-pane-split-request-routing|use-terminal-pane-lifecycle|use-terminal-tab-cold-parking)\.ts|src\/renderer\/src\/hooks\/ipc-events\/terminal-ui-routing-ipc-bridge\.ts)$/.test(
+        file
+      )
+  },
+  {
+    id: 'terminal-session.paired-serve-restart-binding-continuity',
+    specs: ['tests/e2e/paired-remote-terminal-serve-restart-binding.spec.ts'],
+    matches: (file) =>
+      isProductSource(file) &&
+      /^(?:src\/main\/daemon\/(?:daemon-attach-only-retirement|daemon-pty-applied-size|daemon-pty-session-control|daemon-pty-spawn-result)\.ts|src\/renderer\/src\/components\/terminal-pane\/(?:remote-runtime-pty-transport|terminal-error-accumulation)\.ts|src\/renderer\/src\/runtime\/(?:web-runtime-session|web-session-tabs-sync|web-session-terminal-orphan-(?:topology|recovery(?:-(?:adoption|surface|inventory|inventory-validation|cache|queue|rpc-lane|pane))?))\.ts)$/.test(
         file
       )
   },
@@ -82,11 +258,48 @@ export const PR_E2E_SOURCE_ROUTES = [
       )
   },
   {
+    // Why: layout resolution is the only place a split direction can be invented, and the
+    // loss is one-way — the guess is published and written back over the real tree.
+    id: 'terminal-session.split-orientation-resolution',
+    specs: ['tests/e2e/desktop-published-split-orientation-legacy-leaf.spec.ts'],
+    matches: (file) =>
+      isProductSource(file) &&
+      /^src\/renderer\/src\/runtime\/(?:remote-terminal-layout-resolution\.ts|sync-runtime-graph\/(?:graph-publication|mobile-session-terminal-tabs|mobile-session-surfaces)\.ts|web-session-tabs-sync\/terminal-surfaces\.ts)$/.test(
+        file
+      )
+  },
+  {
     id: 'terminal-session.remote-pane-layout-retry',
     specs: ['tests/e2e/paired-remote-pane-layout-retry.spec.ts'],
     matches: (file) =>
       isProductSource(file) &&
       /^(?:src\/renderer\/src\/components\/terminal-pane\/(?:remote-pane-layout-push|TerminalPane)\.tsx?|src\/renderer\/src\/lib\/terminal-layout-equality\.ts|src\/renderer\/src\/runtime\/web-session-tabs-sync\.ts|src\/renderer\/src\/store\/slices\/terminals\.ts)$/.test(
+        file
+      )
+  },
+  {
+    // Why: the host's row for a client-rendered page only exists across two real Electron
+    // apps, so this spec is the only gate on it. The high-churn seams it also rides
+    // (ipc/runtime, useIpcEvents, preload) are left out deliberately: routing on those runs a
+    // two-app e2e on most PRs, and their client-hosted share is already covered by the
+    // main-process integration test.
+    id: 'client-hosted-browser.host-strip',
+    specs: ['tests/e2e/paired-client-hosted-browser-host-strip.spec.ts'],
+    matches: (file) =>
+      isProductSource(file) &&
+      /^src\/.*(?:[Cc]lient-?[Hh]osted-?[Bb]rowser|BrowserPaneOverlayLayer)/.test(file)
+  },
+  {
+    // Why a second, wider pattern: restart survival breaks from seams that never say
+    // "client-hosted" - page adoption, the host lease/reconciliation plan, the session-tab
+    // snapshot the client culls rows against. orca-runtime.ts is included despite its churn: it
+    // publishes the snapshot flag the client holds its rows on, and no narrower path names that
+    // seam.
+    id: 'client-hosted-browser.restart-survival',
+    specs: ['tests/e2e/paired-client-hosted-browser-restart-survival.spec.ts'],
+    matches: (file) =>
+      isProductSource(file) &&
+      /^src\/.*(?:[Cc]lient-?[Hh]osted|browser-host-(?:lease|page|client-page)|browser-client-(?:host|page)|runtime-browser-(?:client-)?page|session-tabs-sync|host-session-snapshot-authority|orca-runtime(?:-browser)?\.ts|\/runtime-(?:status|types)\.ts)/.test(
         file
       )
   }
@@ -105,6 +318,46 @@ export function selectPrE2eSpecs(changedPaths, reportRoute = () => undefined) {
   return [...specs].sort((left, right) => left.localeCompare(right))
 }
 
+/** Routes whose authorities are SSH execution source, and so require the Docker-SSH lane. */
+export const SSH_SOURCE_ROUTE_IDS = ['ssh-terminal-source', 'ssh-workspace-session-restore']
+
+// Why derive this from the routes instead of a second path list: the Docker-SSH lane used to
+// trigger only because one route happened to list a startup-readiness spec, so pruning that
+// spec would have silently retired the lane. Two lists that must agree is how that drifted.
+export function hasSshSourceChange(changedPaths) {
+  return PR_E2E_SOURCE_ROUTES.filter((route) => SSH_SOURCE_ROUTE_IDS.includes(route.id)).some(
+    (route) => changedPaths.some(route.matches)
+  )
+}
+
+/** Routes whose authorities a real input method can judge, and so require the native IME lane. */
+export const NATIVE_IME_SOURCE_ROUTE_IDS = ['terminal-ime.native-input-method']
+
+// Why derived from the routes, like hasSshSourceChange: the native lane must trigger on IME
+// source, not on the native spec surviving in some route's spec list.
+export function hasNativeImeSourceChange(changedPaths) {
+  return PR_E2E_SOURCE_ROUTES.filter((route) =>
+    NATIVE_IME_SOURCE_ROUTE_IDS.includes(route.id)
+  ).some((route) => changedPaths.some(route.matches))
+}
+
+export function shouldRunReusablePrE2e(changedPaths) {
+  // Native IME has its own workflow; SSH still runs inside the reusable workflow.
+  return (
+    hasSshSourceChange(changedPaths) ||
+    selectPrE2eSpecs(changedPaths).some(
+      (spec) => spec !== 'tests/e2e/terminal-ibus-hangul-native.spec.ts'
+    )
+  )
+}
+
+export function hasWslSourceChange(changedPaths) {
+  const route = PR_E2E_SOURCE_ROUTES.find(
+    (candidate) => candidate.id === 'terminal.windows-wsl-launch-and-paste'
+  )
+  return changedPaths.some(route.matches)
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let input = ''
   process.stdin.setEncoding('utf8')
@@ -112,6 +365,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     input += chunk
   }
   const changedPaths = input.split(/\r?\n/).filter(Boolean)
-  const specs = selectPrE2eSpecs(changedPaths, (message) => console.error(message))
-  process.stdout.write(`${JSON.stringify(specs)}\n`)
+  if (process.argv.includes('--ssh-source')) {
+    process.stdout.write(`${hasSshSourceChange(changedPaths)}\n`)
+  } else if (process.argv.includes('--reusable-workflow')) {
+    process.stdout.write(`${shouldRunReusablePrE2e(changedPaths)}\n`)
+  } else if (process.argv.includes('--wsl-source')) {
+    process.stdout.write(`${hasWslSourceChange(changedPaths)}\n`)
+  } else if (process.argv.includes('--native-ime-source')) {
+    process.stdout.write(`${hasNativeImeSourceChange(changedPaths)}\n`)
+  } else {
+    const specs = selectPrE2eSpecs(changedPaths, (message) => console.error(message))
+    process.stdout.write(`${JSON.stringify(specs)}\n`)
+  }
 }

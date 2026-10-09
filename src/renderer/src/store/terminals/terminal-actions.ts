@@ -1,3 +1,5 @@
+import type { AgentAttentionUnreadReason } from '@/attention/agent-attention-contract'
+import type { DirectSshLayoutEdit, TerminalState } from './terminal-state'
 import type { Tab } from '../../../../shared/tab-types'
 import type { TerminalLayoutSnapshot, TerminalTab } from '../../../../shared/terminal-tab-types'
 import type { TuiAgent } from '../../../../shared/tui-agent'
@@ -34,6 +36,7 @@ import type {
 } from './terminal-contracts'
 
 export type TerminalActions = {
+  setTerminalStartupRestorationReady: (value: boolean) => void
   setRecentQuickCommandForGroup: (groupId: string, quickCommandId: string) => void
   claimAutomaticAgentResume: (tabId: string, claim: AutomaticAgentResumeClaim) => void
   seedNativeChatLaunchPrompt: (prompt: NativeChatLaunchPrompt) => void
@@ -66,10 +69,18 @@ export type TerminalActions = {
     options?: {
       pendingActivationSpawn?: boolean
       initialPtyId?: string
+      /** Stable leaf identity: an already-live pane's, or a host launch's pane before its process. */
+      initialLeafId?: string
+      /** Published atomically with the tab so its first mount cannot spawn a bare shell. */
+      pendingStartup?: TerminalState['pendingStartupByTabId'][string]
+      /** Published atomically with pendingStartup for automatic resume ownership. */
+      automaticResumeClaim?: AutomaticAgentResumeClaim
       activate?: boolean
       recordInteraction?: boolean
       id?: string
       launchAgent?: TuiAgent
+      /** The pane a host `agent.launch` laid out before its agent existed, while its fate is open. */
+      agentLaunchPane?: TerminalTab['agentLaunchPane']
       quickCommandLabel?: string | null
       viewMode?: Tab['viewMode']
       startupCwd?: string
@@ -109,9 +120,9 @@ export type TerminalActions = {
   clearTabLaunchAgent: (tabId: string) => void
   setRuntimePaneTitle: (tabId: string, paneId: number, title: string) => void
   clearRuntimePaneTitle: (tabId: string, paneId: number) => void
-  markTerminalTabUnread: (tabId: string) => void
-  markTerminalPaneUnread: (paneKey: string) => void
-  markAgentCompletionPaneUnread: (paneKey: string) => void
+  markTerminalTabUnread: (tabId: string, reason: AgentAttentionUnreadReason) => void
+  markTerminalPaneUnread: (paneKey: string, reason: AgentAttentionUnreadReason) => void
+  markAgentCompletionPaneUnread: (paneKey: string, reason: AgentAttentionUnreadReason) => void
   clearTerminalTabUnread: (tabId: string) => void
   clearTerminalPaneUnread: (paneKey: string) => void
   setTabCustomTitle: (
@@ -122,6 +133,13 @@ export type TerminalActions = {
     }
   ) => void
   setTabColor: (tabId: string, color: string | null) => void
+  /** What the tab keeps about the launch that laid out one of its panes; undefined clears it.
+   *  `remount` remounts the tab's panes, so one whose spawn was refused spawns again. */
+  setTabAgentLaunchPane: (
+    tabId: string,
+    launchPane: TerminalTab['agentLaunchPane'],
+    options?: { remount?: boolean }
+  ) => void
   /** Binds only live tabs and migrates replacement identity state before publishing ownership. */
   updateTabPtyId: (
     tabId: string,
@@ -131,6 +149,10 @@ export type TerminalActions = {
   ) => void
   /** Reconciles exact exits; bulk clear intentionally retains relay-grace identity. */
   clearTabPtyId: (tabId: string, ptyId?: string) => void
+  /** Protects a tab from orphan cleanup after an unverified PTY loss. */
+  markUnverifiedPtyLoss: (tabId: string) => void
+  /** Records the relay's own answer that a PTY id is gone; the one `exited` a respawn may act on. */
+  markPtySourceDisowned: (ptyId: string) => void
   clearDirectSshTargetPtyBindings: (targetId: string) => number
   invalidateStaleDirectSshTargetPtyBindings: (authority: DirectSshAuthority) => number
   retryDirectSshTargetPanes: (authority: DirectSshAuthority, now?: number) => number
@@ -165,7 +187,6 @@ export type TerminalActions = {
   markCodexRestartNotices: (
     notices: (Pick<CodexRestartNotice, 'previousAccountLabel' | 'nextAccountLabel'> &
       Partial<Pick<CodexRestartNotice, 'previousAccountId' | 'nextAccountId'>> & {
-        homeRouteChanged?: boolean
         ptyId: string
       })[]
   ) => string[]
@@ -176,6 +197,9 @@ export type TerminalActions = {
   setTabPaneExpanded: (tabId: string, expanded: boolean) => void
   setTabCanExpandPane: (tabId: string, canExpand: boolean) => void
   setTabLayout: (tabId: string, layout: TerminalLayoutSnapshot | null) => void
+  acknowledgeDirectSshLayoutEdits: (uploaded: Readonly<Record<string, DirectSshLayoutEdit>>) => void
+  /** Client-local park scrollback for a tab. Never uploaded; read via `resolveLeafScrollback`. */
+  setTabLocalOnlyScrollback: (tabId: string, buffersByLeafId: Record<string, string> | null) => void
   syncPaneDetachPtyOwnership: (args: {
     detachedLeafId: string
     detachedPtyId: string | null
@@ -208,7 +232,10 @@ export type TerminalActions = {
   ) => void
   queueTabInitialCwd: (tabId: string, cwd: string) => void
   consumeTabInitialCwd: (tabId: string) => string | null
-  consumeTabStartupCommand: (tabId: string) => {
+  consumeTabStartupCommand: (
+    tabId: string,
+    expected?: TerminalState['pendingStartupByTabId'][string]
+  ) => {
     command: string
     delivery?: 'terminal-paste'
     startupCommandDelivery?: StartupCommandDelivery

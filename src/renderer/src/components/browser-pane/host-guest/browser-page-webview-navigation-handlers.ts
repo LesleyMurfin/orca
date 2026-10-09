@@ -13,6 +13,10 @@ import {
   isChromiumErrorPage,
   toDisplayUrl
 } from '../describe-page/browser-page-url-display'
+import {
+  browserNavigationLeavesFaviconOrigin,
+  pickDisplayableFaviconUrl
+} from '../describe-page/browser-favicon-url'
 import type {
   BrowserPageNavigateEvent,
   BrowserPageRecoveryNavigationValidation,
@@ -24,13 +28,16 @@ export type BrowserPageWebviewNavigationHandlersArgs = {
   webview: Electron.WebviewTag
   browserTabId: string
   browserTabUrl: string
+  invalidateBrowserAnnotationDocumentRef: MutableRefObject<() => void>
   recoveryNavigationValidationRef: MutableRefObject<BrowserPageRecoveryNavigationValidation | null>
   activeLoadFailureRef: MutableRefObject<BrowserLoadError | null>
   lastKnownWebviewUrlRef: MutableRefObject<string | null>
   addressBarInputRef: RefObject<HTMLInputElement | null>
   onSetUrlRef: MutableRefObject<BrowserPageUrlSetter>
   onUpdatePageStateRef: MutableRefObject<(tabId: string, updates: BrowserTabPageState) => void>
-  addBrowserHistoryEntryRef: MutableRefObject<(url: string, title: string) => void>
+  addBrowserHistoryEntryRef: MutableRefObject<
+    (url: string, title: string, faviconUrl?: string | null) => void
+  >
   faviconUrlRef: MutableRefObject<string | null>
   setAddressBarValue: Dispatch<SetStateAction<string>>
   annotationViewportBridgeTokenRef: MutableRefObject<string>
@@ -39,6 +46,7 @@ export type BrowserPageWebviewNavigationHandlersArgs = {
 
 export type BrowserPageWebviewNavigationHandlers = {
   handleDidStartNavigation: (event: Electron.DidStartNavigationEvent) => void
+  handleDidRedirectNavigation: (event: Electron.DidRedirectNavigationEvent) => void
   handleFullDidNavigate: (event: BrowserPageNavigateEvent) => void
   handleDidNavigateInPage: (event: BrowserPageNavigateEvent) => void
   handleTitleUpdate: (event: { title?: string }) => void
@@ -50,6 +58,7 @@ export function createBrowserPageWebviewNavigationHandlers({
   webview,
   browserTabId,
   browserTabUrl,
+  invalidateBrowserAnnotationDocumentRef,
   recoveryNavigationValidationRef,
   activeLoadFailureRef,
   lastKnownWebviewUrlRef,
@@ -62,7 +71,32 @@ export function createBrowserPageWebviewNavigationHandlers({
   annotationViewportBridgeTokenRef,
   setBrowserOverlayViewport
 }: BrowserPageWebviewNavigationHandlersArgs): BrowserPageWebviewNavigationHandlers {
+  const clearFaviconIfOriginChanges = (
+    event: Electron.DidStartNavigationEvent | Electron.DidRedirectNavigationEvent
+  ): void => {
+    if (!event.isMainFrame || event.isInPlace || !event.url) {
+      return
+    }
+    const browserStartedUrl = redactKagiSessionToken(event.url)
+    const startedUrl = normalizeBrowserNavigationUrl(browserStartedUrl) ?? browserStartedUrl
+    // Why getURL() and not lastKnownWebviewUrlRef: Orca-driven navigations point that ref at the
+    // destination before assigning src, so it can't identify the document being left.
+    let committedUrl: string | null = null
+    try {
+      committedUrl = webview.getURL() || null
+    } catch {
+      // Why: a guest that hasn't attached yet rejects getURL(); an unknown origin keeps the icon.
+    }
+    if (browserNavigationLeavesFaviconOrigin(committedUrl, startedUrl)) {
+      faviconUrlRef.current = null
+      onUpdatePageStateRef.current(browserTabId, { faviconUrl: null })
+    }
+  }
+
   const handleDidStartNavigation = (event: Electron.DidStartNavigationEvent): void => {
+    if (event.isMainFrame && event.url) {
+      invalidateBrowserAnnotationDocumentRef.current()
+    }
     if (!event.isMainFrame || event.isInPlace || !event.url) {
       return
     }
@@ -72,6 +106,14 @@ export function createBrowserPageWebviewNavigationHandlers({
     if (pendingRecoveryNavigation?.targetUrl === startedUrl) {
       pendingRecoveryNavigation.started = true
     }
+    // Why here and not on did-start-loading: Chromium re-announces a favicon only when the icon URL
+    // list changes, so clearing on every load strands same-origin navigations with no icon and no
+    // event that would ever restore one.
+    clearFaviconIfOriginChanges(event)
+  }
+
+  const handleDidRedirectNavigation = (event: Electron.DidRedirectNavigationEvent): void => {
+    clearFaviconIfOriginChanges(event)
   }
 
   const handleDidNavigate = (
@@ -89,6 +131,9 @@ export function createBrowserPageWebviewNavigationHandlers({
     const browserModelUrl = redactKagiSessionToken(currentUrl)
     const normalizedBrowserModelUrl =
       normalizeBrowserNavigationUrl(browserModelUrl) ?? browserModelUrl
+    if (lastKnownWebviewUrlRef.current !== normalizedBrowserModelUrl) {
+      invalidateBrowserAnnotationDocumentRef.current()
+    }
     lastKnownWebviewUrlRef.current = normalizedBrowserModelUrl
     rememberLiveBrowserUrl(browserTabId, browserModelUrl)
     // Why: don't overwrite in-progress typing (see above).
@@ -127,21 +172,14 @@ export function createBrowserPageWebviewNavigationHandlers({
       const browserModelUrl = redactKagiSessionToken(currentUrl)
       const title = getBrowserDisplayTitle(event.title, browserModelUrl)
       onUpdatePageStateRef.current(browserTabId, { title })
-      addBrowserHistoryEntryRef.current(browserModelUrl, title)
+      addBrowserHistoryEntryRef.current(browserModelUrl, title, faviconUrlRef.current)
     } catch {
       // Why: title-updated can fire before dom-ready, making getURL() throw.
     }
   }
 
   const handleFaviconUpdate = (event: { favicons?: string[] }): void => {
-    const faviconUrl = event.favicons?.[0] ?? null
-    faviconUrlRef.current =
-      faviconUrl &&
-      (faviconUrl.startsWith('https://') ||
-        faviconUrl.startsWith('http://') ||
-        faviconUrl.startsWith('data:image/'))
-        ? faviconUrl
-        : null
+    faviconUrlRef.current = pickDisplayableFaviconUrl(event.favicons)
     onUpdatePageStateRef.current(browserTabId, { faviconUrl: faviconUrlRef.current })
   }
 
@@ -173,6 +211,7 @@ export function createBrowserPageWebviewNavigationHandlers({
 
   return {
     handleDidStartNavigation,
+    handleDidRedirectNavigation,
     handleFullDidNavigate,
     handleDidNavigateInPage,
     handleTitleUpdate,

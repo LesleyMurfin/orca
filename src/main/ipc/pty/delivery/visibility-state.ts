@@ -9,10 +9,17 @@ export const interactiveOutputCharsByPty = new Map<string, number>()
 export const activeRendererPtys = new Set<string>()
 export const visibleRendererPtys = new Set<string>()
 export const rendererVisibilityKnownPtys = new Set<string>()
-export let invalidatePendingPtyDrainPriority = (_id?: string, _schedule?: boolean): void => {}
-export let invalidatePendingPtyDrainPolicy = (_id?: string, _schedule?: boolean): void => {}
-export const pendingHiddenRendererResizeOutputPtys = new Set<string>()
-export const deliveredHiddenRendererResizeOutputPtys = new Set<string>()
+// Why null-init + wrapper fns: see debug.ts — rolldown const-folds `export let fn = noop` bridges (STA-5661).
+let invalidatePendingPtyDrainPriorityImpl: ((id?: string, schedule?: boolean) => void) | null = null
+let invalidatePendingPtyDrainPolicyImpl: ((id?: string, schedule?: boolean) => void) | null = null
+
+export function invalidatePendingPtyDrainPriority(id?: string, schedule?: boolean): void {
+  invalidatePendingPtyDrainPriorityImpl?.(id, schedule)
+}
+
+export function invalidatePendingPtyDrainPolicy(id?: string, schedule?: boolean): void {
+  invalidatePendingPtyDrainPolicyImpl?.(id, schedule)
+}
 export const KEEP_HISTORY_STOP_SETTLE_MS = 1_000
 export const KEEP_HISTORY_STOP_POLL_MS = 100
 // Why: after daemon keep-tail thinning main's mirror holds only the kept tail, so recovery must keep consulting the daemon's complete model until exit.
@@ -21,11 +28,11 @@ export const providerSnapshotRequiredPtys = new Set<string>()
 export function setInvalidatePendingPtyDrainPriority(
   fn: (id?: string, schedule?: boolean) => void
 ): void {
-  invalidatePendingPtyDrainPriority = fn
+  invalidatePendingPtyDrainPriorityImpl = fn
 }
 
 export function setInvalidatePendingPtyDrainPolicy(
   fn: (id?: string, schedule?: boolean) => void
 ): void {
-  invalidatePendingPtyDrainPolicy = fn
+  invalidatePendingPtyDrainPolicyImpl = fn
 }

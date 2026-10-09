@@ -18,6 +18,7 @@ import {
   reconnectDockerSshRelayTarget
 } from './helpers/docker-ssh-relay-connection'
 import { openTerminalTabInActiveGroup } from './helpers/terminal-tab-open'
+import { attachSshReconnectFailureObservation } from './helpers/ssh-reconnect-failure-observation'
 
 const RUN_DOCKER_SSH = process.env.ORCA_E2E_SSH_DOCKER === '1'
 
@@ -46,8 +47,8 @@ const RUN_DOCKER_SSH = process.env.ORCA_E2E_SSH_DOCKER === '1'
  *   slot, and the next open throws "PTY source delivery already has an upstream owner". Seen live as
  *   an error toast and a blank pane.
  * - COMPARING record.identity.clientGeneration TO THE REQUEST is not available: that value is
- *   client-supplied through pty.openClient (dispatcher.ts:1219) and RequestContext carries no
- *   generation of its own.
+ *   client-supplied through pty.openClient (see admitsPtyDataPublication in
+ *   dispatcher-capacity-signals.ts) and RequestContext carries no generation of its own.
  *
  * The real cause is now established, and it is broader than this spec: a reconnect reuses the same
  * clientId (setWrite keeps the primary client), so the relay's activate() matches on it and returns
@@ -63,6 +64,8 @@ test.describe('SSH reconnect pane restore', () => {
   }, testInfo) => {
     test.slow()
     let target: DockerSshRelayTarget | null = null
+    let targetId: string | null = null
+    let originalPtyId: string | null = null
     try {
       target = startDockerSshRelayTarget(testInfo)
       // The fixture image's shell emits no OSC 0, so without this every tab keeps its placeholder
@@ -71,9 +74,11 @@ test.describe('SSH reconnect pane restore', () => {
       await waitForSessionReady(orcaPage)
       await waitForActiveWorktree(orcaPage)
       const remote = await connectDockerSshRelayTarget(orcaPage, target)
+      targetId = remote.targetId
       await ensureTerminalVisible(orcaPage, 45_000)
       await waitForActiveTerminalManager(orcaPage, 60_000)
       const ptyId = await waitForActivePanePtyId(orcaPage, 60_000)
+      originalPtyId = ptyId
 
       // A marker rather than a prompt: a prompt reappears on its own after a reconnect, so it cannot
       // distinguish restored scrollback from a fresh shell. This string only exists if the pane kept
@@ -108,13 +113,15 @@ test.describe('SSH reconnect pane restore', () => {
       await execInTerminal(orcaPage, ptyId, 'top -b -n 1 > /dev/null; top')
       await waitForTerminalOutput(orcaPage, 'load average', 30_000, 8000)
 
-      await reconnectDockerSshRelayTarget(orcaPage, remote.targetId)
-      await waitForActiveTerminalManager(orcaPage, 60_000)
-      await waitForActivePanePtyId(orcaPage, 60_000)
+      for (let reconnect = 0; reconnect < 3; reconnect += 1) {
+        await reconnectDockerSshRelayTarget(orcaPage, remote.targetId)
+        await waitForActiveTerminalManager(orcaPage, 60_000)
+        await waitForActivePanePtyId(orcaPage, 60_000)
 
-      await waitForTerminalOutput(orcaPage, 'load average', 60_000, 8000)
-      const tuiContent = await getTerminalContent(orcaPage, 8000)
-      expect(tuiContent).toContain('PID')
+        await waitForTerminalOutput(orcaPage, 'load average', 60_000, 8000)
+        const tuiContent = await getTerminalContent(orcaPage, 8000)
+        expect(tuiContent).toContain('PID')
+      }
 
       // REGRESSION 2: opening a tab AFTER a reconnect. The prepaint could still fire on this mount
       // and write over the new shell, leaving a pane with no prompt and a generic tab title.
@@ -152,6 +159,17 @@ test.describe('SSH reconnect pane restore', () => {
           { timeout: 60_000, message: 'New tab kept its placeholder title' }
         )
         .not.toMatch(/^Terminal \d+$/)
+    } catch (error) {
+      await attachSshReconnectFailureObservation(
+        orcaPage,
+        testInfo,
+        target,
+        targetId,
+        originalPtyId
+      ).catch((diagnosticError) =>
+        console.warn('SSH reconnect diagnostics failed', diagnosticError)
+      )
+      throw error
     } finally {
       if (target) {
         cleanupDockerSshRelayTarget(target)

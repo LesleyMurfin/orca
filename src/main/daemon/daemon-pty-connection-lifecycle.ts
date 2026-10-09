@@ -13,8 +13,17 @@ import type { DaemonEvidenceSource, ExactDaemonIncarnation } from './daemon-inca
 import { notifyDaemonAuditListeners } from './daemon-listener-registry'
 import { DaemonPtyEventSubscriptions } from './daemon-pty-event-subscriptions'
 import { parseDaemonPidFile, type ParsedDaemonPid } from './daemon-pid-file-parse'
+import { supportsColorQueryReplyColors } from './daemon-protocol-version'
+import type { TerminalOscColorQueryReplyColors } from '../../shared/terminal-osc-color-reply'
 
 export abstract class DaemonPtyConnectionLifecycle extends DaemonPtyEventSubscriptions {
+  private colorQueryReplyColors: TerminalOscColorQueryReplyColors | null = null
+
+  setColorQueryReplyColors(colors: TerminalOscColorQueryReplyColors): void {
+    this.colorQueryReplyColors = colors
+    this.syncColorQueryReplyColors()
+  }
+
   protected async ensureConnected(deadlineMs?: number): Promise<void> {
     try {
       // Why: destructive teardown bounds the handshake by its deadline so a wedged
@@ -35,6 +44,14 @@ export abstract class DaemonPtyConnectionLifecycle extends DaemonPtyEventSubscri
     this.flushOwedProducerResumes()
     if (isFreshConnection) {
       this.resyncBackgroundedSessions()
+      // Why: a replacement daemon starts with no colours, and a disconnected push was dropped.
+      this.syncColorQueryReplyColors()
+    }
+  }
+
+  private syncColorQueryReplyColors(): void {
+    if (this.colorQueryReplyColors && supportsColorQueryReplyColors(this.protocolVersion)) {
+      this.client.notify('setColorQueryReplyColors', { colors: this.colorQueryReplyColors })
     }
   }
 
@@ -46,6 +63,11 @@ export abstract class DaemonPtyConnectionLifecycle extends DaemonPtyEventSubscri
     const previous = this.lastAuthenticatedIdentity
     if (previous && sameEndpointIdentity(previous, current)) {
       return
+    }
+    if (previous) {
+      // Capability probes belong to one daemon incarnation; a replacement may
+      // support getSize even when the preserved owner did not.
+      this.getSizeUnsupported = false
     }
     this.lastAuthenticatedIdentity = { ...current }
     this.exactDaemonIncarnation = exactDaemonIncarnationForPidRecord(current, this.pidRecord)

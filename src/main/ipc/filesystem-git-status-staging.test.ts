@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events'
 import path from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -94,11 +95,9 @@ describe('registerFilesystemHandlers', () => {
 
     // Why: validateGitRelativeFilePath uses path.relative() which produces
     // platform-specific separators (backslashes on Windows).
-    expect(stageFileMock).toHaveBeenCalledWith(
-      WORKTREE_FEATURE_PATH,
-      path.join('src', 'file.ts'),
-      {}
-    )
+    expect(stageFileMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, path.join('src', 'file.ts'), {
+      admissionTier: 'interactive'
+    })
   })
 
   it('uses worktree roots seeded by worktrees:list without rebuilding the cache', async () => {
@@ -111,7 +110,10 @@ describe('registerFilesystemHandlers', () => {
 
     expect(listWorktreesMock).not.toHaveBeenCalled()
     expect(realpathMock).not.toHaveBeenCalledWith(WORKTREE_FEATURE_PATH)
-    expect(getStatusMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, { includeIgnored: false })
+    expect(getStatusMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, {
+      admissionTier: 'status',
+      includeIgnored: false
+    })
   })
 
   it('passes configured shared links through the local status path', async () => {
@@ -135,6 +137,7 @@ describe('registerFilesystemHandlers', () => {
     await handlers.get('git:status')!(null, { worktreePath: WORKTREE_FEATURE_PATH })
 
     expect(getStatusMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, {
+      admissionTier: 'status',
       includeIgnored: false,
       sharedLinkPaths: ['node_modules']
     })
@@ -149,7 +152,10 @@ describe('registerFilesystemHandlers', () => {
 
     expect(listWorktreesMock).not.toHaveBeenCalled()
     expect(realpathMock).not.toHaveBeenCalledWith(REPO_PATH)
-    expect(getStatusMock).toHaveBeenCalledWith(REPO_PATH, { includeIgnored: false })
+    expect(getStatusMock).toHaveBeenCalledWith(REPO_PATH, {
+      admissionTier: 'status',
+      includeIgnored: false
+    })
   })
 
   it('forwards includeIgnored through local and SSH git status IPC', async () => {
@@ -172,8 +178,14 @@ describe('registerFilesystemHandlers', () => {
       includeIgnored: true
     })
 
-    expect(getStatusMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, { includeIgnored: true })
-    expect(sshProvider.getStatus).toHaveBeenCalledWith('/remote/repo', { includeIgnored: true })
+    expect(getStatusMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, {
+      admissionTier: 'status',
+      includeIgnored: true
+    })
+    expect(sshProvider.getStatus).toHaveBeenCalledWith('/remote/repo', {
+      admissionTier: 'status',
+      includeIgnored: true
+    })
   })
 
   it('returns capped-state metadata unchanged across local and SSH status IPC', async () => {
@@ -221,10 +233,12 @@ describe('registerFilesystemHandlers', () => {
     })
 
     expect(getStatusMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, {
+      admissionTier: 'status',
       includeIgnored: false,
       bypassEffectiveUpstreamNegativeCache: true
     })
     expect(sshProvider.getStatus).toHaveBeenCalledWith('/remote/repo', {
+      admissionTier: 'status',
       includeIgnored: false,
       bypassEffectiveUpstreamNegativeCache: true
     })
@@ -250,51 +264,93 @@ describe('registerFilesystemHandlers', () => {
     })
 
     expect(getStatusMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, {
+      admissionTier: 'status',
       includeIgnored: false,
       reuseLineStats: true
     })
     expect(sshProvider.getStatus).toHaveBeenCalledWith('/remote/repo', {
+      admissionTier: 'status',
       includeIgnored: false,
       reuseLineStats: true
     })
   })
 
-  it('aborts tokenized local status without crossing renderer boundaries', async () => {
+  it('forwards a false line-stats request through local and SSH git status IPC', async () => {
     registerWorktreeRootsForRepo(store as never, 'repo-1', [REPO_PATH, WORKTREE_FEATURE_PATH])
-    const statusSignals: AbortSignal[] = []
-    getStatusMock.mockImplementation(
-      (_worktreePath: string, options: { signal?: AbortSignal }) =>
-        new Promise((_resolve, reject) => {
-          if (options.signal) {
-            statusSignals.push(options.signal)
-            options.signal.addEventListener('abort', () => reject(new Error('aborted')), {
-              once: true
-            })
-          }
-        })
-    )
+    getStatusMock.mockResolvedValue({ entries: [], conflictOperation: 'unknown' })
+    const sshProvider = {
+      getStatus: vi.fn().mockResolvedValue({ entries: [], conflictOperation: 'unknown' })
+    }
+    getSshGitProviderMock.mockReturnValue(sshProvider)
     registerFilesystemHandlers(store as never)
 
-    const firstEvent = { sender: { id: 7 } }
-    const secondEvent = { sender: { id: 8 } }
-    const firstRequest = handlers.get('git:status')!(firstEvent, {
+    await handlers.get('git:status')!(null, {
       worktreePath: WORKTREE_FEATURE_PATH,
-      requestToken: 'status-1'
-    }) as Promise<unknown>
-    const secondRequest = handlers.get('git:status')!(secondEvent, {
-      worktreePath: WORKTREE_FEATURE_PATH,
-      requestToken: 'status-1'
-    }) as Promise<unknown>
-    await vi.waitFor(() => expect(statusSignals).toHaveLength(2))
-    await handlers.get('git:cancelStatus')!(firstEvent, { requestToken: 'status-1' })
+      includeLineStats: false
+    })
+    await handlers.get('git:status')!(null, {
+      worktreePath: '/remote/repo',
+      connectionId: 'ssh-1',
+      includeLineStats: false
+    })
 
-    expect(statusSignals[0]?.aborted).toBe(true)
-    expect(statusSignals[1]?.aborted).toBe(false)
-    await expect(firstRequest).rejects.toThrow('aborted')
-
-    await handlers.get('git:cancelStatus')!(secondEvent, { requestToken: 'status-1' })
-    await expect(secondRequest).rejects.toThrow('aborted')
+    expect(getStatusMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, {
+      admissionTier: 'status',
+      includeIgnored: false,
+      includeLineStats: false
+    })
+    expect(sshProvider.getStatus).toHaveBeenCalledWith('/remote/repo', {
+      admissionTier: 'status',
+      includeIgnored: false,
+      includeLineStats: false
+    })
   })
+
+  it.each(['cancel', 'did-navigate', 'render-process-gone', 'destroyed'])(
+    'aborts tokenized local status on %s without crossing renderer boundaries',
+    async (eventName) => {
+      registerWorktreeRootsForRepo(store as never, 'repo-1', [REPO_PATH, WORKTREE_FEATURE_PATH])
+      const statusSignals: AbortSignal[] = []
+      getStatusMock.mockImplementation(
+        (_worktreePath: string, options: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            if (options.signal) {
+              statusSignals.push(options.signal)
+              options.signal.addEventListener('abort', () => reject(new Error('aborted')), {
+                once: true
+              })
+            }
+          })
+      )
+      registerFilesystemHandlers(store as never)
+
+      const firstEvent = { sender: Object.assign(new EventEmitter(), { id: 7 }) }
+      const secondEvent = { sender: Object.assign(new EventEmitter(), { id: 8 }) }
+      const firstRequest = handlers.get('git:status')!(firstEvent, {
+        worktreePath: WORKTREE_FEATURE_PATH,
+        requestToken: 'status-1'
+      }) as Promise<unknown>
+      const secondRequest = handlers.get('git:status')!(secondEvent, {
+        worktreePath: WORKTREE_FEATURE_PATH,
+        requestToken: 'status-1'
+      }) as Promise<unknown>
+      await vi.waitFor(() => expect(statusSignals).toHaveLength(2))
+      if (eventName === 'cancel') {
+        await handlers.get('git:cancelStatus')!(firstEvent, { requestToken: 'status-1' })
+      } else {
+        firstEvent.sender.emit(eventName)
+      }
+
+      expect(statusSignals[0]?.aborted).toBe(true)
+      expect(statusSignals[1]?.aborted).toBe(false)
+      await expect(firstRequest).rejects.toThrow('aborted')
+
+      await handlers.get('git:cancelStatus')!(secondEvent, { requestToken: 'status-1' })
+      await expect(secondRequest).rejects.toThrow('aborted')
+      expect(firstEvent.sender.eventNames()).toEqual([])
+      expect(secondEvent.sender.eventNames()).toEqual([])
+    }
+  )
 
   it('checks ignored paths through local and SSH git providers', async () => {
     registerWorktreeRootsForRepo(store as never, 'repo-1', [REPO_PATH, WORKTREE_FEATURE_PATH])
@@ -346,7 +402,9 @@ describe('registerFilesystemHandlers', () => {
       connectionId: 'ssh-1'
     })
 
-    expect(abortMergeMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, {})
+    expect(abortMergeMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, {
+      admissionTier: 'interactive'
+    })
     expect(sshProvider.abortMerge).toHaveBeenCalledWith('/remote/repo')
   })
 
@@ -366,7 +424,9 @@ describe('registerFilesystemHandlers', () => {
       connectionId: 'ssh-1'
     })
 
-    expect(abortRebaseMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, {})
+    expect(abortRebaseMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, {
+      admissionTier: 'interactive'
+    })
     expect(sshProvider.abortRebase).toHaveBeenCalledWith('/remote/repo')
   })
 
@@ -410,7 +470,7 @@ describe('registerFilesystemHandlers', () => {
     expect(bulkStageFilesMock).toHaveBeenCalledWith(
       WORKTREE_FEATURE_PATH,
       [path.join('src', 'file.ts'), path.join('nested', 'child.ts')],
-      {}
+      { admissionTier: 'interactive' }
     )
   })
 
@@ -427,7 +487,7 @@ describe('registerFilesystemHandlers', () => {
     expect(bulkDiscardChangesMock).toHaveBeenCalledWith(
       WORKTREE_FEATURE_PATH,
       [path.join('src', 'file.ts'), path.join('nested', 'child.ts')],
-      {}
+      { admissionTier: 'interactive' }
     )
   })
 

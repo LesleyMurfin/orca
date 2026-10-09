@@ -36,11 +36,13 @@ import { useSidebarWorktreeSortOrder } from './worktree-list/listing/use-sort-or
 import { useVisibleSidebarWorktrees } from './worktree-list/listing/use-visible-worktrees'
 import { useWorktreeStatusMutations } from './worktree-list/drag/use-status-mutations'
 import { shouldFiltersHideAllRows } from './sidebar-empty-state-gate'
+import { buildWorktreeManualOrderCatalog } from './worktree-manual-order-catalog'
 
 type WorktreeListProps = {
   scrollOffsetRef: React.MutableRefObject<number>
   scrollAnchorRef: React.MutableRefObject<VirtualizedScrollAnchor>
   workspaceBoardOpen?: boolean
+  onWorktreeCardClick?: () => void
   onWorkspaceBoardDragPreviewStart?: () => void
   onWorkspaceBoardDragPreviewCommit?: () => void
   onWorkspaceBoardDragPreviewCancel?: () => void
@@ -50,6 +52,7 @@ const WorktreeList = React.memo(function WorktreeList({
   scrollOffsetRef,
   scrollAnchorRef,
   workspaceBoardOpen = false,
+  onWorktreeCardClick,
   onWorkspaceBoardDragPreviewStart = NOOP_WORKSPACE_BOARD_DRAG_PREVIEW_CALLBACK,
   onWorkspaceBoardDragPreviewCommit = NOOP_WORKSPACE_BOARD_DRAG_PREVIEW_CALLBACK,
   onWorkspaceBoardDragPreviewCancel = NOOP_WORKSPACE_BOARD_DRAG_PREVIEW_CALLBACK
@@ -103,22 +106,30 @@ const WorktreeList = React.memo(function WorktreeList({
   )
 
   const agentSendTargetWorktreeId = useAgentSendTargetWorktreeId()
-  const { filterState, hasFilters, clearFilters } = useSidebarWorktreeFilters()
-  const sortedIds = useSidebarWorktreeSortOrder({ allWorktrees, repoMap, sortBy })
+  const { filterState, hasFilters, clearFilters, revealWorkspaceFilters } =
+    useSidebarWorktreeFilters()
+  const sortedIds = useSidebarWorktreeSortOrder({ repoMap, sortBy })
+  const manualOrderCatalog = useMemo(
+    () => buildWorktreeManualOrderCatalog({ worktrees: allWorktrees, folderWorkspaces }),
+    [allWorktrees, folderWorkspaces]
+  )
   const { visibleWorktrees, pairedDeviceIdsByEnvironment } = useVisibleSidebarWorktrees({
     filterState,
     sortBy,
     sortedIds,
     repoMap,
     worktreeLineageById,
-    settings,
+    defaultHostId,
     agentSendTargetWorktreeId
   })
   const effectiveCollapsedGroups = useEffectiveCollapsedGroups({
+    hostScopedGroups:
+      filterState.workspaceHostScope !== 'all' || filterState.visibleWorkspaceHostIds !== null,
     collapsedGroups,
     agentSendTargetWorktreeId,
     groupBy,
     pinnedDisplayPolicy,
+    worktrees: allWorktrees,
     visibleWorktrees,
     repoMap,
     worktreeMap,
@@ -173,7 +184,12 @@ const WorktreeList = React.memo(function WorktreeList({
     sectionRows: rowModel.sectionRows,
     pinnedDisplayPolicy
   })
-  const statusMutations = useWorktreeStatusMutations({ worktreeMap, workspaceStatuses, sortBy })
+  const statusMutations = useWorktreeStatusMutations({
+    manualOrderCatalog,
+    worktreeMap,
+    workspaceStatuses,
+    sortBy
+  })
   const projectGroupDialogs = useProjectGroupDialogs({ repos, repoMap, projectGroups })
 
   const handleImmediateWorktreeActivate = useCallback((worktreeId: string, rowKey?: string) => {
@@ -226,14 +242,15 @@ const WorktreeList = React.memo(function WorktreeList({
   useSidebarRevealRequests({
     groupBy,
     renderedSidebarRowKeys: rowModel.renderedSidebarRowKeys,
-    renderedWorktreeIdentities: selection.renderedWorktreeIdentities,
+    visibleWorktrees,
+    visibleFolderWorkspaces: visibleScope.visibleFolderWorkspacesForRows,
     currentSidebarWorktreeId,
     currentSidebarExecutionHostId: activeWorkspaceExecutionHostId,
     worktreeMap,
     worktrees: allWorktrees,
     folderWorkspaces,
     hasFilters,
-    clearFilters
+    revealWorkspaceFilters
   })
 
   const filtersHideAllRows = shouldFiltersHideAllRows({
@@ -335,6 +352,7 @@ const WorktreeList = React.memo(function WorktreeList({
         onPinWorktrees={statusMutations.pinWorktrees}
         onDropWorktreesOnWorkspaceBoard={statusMutations.dropWorktreesOnWorkspaceBoard}
         workspaceBoardOpen={workspaceBoardOpen}
+        onWorktreeCardClick={onWorktreeCardClick}
         onWorkspaceBoardDragPreviewStart={onWorkspaceBoardDragPreviewStart}
         onWorkspaceBoardDragPreviewCommit={onWorkspaceBoardDragPreviewCommit}
         onWorkspaceBoardDragPreviewCancel={onWorkspaceBoardDragPreviewCancel}

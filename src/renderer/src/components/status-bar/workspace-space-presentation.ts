@@ -47,7 +47,7 @@ export type WorkspaceSpaceAgentActivityInputs = {
   now: number
 }
 
-function getPaneKeyTabId(paneKey: string): string | null {
+export function getPaneKeyTabId(paneKey: string): string | null {
   const parsed = parsePaneKey(paneKey)
   if (parsed) {
     return parsed.tabId
@@ -252,14 +252,6 @@ export function isWorkspaceSpaceRowReadyToDelete(
     !readiness.reviewLabel &&
     !readiness.issueLabel &&
     !readiness.linearIssueLabel
-  )
-}
-
-export function getWorkspaceSpaceGitStatusRefreshCandidates(
-  rows: readonly WorkspaceSpaceWorktree[]
-): WorkspaceSpaceWorktree[] {
-  return rows.filter(
-    (worktree) => worktree.canDelete && worktree.status === 'ok' && !worktree.isMainWorktree
   )
 }
 

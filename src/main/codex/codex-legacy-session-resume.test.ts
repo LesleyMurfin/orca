@@ -41,6 +41,17 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   }
 })
 
+// Why: session backfill resolves Orca's managed Codex home from userData, which otherwise resolves to the live one.
+let userDataRoot: string
+beforeEach(() => {
+  userDataRoot = mkdtempSync(join(tmpdir(), 'orca-codex-resume-user-data-'))
+  vi.stubEnv('ORCA_USER_DATA_PATH', userDataRoot)
+})
+afterEach(() => {
+  vi.unstubAllEnvs()
+  rmSync(userDataRoot, { recursive: true, force: true })
+})
+
 describe('prepareLegacySharedCodexSessionResume', () => {
   let root: string
   let legacyHome: string
@@ -135,18 +146,15 @@ describe('prepareLegacySharedCodexSessionResume', () => {
     }
   )
 
-  it.each(['managed account', 'custom CODEX_HOME'])(
-    'preserves the legacy home while the %s lane is selected',
-    async () => {
-      const result = await prepareLegacySharedCodexSessionResume(legacyArgs(), {
-        ...options(),
-        isHostSystemDefaultRealHome: () => false
-      })
+  it('preserves the legacy home while a non-default Codex home lane is selected', async () => {
+    const result = await prepareLegacySharedCodexSessionResume(legacyArgs(), {
+      ...options(),
+      isHostSystemDefaultRealHomeSelected: () => false
+    })
 
-      expect(result).toEqual({ useRealCodexHome: false })
-      expect(existsSync(targetRolloutPath())).toBe(false)
-    }
-  )
+    expect(result).toEqual({ useRealCodexHome: false })
+    expect(existsSync(targetRolloutPath())).toBe(false)
+  })
 
   it('still materializes a legacy resume when an account selection exists', async () => {
     const result = await prepareLegacySharedCodexSessionResume(legacyArgs(), {
@@ -172,7 +180,7 @@ describe('prepareLegacySharedCodexSessionResume', () => {
 
   function options() {
     return {
-      isHostSystemDefaultRealHome: () => true,
+      isHostSystemDefaultRealHomeSelected: () => true,
       legacyCodexHomePath: legacyHome,
       systemCodexHomePath: systemHome
     }
@@ -325,6 +333,27 @@ describe('per-account resume repin', () => {
     expect(result).toEqual({ useRealCodexHome: false })
   })
 
+  it('does not consult the host selection while resuming a WSL account session', async () => {
+    const wslHome =
+      '\\\\wsl.localhost\\Ubuntu\\home\\me\\.local\\share\\orca\\codex-accounts\\account-1\\home'
+    const result = await prepareLegacySharedCodexSessionResume(
+      {
+        agent: 'codex',
+        filePath: `${wslHome}\\sessions\\2026\\07\\20\\rollout-session.jsonl`,
+        codexHome: wslHome,
+        executionHostId: 'local'
+      },
+      {
+        ...repinOptions(),
+        getSelectedHostAccountCodexHomePath: () => {
+          throw new Error('host lane must not be consulted')
+        }
+      }
+    )
+
+    expect(result).toEqual({ useRealCodexHome: false })
+  })
+
   it('declines a transcript outside the dated rollout layout', async () => {
     const straySessionPath = join(peerHome, 'sessions', 'stray.jsonl')
     writeFileSync(straySessionPath, '{"type":"session_meta"}\n', 'utf-8')
@@ -344,7 +373,7 @@ describe('per-account resume repin', () => {
 
   function repinOptions() {
     return {
-      isHostSystemDefaultRealHome: () => false,
+      isHostSystemDefaultRealHomeSelected: () => false,
       getSelectedHostAccountCodexHomePath: () => selectedHome
     }
   }

@@ -14,6 +14,14 @@ describe('isTransientReconnectError', () => {
     expect(isTransientReconnectError(err)).toBe(true)
   })
 
+  it('treats the bounded ssh2 authentication watchdog as recoverable', () => {
+    const err = Object.assign(new Error('Timed out while waiting for SSH authentication'), {
+      level: 'client-timeout'
+    })
+
+    expect(isTransientReconnectError(err)).toBe(true)
+  })
+
   it.each([
     'System SSH probe failed (exit 255).',
     'System SSH probe failed (exit 255). stderr: ssh: connect to host box port 22: Connection refused',
@@ -46,6 +54,13 @@ describe('isTransientReconnectError', () => {
         )
       )
     ).toBe(false)
+  })
+
+  it('treats a pre-banner socket close as recoverable on the ladder only', () => {
+    // ssh2 attaches no errno here, so the code table alone stranded hosts in 'error' after an outage.
+    const err = Object.assign(new Error('Connection lost before handshake'), { level: 'protocol' })
+    expect(isTransientError(err)).toBe(false)
+    expect(isTransientReconnectError(err)).toBe(true)
   })
 
   it('keeps credential failures permanent', () => {

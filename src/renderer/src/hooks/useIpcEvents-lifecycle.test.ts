@@ -8,7 +8,9 @@ const EXPECTED_DIRECT_CALLBACK_METHODS = [
   'agentStatus.onMigrationUnsupported',
   'agentStatus.onMigrationUnsupportedClear',
   'agentStatus.onSet',
+  'automations.onChanged',
   'browser.onActivateView',
+  'browser.onCapturePaintHold',
   'browser.onCertificateFailureChanged',
   'browser.onGuestLoadFailed',
   'browser.onNavigationUpdate',
@@ -18,13 +20,18 @@ const EXPECTED_DIRECT_CALLBACK_METHODS = [
   'emulator.onPaneFocus',
   'gh.onPRRefreshEvent',
   'keybindings.onChanged',
+  'orcaProfiles.onAuthStatusChanged',
+  'pty.onExit',
   'rateLimits.onUpdate',
   'remoteWorkspace.onChanged',
   'repos.onChanged',
   'runtime.onBrowserDriverChanged',
+  'runtime.onBrowserRemoteViewersChanged',
+  'runtime.onClientHostedBrowserRowsChanged',
   'runtime.onNativeChatLaunchDraftResolved',
   'runtime.onTerminalDriverChanged',
   'runtime.onTerminalFitOverrideChanged',
+  'runtimeEnvironments.onStatusChanged',
   'settings.onChanged',
   'ssh.onCredentialRequest',
   'ssh.onCredentialResolved',
@@ -32,6 +39,7 @@ const EXPECTED_DIRECT_CALLBACK_METHODS = [
   'ssh.onPortForwardsChanged',
   'ssh.onStateChanged',
   'ui.onActivateWorktree',
+  'ui.onAgentLaunchPaneVerdict',
   'ui.onCloseActiveTab',
   'ui.onCloseFloatingItem',
   'ui.onCloseSessionTab',
@@ -51,6 +59,7 @@ const EXPECTED_DIRECT_CALLBACK_METHODS = [
   'ui.onOpenDiffFromMobile',
   'ui.onOpenFeatureTour',
   'ui.onOpenFileFromMobile',
+  'ui.onOpenMarkdownFiles',
   'ui.onOpenNewWorkspace',
   'ui.onOpenQuickOpen',
   'ui.onOpenSettings',
@@ -58,6 +67,7 @@ const EXPECTED_DIRECT_CALLBACK_METHODS = [
   'ui.onOpenSkillShare',
   'ui.onOpenTasks',
   'ui.onOpenWorkspaceBoard',
+  'ui.onPublishAgentLaunchTab',
   'ui.onRenameTerminal',
   'ui.onRequestTabClose',
   'ui.onRequestTabCreate',
@@ -98,6 +108,8 @@ const EXPECTED_DIRECT_CALLBACK_METHODS = [
 
 const EXPECTED_CALLBACK_REGISTRATION_SEQUENCE = [
   'ui.onMobileMarkdownRequest',
+  'automations.onChanged',
+  'runtimeEnvironments.onStatusChanged',
   'repos.onChanged',
   'worktrees.onChanged',
   'worktrees.onHeadIdentitiesChanged',
@@ -118,6 +130,7 @@ const EXPECTED_CALLBACK_REGISTRATION_SEQUENCE = [
   'ui.onToggleWorktreePalette',
   'ui.onToggleFloatingTerminal',
   'ui.onTerminalShortcutCaptured',
+  'orcaProfiles.onAuthStatusChanged',
   'ui.onOpenQuickOpen',
   'ui.onToggleQuickCommandsMenu',
   'ui.onOpenNewWorkspace',
@@ -129,10 +142,14 @@ const EXPECTED_CALLBACK_REGISTRATION_SEQUENCE = [
   'ui.onJumpToTabIndex',
   'ui.onWorktreeHistoryNavigate',
   'ui.onToggleStatusBar',
+  'ui.onOpenMarkdownFiles',
   'ui.onActivateWorktree',
   'ui.onCreateTerminal',
   'ui.onRequestTerminalTabMount',
   'ui.onRequestTerminalCreate',
+  'ui.onPublishAgentLaunchTab',
+  'ui.onAgentLaunchPaneVerdict',
+  'pty.onExit',
   'ui.onSplitTerminal',
   'ui.onRenameTerminal',
   'ui.onFocusTerminal',
@@ -153,6 +170,7 @@ const EXPECTED_CALLBACK_REGISTRATION_SEQUENCE = [
   'browser.onCertificateFailureChanged',
   'browser.onNavigationUpdate',
   'browser.onActivateView',
+  'browser.onCapturePaintHold',
   'browser.onPaneFocus',
   'browser.onOpenLinkInOrcaTab',
   'ui.onNewBrowserTab',
@@ -189,7 +207,9 @@ const EXPECTED_CALLBACK_REGISTRATION_SEQUENCE = [
   'runtime.onTerminalFitOverrideChanged',
   'runtime.onTerminalDriverChanged',
   'runtime.onNativeChatLaunchDraftResolved',
-  'runtime.onBrowserDriverChanged'
+  'runtime.onBrowserDriverChanged',
+  'runtime.onBrowserRemoteViewersChanged',
+  'runtime.onClientHostedBrowserRowsChanged'
 ] as const
 
 type ListenerRecord = {
@@ -367,8 +387,10 @@ describe('useIpcEvents App-lifetime lifecycle', () => {
       )
     ).toEqual([
       'ui.onMobileMarkdownRequest',
+      'automations.onChanged',
+      'runtimeEnvironments.onStatusChanged',
       'runtimeEnvironments.subscribe',
-      ...EXPECTED_CALLBACK_REGISTRATION_SEQUENCE.slice(1)
+      ...EXPECTED_CALLBACK_REGISTRATION_SEQUENCE.slice(3)
     ])
     const groupOrder = (names: readonly string[]): string[] =>
       registrationOrder.filter((entry) => names.includes(entry))
@@ -423,23 +445,31 @@ describe('useIpcEvents App-lifetime lifecycle', () => {
         'runtime.onTerminalDriverChanged',
         'runtime.onNativeChatLaunchDraftResolved',
         'runtime.onBrowserDriverChanged',
+        'runtime.onBrowserRemoteViewersChanged',
+        'runtime.onClientHostedBrowserRowsChanged',
+        'runtime.getClientHostedBrowserRows',
         'runtime.getTerminalFitOverrides',
         'runtime.getTerminalDrivers',
-        'runtime.getBrowserDrivers'
+        'runtime.getBrowserDrivers',
+        'runtime.getBrowserRemoteViewerPages'
       ])
     ).toEqual([
       'runtime.onTerminalFitOverrideChanged',
       'runtime.onTerminalDriverChanged',
       'runtime.onNativeChatLaunchDraftResolved',
       'runtime.onBrowserDriverChanged',
+      'runtime.onBrowserRemoteViewersChanged',
+      'runtime.onClientHostedBrowserRowsChanged',
+      'runtime.getClientHostedBrowserRows',
       'runtime.getTerminalFitOverrides',
       'runtime.getTerminalDrivers',
-      'runtime.getBrowserDrivers'
+      'runtime.getBrowserDrivers',
+      'runtime.getBrowserRemoteViewerPages'
     ])
     expect(
       [...listeners.values()].every((records) => records.filter((item) => item.active).length === 1)
     ).toBe(true)
-    expect(storeSubscriptions.filter((item) => item.active)).toHaveLength(2)
+    expect(storeSubscriptions.filter((item) => item.active)).toHaveLength(3)
 
     firstCleanup()
     const ipcCleanupOrder = cleanupOrder
@@ -451,9 +481,11 @@ describe('useIpcEvents App-lifetime lifecycle', () => {
       'mobile.disposeHydration',
       'store.unsubscribe.0',
       'runtimeStore.unsubscribe',
-      'store.unsubscribe.1',
+      'store.unsubscribe.2',
       'agentStore.unsubscribe'
     ])
+    // The background-removal bridge's row subscription, released with the rest of `unsubs`.
+    expect(cleanupOrder).toContain('store.unsubscribe.1')
     expect(cleanupOrder.indexOf('runtimeEnvironment.unsubscribe')).toBeGreaterThan(
       cleanupOrder.indexOf('ipc.ui.onMobileMarkdownRequest')
     )
@@ -486,7 +518,7 @@ describe('useIpcEvents App-lifetime lifecycle', () => {
     expect(
       [...listeners.values()].every((records) => records.filter((item) => item.active).length === 1)
     ).toBe(true)
-    expect(storeSubscriptions.filter((item) => item.active)).toHaveLength(2)
+    expect(storeSubscriptions.filter((item) => item.active)).toHaveLength(3)
 
     secondCleanup()
     expect([...listeners.values()].every((records) => records.every((item) => !item.active))).toBe(

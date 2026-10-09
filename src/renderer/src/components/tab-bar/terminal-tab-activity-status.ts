@@ -1,3 +1,7 @@
+import {
+  readAgentAttentionUnreadReason,
+  type ReadableAgentAttentionUnread
+} from '@/attention/agent-attention-contract'
 import { isExplicitAgentStatusFresh } from '@/lib/agent-status'
 import { resolveWorktreeStatus, type WorktreeStatus } from '@/lib/worktree-status'
 import {
@@ -5,6 +9,10 @@ import {
   type AgentStatusEntry
 } from '../../../../shared/agent-status-types'
 import { parseLegacyNumericPaneKey, parsePaneKey } from '../../../../shared/stable-pane-id'
+import {
+  applyAgentPaneActivityFlags,
+  type AgentPaneActivityFlags
+} from '@/lib/agent-pane-activity-flags'
 import type { TerminalLayoutSnapshot, TerminalTab } from '../../../../shared/terminal-tab-types'
 
 // Why: a terminal tab is a container of panes, exactly like a worktree card is
@@ -13,16 +21,11 @@ import type { TerminalLayoutSnapshot, TerminalTab } from '../../../../shared/ter
 // skip the card's retained-done promotion — see resolveTerminalTabActivityStatus).
 export type TerminalTabActivityStatus = WorktreeStatus
 
-// Per-tab live-hook flags, mirroring applyLiveAgentState in
-// worktree-agent-activity-summary.ts. blocked/waiting collapse to permission,
-// matching every other status surface in the app.
-type TerminalTabActivityFlags = {
-  hasPermission: boolean
-  hasLiveWorking: boolean
-  hasLiveMonitoring: boolean
-  hasInterrupted: boolean
-  hasLiveDone: boolean
+// Per-tab live-hook flags, folded by the same applyAgentPaneActivityFlags as the worktree card.
+type TerminalTabActivityFlags = AgentPaneActivityFlags & {
   paneIds: Set<string>
+  /** Panes whose row went stale; suppress generated permission labels only. */
+  stalePaneIds: Set<string>
 }
 
 type FlagsCache = {
@@ -69,25 +72,16 @@ function getTerminalTabActivityFlags(
     // Why: stale hook entries (>30m) are not authority; a slept/abandoned pane
     // must not keep a tab spinning. Same freshness gate as the sidebar.
     if (!isExplicitAgentStatusFresh(entry, now, AGENT_STATUS_STALE_AFTER_MS)) {
+      // Stale identity suppresses Orca's one-shot permission label without suppressing native titles.
+      getOrCreateTerminalTabActivityFlags(flagsByTabId, identity.tabId).stalePaneIds.add(
+        identity.paneId
+      )
       continue
     }
 
     const flags = getOrCreateTerminalTabActivityFlags(flagsByTabId, identity.tabId)
     flags.paneIds.add(identity.paneId)
-    if (entry.state === 'blocked' || entry.state === 'waiting') {
-      flags.hasPermission = true
-    } else if (entry.state === 'working') {
-      if (entry.workingMode === 'monitoring') {
-        flags.hasLiveMonitoring = true
-      } else {
-        flags.hasLiveWorking = true
-      }
-    } else if (entry.interrupted === true) {
-      // Interrupted is encoded as done, so it must be checked first.
-      flags.hasInterrupted = true
-    } else if (entry.state === 'done') {
-      flags.hasLiveDone = true
-    }
+    applyAgentPaneActivityFlags(flags, entry)
   }
 
   flagsCache = { agentStatusByPaneKey, agentStatusEpoch, flagsByTabId }
@@ -104,9 +98,12 @@ function getOrCreateTerminalTabActivityFlags(
       hasPermission: false,
       hasLiveWorking: false,
       hasLiveMonitoring: false,
+      hasFailed: false,
       hasInterrupted: false,
+      hasUnconfirmed: false,
       hasLiveDone: false,
-      paneIds: new Set()
+      paneIds: new Set(),
+      stalePaneIds: new Set()
     }
     flagsByTabId.set(tabId, flags)
   }
@@ -162,11 +159,14 @@ export function resolveTerminalTabActivityStatus({
     ptyIdsByTabId: ptyIdsByTabId ?? {},
     runtimePaneTitlesByTabId: runtimePaneTitlesByTabId ?? {},
     agentStatusPaneIdsByTabId: { [tab.id]: flags?.paneIds ?? EMPTY_PANE_IDS },
+    stalePaneIdsByTabId: { [tab.id]: flags?.stalePaneIds ?? EMPTY_PANE_IDS },
     terminalLayoutsByTabId: terminalLayout ? { [tab.id]: terminalLayout } : undefined,
     hasPermission: flags?.hasPermission ?? false,
     hasLiveWorking: flags?.hasLiveWorking ?? false,
     hasLiveMonitoring: flags?.hasLiveMonitoring ?? false,
+    hasFailed: flags?.hasFailed ?? false,
     hasInterrupted: flags?.hasInterrupted ?? false,
+    hasUnconfirmed: flags?.hasUnconfirmed ?? false,
     hasLiveDone: flags?.hasLiveDone ?? false,
     // Why: retained/orchestration promotions are worktree-aggregate concerns;
     // a tab reflects its own live panes and title only.
@@ -187,7 +187,9 @@ export type TerminalTabAttentionBadge =
   | 'working'
   | 'monitoring'
   | 'permission'
+  | 'failed'
   | 'interrupted'
+  | 'unconfirmed'
   | 'unread'
   | 'done'
 
@@ -217,8 +219,8 @@ export function resolveTerminalTabAttentionBadge({
   if (status === 'done') {
     return 'done'
   }
-  if (status === 'interrupted') {
-    return 'interrupted'
+  if (status === 'failed' || status === 'interrupted' || status === 'unconfirmed') {
+    return status
   }
   return null
 }
@@ -226,12 +228,22 @@ export function resolveTerminalTabAttentionBadge({
 /** Map a container activity status onto AgentStateDot's vocabulary (no unread — that's a bell). */
 export function terminalTabActivityToAgentDotState(
   status: TerminalTabActivityStatus
-): 'working' | 'monitoring' | 'permission' | 'interrupted' | 'done' | null {
+):
+  | 'working'
+  | 'monitoring'
+  | 'permission'
+  | 'failed'
+  | 'interrupted'
+  | 'unconfirmed'
+  | 'done'
+  | null {
   switch (status) {
     case 'working':
     case 'monitoring':
     case 'permission':
+    case 'failed':
     case 'interrupted':
+    case 'unconfirmed':
     case 'done':
       return status
     case 'active':
@@ -247,38 +259,58 @@ export function terminalTabHasUnreadActivity({
   unreadAgentCompletionPanes
 }: {
   terminalTabId: string
-  unreadTerminalTabs: Record<string, boolean | undefined>
-  unreadAgentCompletionPanes: Record<string, boolean | undefined>
+  unreadTerminalTabs: Record<string, ReadableAgentAttentionUnread>
+  unreadAgentCompletionPanes: Record<string, ReadableAgentAttentionUnread>
 }): boolean {
   return (
-    unreadTerminalTabs[terminalTabId] === true ||
+    readAgentAttentionUnreadReason(unreadTerminalTabs[terminalTabId]) !== null ||
     hasUnreadAgentCompletionForTerminalTab(unreadAgentCompletionPanes, terminalTabId)
   )
 }
 
-/** Match pane-level unread completion markers to their owning terminal tab. */
-export function hasUnreadAgentCompletionForTerminalTab(
-  unreadAgentCompletionPanes: Record<string, boolean | undefined> | undefined,
-  tabId: string
-): boolean {
-  for (const [paneKey, unread] of Object.entries(unreadAgentCompletionPanes ?? {})) {
-    // Why entries, not keys: the widened value type lets a cleared marker linger as `false`.
-    if (!unread) {
+// Why: production writes replace this map; WeakMap supports retained snapshots without pinning them.
+let unreadAgentCompletionTabIdsBySnapshot = new WeakMap<
+  Record<string, ReadableAgentAttentionUnread>,
+  ReadonlySet<string>
+>()
+
+function getUnreadAgentCompletionTabIds(
+  unreadAgentCompletionPanes: Record<string, ReadableAgentAttentionUnread>
+): ReadonlySet<string> {
+  const cached = unreadAgentCompletionTabIdsBySnapshot.get(unreadAgentCompletionPanes)
+  if (cached) {
+    return cached
+  }
+
+  // Why: every mounted tab runs this selector per store write; index each immutable marker snapshot once.
+  const tabIds = new Set<string>()
+  for (const paneKey of Object.keys(unreadAgentCompletionPanes)) {
+    if (!unreadAgentCompletionPanes[paneKey]) {
       continue
     }
-    // paneKey is `${tabId}:${leafId}` and tab ids never contain ":", so the
-    // prefix up to the first ":" is the owning tab id (see
-    // selectFloatingWorkspaceHasUnread). Prefix-match to keep legacy keys.
     const separatorIndex = paneKey.indexOf(':')
-    const owningTabId = separatorIndex === -1 ? paneKey : paneKey.slice(0, separatorIndex)
-    if (owningTabId === tabId) {
-      return true
-    }
+    tabIds.add(separatorIndex === -1 ? paneKey : paneKey.slice(0, separatorIndex))
   }
-  return false
+  unreadAgentCompletionTabIdsBySnapshot.set(unreadAgentCompletionPanes, tabIds)
+  return tabIds
+}
+
+/** Match pane-level unread completion markers to their owning terminal tab. */
+export function hasUnreadAgentCompletionForTerminalTab(
+  unreadAgentCompletionPanes: Record<string, ReadableAgentAttentionUnread> | undefined,
+  tabId: string
+): boolean {
+  return unreadAgentCompletionPanes
+    ? getUnreadAgentCompletionTabIds(unreadAgentCompletionPanes).has(tabId)
+    : false
 }
 
 /** Test-only: clear the memoized per-tab flag cache between cases. */
 export function resetTerminalTabActivityFlagsCacheForTest(): void {
   flagsCache = null
+}
+
+/** Test-only: clear the unread marker snapshot index between cases. */
+export function resetUnreadAgentCompletionTabIdsCacheForTest(): void {
+  unreadAgentCompletionTabIdsBySnapshot = new WeakMap()
 }
