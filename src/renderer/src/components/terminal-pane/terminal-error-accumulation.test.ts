@@ -10,7 +10,7 @@ import {
   REMOTE_TERMINAL_CLOSED_MARKER,
   terminalErrorForPane
 } from './terminal-error-accumulation'
-import { stripSshReconnectOwnedErrorLines } from './TerminalErrorToast'
+import { isRemoteTerminalClosedError, stripSshReconnectOwnedErrorLines } from './TerminalErrorToast'
 
 const MULTILINE_ERROR = 'Remote terminal write failed.\nThe remote runtime rejected the request.'
 
@@ -155,6 +155,33 @@ describe('pane terminal errors', () => {
     expect(terminalErrorForPane(null, errors, 1)?.split('\n')).toEqual(
       Array.from({ length: 8 }, (_, index) => `Failure ${index + 12}`)
     )
+  })
+
+  it('keeps the remote terminal closed marker when a storm fills the pane cap', () => {
+    let errors = appendPaneTerminalError({}, 1, REMOTE_TERMINAL_CLOSED_MARKER)
+    for (let index = 0; index < 20; index += 1) {
+      errors = appendPaneTerminalError(errors, 1, `Failure ${index}`)
+    }
+
+    const surface = terminalErrorForPane(null, errors, 1)
+    expect(surface).toContain(REMOTE_TERMINAL_CLOSED_MARKER)
+    expect(surface?.split('\n')).toHaveLength(8)
+  })
+
+  it('keeps a multi-line entry carrying the closed marker when a storm fills the pane cap', () => {
+    let errors = appendPaneTerminalError(
+      {},
+      1,
+      `${REMOTE_TERMINAL_CLOSED_MARKER}\nssh: broken pipe`
+    )
+    for (let index = 0; index < 20; index += 1) {
+      errors = appendPaneTerminalError(errors, 1, `Failure ${index}`)
+    }
+
+    const surface = terminalErrorForPane(null, errors, 1) ?? ''
+    expect(isRemoteTerminalClosedError(surface)).toBe(true)
+    expect(surface).toContain('ssh: broken pipe')
+    expect(errors[1]).toHaveLength(8)
   })
 
   it('bounds individual pane errors and their joined display', () => {

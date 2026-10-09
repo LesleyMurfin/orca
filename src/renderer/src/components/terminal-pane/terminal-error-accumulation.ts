@@ -84,6 +84,29 @@ export function boundTerminalErrorSurface(
   )
 }
 
+// Why: the per-pane cap evicts oldest-first, which drops the leading remote-closed marker and
+// hides Close Pane; displace the oldest ordinary entry instead and keep the marker at the head.
+function retainPaneErrorsWithClosedMarker(
+  current: readonly string[],
+  maxRetained: number
+): readonly string[] {
+  // Why not slice(-maxRetained) alone: a zero budget makes that slice(0), which keeps everything.
+  if (maxRetained <= 0) {
+    return []
+  }
+  const retained = current.slice(-maxRetained)
+  // Why substring: the render gate (isRemoteTerminalClosedError) matches containment, so an entry
+  // carrying the marker alongside other text must be retained too — and re-seated with its text.
+  const markerEntry = current.find((entry) => entry.includes(REMOTE_TERMINAL_CLOSED_MARKER))
+  if (
+    markerEntry === undefined ||
+    retained.some((entry) => entry.includes(REMOTE_TERMINAL_CLOSED_MARKER))
+  ) {
+    return retained
+  }
+  return [markerEntry, ...retained.slice(1)]
+}
+
 export function appendPaneTerminalError(
   errorsByPaneId: TerminalErrorsByPaneId,
   paneId: number,
@@ -102,7 +125,10 @@ export function appendPaneTerminalError(
   }
   return {
     ...errorsByPaneId,
-    [paneId]: [...current.slice(-(MAX_TERMINAL_ERRORS_PER_PANE - 1)), boundedMessage]
+    [paneId]: [
+      ...retainPaneErrorsWithClosedMarker(current, MAX_TERMINAL_ERRORS_PER_PANE - 1),
+      boundedMessage
+    ]
   }
 }
 
