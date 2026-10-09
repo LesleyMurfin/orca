@@ -73,7 +73,7 @@ Detect the architecture first: `uname -m` (`x86_64` â†’ x64, `aarch64`/`arm64` â
 - **Fedora / RHEL (.rpm)**: Download `orca-ide-*.x86_64.rpm` (x64) or `orca-ide-*.aarch64.rpm` (arm64) from GitHub releases and run `sudo dnf install ./orca-ide-*.rpm`.
 
 ### Path D: Orca Server (Headless Linux systemd)
-Install the binary (`/usr/bin/orca-ide`), create an unprivileged `orca` user, and supervise with `/etc/systemd/system/orca-serve.service`:
+Install the binary (`orca-ide`), create an unprivileged `orca` user, and supervise with `/etc/systemd/system/orca-serve.service`:
 
 ```ini
 [Unit]
@@ -103,7 +103,7 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 ```
-*(Replace `1001` with `id -u orca` and set `--pairing-address` to the reachable LAN/Tailscale address).*
+*(Replace `1001` with `id -u orca`, replace `/usr/bin/orca-ide` with your absolute path if using an AppImage, and set `--pairing-address` to the reachable LAN/Tailscale address).*
 
 Enable and start:
 ```bash
@@ -139,6 +139,8 @@ If running under your own user account without root permissions:
    [Install]
    WantedBy=default.target
    ```
+*(Replace `/usr/bin/orca-ide` with your absolute path if using an AppImage).*
+
 3. Start and enable:
    ```bash
    systemctl --user daemon-reload

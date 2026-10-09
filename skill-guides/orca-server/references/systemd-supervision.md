@@ -37,8 +37,10 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
-Replace `1001` with `id -u orca`. Write the absolute `/usr/bin/orca-ide`: a bare `orca` on Linux
-is the GNOME Orca screen reader.
+Replace `1001` with `id -u orca`. Resolve the absolute path with
+`readlink -f "$(command -v orca-ide)"` as the service user and write that in `ExecStart=`: the
+deb/rpm symlink is `/usr/bin/orca-ide`, an AppImage registers `~/.local/bin/orca-ide`, and a bare
+`orca` on Linux is the GNOME Orca screen reader.
 
 ## Directives that carry weight
 
