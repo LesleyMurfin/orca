@@ -40,8 +40,10 @@ absence included, is a checkpoint.
 | A message carries a legacy authority label                                                                                                     | Compatibility operator  | Load the legacy contract reference before any lifecycle mutation               |
 | No live preamble and no explicit supervision                                                                                                   | Ordinary terminal agent | Do not emit lifecycle messages; use `orca-cli` for terminal/worktree work      |
 
-Model or effort selection does not make a handoff supervised. Never substitute a
-non-Orca subagent tool when Orca orchestration provenance was requested.
+Model or effort selection does not make a handoff supervised. When the user asked for Orca
+orchestration provenance — Orca-tracked workers, Runs, Tasks, Dispatches — never substitute
+a non-Orca subagent tool. Otherwise your own harness's subagents are the right tool for
+concurrent work; do not start Orca workers just to parallelize.
 
 ## Authority and safety floor
 
@@ -100,8 +102,7 @@ waiting. `worker-start --spec` creates the Task and its attempt in one call:
 ```text
 ORCA status --json
 ORCA orchestration run-create --objective "<objective>" --json
-ORCA orchestration worker-start --spec "<worker A task>" --worktree current --agent codex --json
-ORCA orchestration worker-start --spec "<worker B task>" --worktree current --agent claude --json
+ORCA orchestration worker-start --spec "<worker A task>" --worktree current --agent <agent-id> --json
 ORCA orchestration check --wait --types "worker_done,escalation,question" --timeout-ms 900000 --json
 ```
 
