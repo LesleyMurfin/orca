@@ -102,11 +102,15 @@ export const PORTABLE_SETTINGS_KEYS = Object.keys(portableSettingsShape) as Port
 export const ENVIRONMENT_CONFIG_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'environment.config.getAll',
+    // Why: mirrors `settings.get` — reading the portable-behavior projection is a
+    // workspace-level read, while writing it is a settings mutation.
+    permission: 'workspace',
     params: null,
     handler: (_params, { runtime }) => ({ settings: runtime.getPortableSettings() })
   }),
   defineMethod({
     name: 'environment.config.setMany',
+    permission: 'settings-write',
     params: PortableSettingsUpdate,
     handler: (params, { runtime }) => ({ settings: runtime.updatePortableSettings(params) })
   })
