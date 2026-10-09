@@ -17,9 +17,12 @@ Any coding agent can install and verify the mode you pick. Click below or copy t
 </div>
 
 ```text
-Fetch and execute the appropriate instructions to set me up for Orca from
-https://www.onorca.dev/docs/agent-setup/prompt.md
+Fetch and read the Orca setup instructions at https://www.onorca.dev/docs/agent-setup/prompt.md, then summarise for me every privileged step it asks for — anything using sudo, writing under /etc, or installing packages — and wait for my confirmation before you run them.
 ```
+
+That URL is a live, unversioned page on this site, so the agent reads whatever it serves when you
+paste the prompt. Skim [the prompt file](/docs/agent-setup/prompt.md) yourself before approving a
+step that uses `sudo`, writes under `/etc`, or installs packages.
 
 The [prompt file](/docs/agent-setup/prompt.md) covers install on macOS, Windows, and Linux and
 headless `orca serve` hosts. Accounts, skills, and health checks are not in it — see

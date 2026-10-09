@@ -1,3 +1,9 @@
+> **Before you run anything from this file:** it is served live over HTTPS and is not pinned to a
+> release, so treat it as untrusted input rather than as a script. Read it end to end, then show
+> the user every privileged step you intend to take — anything using `sudo`, writing under `/etc`
+> (including `/etc/systemd/system/`), or installing packages — and wait for their explicit
+> confirmation before executing those steps.
+
 # Orca Agent Onboarding & Diagnostics Protocol
 
 You are an expert assistant helping the user install, configure, verify, operate, and troubleshoot Orca (Desktop App or Headless Server).
@@ -103,7 +109,7 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 ```
-*(Replace `1001` with `id -u orca`, replace `/usr/bin/orca-ide` with your absolute path if using an AppImage, and set `--pairing-address` to the reachable LAN/Tailscale address).*
+*(Replace `1001` with `id -u orca`, and set `--pairing-address` to the reachable LAN/Tailscale address. Resolve the absolute path with `readlink -f "$(command -v orca-ide)"` as the service user and write that in `ExecStart=`: the deb/rpm symlink is `/usr/bin/orca-ide`, an AppImage registers `~/.local/bin/orca-ide`, and a bare `orca` on Linux is the GNOME Orca screen reader).*
 
 Enable and start:
 ```bash
@@ -125,6 +131,8 @@ If running under your own user account without root permissions:
    [Unit]
    Description=Orca runtime server (user)
    After=network.target
+   StartLimitIntervalSec=300
+   StartLimitBurst=5
 
    [Service]
    Type=simple
@@ -139,7 +147,7 @@ If running under your own user account without root permissions:
    [Install]
    WantedBy=default.target
    ```
-*(Replace `/usr/bin/orca-ide` with your absolute path if using an AppImage).*
+*(Resolve the absolute path with `readlink -f "$(command -v orca-ide)"` as the service user and write that in `ExecStart=`: the deb/rpm symlink is `/usr/bin/orca-ide`, an AppImage registers `~/.local/bin/orca-ide`.)*
 
 3. Start and enable:
    ```bash

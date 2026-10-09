@@ -128,9 +128,11 @@ credentials. Agents on the server run as that user.
 ```ini
 # /etc/systemd/system/orca-serve.service
 [Unit]
-Description=Orca remote server
+Description=Orca runtime server
 Wants=network-online.target
 After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -139,13 +141,15 @@ Group=orca
 WorkingDirectory=/home/orca
 Environment=HOME=/home/orca
 Environment=XDG_RUNTIME_DIR=/run/user/1001
-ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address 100.64.1.20
+ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>
 Restart=on-failure
 RestartSec=5
 RestartPreventExitStatus=3 78
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=45
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

@@ -48,9 +48,13 @@ Any coding agent — Claude Code, Codex, Cursor, Copilot — can do this setup f
 </div>
 
 ```text
-Fetch and execute the appropriate instructions to set me up for Orca from
-https://www.onorca.dev/docs/agent-setup/prompt.md
+Fetch and read the Orca setup instructions at https://www.onorca.dev/docs/agent-setup/prompt.md, then summarise for me every privileged step it asks for — anything using sudo, writing under /etc, or installing packages — and wait for my confirmation before you run them.
 ```
+
+That URL is a live, unversioned page on this site — the agent reads whatever it serves at the
+moment you paste the prompt. The prompt deliberately asks the agent to read first and propose,
+so skim [/docs/agent-setup/prompt.md](/docs/agent-setup/prompt.md) yourself before approving any
+privileged step.
 
 The prompt file covers host-role discovery, desktop install on macOS, Windows, and Linux,
 headless `orca serve` hosts and their systemd unit, and where to go when a step fails. It does
@@ -227,9 +231,11 @@ On a Linux server, let systemd own the process so it starts at boot and comes ba
 ```ini
 # /etc/systemd/system/orca-serve.service
 [Unit]
-Description=Orca remote server
+Description=Orca runtime server
 Wants=network-online.target
 After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -238,13 +244,15 @@ Group=orca
 WorkingDirectory=/home/orca
 Environment=HOME=/home/orca
 Environment=XDG_RUNTIME_DIR=/run/user/1001
-ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address 100.64.1.20
+ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>
 Restart=on-failure
 RestartSec=5
 RestartPreventExitStatus=3 78
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=45
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -256,7 +264,7 @@ Three settings carry the weight:
 - `KillMode=mixed` — only the main process receives `SIGTERM`. That matters because `orca serve`'s graceful stop deliberately leaves the terminal daemon running, so a restarted runtime can adopt the PTYs. `KillMode=control-group` would signal the daemon and every agent at once and lose that work; the final `SIGKILL` still sweeps whatever remains in the cgroup.
 - `RestartPreventExitStatus=3 78` — two statuses a restart cannot repair. `78` is a configuration fault: a user-data root held by another runtime, a malformed `--bind` address, an unusable bundled runtime, or an unreadable profile store. `3` means another process already owns this user-data profile — the desktop app, or a `serve` that is still running. A busy port is neither: it exits `1` and `Restart=on-failure` will retry it every `RestartSec` forever, so fix `--port` when the journal shows `EADDRINUSE`.
 
-Write an absolute path in the unit rather than a bare `orca`, which resolves to the GNOME Orca screen reader. The deb/rpm install symlinks `/usr/bin/orca-ide`; an AppImage registers `~/.local/bin/orca-ide` instead, so resolve it with `readlink -f "$(command -v orca-ide)"` as the service user. Replace `1001` with the output of `id -u orca`, then:
+Write an absolute path in the unit rather than a bare `orca`, which resolves to the GNOME Orca screen reader. The deb/rpm install symlinks `/usr/bin/orca-ide`; an AppImage registers `~/.local/bin/orca-ide` instead, so resolve it with `readlink -f "$(command -v orca-ide)"` as the service user. Replace `1001` with the output of `id -u orca`, set `--pairing-address` to the reachable LAN or Tailscale address, then:
 
 ```bash
 sudo systemctl daemon-reload
@@ -284,22 +292,24 @@ The scope needs a reachable user systemd manager, which a service account only g
 sudo loginctl enable-linger orca
 ```
 
-Long jobs you start yourself are protected the same way. Run them in a transient scope instead of as a plain child of the service:
+Work you start yourself is already protected when the daemon is in its own scope: the daemon owns the PTY, survives the restart, and the new runtime adopts it, so the pane comes back. Wrap work in its own unit only when it must also survive the daemon itself being replaced—an Orca update, or a host where the scope probe fails closed:
 
 ```bash
-systemd-run --user --scope --unit orca-build-1 -- tmux new-session -d -s build 'pnpm build'
-systemctl --user status orca-build-1
+# A transient service, not a scope: nothing depends on the invoking shell surviving.
+systemd-run --user --unit=orca-build-1 --collect --same-dir --property=TimeoutStopSec=5s -- pnpm build
+journalctl --user -u orca-build-1 -f
 ```
 
-`--scope` registers the process with the user manager, so it is tracked by `orca-build-1.scope` rather than `orca-serve.service` and survives both the stop sweep and the restart. Without lingering, `/run/user/<uid>` is absent, the capability check fails closed, and `systemd-run --user` cannot connect.
+The unit is registered with the user manager, so it is tracked by `orca-build-1.service` rather than `orca-serve.service` and survives both the stop sweep and the restart. Without lingering, `/run/user/<uid>` is absent, the capability check fails closed, and `systemd-run --user` cannot connect.
 
-The PTY still belongs to the runtime that restarted, so Orca cannot reattach the old terminal pane. Run the work inside `tmux` as above and reattach from a fresh terminal once the service is back:
+To reattach a shell rather than read logs, give tmux its own server so the request cannot be answered by a tmux server already running in another cgroup:
 
 ```bash
-tmux attach -t build
+systemd-run --user --scope --unit=orca-build-1 -- tmux -L orca-build-1 new-session -d -s build 'pnpm build'
+tmux -L orca-build-1 attach -t build
 ```
 
-Scopes are transient: they disappear when their process exits. Stop a finished one with `systemctl --user stop orca-build-1`.
+Transient units disappear when their process exits. Stop a finished one with `systemctl --user stop orca-build-1`.
 
 Confirm the daemon escaped with `systemctl --user list-units 'orca-daemon-*.scope'`; a daemon listed inside `orca-serve.service`'s cgroup instead will not survive a restart.
 

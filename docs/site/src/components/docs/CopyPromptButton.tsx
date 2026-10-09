@@ -1,10 +1,14 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import {
+  createCopyPromptController,
+  type CopyPromptController
+} from '@/components/docs/copy-prompt-clipboard.mjs'
 import { cn } from '@/lib/class-names'
 
 const DEFAULT_PROMPT =
-  'Fetch and execute the appropriate instructions to set me up for Orca from https://www.onorca.dev/docs/agent-setup/prompt.md'
+  'Fetch and read the Orca setup instructions at https://www.onorca.dev/docs/agent-setup/prompt.md, then summarise for me every privileged step it asks for — anything using sudo, writing under /etc, or installing packages — and wait for my confirmation before you run them.'
 
 export function CopyPromptButton({
   prompt = DEFAULT_PROMPT,
@@ -17,28 +21,28 @@ export function CopyPromptButton({
 }) {
   const [copied, setCopied] = useState(false)
   const [failed, setFailed] = useState(false)
-  const resetTimer = useRef<number | null>(null)
+  const controller = useRef<CopyPromptController | null>(null)
 
-  // Why: the reset fires 2s later; an unmount (or a second click) in between would
-  // otherwise leave a timer that calls setState on a dead component.
-  useEffect(() => () => window.clearTimeout(resetTimer.current ?? undefined), [])
-
-  const handleCopy = async () => {
-    // Why: in an insecure context navigator.clipboard is undefined, so the user needs a
-    // visible failure rather than a button that does nothing.
-    try {
-      if (!navigator.clipboard?.writeText) {
-        throw new Error('Clipboard API unavailable in this context')
+  if (controller.current === null) {
+    controller.current = createCopyPromptController({
+      getClipboard: () => navigator.clipboard,
+      onState: (state) => {
+        setCopied(state.copied)
+        setFailed(state.failed)
+      },
+      setTimer: (callback, delayMs) => window.setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        if (typeof handle === 'number') {
+          window.clearTimeout(handle)
+        }
       }
-      await navigator.clipboard.writeText(prompt)
-      setFailed(false)
-      setCopied(true)
-      window.clearTimeout(resetTimer.current ?? undefined)
-      resetTimer.current = window.setTimeout(() => setCopied(false), 2000)
-    } catch {
-      setCopied(false)
-      setFailed(true)
-    }
+    })
+  }
+
+  useEffect(() => () => controller.current?.dispose(), [])
+
+  const handleCopy = () => {
+    void controller.current?.copy(prompt)
   }
 
   return (

@@ -35,7 +35,7 @@ Map the triage output directly to the correct bucket and apply the targeted fix:
 | Evidence / Exit Code | Root-Cause Bucket | Cause & Verification | Targeted Fix |
 | :--- | :--- | :--- | :--- |
 | `status=137` (OOM/SIGKILL), `ENOSPC`, CPU stall | **Bucket 1: Server Resource** | Server ran out of memory or disk space during build. | Raise systemd `MemoryMax=` / `LimitNOFILE=` or clear disk cache. |
-| `status=203` (EXEC), port 6768 collision, bind error | **Bucket 2: Server Config** | Bad `ExecStart` path (must be absolute path to `orca-ide`), or port already held. | Use absolute path (e.g. `/usr/bin/orca-ide`); kill rogue listener on 6768. |
+| `status=203` (EXEC), port 6768 collision, bind error | **Bucket 2: Server Config** | Bad `ExecStart` path (must be absolute path to `orca-ide`), or port already held. | Resolve the real path with `readlink -f "$(command -v orca-ide)"` as the service user and write that in `ExecStart=` (deb/rpm `/usr/bin/orca-ide`, AppImage `~/.local/bin/orca-ide`); kill rogue listener on 6768. |
 | `SIGSEGV`, `SIGTRAP`, unhandled rejection in journal | **Bucket 3: Orca Bug** | Electron / headless runtime crash or missing graphics library. | Verify software GL: `LIBGL_ALWAYS_SOFTWARE=1` in unit Environment; report trace upstream. |
 | Connection refused, pairing timeout, bad endpoint | **Bucket 4: Client Reachability** | Advertised `127.0.0.1` or client cannot reach host over private route. | Specify `--pairing-address <tailscale-or-lan-ip>`; check client firewall. |
 
