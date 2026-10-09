@@ -11,13 +11,13 @@
 
 export type WslDaemonState = 'starting' | 'ready' | 'stopped' | 'failed'
 
-export interface WslDaemonHandle {
+export type WslDaemonHandle = {
   readonly distro: string
   readonly socketPath: string
   state: WslDaemonState
 }
 
-export interface WslDaemonSpawnOptions {
+export type WslDaemonSpawnOptions = {
   distro: string
   socketPath: string
   /** Spawns the process; resolves once the child has launched, not once it is ready. */
@@ -37,14 +37,16 @@ const DEFAULT_TIMEOUT_MS = 5000
  * so callers holding a reference always observe the current lifecycle
  * state without re-polling.
  */
-export async function startManagedWslDaemon(options: WslDaemonSpawnOptions): Promise<WslDaemonHandle> {
+export async function startManagedWslDaemon(
+  options: WslDaemonSpawnOptions
+): Promise<WslDaemonHandle> {
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   const handle: WslDaemonHandle = {
     distro: options.distro,
     socketPath: options.socketPath,
-    state: 'starting',
+    state: 'starting'
   }
 
   const child = await options.spawn(options.distro, options.socketPath)
