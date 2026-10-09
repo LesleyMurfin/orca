@@ -32,6 +32,10 @@ otherwise:
 - the host is booted under systemd (`/run/systemd/system` exists — a plain container is not);
 - a user bus is reachable, at `/run/user/<uid>` first and the process's own `XDG_RUNTIME_DIR`
   only as a fallback;
+- the user manager outlives the caller: `Linger=yes` for the service account, or a caller already
+  running inside `user@<uid>.service`. A bus alone is not enough — without linger the manager (and
+  every scope in it) stops when the last login session closes. When this gate fails Orca logs
+  `daemon-scope-unavailable: linger off`; grep the journal for that string;
 - `systemd-run --version` runs and exits 0 within a couple of seconds.
 
 A fallback launch is not an error, but on a service-managed host it means terminals die on
@@ -47,32 +51,44 @@ sudo loginctl enable-linger orca
 loginctl show-user orca -p Linger
 ```
 
-Then point the unit at that path, because hardening can hand the service a different one:
-`RuntimeDirectory=` makes systemd export an `XDG_RUNTIME_DIR` that shares the name but hosts no
-bus (alongside `DBUS_SESSION_BUS_ADDRESS=disabled:`), while the real bus is live at
-`/run/user/<uid>` the whole time. That is why the unit sets it explicitly.
+`RuntimeDirectory=` hardening makes systemd export an `XDG_RUNTIME_DIR` that shares the name but
+hosts no bus (alongside `DBUS_SESSION_BUS_ADDRESS=disabled:`), while the real bus is live at
+`/run/user/<uid>` the whole time. Orca is not fooled by that — it derives the bus path from
+`getuid()` first and sets it explicitly on the `systemd-run` call — so the unit's
+`Environment=XDG_RUNTIME_DIR=` exists for other tooling, not for the scope.
 
 ## Verify the daemon escaped
 
 ```bash
-systemctl --user list-units 'orca-daemon-*.scope'
+systemctl --user list-units 'orca-daemon-*.scope' 'app-orca-*.scope'
 systemd-cgls /user.slice/user-$(id -u orca).slice
 ```
 
 A daemon listed in its own `orca-daemon-*.scope` survives `systemctl restart
-orca-serve.service`. A daemon that appears inside `orca-serve.service`'s cgroup will not.
+orca-serve.service`. A daemon that appears inside `orca-serve.service`'s cgroup will not. An older
+daemon may still sit in a legacy `app-orca-*.scope`; Orca migrates it into an `orca-daemon-*`
+scope on the next launch, and either name is outside the service cgroup.
 
 ## Long jobs you start yourself
 
-The same mechanism protects work an agent or operator starts from a terminal. Wrap it in a
-scope, and run it under `tmux` when you want to reattach — the pane's PTY belongs to the runtime
-that restarted, so Orca cannot reattach the old terminal even though the process lives:
+The daemon owns the PTY, so work started from an Orca terminal already survives a restart of the
+service: the new runtime adopts the surviving daemon and the pane comes back. Give a job its own
+unit only when it must also survive the daemon being replaced — an Orca update, or a host where
+the scope probe fails closed:
 
 ```bash
-systemd-run --user --scope --unit orca-build-1 -- tmux new-session -d -s build 'pnpm build'
-systemctl --user status orca-build-1
-tmux attach -t build
+# A transient service, not a scope: nothing depends on the invoking shell surviving.
+systemd-run --user --unit=orca-build-1 --collect --same-dir --property=TimeoutStopSec=5s -- pnpm build
+journalctl --user -u orca-build-1 -f
 ```
 
-Stop a finished scope with `systemctl --user stop orca-build-1`; a scope whose process has
-already exited is gone on its own.
+To reattach a shell rather than read logs, give tmux its own server, so the request cannot be
+answered by a tmux server already running in another cgroup:
+
+```bash
+systemd-run --user --scope --unit=orca-build-1 -- tmux -L orca-build-1 new-session -d -s build 'pnpm build'
+tmux -L orca-build-1 attach -t build
+```
+
+Stop a finished unit with `systemctl --user stop orca-build-1`; one whose process has already
+exited is gone on its own.

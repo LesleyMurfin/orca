@@ -65,8 +65,9 @@ The client computer needs the same install; a Remote Orca Server is Orca talking
   **Settings → Remote Orca Servers**. Use it when a human can stay signed in on that machine.
 - **`serve`.** A headless runtime with no desktop window, for a Linux box, VM, or container.
 
-Run exactly one of them per machine. A desktop app already sharing the host plus a second
-`serve` process is two runtimes competing for the same user data.
+Run exactly one of them per machine. They cannot both own the profile: the second start refuses
+and exits (`3` from the desktop path, `78` from orcad) rather than sharing the user data. Decide
+which one owns the host and stop the other.
 
 ## Start the server
 
@@ -91,9 +92,18 @@ ORCA serve --pairing-address 100.64.1.20 --mobile-pairing
 server with one printed line saying why. Set `ORCA_SERVE_RUNTIME=electron` to always use the
 desktop app's server.
 
-On Linux the executable is `orca-ide`; `/usr/bin/orca` is the GNOME Orca screen reader. In unit
-files and cron entries always write the absolute path `/usr/bin/orca-ide`, never a bare `orca`
-that a `PATH` change could redirect.
+On Linux the executable is `orca-ide`; `/usr/bin/orca` is the GNOME Orca screen reader. Write an
+absolute path in unit files and cron entries, but resolve it first — it depends on how Orca was
+installed: the deb/rpm post-install symlinks `/usr/bin/orca-ide`, while an AppImage registers
+`~/.local/bin/orca-ide` pointing into `${XDG_CACHE_HOME:-~/.cache}/orca/appimage/launcher/orca-ide`.
+Run `readlink -f "$(command -v orca-ide)"` as the service user and put that path in `ExecStart=`;
+never a bare `orca`, which a `PATH` change could redirect.
+
+`serve` always binds every interface (`0.0.0.0`); `--pairing-address` changes only what is
+advertised and `--port` only which port is opened. There is no flag to bind a single interface, so
+the host firewall or overlay network is the only control: allow the port from the
+Tailscale/WireGuard/LAN range (or expose nothing publicly and reach it over `ssh -L`), and verify
+with `ss -ltnp 'sport = :6768'` before pairing anyone.
 
 ### Verify the first run before pairing anyone
 
@@ -135,7 +145,7 @@ RestartSec=5
 RestartPreventExitStatus=3 78
 KillMode=mixed
 KillSignal=SIGTERM
-TimeoutStopSec=120
+TimeoutStopSec=45
 
 [Install]
 WantedBy=multi-user.target
@@ -146,14 +156,20 @@ Why those settings:
 - `Type=simple` — `serve` stays in the foreground and never forks or writes a PID file, so the
   started process is the main process. systemd marks the unit active as soon as it spawns; the
   bound endpoint and pairing URL arrive later, in the journal.
-- `KillMode=mixed` — only the main process gets `SIGTERM`, so the runtime closes its own
-  terminals and agent children in order; the final `SIGKILL` after `TimeoutStopSec` still sweeps
-  the whole cgroup. `control-group` would `SIGTERM` every agent at once and strand half-written
-  work.
-- `RestartPreventExitStatus=3 78` — `78` is the runtime's configuration-fault status: a data
-  root held by another runtime, a bind address it cannot use, or an unreadable profile store.
-  Restarting never repairs those, so plain `Restart=on-failure` would crash-loop on them. `3` is
-  reserved for the unit's own `ExecStartPre=` preflight to report the same "do not retry".
+- `KillMode=mixed` — `SIGTERM` goes to the main process only. That matters because `serve`'s
+  graceful stop deliberately does **not** take the terminal daemon down with it: the daemon keeps
+  the PTYs so a restarted runtime can adopt them. `control-group` would signal the daemon and every
+  agent in the unit's cgroup at once and lose that work; with `mixed`, anything still in the cgroup
+  when the main process exits is swept, which is why the daemon must live in its own scope (see
+  `references/daemon-scope.md`).
+- `RestartPreventExitStatus=3 78` — two statuses a restart cannot repair. `78` is orcad's
+  configuration-fault status (`ORCAD_EXIT_CONFIGURATION`): a data root held by another orcad, a
+  malformed `--bind` address, an unusable bundled runtime, or an unreadable profile store. `3`
+  means another process already owns this userData profile — the desktop app, or a `serve` that is
+  still running; the host prints `[single-instance] Another Orca instance is already running for
+  this userData profile`. A port already in use is **neither**: the listener fails with a plain
+  error and exits `1`, which `Restart=on-failure` retries every `RestartSec` forever, so fix
+  `--port` rather than the unit when the journal shows `EADDRINUSE`.
 
 Load `references/systemd-supervision.md` before writing or repairing the unit: it carries the
 full template, the start-limit backstop, the Xvfb package headless browser panes need, and how
@@ -186,18 +202,27 @@ sudo loginctl enable-linger orca
 loginctl show-user orca -p Linger
 ```
 
-Lingering starts the `orca` user's manager at boot and provisions `/run/user/<uid>`, the bus the
-unit's `Environment=XDG_RUNTIME_DIR=/run/user/<uid>` points at. Without it the probe fails
-closed and Orca forks the daemon directly.
+Lingering starts the `orca` user's manager at boot and provisions `/run/user/<uid>`. Without it
+the probe fails closed — the user manager would not outlive the caller — and Orca forks the daemon
+directly; the journal says `daemon-scope-unavailable: linger off`.
 
-Work you start yourself is protected the same way. Wrap it in a scope, and run it under `tmux`
-when you want to reattach — the old pane's PTY belongs to the runtime that restarted, so Orca
-cannot restore the terminal even though the process lives:
+Work you start yourself is already protected when the daemon is in its own scope: the daemon owns
+the PTY, survives the restart, and the new runtime adopts it, so the pane comes back. Wrap work in
+its own unit only when it must also survive the daemon itself being replaced — an Orca update, or
+a host where the scope probe fails closed:
 
 ```bash
-systemd-run --user --scope --unit orca-build-1 -- tmux new-session -d -s build 'pnpm build'
-systemctl --user status orca-build-1
-tmux attach -t build
+# A transient service, not a scope: nothing depends on the invoking shell surviving.
+systemd-run --user --unit=orca-build-1 --collect --same-dir --property=TimeoutStopSec=5s -- pnpm build
+journalctl --user -u orca-build-1 -f
+```
+
+To reattach a shell rather than read logs, give tmux its own server so the request cannot be
+answered by a tmux server already running in another cgroup:
+
+```bash
+systemd-run --user --scope --unit=orca-build-1 -- tmux -L orca-build-1 new-session -d -s build 'pnpm build'
+tmux -L orca-build-1 attach -t build
 ```
 
 Load `references/daemon-scope.md` when terminals die on restart, before an update with live
