@@ -10,13 +10,15 @@ import {
   journalPragmaNumber,
   openJournalDatabase
 } from './journal-database'
-import { JOURNAL_DB_SCHEMA_VERSION } from './journal-database-schema'
+import {
+  createJournalTablesSql,
+  JOURNAL_DB_OLDEST_RELEASED_VERSION,
+  JOURNAL_DB_SCHEMA_VERSION
+} from './journal-database-schema'
 import { journalDatabasePath } from './journal-host-database'
 import { JournalUnreleasedSchemaError } from './journal-open-failure'
 import {
   deleteJournalEpochRows,
-  deleteJournalRowSuffix,
-  deleteUnpublishedJournalRows,
   insertJournalRow,
   iterateJournalEpochRows,
   publishJournalSessionEpoch,
@@ -129,7 +131,7 @@ describe('the host journal database open', () => {
 })
 
 describe('journal row statements', () => {
-  it('serves replay, resume, suffix truncation and an epoch discard', () => {
+  it('serves replay, resume and an epoch discard', () => {
     const db = openJournalDatabase(dbPath).db
     try {
       db.exec('BEGIN IMMEDIATE')
@@ -148,32 +150,10 @@ describe('journal row statements', () => {
         4, 5
       ])
 
-      expect(deleteJournalRowSuffix(db, 'session-1', 'epoch-1', 4)).toBe(2)
-      expect(rowsOf(db, 'session-1', 'epoch-1')).toEqual([1, 2, 3])
-
       // Another chat in the same file is untouched by this chat's discard.
       deleteJournalEpochRows(db, 'session-1', 'epoch-1')
       expect(rowsOf(db, 'session-1', 'epoch-1')).toEqual([])
       expect(rowsOf(db, 'session-2', 'epoch-1')).toEqual([1])
-    } finally {
-      db.close()
-    }
-  })
-
-  it('deletes only the rows no pointer names', () => {
-    const db = openJournalDatabase(dbPath).db
-    try {
-      insertJournalRow(db, 'session-1', epochRow(1, 'epoch-copying'))
-      insertJournalRow(db, 'session-2', epochRow(1, 'epoch-live'))
-      insertJournalRow(db, 'session-2', epochRow(1, 'epoch-stale'))
-      publishJournalSessionEpoch(db, { sessionId: 'session-2', workspaceId: 'ws-1' }, 'epoch-live')
-
-      deleteUnpublishedJournalRows(db, 'session-1')
-      deleteUnpublishedJournalRows(db, 'session-2')
-
-      expect(rowsOf(db, 'session-1', 'epoch-copying')).toEqual([])
-      expect(rowsOf(db, 'session-2', 'epoch-live')).toEqual([1])
-      expect(rowsOf(db, 'session-2', 'epoch-stale')).toEqual([])
     } finally {
       db.close()
     }
@@ -233,6 +213,25 @@ describe('schema creation', () => {
       ).toBeUndefined()
     } finally {
       inspected.close()
+    }
+  })
+
+  it('gives a version 3 database the chat record tables, keeping its rows', () => {
+    const released = new Database(dbPath)
+    released.exec(createJournalTablesSql())
+    released.exec("INSERT INTO journal_sessions VALUES ('s1', 'ws', 'e1')")
+    released.pragma(`user_version = ${JOURNAL_DB_OLDEST_RELEASED_VERSION}`)
+    released.close()
+
+    const { db } = openJournalDatabase(dbPath)
+    try {
+      expect(journalPragmaNumber(db, 'user_version')).toBe(JOURNAL_DB_SCHEMA_VERSION)
+      expect(db.prepare('SELECT session_id FROM journal_sessions').all()).toEqual([
+        { session_id: 's1' }
+      ])
+      expect(db.prepare('SELECT count(*) AS n FROM agent_session_records').get()).toEqual({ n: 0 })
+    } finally {
+      db.close()
     }
   })
 

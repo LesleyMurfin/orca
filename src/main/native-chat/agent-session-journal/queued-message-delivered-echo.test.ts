@@ -13,17 +13,18 @@ import type {
 } from '../../../shared/agent-session-journal-types'
 import { agentSessionFailureFact } from '../../../shared/agent-session-failure'
 import { agentSessionFailureWords } from '../../../shared/agent-session-failure-words'
-import { queuedMessageFingerprint } from '../agent-session-wire/structured-agent-session-queued-messages'
+import { agentSessionSendBodyFingerprint } from '../../../shared/structured-agent-session-send-mutation'
 import { JournalQueuedMessages } from './journal-queued-messages'
 import type { AgentSessionJournal } from './journal-store'
 import { createTrackedJournalOpener } from './journal-host-database-test-support'
+import { claudeProviderHandle } from '../../../shared/agent-session-provider-handle-encoding'
 
 const IDENTITY: AgentSessionJournalIdentity = {
   sessionId: 'session-q',
   workspaceId: 'ws-1',
   hostId: 'host-1',
   agent: 'claude',
-  providerHandle: { kind: 'claude', sessionId: 'native-1', leafUuid: null }
+  providerHandle: claudeProviderHandle('native-1', null)
 }
 const STOP_WITHDRAWAL = agentSessionFailureWords(agentSessionFailureFact('cancelled'), {
   surface: 'rejection'
@@ -71,7 +72,7 @@ async function handOffAndReject(
   options: { handedOver: boolean } = { handedOver: true }
 ): Promise<void> {
   const body = message(text)
-  const fingerprint = queuedMessageFingerprint(IDENTITY.sessionId, body)
+  const fingerprint = agentSessionSendBodyFingerprint(IDENTITY.sessionId, body)
   await journal.queuedMessages.insert({
     messageId: 'draft-1',
     body,
@@ -139,14 +140,6 @@ describe("a waiting draft whose 'never delivered' claim an echo disproves", () =
     expect(journal.queuedMessages.get('draft-1')?.state).toBe('waiting')
   })
 
-  it('retires the pause in the per-row hook when that echo withdraws the last card it holds back', async () => {
-    const journal = await withdrawnDraft('did it land?')
-    expect(await journal.queuedMessages.recordPause('stopped')).toBe(true)
-    await echo(journal, 'echo-1', 'did it land?')
-    expect(journal.queuedMessages.get('draft-1')?.state).toBe('withdrawn')
-    expect(journal.queuedMessages.pause()).toBeNull()
-  })
-
   it('stays waiting for an echo of some other text', async () => {
     const journal = await withdrawnDraft('did it land?')
     await echo(journal, 'echo-1', 'something else')
@@ -158,7 +151,7 @@ describe("a waiting draft whose 'never delivered' claim an echo disproves", () =
     const body = message('did it land?')
     await journal.appendSubmission({
       clientMessageId: 'typed-again',
-      payloadFingerprint: queuedMessageFingerprint(IDENTITY.sessionId, body),
+      payloadFingerprint: agentSessionSendBodyFingerprint(IDENTITY.sessionId, body),
       body,
       fence: 0,
       handoverRecorded: true

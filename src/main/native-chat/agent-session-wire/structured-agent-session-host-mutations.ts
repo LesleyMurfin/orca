@@ -18,24 +18,16 @@ import type {
   AgentSessionThreadGoalChange,
   AgentSessionThreadGoalResult
 } from '../../../shared/agent-session-wire'
-import { agentSessionFailureWords } from '../../../shared/agent-session-failure-words'
-import { agentSessionFailureFact } from '../../../shared/agent-session-failure'
 import type { AgentSessionPromptRequest } from './structured-agent-session-turns-prompt'
 import { threadGoalPlan } from './structured-agent-session-thread-goal'
 import {
-  isMainAgentWorkingOnceFlushed,
-  performCancel
-} from './structured-agent-session-turns-cancel'
+  mutateStructuredAgentSession,
+  type StructuredAgentSessionMutationContext
+} from './structured-agent-session-mutation-context'
 import {
-  admitAndRunAgentSessionMutation,
-  type AgentSessionMutationRequest,
-  type AgentSessionMutationSessionPreparation
-} from './structured-agent-session-mutation-admission'
-import {
-  openForWrite,
+  openForProviderWrite,
   openWithAgent,
   sendPreparation,
-  structuredAgentSessionFailureWordsContext,
   structuredAgentSessionSendBlock
 } from './structured-agent-session-send-preparation'
 import {
@@ -45,65 +37,17 @@ import {
   setOptionPlan,
   type MutationPlan
 } from './structured-agent-session-mutation-plans'
+import { agentSessionMutationAdmitsNow } from './structured-agent-session-mutation-admits-now'
 import { runQueueableStructuredAgentSessionSend } from './structured-agent-session-queued-send'
-import { runStopWithQueuePause } from './structured-agent-session-queued-stop'
-import type {
-  StructuredAgentSessionCaller,
-  StructuredAgentSessionHostDeps,
-  StructuredAgentSessionHostSession
-} from './structured-agent-session-host-types'
+import { cancelStructuredAgentSessionPrompt } from './structured-agent-session-prompt-cancel'
+import { mutateWithChatStop } from './structured-agent-session-chat-stop'
+import { performSetOption } from './structured-agent-session-turns-options'
+export type { StructuredAgentSessionMutationContext } from './structured-agent-session-mutation-context'
+import type { StructuredAgentSessionCaller } from './structured-agent-session-host-types'
 import {
   readStructuredAgentSessionOptions,
   recordStructuredAgentSessionOptionIntent
 } from './structured-agent-session-options-read'
-
-export type StructuredAgentSessionMutationContext = {
-  deps: StructuredAgentSessionHostDeps
-  sessions: Map<string, StructuredAgentSessionHostSession>
-  publish: (sessionId: string, journal: StructuredAgentSessionHostSession['journal']) => void
-  flushStreamedEvents: (sessionId: string) => Promise<void>
-  /** The host's accessor, for a caller outside the session's serialize. */
-  conversation: (sessionId: string) => Promise<StructuredAgentSessionHostSession>
-  serialize: <T>(sessionId: string, task: () => Promise<T>) => Promise<T>
-  /** The session's conversation, opened when closed; inside the caller's serialize. */
-  openConversation: (sessionId: string) => Promise<StructuredAgentSessionHostSession | null>
-  /** Gives the session a provider child; inside the caller's serialize. */
-  ensureAgent: (sessionId: string) => Promise<AgentSessionMutationSessionPreparation>
-  /** A message was accepted: the session's delivery loop hands it over. */
-  wakeDelivery: (sessionId: string) => void
-  /** Stops the session's provider child, keeping its conversation; inside the caller's serialize. */
-  stopAgent: (sessionId: string) => Promise<void>
-  /** Only for gate inputs living in the RECORD store, which can settle with no
-   *  journal commit (a conversation command). Draft-table changes need no call:
-   *  the draft store notifies through the journal's own commit listener. */
-  wakeQueuedDrain?: (sessionId: string) => void
-  now: () => number
-}
-
-/** Admits the envelope and runs the plan inside the session's serialize. */
-export function mutateStructuredAgentSession<TValue>(
-  context: StructuredAgentSessionMutationContext,
-  caller: StructuredAgentSessionCaller,
-  envelope: AgentSessionMutationEnvelope,
-  plan: MutationPlan<TValue>,
-  prepareSession?: AgentSessionMutationRequest<TValue>['prepareSession']
-): Promise<AgentSessionMutationResult<TValue>> {
-  return context.serialize(envelope.sessionId, () =>
-    admitAndRunAgentSessionMutation({
-      store: context.deps.store,
-      adapter: context.deps.adapter,
-      callerKey: caller.callerKey,
-      envelope,
-      plan,
-      journal: () => context.sessions.get(envelope.sessionId)?.journal,
-      prepareSession,
-      publish: (journal) => context.publish(envelope.sessionId, journal),
-      flushStreamedEvents: context.flushStreamedEvents,
-      providerChildPhase: () => context.sessions.get(envelope.sessionId)?.child?.phase,
-      now: () => context.now()
-    })
-  )
-}
 
 export function sendStructuredAgentSessionTurn(
   context: StructuredAgentSessionMutationContext,
@@ -115,12 +59,16 @@ export function sendStructuredAgentSessionTurn(
     delivery?: 'queue-if-active'
     /** Host-local, set only by the client-facing `agentSession.send` RPC (the
      *  renderer's launch prompt included): recorded as the submission's `client`
-     *  origin, whose started turn ends a Stop's or a restart's queue pause.
-     *  Orchestration mail, a restart continuation and `agent.launch`'s host-sent
+     *  origin, so a restart or a close keeps it as a card if it never reached the
+     *  agent. Orchestration mail, a restart continuation and `agent.launch`'s host-sent
      *  prompt never set it. */
     userSend?: true
+    /** Host-local, never on the wire: a person's message the host sends for them, such as a
+     *  launch's first prompt. `userSend` is always one; another agent's message carries `from`. */
+    personsMessage?: true
     beforeRun?: () => void
-  }
+  },
+  arrival?: Parameters<typeof sendPreparation>[2]
 ): Promise<AgentSessionMutationResult<AgentSessionSendResult>> {
   const plan = sendPlan(params)
   return mutateStructuredAgentSession(
@@ -139,7 +87,7 @@ export function sendStructuredAgentSessionTurn(
             (await plan.run(ctx))
         )
     },
-    sendPreparation(context, params.envelope)
+    sendPreparation(context, params.envelope, arrival)
   )
 }
 
@@ -154,67 +102,57 @@ export function cancelStructuredAgentSessionTurn(
     prompt?: { itemId: string; expectedRevision: number }
   }
 ): Promise<AgentSessionMutationResult<AgentSessionCancelResult>> {
-  if (params.scope || params.prompt) {
+  if (params.scope) {
     return mutateStructuredAgentSession(
       context,
       caller,
       params.envelope,
-      cancelPlan(params),
-      openForWrite(context, params.envelope)
+      cancelPlan({ ...params, childWork: () => context.readChildWork(params.envelope.sessionId) }),
+      openForProviderWrite(context, params.envelope)
     )
   }
-  const plan = cancelPlan({
-    ...params,
-    stopChild: () => context.stopAgent(params.envelope.sessionId)
-  })
-  return mutateStructuredAgentSession(
-    context,
-    caller,
-    params.envelope,
-    {
-      ...plan,
-      // Stop's queue step, the same for every client: once the Stop takes effect
-      // the queue is paused. The cards stay published; nothing is withdrawn and no
-      // text ever rides the answer.
-      run: (ctx) =>
-        runStopWithQueuePause(ctx, async (tookEffect) => {
-          // Stop withdraws every queued SUBMISSION first, whatever the start or the child is doing.
-          const withdrawn = await ctx.journal.rejectQueuedSubmissions(
-            ctx.fence,
-            agentSessionFailureWords(agentSessionFailureFact('cancelled'), { surface: 'rejection' })
-          )
-          const named = params.turnId !== undefined ? { turnId: params.turnId } : {}
-          const child = context.sessions.get(ctx.sessionId)?.child
-          if (child?.phase === 'starting') {
-            // A start that may never land is the one thing here Stop has to end; the chat stays.
-            await tookEffect()
-            await context.stopAgent(ctx.sessionId)
-            return { ok: true, value: { ...named, cancelled: true } }
-          }
-          // A Stop naming no turn ends nothing more unless the session reads working, by the rule
-          // every session list and the chat's own Stop read it.
-          const inFlight = params.turnId !== undefined || (await isMainAgentWorkingOnceFlushed(ctx))
-          const record = context.deps.store.getRecord(ctx.sessionId)
-          if (!child || !inFlight) {
-            if (withdrawn.length > 0) {
-              await tookEffect()
-            }
-            return { ok: true, value: { ...named, cancelled: withdrawn.length > 0 } }
-          }
-          await tookEffect()
-          return performCancel(
-            { ...ctx, failureTextContext: structuredAgentSessionFailureWordsContext(record) },
-            {
-              clientOperationId: params.envelope.clientOperationId,
-              ...named,
-              stopChild: () => context.stopAgent(params.envelope.sessionId),
-              withdrewQueued: withdrawn.length > 0
-            }
-          )
-        })
-    },
-    openForWrite(context, params.envelope)
+  const plan = cancelPlan(params)
+  const { prompt } = params
+  if (!prompt && params.turnId === undefined) {
+    abortAcquireForStop(context, caller, params.envelope, plan)
+  }
+  // A card's Cancel stops whatever the chat has in flight, as the Stop button does; it reaches the
+  // Stop only for a card the live turn raised (`cancelStructuredAgentSessionPrompt`).
+  const stopped = prompt ? { envelope: params.envelope } : params
+  return mutateWithChatStop(context, caller, stopped, plan, (ctx, stop) =>
+    prompt
+      ? cancelStructuredAgentSessionPrompt(
+          ctx,
+          { ...(params.turnId !== undefined ? { turnId: params.turnId } : {}), prompt },
+          { stop, interrupt: () => plan.run(ctx) }
+        )
+      : stop().then(({ outcome }) => outcome)
   )
+}
+
+/** A Stop must not wait behind a start the provider may never answer: the start the session's
+ *  queue is waiting on stops now, as a close's does, and the Stop's own step then finds no child.
+ *  Only a Stop admission would run now; one naming a turn is about a child already gone, so it
+ *  leaves a newer start alone. */
+function abortAcquireForStop(
+  context: StructuredAgentSessionMutationContext,
+  caller: StructuredAgentSessionCaller,
+  envelope: AgentSessionMutationEnvelope,
+  plan: MutationPlan<AgentSessionCancelResult>
+): void {
+  const { store } = context.deps
+  if (
+    !agentSessionMutationAdmitsNow({
+      store,
+      callerKey: caller.callerKey,
+      envelope,
+      plan,
+      now: context.now
+    })
+  ) {
+    return
+  }
+  context.acquireAborts.abort(envelope.sessionId, 'stopped while starting')
 }
 
 export function respondToStructuredAgentSessionPrompt(
@@ -227,7 +165,7 @@ export function respondToStructuredAgentSessionPrompt(
     caller,
     params.envelope,
     promptPlan(params),
-    openForWrite(context, params.envelope)
+    openForProviderWrite(context, params.envelope)
   )
 }
 
@@ -251,12 +189,22 @@ export async function setStructuredAgentSessionOption(
       get conversationWrite() {
         return atRest() ? (true as const) : undefined
       },
-      run: (ctx) =>
-        atRest()
-          ? recordStructuredAgentSessionOptionIntent(context.deps.store, ctx, params)
-          : plan.run(ctx)
+      run: async (ctx) => {
+        if (atRest()) {
+          return recordStructuredAgentSessionOptionIntent(context.deps, ctx, params)
+        }
+        // Held where a start is, so a close, a Stop admitted now or quit ends the wait from outside.
+        const wait = context.acquireAborts.begin(params.envelope.sessionId)
+        try {
+          return await performSetOption(ctx, params, wait.signal)
+        } finally {
+          wait.end()
+          // Whatever the write's outcome, the child may hold what it asked for now.
+          context.optionRevisions.advance(params.envelope.sessionId)
+        }
+      }
     },
-    openForWrite(context, params.envelope)
+    openForProviderWrite(context, params.envelope)
   )
 }
 

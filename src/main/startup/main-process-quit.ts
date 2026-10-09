@@ -17,6 +17,7 @@ import { browserManager } from '../browser/browser-manager'
 import { stopCodexStateDbBackfillRecoveries } from '../codex/codex-state-db-backfill-recovery'
 import { stopCodexAccountSessionBridges } from '../codex/codex-account-session-bridge'
 import { awaitPackedRefsLockRelease } from '../git/local-repo-ref-maintenance'
+import { stopBackgroundWorktreeRemovals } from '../worktree-background-removal'
 import { settleTeardownWithinDeadline, settleWithinMs } from '../quit-teardown-deadline'
 import { quitTeardownStartGate } from '../quit-teardown-start-gate'
 import { setUnreadDockBadgeCount } from '../dock/unread-badge'
@@ -66,7 +67,10 @@ function shutdownWatchersOnce(): Promise<void> {
 }
 
 function installBeforeQuitHandler(): void {
-  app.on('before-quit', () => {
+  app.on('before-quit', (event: Event) => {
+    if (event.defaultPrevented) {
+      return
+    }
     if (isQuittingForUpdate()) {
       recordUpdaterLifecycle('before_quit_allowed', undefined, {
         message: 'before-quit allowed for update install'
@@ -152,6 +156,8 @@ function installWillQuitHandler(): void {
       REF_MAINTENANCE_QUIT_DEADLINE_MS
     ).then(() => {})
     state.uninstallRepoMaintenanceIdleGate = null
+    // Why stop, not wait: a delete can run for minutes, and its record makes the next start finish it.
+    stopBackgroundWorktreeRemovals()
     agentHookServer.stop()
     // Why Windows only: POSIX hooks short-circuit on ORCA_PANE_KEY, while Windows must register a
     // bare script path that cannot express the guard and would otherwise keep spawning after quit.
@@ -208,7 +214,7 @@ function installWillQuitHandler(): void {
         return
       }
       try {
-        await finalStore.flushFinalOrThrowAsync({ exportJsonCompatibility: true })
+        await finalStore.flushFinalOrThrowAsync()
         await finalStore.freezeWritesAsync()
         state.profileStateAdmission?.release()
         state.profileStateAdmission = undefined

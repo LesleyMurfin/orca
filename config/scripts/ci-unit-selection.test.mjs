@@ -62,6 +62,32 @@ describe('conservative unit selection', () => {
     expect(selectUnitFiles(files, changed, graph)).toMatchObject({ files, full: true })
   })
 
+  it.each(
+    [[], ['pnpm-lock.yaml'], ['config/vitest.config.ts', 'src/leaf.ts']].map((changed) => ({
+      changed
+    }))
+  )('keeps full coverage without reading the graph for global evidence: %j', ({ changed }) => {
+    const plan = planUnitSelection({
+      files,
+      changed,
+      graph: () => {
+        throw new Error('Graph must not be read')
+      },
+      timings: {},
+      mode: 'selected',
+      event: { pull_request: { draft: true } }
+    })
+    expect(plan.executionFiles).toEqual(files)
+    expect(plan.selectionAvailable).toBe(false)
+    expect(plan.shards).toHaveLength(FULL_SHARD_COUNT)
+  })
+
+  it('reads lazy graph evidence for source changes', () => {
+    expect(selectUnitFiles(files, ['src/leaf.ts'], () => graph)).toEqual(
+      selectUnitFiles(files, ['src/leaf.ts'], graph)
+    )
+  })
+
   it('keeps full coverage by default and on every non-draft commit', () => {
     const base = { files, changed: ['src/leaf.ts'], graph, timings: {} }
     for (const event of [
@@ -92,6 +118,42 @@ describe('conservative unit selection', () => {
         count: FULL_SHARD_COUNT
       }))
     )
+  })
+
+  it('uses ten complete PR shards while selected drafts retain the five-shard cap', () => {
+    const expandedSources = new Map(sources)
+    for (let index = 0; index < 5; index++) {
+      expandedSources.set(`src/additional-${index}.test.ts`, `import './leaf'`)
+    }
+    const expandedGraph = {
+      ...buildUnitDependencyGraph(expandedSources),
+      files: new Set(expandedSources.keys())
+    }
+    const expandedFiles = [...expandedSources.keys()]
+      .filter((file) => file.endsWith('.test.ts'))
+      .sort()
+    const base = {
+      files: expandedFiles,
+      changed: ['src/leaf.ts'],
+      graph: expandedGraph,
+      fullShardCount: 10
+    }
+    const full = planUnitSelection({ ...base, timings: {} })
+    expect(full.executionFiles).toEqual(expandedFiles)
+    expect(full.shards).toEqual(
+      Array.from({ length: 10 }, (_, index) => ({ index: index + 1, count: 10 }))
+    )
+    const selected = planUnitSelection({
+      ...base,
+      timings: Object.fromEntries(expandedFiles.map((file) => [file, 1_800_000])),
+      mode: 'selected',
+      event: { pull_request: { draft: true } }
+    })
+    expect(selected.shards).toHaveLength(5)
+    expect(selected.executionFiles).toEqual(
+      selectUnitFiles(expandedFiles, ['src/leaf.ts'], expandedGraph).files
+    )
+    expect(selected.executionFiles.length).toBeGreaterThan(5)
   })
 
   it('records failures that would have been missed while shadow runs remain full', () => {

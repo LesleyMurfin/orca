@@ -61,7 +61,7 @@ export type WorktreeActivationStore = Partial<WorktreeRuntimeOwnerState> & {
   queueTabInitialCwd: (tabId: string, cwd: string) => void
   settings?: Pick<
     GlobalSettings,
-    'experimentalNativeChat' | 'openAgentTabsInChatByDefault' | 'autoOpenInitialTerminal'
+    'experimentalNativeChat' | 'autoOpenInitialTerminal'
   > | null
 }
 

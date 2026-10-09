@@ -68,6 +68,8 @@ export default function AiVaultPanel(): React.JSX.Element {
   const projectHostSetupProjection = useProjectHostSetupProjection()
   const resumeTargetState = useAppStore(
     useShallow((state) => ({
+      projects: state.projects,
+      settings: state.settings,
       folderWorkspaces: state.folderWorkspaces,
       projectGroups: state.projectGroups,
       repos: state.repos,
@@ -374,6 +376,7 @@ export default function AiVaultPanel(): React.JSX.Element {
             getSessionResumeInChat={getSessionResumeInChat}
             onContinueInNewSession={launchActions.handleContinueInNewSession}
             onResumeInNewChat={launchActions.handleResumeInNewChat}
+            onResumeInNewCli={launchActions.handleResumeInNewCli}
             onCopyResume={(session, worktreeId) =>
               void launchActions.copyResumeCommand(session, worktreeId)
             }

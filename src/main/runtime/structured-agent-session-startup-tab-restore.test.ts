@@ -1,9 +1,9 @@
 // With native chat on, the renderer's startup also awaits the chat tab restore (`session.tabs.listAll`),
 // which reads every chat whose tab was open at quit. That read must not wait on record-store
 // bookkeeping: with a saved tab index it writes nothing, and a store that cannot be written costs
-// a bounded number of lock waits, not one per chat.
+// a bounded number of failed writes, not one per chat.
 
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -13,40 +13,47 @@ import {
   agentSessionLeaseFixture,
   agentSessionRecordFixture
 } from '../../shared/agent-session-record.test-fixture'
-import type * as FileTransactionLock from '../file-transaction-lock'
-import { JournalHostDatabase } from '../native-chat/agent-session-journal/journal-host-database'
+import { journalDatabasePath } from '../native-chat/agent-session-journal/journal-host-database'
+import {
+  closeTestJournalHostDatabase,
+  closeTestJournalHostDatabases,
+  openTestJournalHostDatabase,
+  SAVED_BY_NEWER_ORCA
+} from '../native-chat/agent-session-journal/journal-host-database-test-support'
 import { openAgentSessionJournal } from '../native-chat/agent-session-journal/journal-store-factory'
 import { journalIdentityFor } from '../native-chat/agent-session-wire/structured-agent-session-attach'
 import { attachParamsForRecord } from '../native-chat/agent-session-wire/structured-agent-session-conversation-open'
 import { getStructuredAgentSessionHost } from '../native-chat/agent-session-wire/structured-agent-session-registry'
 import { AgentSessionRecordStore } from './agent-session-record-store'
+import type * as AgentSessionRecordRows from './agent-session-record-rows'
 import {
-  AGENT_SESSION_STORE_SCHEMA_VERSION,
-  agentSessionStorePath
-} from './agent-session-record-store-file'
+  readPersistedTestAgentSessionStore,
+  seedTestAgentSessionRecordStore,
+  seedTestAgentSessionStoreFromNewerBuild
+} from './agent-session-record-store-test-harness'
 import { OrcaRuntimeService } from './orca-runtime'
 import {
   ensureStructuredAgentSessionHost,
   stopStructuredAgentSessionRuntime
 } from './structured-agent-session-runtime'
+import { recordingStructuredAgentSessionLogger } from '../native-chat/agent-session-wire/structured-agent-session-logger-test-support'
+import { codexProviderHandle } from '../../shared/agent-session-provider-handle-encoding'
+import { structuredAgentSessionTabId } from '../../shared/structured-agent-session-projection'
 
-// `failing` refuses every take; `grants` lets that many more through, then refuses.
-const lock = vi.hoisted(() => ({ failing: false, grants: Infinity, refused: 0 }))
+// `failing` fails every record write; `grants` lets that many more through, then fails.
+const writes = vi.hoisted(() => ({ failing: false, grants: Infinity, refused: 0 }))
 
-vi.mock('../file-transaction-lock', async (importOriginal) => {
-  const actual = await importOriginal<typeof FileTransactionLock>()
+vi.mock('./agent-session-record-rows', async (importOriginal) => {
+  const actual = await importOriginal<typeof AgentSessionRecordRows>()
   return {
     ...actual,
-    withFileTransactionLock: (...args: Parameters<typeof actual.withFileTransactionLock>) => {
-      if (lock.failing || lock.grants <= 0) {
-        lock.refused += 1
-        // What proper-lockfile throws once its retries give up, about 3 s later.
-        return Promise.reject(
-          Object.assign(new Error('Lock file is already being held'), { code: 'ELOCKED' })
-        )
+    writeAgentSessionStoreRows: (...args: Parameters<typeof actual.writeAgentSessionStoreRows>) => {
+      if (writes.failing || writes.grants <= 0) {
+        writes.refused += 1
+        throw new Error('disk I/O error')
       }
-      lock.grants -= 1
-      return actual.withFileTransactionLock(...args)
+      writes.grants -= 1
+      return actual.writeAgentSessionStoreRows(...args)
     }
   }
 })
@@ -63,8 +70,9 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  Object.assign(lock, { failing: false, grants: Infinity, refused: 0 })
+  Object.assign(writes, { failing: false, grants: Infinity, refused: 0 })
   await stopStructuredAgentSessionRuntime().catch(() => undefined)
+  closeTestJournalHostDatabases()
   vi.restoreAllMocks()
   await rm(root, { recursive: true, force: true })
 })
@@ -87,7 +95,7 @@ function chatRecord(
         provider: 'codex' as const,
         providerHandleChain: record.providerHandleChain.map((link) => ({
           ...link,
-          handle: { provider: 'codex' as const, threadId: `thread-${sessionId}` }
+          handle: codexProviderHandle(`thread-${sessionId}`)
         })),
         accountHome: { variable: 'CODEX_HOME' as const, path: join(root, 'codex-home') }
       }
@@ -107,33 +115,26 @@ function chatRecord(
   return { ...record, ...codex, ...clear }
 }
 
-/** Writes the record store; `visible` is the saved tab index, absent on a legacy profile. */
-async function seedStore(
+/** The chat records the last run left; `visible` is their saved tab index, absent on a legacy
+ *  profile. `newer` leaves them in a database a newer Orca wrote. Then each chat's history as the
+ *  last run left it: one prompt, accepted, so nothing is left to send. */
+async function seedProfile(
   records: AgentSessionRecord[],
-  options: { newer?: boolean; visible?: string[] } = {}
+  options: { newer?: boolean; visible?: string[]; history?: AgentSessionRecord[] } = {}
 ) {
-  const storeDirectory = join(root, 'agent-sessions')
-  const path = agentSessionStorePath(storeDirectory)
-  await mkdir(storeDirectory, { recursive: true })
-  await writeFile(
-    path,
-    JSON.stringify({
-      schemaVersion: AGENT_SESSION_STORE_SCHEMA_VERSION + (options.newer ? 1 : 0),
-      hostId: 'local',
-      records: Object.fromEntries(records.map((record) => [record.sessionId, record])),
-      operations: {},
-      retiredClaimKeys: [],
-      unusableRecords: {},
-      ...(options.visible ? { visibleSessionIds: options.visible } : {})
-    })
-  )
-  return { storeDirectory, path }
-}
-
-/** Each chat's history as the last run left it: one prompt, accepted, so nothing is left to send. */
-async function seedHistory(records: AgentSessionRecord[]): Promise<void> {
-  const database = JournalHostDatabase.open(root)
-  for (const record of records) {
+  await seedTestAgentSessionRecordStore(root, {
+    records,
+    ...(options.visible
+      ? {
+          sessionTabs: options.visible.map((sessionId) => ({
+            tabId: structuredAgentSessionTabId(sessionId),
+            sessionId
+          }))
+        }
+      : {})
+  })
+  const database = openTestJournalHostDatabase(root)
+  for (const record of options.history ?? records) {
     const fence = record.lease.runtimeFence
     const journal = await openAgentSessionJournal({
       identity: journalIdentityFor(
@@ -157,11 +158,15 @@ async function seedHistory(records: AgentSessionRecord[]): Promise<void> {
     })
     await journal.close()
   }
-  database.close()
+  closeTestJournalHostDatabase(root)
+  if (options.newer) {
+    await seedTestAgentSessionStoreFromNewerBuild(root)
+  }
+  return { path: journalDatabasePath(root) }
 }
 
 function startupRuntime(options: { afterInstall?: () => void; profileChats?: string[] } = {}) {
-  const onError = vi.fn()
+  const log = recordingStructuredAgentSessionLogger()
   const runtime = new OrcaRuntimeService()
   // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: these are the runtime's own protected members; the test roots the host at `root`, stubs the PTY daemon and gives it a profile.
   const internal = runtime as unknown as {
@@ -174,13 +179,14 @@ function startupRuntime(options: { afterInstall?: () => void; profileChats?: str
   internal.hasPersistedStructuredAgentSessionStore = () => true
   internal.ensureStructuredAgentSessionHost = async () => {
     const installed = await ensureStructuredAgentSessionHost({
+      logger: log.logger,
       stateDirectory: root,
       hostId: 'local',
       claimKeyId: 'key-1',
       resolveWorkspacePath: async () => root,
       resolveEnvironment: async () => ({}),
-      resolveClaudeAuthPolicy: () => ({ stripAuthEnv: true }),
-      onError
+      resolveLaunchArgs: () => [],
+      resolveClaudeAuthPolicy: () => ({ stripAuthEnv: true })
     })
     options.afterInstall?.()
     return installed
@@ -212,7 +218,7 @@ function startupRuntime(options: { afterInstall?: () => void; profileChats?: str
   }
   return {
     runtime,
-    onError,
+    log,
     published: () => internal.mobileSessionTabsByWorktree.get('workspace-1')?.tabs ?? []
   }
 }
@@ -229,82 +235,93 @@ function spyOnTabWrites() {
   }
 }
 
-async function tabIndexOnDisk(path: string): Promise<unknown> {
-  return JSON.parse(await readFile(path, 'utf-8')).visibleSessionIds
+async function tabIndexOnDisk(): Promise<string[] | undefined> {
+  return (await readPersistedTestAgentSessionStore(root)).sessionTabs?.map((tab) => tab.sessionId)
 }
 
 describe('restoring the chat tabs open at quit', () => {
   it.each([
-    { store: 'records a newer Orca wrote', newer: true, lockFails: false },
-    { store: 'a lock that keeps failing', newer: false, lockFails: true }
-  ])('lists and reads every chat from $store, and writes nothing', async ({ newer, lockFails }) => {
-    const records = [
-      chatRecord(CHAT_A),
-      chatRecord(CHAT_B),
-      chatRecord(CLEARED, { clearedInto: CHAT_A })
-    ]
-    const { storeDirectory, path } = await seedStore(records, { newer, visible: [CHAT_A, CHAT_B] })
-    await seedHistory(records.slice(0, 2))
-    const bytes = await readFile(path)
-    const files = await readdir(storeDirectory)
-    const writes = spyOnTabWrites()
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    // Free when the store opens, then held for good.
-    const { runtime, onError, published } = startupRuntime({
-      afterInstall: () => {
-        lock.failing = lockFails
-      }
-    })
-
-    await expect(runtime.restoreStructuredAgentSessionTabs()).resolves.toBeUndefined()
-
-    expect(published().map((tab) => tab.id)).toEqual([
-      `agent-session:${CHAT_A}`,
-      `agent-session:${CHAT_B}`
-    ])
-    expect(published()[0]).toMatchObject({ replacesSessionId: CLEARED })
-    await expectHistory(CHAT_A)
-    await expectHistory(CHAT_B)
-    expect(onError).toHaveBeenCalledOnce()
-    expect(onError).toHaveBeenCalledWith({
-      scope: 'structured-agent-session-lease-reconcile',
-      error: expect.objectContaining(
-        newer ? { message: 'agent_session_legacy_required' } : { code: 'ELOCKED' }
-      )
-    })
-    expect(writes.visibility).not.toHaveBeenCalled()
-    expect(writes.seed).not.toHaveBeenCalled()
-    await stopStructuredAgentSessionRuntime()
-    if (newer) {
-      expect(await readFile(path)).toEqual(bytes)
-      expect(await readdir(storeDirectory)).toEqual(files)
-    }
-  })
-
-  // Each refused take stands for one lock wait of about 3 s.
-  it.each([1, 4, 8])(
-    'waits on a held lock once per startup step with %i chats open',
-    async (count) => {
-      const chats = Array.from({ length: count }, (_, index) => `chat-${index}-000${index}`)
-      const records = chats.map((sessionId) => chatRecord(sessionId))
-      await seedStore(records, { visible: chats })
-      await seedHistory(records)
+    { store: 'records a newer Orca wrote', newer: true, writesFail: false },
+    { store: 'a store whose writes keep failing', newer: false, writesFail: true }
+  ])(
+    'lists every chat from $store and writes nothing; it reads them unless a newer Orca saved them',
+    async ({ newer, writesFail }) => {
+      const records = [
+        chatRecord(CHAT_A),
+        chatRecord(CHAT_B),
+        chatRecord(CLEARED, { clearedInto: CHAT_A })
+      ]
+      const { path } = await seedProfile(records, {
+        newer,
+        visible: [CHAT_A, CHAT_B],
+        history: records.slice(0, 2)
+      })
+      const bytes = await readFile(path)
+      const tabWrites = spyOnTabWrites()
       vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-      const { runtime, published } = startupRuntime({
+      // Writable when the store opens, then failing for good.
+      const { runtime, log, published } = startupRuntime({
         afterInstall: () => {
-          lock.failing = true
+          writes.failing = writesFail
         }
       })
 
-      await runtime.prepareStructuredAgentSessionStartupRestoration()
-      const prepared = lock.refused
-      await runtime.restoreStructuredAgentSessionTabs()
+      await expect(runtime.restoreStructuredAgentSessionTabs()).resolves.toBeUndefined()
 
-      expect(published()).toHaveLength(count)
-      expect(prepared).toBe(1)
-      expect(lock.refused - prepared).toBe(1)
+      expect(published().map((tab) => tab.id)).toEqual([
+        `agent-session:${CHAT_A}`,
+        `agent-session:${CHAT_B}`
+      ])
+      expect(published()[0]).toMatchObject({ replacesSessionId: CLEARED })
+      // A newer Orca's leases are adjudicated in memory, so nothing fails there; its chats do not open.
+      if (newer) {
+        for (const sessionId of [CHAT_A, CHAT_B]) {
+          await expect(
+            getStructuredAgentSessionHost()!.journalSnapshot(sessionId)
+          ).rejects.toMatchObject(SAVED_BY_NEWER_ORCA)
+        }
+        expect(log.entries.map((entry) => entry.fields.scope)).not.toContain('lease-reconcile')
+      } else {
+        await expectHistory(CHAT_A)
+        await expectHistory(CHAT_B)
+        expect(log.entries).toEqual([
+          expect.objectContaining({
+            fields: {
+              scope: 'lease-reconcile',
+              error: expect.objectContaining({ message: 'disk I/O error' })
+            }
+          })
+        ])
+      }
+      expect(tabWrites.visibility).not.toHaveBeenCalled()
+      expect(tabWrites.seed).not.toHaveBeenCalled()
+      await stopStructuredAgentSessionRuntime()
+      if (newer) {
+        expect(await readFile(path)).toEqual(bytes)
+      }
     }
   )
+
+  // Each failed write stands for one refused commit.
+  it.each([1, 4, 8])('fails one write per startup step with %i chats open', async (count) => {
+    const chats = Array.from({ length: count }, (_, index) => `chat-${index}-000${index}`)
+    const records = chats.map((sessionId) => chatRecord(sessionId))
+    await seedProfile(records, { visible: chats })
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { runtime, published } = startupRuntime({
+      afterInstall: () => {
+        writes.failing = true
+      }
+    })
+
+    await runtime.prepareStructuredAgentSessionStartupRestoration()
+    const prepared = writes.refused
+    await runtime.restoreStructuredAgentSessionTabs()
+
+    expect(published()).toHaveLength(count)
+    expect(prepared).toBe(1)
+    expect(writes.refused - prepared).toBe(1)
+  })
 
   describe('on a legacy profile, with no tab index yet', () => {
     const legacyChats = () => [
@@ -314,13 +331,12 @@ describe('restoring the chat tabs open at quit', () => {
 
     it('records every restored chat in one write', async () => {
       const records = legacyChats()
-      const { path } = await seedStore(records)
-      await seedHistory(records)
-      const writes = spyOnTabWrites()
+      await seedProfile(records)
+      const tabWrites = spyOnTabWrites()
       const { runtime, published } = startupRuntime({ profileChats: [CHAT_A, CHAT_B] })
       await runtime.prepareStructuredAgentSessionStartupRestoration()
-      // One more take, then held: a seed written chat by chat would stop part way.
-      lock.grants = 1
+      // One more write, then failing: a seed written chat by chat would stop part way.
+      writes.grants = 1
 
       await runtime.restoreStructuredAgentSessionTabs()
 
@@ -328,51 +344,53 @@ describe('restoring the chat tabs open at quit', () => {
         `agent-session:${CHAT_A}`,
         `agent-session:${CHAT_B}`
       ])
-      expect(await tabIndexOnDisk(path)).toEqual([CHAT_A, CHAT_B])
-      expect(writes.seed).toHaveBeenCalledOnce()
-      expect(writes.visibility).not.toHaveBeenCalled()
+      expect(await tabIndexOnDisk()).toEqual([CHAT_A, CHAT_B])
+      expect(tabWrites.seed).toHaveBeenCalledOnce()
+      expect(tabWrites.visibility).not.toHaveBeenCalled()
     })
 
-    it('waits on a held lock once more, for that one write', async () => {
+    it('fails one write more, for that one write', async () => {
       const records = legacyChats()
-      await seedStore(records)
-      await seedHistory(records)
+      await seedProfile(records)
       vi.spyOn(console, 'warn').mockImplementation(() => undefined)
       const { runtime, published } = startupRuntime({
         profileChats: [CHAT_A, CHAT_B],
         afterInstall: () => {
-          lock.failing = true
+          writes.failing = true
         }
       })
 
       await runtime.prepareStructuredAgentSessionStartupRestoration()
-      const prepared = lock.refused
+      const prepared = writes.refused
       await runtime.restoreStructuredAgentSessionTabs()
 
       expect(published()).toHaveLength(2)
       expect(prepared).toBe(1)
       // The restore's lease check and the seed.
-      expect(lock.refused - prepared).toBe(2)
+      expect(writes.refused - prepared).toBe(2)
     })
 
     it('still lists the chats when that write fails, and leaves the index absent', async () => {
       const records = legacyChats()
-      const { path } = await seedStore(records)
-      await seedHistory(records)
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-      const { runtime, published } = startupRuntime({ profileChats: [CHAT_A, CHAT_B] })
+      await seedProfile(records)
+      const { runtime, published, log } = startupRuntime({ profileChats: [CHAT_A, CHAT_B] })
       await runtime.prepareStructuredAgentSessionStartupRestoration()
-      lock.failing = true
+      writes.failing = true
 
       await expect(runtime.restoreStructuredAgentSessionTabs()).resolves.toBeUndefined()
 
       expect(published()).toHaveLength(2)
       await expectHistory(CHAT_A)
-      expect(warn).toHaveBeenCalledWith(
-        '[structured-agent-session] recording restored chat tabs failed',
-        { sessionIds: [CHAT_A, CHAT_B], error: expect.objectContaining({ code: 'ELOCKED' }) }
-      )
-      expect(await tabIndexOnDisk(path)).toBeUndefined()
+      expect(log.entries).toContainEqual({
+        level: 'warn',
+        message: 'recording restored chat tabs failed',
+        fields: {
+          scope: 'tab-index-seed',
+          sessionIds: [CHAT_A, CHAT_B],
+          error: expect.objectContaining({ message: 'disk I/O error' })
+        }
+      })
+      expect(await tabIndexOnDisk()).toBeUndefined()
     })
   })
 })

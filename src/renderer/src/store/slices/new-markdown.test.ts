@@ -4,6 +4,7 @@ import { createEditorSlice } from './editor'
 import type { AppState } from '../types'
 import type { BrowserTab } from '../../../../shared/browser-workspace-types'
 import type { Tab, TabContentType, TabGroup } from '../../../../shared/tab-types'
+import { makeTab } from './store-session-test-harness'
 
 function createEditorStore(overrides?: Partial<AppState>): StoreApi<AppState> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -386,8 +387,11 @@ describe('New Markdown — rename flow store operations', () => {
   })
 
   it('rename preserves active file to the new path', () => {
+    // Why a terminal: it keeps wt-1 the active worktree while the note is replaced, as it is for
+    // a user renaming inside it; closing a worktree's last tab otherwise leaves it.
     const store = createEditorStore({
-      tabBarOrderByWorktree: { 'wt-1': [] }
+      tabBarOrderByWorktree: { 'wt-1': [] },
+      tabsByWorktree: { 'wt-1': [makeTab({ id: 'terminal-1', worktreeId: 'wt-1' })] }
     })
 
     store.getState().openFile({
@@ -401,6 +405,8 @@ describe('New Markdown — rename flow store operations', () => {
     expect(store.getState().activeFileId).toBe('/repo/untitled.md')
 
     store.getState().closeFile('/repo/untitled.md')
+    // Why: closing the only tab left the landing state; the renamed file opens back on the on-screen worktree.
+    store.setState({ activeWorktreeId: 'wt-1' })
     store.getState().openFile({
       filePath: '/repo/notes.md',
       relativePath: 'notes.md',

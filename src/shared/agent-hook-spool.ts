@@ -40,6 +40,10 @@ export function buildSpoolHookBody(record: SpoolRecord): Record<string, unknown>
     version: record.version,
     launchToken: record.launchToken,
     hookEventName: record.hookEventName,
+    agentProcess: record.agentProcess,
+    opencodeMajor: record.opencodeMajor,
+    opencodeTui: record.opencodeTui,
+    opencodeSharedServer: record.opencodeSharedServer,
     payload: record.payload
   }
 }

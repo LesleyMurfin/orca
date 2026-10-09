@@ -7,6 +7,7 @@ import { remoteRuntimeTerminalColorPush } from '@/runtime/remote-runtime-termina
 import { resetAgentHookCompletionNotificationCoordinators } from '../agent-hook-completion-notifications'
 import { useAppStore } from '../../store'
 import { registerAgentStatusIpcBridge } from './agent-status-ipc-bridge'
+import { registerBackgroundWorktreeRemovalBridge } from './background-worktree-removal-bridge'
 import { registerBrowserRequestIpcBridge } from './browser-request-ipc-bridge'
 import { registerBrowserStateIpcBridge } from './browser-state-ipc-bridge'
 import { registerContentCreationIpcBridge } from './content-creation-ipc-bridge'
@@ -26,6 +27,7 @@ import { registerTabLifecycleIpcBridge } from './tab-lifecycle-ipc-bridge'
 import { registerTerminalPresentationIpcBridge } from './terminal-presentation-ipc-bridge'
 import { registerPtySourceDisownedIpcBridge } from './pty-source-disowned-ipc-bridge'
 import { registerTerminalRequestIpcBridge } from './terminal-request-ipc-bridge'
+import { registerAgentLaunchTabIpcBridge } from './agent-launch-tab-ipc-bridge'
 import { registerTerminalUiRoutingIpcBridge } from './terminal-ui-routing-ipc-bridge'
 import { registerUpdaterStatusIpcBridge } from './updater-status-ipc-bridge'
 import { createWorktreeEventRuntime } from './worktree-event-runtime'
@@ -85,6 +87,7 @@ export function installAppLifetimeIpcEvents(
       .catch((error) => console.error('Failed to read runtime status snapshots:', error))
   }
   const unsubscribeRuntimeEnvironmentStore = registerRuntimeClientIpcBridge(unsubs, worktreeRuntime)
+  registerBackgroundWorktreeRemovalBridge(unsubs)
   registerProjectCatalogIpcBridge(
     unsubs,
     worktreeRuntime.worktreeChangeRefreshQueue,
@@ -115,6 +118,7 @@ export function installAppLifetimeIpcEvents(
 
   registerTerminalPresentationIpcBridge(unsubs)
   registerTerminalRequestIpcBridge(unsubs)
+  registerAgentLaunchTabIpcBridge(unsubs)
   registerPtySourceDisownedIpcBridge(unsubs)
   registerTerminalUiRoutingIpcBridge(unsubs)
   registerSessionTabIpcBridge(unsubs)

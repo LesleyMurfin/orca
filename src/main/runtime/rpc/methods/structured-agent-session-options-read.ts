@@ -11,24 +11,60 @@
 import { defineMethod } from '../core'
 import {
   requireInstalledStructuredHost,
-  requireStructuredHost as requireHost
+  requireStructuredAgentAudience,
+  requireStructuredHost
 } from './structured-agent-session-gate'
-import { ModelCatalogParams, OptionsParams } from './structured-agent-session-schemas'
+import {
+  HandoffStatusParams,
+  ModelCatalogParams,
+  OptionsParams
+} from './structured-agent-session-schemas'
+import { agentSessionPinnedLaunchDirectory } from '../../agent-session-record-launch-directory'
 
 export const STRUCTURED_AGENT_SESSION_OPTIONS_READ_METHODS = [
   defineMethod({
-    name: 'agentSession.options',
+    name: 'agentSession.handoffStatus',
+    permission: 'workspace',
+    params: HandoffStatusParams,
+    handler: async (params, ctx) =>
+      (await requireInstalledStructuredHost(ctx, params.sessionId)).handoffStatus(params.sessionId)
+  }),
+  defineMethod({
+    name: 'agentSession.commands',
+    permission: 'workspace',
     params: OptionsParams,
     handler: async (params, ctx) =>
-      (await requireInstalledStructuredHost(ctx)).readOptions(params.sessionId)
+      (await requireInstalledStructuredHost(ctx, params.sessionId)).readCommands(params.sessionId)
+  }),
+  defineMethod({
+    name: 'agentSession.options',
+    permission: 'workspace',
+    params: OptionsParams,
+    handler: async (params, ctx) =>
+      (await requireInstalledStructuredHost(ctx, params.sessionId)).readOptions(params.sessionId)
   }),
   defineMethod({
     name: 'agentSession.modelCatalog',
+    permission: 'workspace',
     params: ModelCatalogParams,
+    // A structured chat's read names its session and builds the host, since it may come first;
+    // terminal-backed chat's session-less read must not open the journal where none runs.
     handler: async ({ worktree, ...params }, ctx) => {
-      const catalog = requireHost(ctx).deps.modelCatalog
+      requireStructuredAgentAudience(ctx, params.agent)
+      const host =
+        params.sessionId === undefined
+          ? requireStructuredHost(ctx)
+          : await requireInstalledStructuredHost(ctx, params.sessionId)
+      const catalog = host.deps.modelCatalog
       if (!catalog) {
         return { origin: 'unknown' as const }
+      }
+      // A floating chat runs in the folder it was created in, not the floating setting's current one.
+      const record =
+        params.sessionId === undefined ? null : host.deps.store.getRecord(params.sessionId)
+      const launchDirectory = record ? agentSessionPinnedLaunchDirectory(record) : undefined
+      if (launchDirectory) {
+        return catalog.read({ ...params, workspacePath: launchDirectory })
       }
       if (worktree === undefined) {
         return catalog.read(params)

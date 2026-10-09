@@ -1,3 +1,4 @@
+import '../unused-default-rpc-methods.test-fixture'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -13,6 +14,9 @@ import type { RpcRequest, RpcResponse } from '../core'
 import { RpcDispatcher } from '../dispatcher'
 import { STRUCTURED_AGENT_SESSION_METHODS } from './structured-agent-session'
 import { openTestJournalHostDatabase } from '../../../native-chat/agent-session-journal/journal-host-database-test-support'
+import { createStructuredAgentSessionLogger } from '../../../native-chat/agent-session-wire/structured-agent-session-logger'
+import { codexProviderHandle } from '../../../../shared/agent-session-provider-handle-encoding'
+import { claudeAndCodexAgents } from '../../../native-chat/agent-session-wire/structured-agent-session-adapter-router-test-support'
 
 const SESSION = 'session-adoption-replay'
 const THREAD = 'thread-adoption-replay'
@@ -41,7 +45,7 @@ function adapter(): StructuredAgentSessionAdapter {
         },
         link: {
           linkId: `codex-${fence}-${THREAD}`,
-          handle: { provider: 'codex', threadId: THREAD },
+          handle: codexProviderHandle(THREAD),
           origin: 'resumed',
           mintedAtFence: fence,
           observedAt: 1_800_000_000_000
@@ -103,7 +107,7 @@ beforeEach(async () => {
 afterEach(async () => {
   setStructuredAgentSessionHost(null)
   await host?.flushAllStreamedEvents()
-  await host?.close(SESSION)
+  await host?.close(SESSION, 'evict')
   await rm(root, { recursive: true, force: true })
   vi.restoreAllMocks()
   vi.unstubAllEnvs()
@@ -140,7 +144,6 @@ describe('committed adopting create RPC replay', () => {
     const runtime = new OrcaRuntimeService(
       {
         getSettings: () => ({
-          experimentalStructuredNativeChat: true,
           agentDefaultEnv: { codex: {} }
         })
       } as never,
@@ -149,8 +152,9 @@ describe('committed adopting create RPC replay', () => {
     )
     // The structured surface is settings-gated for every caller, not just mobile; this test
     // probes durable-identity replay, which only runs once the gate admits the call.
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The RPC gate reads only this setting from the test double.
     vi.spyOn(runtime, 'getClientSettings').mockReturnValue({
-      experimentalStructuredNativeChat: true
+      experimentalNativeChat: true
     } as ReturnType<OrcaRuntimeService['getClientSettings']>)
     vi.spyOn(runtime, 'getStructuredAgentSessionCreateSupport').mockResolvedValue({
       supported: true
@@ -184,6 +188,8 @@ describe('committed adopting create RPC replay', () => {
     const store = await openTestAgentSessionRecordStore(root)
     const sessionAdapter = adapter()
     host = new StructuredAgentSessionHost({
+      agents: claudeAndCodexAgents(sessionAdapter),
+      logger: createStructuredAgentSessionLogger(),
       store,
       adapter: sessionAdapter,
       journalDatabase: openTestJournalHostDatabase(root),

@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { computeAgentSessionPayloadFingerprint } from '../../../shared/agent-session-mutation-envelope'
 import type { AgentSessionMutationEnvelope } from '../../../shared/agent-session-wire'
-import type * as DurableFileWrite from '../../durable-file-write'
+import type * as AgentSessionRecordRows from '../../runtime/agent-session-record-rows'
 import type { AgentSessionRecordStore } from '../../runtime/agent-session-record-store'
 import { openTestAgentSessionRecordStore } from '../../runtime/agent-session-record-store-test-harness'
 import type {
@@ -26,26 +26,25 @@ import {
   resetHostTestOperationIds
 } from './structured-agent-session-host-test-data'
 import { openTestJournalHostDatabase } from '../agent-session-journal/journal-host-database-test-support'
+import { AgentSessionJournal } from '../agent-session-journal/journal-store'
+import { createStructuredAgentSessionLogger } from './structured-agent-session-logger'
+import { codexProviderHandle } from '../../../shared/agent-session-provider-handle-encoding'
+import { NO_STRUCTURED_AGENTS } from './structured-agent-session-adapter-router-test-support'
 
 const CALLER = { callerKey: 'client-1' }
 
 const publishFault = vi.hoisted(() => ({ failOnPublish: 0, publishCount: 0 }))
 
-vi.mock('../../durable-file-write', async (importOriginal) => {
-  const actual = await importOriginal<typeof DurableFileWrite>()
+vi.mock('../../runtime/agent-session-record-rows', async (importOriginal) => {
+  const actual = await importOriginal<typeof AgentSessionRecordRows>()
   return {
     ...actual,
-    renameDurable: async (tmpPath: string, finalPath: string) => {
-      if (finalPath.endsWith('agent-sessions.json')) {
-        publishFault.publishCount += 1
-      }
-      if (
-        finalPath.endsWith('agent-sessions.json') &&
-        publishFault.publishCount === publishFault.failOnPublish
-      ) {
+    writeAgentSessionStoreRows: (...args: Parameters<typeof actual.writeAgentSessionStoreRows>) => {
+      publishFault.publishCount += 1
+      if (publishFault.publishCount === publishFault.failOnPublish) {
         throw new Error('simulated crash before failed-settlement publish')
       }
-      return actual.renameDurable(tmpPath, finalPath)
+      return actual.writeAgentSessionStoreRows(...args)
     }
   }
 })
@@ -102,7 +101,7 @@ beforeEach(async () => {
     },
     link: {
       linkId: `link-${fence}`,
-      handle: { provider: 'codex', threadId: THREAD },
+      handle: codexProviderHandle(THREAD),
       origin: store.getRecord(SESSION)?.providerHandleChain.length ? 'resumed' : 'created',
       mintedAtFence: fence,
       observedAt: NOW
@@ -112,6 +111,8 @@ beforeEach(async () => {
   dispatch = vi.fn(async () => accepted())
   store = await openTestAgentSessionRecordStore(root)
   host = new StructuredAgentSessionHost({
+    agents: NO_STRUCTURED_AGENTS,
+    logger: createStructuredAgentSessionLogger(),
     store,
     adapter: adapter(),
     journalDatabase: openTestJournalHostDatabase(root),
@@ -134,14 +135,16 @@ function startAgent(): Promise<unknown> {
 
 describe('settled attach retry', () => {
   it('settles a post-acquisition journal failure and retries without a restart', async () => {
-    const historyFilePath = vi
-      .fn<NonNullable<StructuredAgentSessionAdapter['historyFilePath']>>()
-      .mockRejectedValueOnce(new Error('journal path unavailable'))
-      .mockResolvedValue(null)
+    const journalDatabase = openTestJournalHostDatabase(root)
+    vi.spyOn(AgentSessionJournal.prototype, 'open').mockRejectedValueOnce(
+      new Error('journal path unavailable')
+    )
     host = new StructuredAgentSessionHost({
+      agents: NO_STRUCTURED_AGENTS,
+      logger: createStructuredAgentSessionLogger(),
       store,
-      adapter: { ...adapter(), historyFilePath },
-      journalDatabase: openTestJournalHostDatabase(root),
+      adapter: adapter(),
+      journalDatabase,
       claimKeyId: 'key-1',
       mintSpawnToken: () => 'spawn-a',
       now: () => NOW
@@ -187,7 +190,7 @@ describe('settled attach retry', () => {
         },
         link: {
           linkId: `link-${fence}`,
-          handle: { provider: 'codex', threadId: THREAD },
+          handle: codexProviderHandle(THREAD),
           origin: 'created',
           mintedAtFence: fence,
           observedAt: NOW
@@ -196,6 +199,8 @@ describe('settled attach retry', () => {
     })
     const mintSpawnToken = vi.fn(() => 'spawn-safe')
     host = new StructuredAgentSessionHost({
+      agents: NO_STRUCTURED_AGENTS,
+      logger: createStructuredAgentSessionLogger(),
       store,
       adapter: adapter(),
       journalDatabase: openTestJournalHostDatabase(root),
@@ -230,7 +235,7 @@ describe('settled attach retry', () => {
         },
         link: {
           linkId: `link-${fence}`,
-          handle: { provider: 'codex', threadId: THREAD },
+          handle: codexProviderHandle(THREAD),
           origin: 'created',
           mintedAtFence: fence,
           observedAt: NOW
@@ -240,6 +245,8 @@ describe('settled attach retry', () => {
     let token = 0
     const mintSpawnToken = vi.fn(() => `spawn-${++token}`)
     host = new StructuredAgentSessionHost({
+      agents: NO_STRUCTURED_AGENTS,
+      logger: createStructuredAgentSessionLogger(),
       store,
       adapter: adapter(),
       journalDatabase: openTestJournalHostDatabase(root),
@@ -270,6 +277,8 @@ describe('settled attach retry', () => {
     await host.flushAllStreamedEvents()
     store = await openTestAgentSessionRecordStore(root)
     host = new StructuredAgentSessionHost({
+      agents: NO_STRUCTURED_AGENTS,
+      logger: createStructuredAgentSessionLogger(),
       store,
       adapter: adapter(),
       journalDatabase: openTestJournalHostDatabase(root),
@@ -327,6 +336,8 @@ describe('settled attach retry', () => {
     await host.flushAllStreamedEvents()
     store = await openTestAgentSessionRecordStore(root)
     host = new StructuredAgentSessionHost({
+      agents: NO_STRUCTURED_AGENTS,
+      logger: createStructuredAgentSessionLogger(),
       store,
       adapter: adapter(),
       journalDatabase: openTestJournalHostDatabase(root),
