@@ -31,8 +31,13 @@ import {
   indexWorkspaceRuntimeHostOwnership,
   type WorkspaceRuntimeOwnerProjection
 } from './workspace-runtime-host-ownership'
+import {
+  buildWorktreeIdByTabId,
+  extendWorktreeIdByTabId,
+  type WorkspaceTabOwnerCatalog
+} from '../../../shared/workspace-session-host-records'
 
-export type HostPersistenceState = {
+export type HostPersistenceState = WorkspaceTabOwnerCatalog & {
   repos: readonly Pick<Repo, 'id' | 'connectionId' | 'executionHostId'>[]
   projectGroups?: readonly { id: string; executionHostId?: string | null }[]
   folderWorkspaces?: readonly {
@@ -214,29 +219,45 @@ function splitWorkspaceSessionForWrite(
   mode: HostSessionWriteMode
 ): HostSessionSlices {
   const routing = buildHostSessionRouting(state)
-  const slices = splitWorkspaceSessionByHost(payload, routing.hostIdByWorktreeId)
+  // Why the live catalogs: a debounced patch carries only the fields that changed, so a park
+  // capture's layouts-only patch names no tab rows. Routed by the payload alone, every tab-keyed
+  // row fell into 'local', where main pruned the scrollback it could not attribute to a remote
+  // worktree — the runtime partition never received the capture (#21295).
+  const worktreeIdByTabId = extendWorktreeIdByTabId(buildWorktreeIdByTabId(payload), state)
+  const slices = splitWorkspaceSessionByHost(payload, routing.hostIdByWorktreeId, {
+    worktreeIdByTabId
+  })
   attachHostSessionShadow(slices, state.contestedHostWorkspaceSessions, routing.claims, mode)
   return slices
 }
 
-/** Patch path of the debounced session writer: split the partial patch by owner
- *  host and patch each partition. Returns the promise for the local write so
- *  App.tsx can keep chaining the SSH remote-workspace upload off it. */
+/** Patch path of the debounced session writer: split the partial patch by owner host and patch
+ *  each partition. `localWrite` orders the SSH remote-workspace upload; `written` settles once
+ *  every partition did and rejects if any failed, so the writer re-queues those fields. */
 export function patchWorkspaceSessionByHost(
   api: SessionApi,
   patch: WorkspaceSessionPatch,
   state: HostPersistenceState
-): Promise<void> {
+): { localWrite: Promise<void>; written: Promise<void> } {
   const slices = splitWorkspaceSessionForWrite(patch as WorkspaceSessionState, state, 'patch')
   const local = (slices[LOCAL_EXECUTION_HOST_ID] ?? patch) as WorkspaceSessionPatch
   const localWrite = api.patch(local)
-  for (const [hostId, slice] of nonLocalHostSessionEntries(slices)) {
-    // Why: a failed runtime-partition write must not reject the local chain.
-    void api.patch(slice as WorkspaceSessionPatch, hostId).catch((err) => {
+  const hostWrites = nonLocalHostSessionEntries(slices).map(([hostId, slice]) =>
+    api.patch(slice, hostId).catch((err: unknown) => {
       console.warn(`[session] host partition patch failed for ${hostId}:`, err)
+      throw err
     })
-  }
-  return localWrite
+  )
+  // Why allSettled: every partition finishes before a retry rewrites the same fields.
+  const written = Promise.allSettled([localWrite, ...hostWrites]).then((results) => {
+    const failure = results.find((result) => result.status === 'rejected')
+    if (failure) {
+      throw failure.reason
+    }
+  })
+  // Why: a host failure must not surface as an unhandled rejection on the upload chain's promise.
+  localWrite.catch(() => {})
+  return { localWrite, written }
 }
 
 /** Persist a fresh full snapshot to every owning host partition, then force the

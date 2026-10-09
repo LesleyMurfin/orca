@@ -7,7 +7,7 @@ import { AGENT_STATUS_STALE_AFTER_MS } from '../../../shared/agent-status-types'
 import { parsePaneKey } from '../../../shared/stable-pane-id'
 import {
   getProviderSessionClaimKey,
-  isPassiveCompletedHibernationEvidence,
+  activationTreatsNoteAsFinished,
   recordPaneIsOwnedByPreservedPane,
   stablePaneHasLivePty
 } from './sleeping-agent-pane-ownership'
@@ -21,6 +21,7 @@ import {
   type UnhydratedHostMirror
 } from './host-mirrored-pane-liveness'
 import { parkUntilHostMirrorHandleLands } from './host-mirror-handle-gap-wait'
+import { sleepingRecordNamesAnotherExecutionHost } from './sleeping-record-execution-host-scope'
 import { resolveWorkspaceTerminalHostAuthority } from './workspace-terminal-host-authority'
 import { parkUntilHostSessionMirrorHydrates } from '@/runtime/host-session-mirror-hydration'
 
@@ -33,7 +34,7 @@ function clearPassiveCompletedRecordsForClaimKey(
 ): void {
   const state = useAppStore.getState()
   for (const record of records) {
-    if (record.paneKey === keepPaneKey || !isPassiveCompletedHibernationEvidence(record)) {
+    if (record.paneKey === keepPaneKey || !activationTreatsNoteAsFinished(record)) {
       continue
     }
     if (getProviderSessionClaimKey(record) === claimKey) {
@@ -49,7 +50,7 @@ function getCurrentPaneOwnedClaimKeys(records: readonly SleepingAgentSessionReco
     if (
       state.sleepingAgentSessionsByPaneKey[record.paneKey] !== record ||
       isInvalidWorktreeActivationRecord(record) ||
-      isPassiveCompletedHibernationEvidence(record)
+      activationTreatsNoteAsFinished(record)
     ) {
       continue
     }
@@ -239,7 +240,7 @@ export function resumeSleepingAgentSessionsForWorktree(
     (record) => !isInvalidWorktreeActivationRecord(record)
   )
   const activeWorktreeRecords = validWorktreeRecords.filter(
-    (record) => !isPassiveCompletedHibernationEvidence(record)
+    (record) => !activationTreatsNoteAsFinished(record)
   )
   const activeClaimKeys = new Set(activeWorktreeRecords.map(getProviderSessionClaimKey))
   const newestActiveRecordByClaimKey = getNewestActiveRecordsByClaimKey(activeWorktreeRecords)
@@ -262,6 +263,14 @@ export function resumeSleepingAgentSessionsForWorktree(
       state.clearSleepingAgentSession(record.paneKey)
       continue
     }
+    // Why this is a `continue` and not a clear: the id is a valid locator on the machine that
+    // captured it, so the record is evidence, not garbage — deleting it on the strength of a host
+    // disagreement would destroy the user's only handle on that transcript. Declining costs an
+    // automatic wake the user can re-issue by hand; issuing `--resume` on the wrong machine is
+    // `No conversation found` at best and a forked transcript at worst.
+    if (sleepingRecordNamesAnotherExecutionHost(record, currentState)) {
+      continue
+    }
     const unhydratedMirror = findUnhydratedHostMirrorForPane(record, currentState)
     if (unhydratedMirror) {
       // Why: pane ownership is undecidable until the mirror answers, and every
@@ -271,7 +280,7 @@ export function resumeSleepingAgentSessionsForWorktree(
       continue
     }
     const isPaneOwned = recordPaneIsOwnedByPreservedPane(record, currentState)
-    if (isPassiveCompletedHibernationEvidence(record)) {
+    if (activationTreatsNoteAsFinished(record)) {
       // Why: completed-agent hibernation is passive history; activation should
       // only keep displayable evidence, never start new work from it.
       if (!isPaneOwned || activeClaimKeys.has(claimKey)) {

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { NativeChatBackgroundTasksStatus } from './NativeChatBackgroundTasksStatus'
-import type { StructuredSessionBackgroundTasksView } from './structured-session-background-tasks-view'
+import type { StructuredSessionBackgroundTasksView } from '../../../../shared/structured-session-background-tasks-view'
+import { useStructuredSessionChildRowContext } from './use-structured-session-child-row-context'
 
 type StoppingBackgroundTasks = {
   sessionId: string
@@ -12,8 +13,8 @@ const NO_STOPPING_TASKS: ReadonlySet<string> = new Set()
 
 export function NativeChatStructuredSessionStatus(props: {
   sessionId: string
-  error: string | null
-  composerError: string | null
+  /** The session's own status row, whose verdict the strip's children read. */
+  paneKey: string
   isVisible: boolean
   backgroundTasks: StructuredSessionBackgroundTasksView
   stopBackgroundTask: (taskId?: string) => Promise<unknown>
@@ -21,6 +22,7 @@ export function NativeChatStructuredSessionStatus(props: {
   const [stopping, setStopping] = useState<StoppingBackgroundTasks | null>(null)
   const [expanded, setExpanded] = useState<{ sessionId: string; expanded: boolean } | null>(null)
   const activeStopping = stopping?.sessionId === props.sessionId ? stopping : null
+  const childRowContext = useStructuredSessionChildRowContext(props.paneKey)
 
   const onStop = (taskId?: string) => {
     const sessionId = props.sessionId
@@ -54,16 +56,14 @@ export function NativeChatStructuredSessionStatus(props: {
 
   return (
     <>
-      {props.error || props.composerError ? (
-        <p className="mx-auto w-full max-w-4xl px-4 py-1 text-xs text-destructive">
-          {props.error ?? props.composerError}
-        </p>
-      ) : null}
       {props.backgroundTasks.show ? (
         <NativeChatBackgroundTasksStatus
           isVisible={props.isVisible}
           tasks={props.backgroundTasks.tasks}
           settledTasks={props.backgroundTasks.settledTasks}
+          {...(props.backgroundTasks.children
+            ? { childViews: props.backgroundTasks.children, childRowContext }
+            : {})}
           indicatorActive={props.backgroundTasks.isMonitoring}
           supportsTaskStop={props.backgroundTasks.supportsStop}
           supportsStopAll={props.backgroundTasks.supportsStopAll}

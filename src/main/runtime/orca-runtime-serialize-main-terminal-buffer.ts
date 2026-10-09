@@ -24,6 +24,7 @@ export class OrcaRuntimeWithSerializeMainTerminalBuffer extends OrcaRuntimeWithA
     oscLinks?: TerminalOscLinkRange[]
     alternateScreen?: boolean
     scrollbackAnsi?: string
+    pendingEscapeTailAnsi?: string
     terminalOwner?: 'shell'
   } | null> {
     return this.serializeHeadlessTerminalBuffer(ptyId, { ...opts, includeEmpty: true })
@@ -77,6 +78,16 @@ export class OrcaRuntimeWithSerializeMainTerminalBuffer extends OrcaRuntimeWithA
     await this.ptyController?.clearBuffer?.(leaf.ptyId)
     await this.clearHeadlessTerminalBuffer(leaf.ptyId)
     return { handle, cleared: true }
+  }
+
+  async resetTerminalInputModes(handle: string): Promise<{ handle: string; reset: boolean }> {
+    const leaf = this.resolveLeafForHandle(handle)
+    if (!leaf?.ptyId) {
+      throw new Error('terminal_not_found')
+    }
+    await this.ptyController?.resetInputModes?.(leaf.ptyId)
+    await this.resetHeadlessTerminalInputModes(leaf.ptyId)
+    return { handle, reset: true }
   }
 
   getTerminalSize(ptyId: string): { cols: number; rows: number } | null {

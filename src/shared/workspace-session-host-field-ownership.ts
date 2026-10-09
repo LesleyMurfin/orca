@@ -44,6 +44,9 @@ export const WORKSPACE_SESSION_FIELD_OWNERSHIP = {
   activeWorkspaceKey: 'global',
   activeWorktreeIdsOnShutdown: 'worktreeArray',
   terminalLayoutsByTabId: 'tabKeyed',
+  // Local-only, never uploaded — but still routed per host so a tab's park scrollback follows its
+  // own partition rather than merging across hosts the way sleepingAgentKeyed rows do.
+  localOnlyScrollbackByTabId: 'tabKeyed',
   remoteSessionIdsByTabId: 'tabKeyed',
   browserPagesByWorkspace: 'browserWorkspaceKeyed',
   markdownFrontmatterVisible: 'fileKeyed',
@@ -64,6 +67,15 @@ type MissingOwnership = Exclude<
 >
 const exhaustive: [MissingOwnership] extends [never] ? true : never = true
 void exhaustive
+
+/** The global fields that name what the client is focused on. */
+export const SESSION_FOCUS_FIELDS = [
+  'activeRepoId',
+  'activeWorktreeId',
+  'activeWorkspaceKey',
+  'activeWorkspaceExecutionHostId',
+  'activeTabId'
+] as const satisfies readonly (keyof WorkspaceSessionState)[]
 
 export const GLOBAL_WORKSPACE_SESSION_FIELDS = (
   Object.keys(WORKSPACE_SESSION_FIELD_OWNERSHIP) as (keyof WorkspaceSessionState)[]

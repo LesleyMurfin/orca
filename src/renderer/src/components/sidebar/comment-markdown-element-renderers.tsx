@@ -9,6 +9,8 @@ import {
   isGitHubUserAttachmentVideoLink
 } from './comment-markdown-github-attachment-media'
 import { ExpandableMarkdownImage } from './MarkdownImageLightbox'
+import { MarkdownGitHubCallout } from '@/components/markdown-github-callout'
+import { readGitHubCalloutKind } from '@/lib/remark-github-callouts'
 
 export type CommentMarkdownLinkClickHandler = (
   event: React.MouseEvent<HTMLElement>,
@@ -120,7 +122,11 @@ export function createCompactCommentMarkdownComponents(
     ),
     // Compact lists
     ul: ({ children }) => <ul className="my-0.5 ml-3 list-disc space-y-0">{children}</ul>,
-    ol: ({ children }) => <ol className="my-0.5 ml-3 list-decimal space-y-0">{children}</ol>,
+    ol: ({ children, start }) => (
+      <ol start={start} className="my-0.5 ml-3 list-decimal space-y-0">
+        {children}
+      </ol>
+    ),
     // Why: GFM task list checkboxes are non-functional in a read-only comment
     // card (clicking them would just open the edit modal via the parent's
     // onClick). Rendering them disabled avoids a misleading interactive
@@ -163,11 +169,18 @@ export function createCompactCommentMarkdownComponents(
     // Horizontal rules as a subtle divider
     hr: () => <hr className="my-1 border-border/50" />,
     // Compact blockquotes
-    blockquote: ({ children }) => (
-      <blockquote className="my-0.5 border-l-2 border-border/60 pl-2 text-muted-foreground/80">
-        {children}
-      </blockquote>
-    ),
+    blockquote: ({ node, children }) => {
+      const calloutKind = readGitHubCalloutKind(node?.properties.dataCallout)
+      return calloutKind ? (
+        <MarkdownGitHubCallout kind={calloutKind} className="my-0.5 border-l-2 pl-2">
+          {children}
+        </MarkdownGitHubCallout>
+      ) : (
+        <blockquote className="my-0.5 border-l-2 border-border/60 pl-2 text-muted-foreground/80">
+          {children}
+        </blockquote>
+      )
+    },
     // Why: agent replies and workspace notes often carry screenshot markdown
     // like "Image #1"; compact cards inline app-managed thumbnails without
     // auto-fetching arbitrary remote image URLs.
@@ -237,7 +250,8 @@ export function createCompactCommentMarkdownComponents(
 
 export function createDocumentCommentMarkdownComponents(
   onLinkClick?: CommentMarkdownLinkClickHandler,
-  renderCodeBlock?: DocumentCodeBlockRenderer
+  renderCodeBlock?: DocumentCodeBlockRenderer,
+  renderMermaid = true
 ): Components {
   return {
     p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
@@ -259,7 +273,7 @@ export function createDocumentCommentMarkdownComponents(
         </a>
       ),
     code: ({ className, children }) =>
-      isMermaidFence(className) ? (
+      renderMermaid && isMermaidFence(className) ? (
         renderMermaidFence(
           children,
           'my-3 min-w-0 max-w-full overflow-x-auto rounded-md border border-border/60 p-3 [&_.mermaid-block]:min-w-0 [&_.mermaid-block_pre]:my-0 [&_.mermaid-block_pre]:max-h-80 [&_.mermaid-block_pre]:max-w-full [&_.mermaid-block_pre]:overflow-x-auto [&_.mermaid-block_pre]:rounded-md [&_.mermaid-block_pre]:bg-accent [&_.mermaid-block_pre]:p-3 [&_.mermaid-block_pre]:font-mono [&_.mermaid-block_pre]:text-[12px]'
@@ -271,7 +285,7 @@ export function createDocumentCommentMarkdownComponents(
       ),
     // Mermaid fences render a <div>, which is invalid inside <pre>, so unwrap them.
     pre: ({ children }) =>
-      isMermaidPre(children) ? (
+      renderMermaid && isMermaidPre(children) ? (
         <>{children}</>
       ) : renderCodeBlock ? (
         renderCodeBlock({ children, language: extractCodeFenceLanguage(children) })
@@ -281,7 +295,11 @@ export function createDocumentCommentMarkdownComponents(
         </pre>
       ),
     ul: ({ children }) => <ul className="my-2 ml-5 list-disc space-y-1">{children}</ul>,
-    ol: ({ children }) => <ol className="my-2 ml-5 list-decimal space-y-1">{children}</ol>,
+    ol: ({ children, start }) => (
+      <ol start={start} className="my-2 ml-5 list-decimal space-y-1">
+        {children}
+      </ol>
+    ),
     li: ({ children }) => (
       <li className="leading-relaxed [&>input]:pointer-events-none">{children}</li>
     ),
@@ -298,11 +316,18 @@ export function createDocumentCommentMarkdownComponents(
     h5: ({ children }) => <h5 className="mb-1 mt-3 font-semibold first:mt-0">{children}</h5>,
     h6: ({ children }) => <h6 className="mb-1 mt-3 font-semibold first:mt-0">{children}</h6>,
     hr: () => <hr className="my-4 border-border/60" />,
-    blockquote: ({ children }) => (
-      <blockquote className="my-3 border-l-2 border-border/70 pl-3 text-muted-foreground">
-        {children}
-      </blockquote>
-    ),
+    blockquote: ({ node, children }) => {
+      const calloutKind = readGitHubCalloutKind(node?.properties.dataCallout)
+      return calloutKind ? (
+        <MarkdownGitHubCallout kind={calloutKind} className="my-3 border-l-2 pl-3">
+          {children}
+        </MarkdownGitHubCallout>
+      ) : (
+        <blockquote className="my-3 border-l-2 border-border/70 pl-3 text-muted-foreground">
+          {children}
+        </blockquote>
+      )
+    },
     img: ({ alt, src }) => {
       if (isGitHubUserAttachmentUrl(src)) {
         // Why: private-repo attachment images fail as cross-origin loads; a
