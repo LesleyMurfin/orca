@@ -4,6 +4,7 @@ description: Keep Orca running on another computer and connect from your laptop.
 ---
 
 import { Callout, ImagePlaceholder } from '@/components/docs/prose'
+import { CopyPromptButton } from '@/components/docs/CopyPromptButton'
 
 A Remote Orca Server lets one computer do the work while another computer provides the UI. The server keeps the projects, worktrees, terminals, tabs, provider accounts, and agent sessions. Your laptop connects to that running Orca instance.
 
@@ -12,6 +13,34 @@ The easiest setup is the Orca desktop app on both computers, connected through [
 <Callout title="Beta">
   Remote Orca Servers are beta. Keep the server and client on a private network path you control,
   such as the same Tailscale tailnet or LAN.
+</Callout>
+
+## Agent setup & installation
+
+Any coding agent — Claude Code, Codex, Cursor, Copilot — can do this setup for you. Click below or copy the prompt:
+
+<div className="my-4">
+  <CopyPromptButton />
+</div>
+
+```text
+Fetch and read the Orca setup instructions at https://www.onorca.dev/docs/agent-setup/prompt.md, then summarise for me every privileged step it asks for — anything using sudo, writing under /etc, or installing packages — and wait for my confirmation before you run them.
+```
+
+That URL is a live, unversioned page on this site — the agent reads whatever it serves at the
+moment you paste the prompt. The prompt deliberately asks the agent to read first and propose,
+so skim [/docs/agent-setup/prompt.md](/docs/agent-setup/prompt.md) yourself before approving any
+privileged step.
+
+The prompt file covers host-role discovery, desktop install on macOS, Windows, and Linux,
+headless `orca serve` hosts and their systemd unit, and where to go when a step fails. It does
+not register agent accounts, install skills, or run the health checks on this page — do those
+yourself with the commands below. Read it yourself at
+[/docs/agent-setup/prompt.md](/docs/agent-setup/prompt.md).
+
+<Callout title="The agent still needs you">
+  Pairing links, `sudo` for a `.deb`/`.rpm` install, and the Tailscale login are yours to approve.
+  Never let an agent paste a pairing URL or access link into a public channel.
 </Callout>
 
 ## What runs where

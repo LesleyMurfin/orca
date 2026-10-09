@@ -47,6 +47,23 @@ Once agents settle, open each worktree's diff view. Use [Annotate AI Diff](/docs
 
 Commit and push directly from Orca — see [Commit & push from Orca](/docs/review/commit-push). The other two worktrees can be deleted with one click; their branches go with them.
 
+## From Zero to First Build: 10-Prompt Guided Ladder
+
+If you are non-technical or brand new to Orca and wondering *"What do I type first?"*, let the agent guide you from an empty window to a running feature:
+
+1. **Intake & Orientation:** *"I am brand new to Orca and non-technical. Reference https://www.onorca.dev/docs. Ask me 3 questions: (1) what OS I'm on, (2) what idea or app I want to build, and (3) my comfort level with tech. Explain which Orca features will help me most, then set up my workspace."*
+2. **Environment & App Diagnostic:** *"Verify my Orca installation and settings are configured correctly. In plain English: do I have all required tools installed on my machine, or do you need to help me install anything?"*
+3. **Project Scaffolding:** *"Create the initial project files from scratch for my idea."*
+4. **Scope the Smallest Win:** *"What is the simplest first piece of this project we can build right now so I can see it working?"*
+5. **Build & Verify:** *"Build that feature step-by-step and verify it runs."*
+6. **Plain-English Walkthrough:** *"In 2 plain sentences, explain what you built and how I can preview it on my screen."*
+7. **Save Points (No Git Knowledge Needed):** *"How do we make save points so I can easily undo changes if something breaks?"*
+8. **Automate the Boring Stuff:** *"What repetitive tasks can you automate for me on this project?"*
+9. **Parallel Worktrees:** *"Show me how to run 2 tasks in parallel using Orca worktrees or subagents."*
+10. **Habit Review:** *"Summarize what we built today and give me 3 tips on how to prompt you best."*
+
+Read the standalone guide at [/docs/agent-setup/first-build.md](https://www.onorca.dev/docs/agent-setup/first-build.md).
+
 <Callout title="That's it">
   This flow — add → worktree → agent → split → diff → ship — is the whole of Orca. Every other page
   in these docs is a deeper look at one of those steps.
