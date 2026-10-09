@@ -38,7 +38,8 @@ async function openFloatingBrowser(
       if (!store) {
         throw new Error('Store unavailable')
       }
-      store.setState({ settings: { ...store.getState().settings, floatingTerminalEnabled: true } })
+      // Why: specs wait for session readiness before opening a browser, so settings are hydrated.
+      store.setState({ settings: { ...store.getState().settings!, floatingTerminalEnabled: true } })
       const state = store.getState()
       const tab = state.createBrowserTab(worktreeId, initialUrl, {
         activate: true,

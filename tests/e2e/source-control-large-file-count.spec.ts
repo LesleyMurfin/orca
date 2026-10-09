@@ -137,7 +137,9 @@ async function unregisterLargeFileCountRepos(
       const store = window.__store
       const repo = store?.getState().repos.find((entry) => entry.path === pathToRepo)
       if (repo) {
-        await store?.getState().removeProject(repo.id)
+        // Why: removeProject is host-scoped and these fixtures are plain local checkouts,
+        // so they are owned by the local execution host.
+        await store?.getState().removeProject(repo.id, { hostId: 'local' })
       }
     }, repoPath)
   }

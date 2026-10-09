@@ -22,7 +22,11 @@ test('account switch actions return keyboard input to the terminal', async ({
     const ptyId = await waitForActivePanePtyId(orcaPage)
     await orcaPage.evaluate(
       ({ ptyId, action }) => {
-        window.__store.getState().markCodexRestartNotices([
+        const store = window.__store
+        if (!store) {
+          throw new Error('Missing app store')
+        }
+        store.getState().markCodexRestartNotices([
           {
             ptyId,
             previousAccountLabel: 'Previous account',

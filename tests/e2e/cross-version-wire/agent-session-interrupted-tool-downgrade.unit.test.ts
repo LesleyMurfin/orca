@@ -6,6 +6,7 @@ import {
   endedRunningAgentJournalToolCall,
   interruptedAgentJournalToolCall
 } from '../../../src/shared/agent-journal-tool-call-lifecycle'
+import { codexProviderHandle } from '../../../src/shared/agent-session-provider-handle-encoding'
 import type { AgentJournalItemIdentity } from '../../../src/shared/agent-session-journal-types'
 import { createTrackedJournalOpener } from '../../../src/main/native-chat/agent-session-journal/journal-host-database-test-support'
 import type { JournalRow } from '../../../src/main/native-chat/agent-session-journal/journal-row-schema'
@@ -49,7 +50,7 @@ test('an older host and client read a call a stop cut short as the failure they 
         workspaceId: 'ws-1',
         hostId: 'host-1',
         agent: 'codex',
-        providerHandle: { kind: 'codex', threadId: 'thread-1' }
+        providerHandle: codexProviderHandle('thread-1')
       },
       stateDirectory: directory,
       now: () => 1_000

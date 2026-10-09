@@ -142,9 +142,10 @@ test('recovers the same startup exec through an isolated headless orca serve', a
       state: 'visible',
       timeout: 30_000
     })
+    const clientPage = client.page
     await expect
       .poll(
-        () => client.page.evaluate(() => window.__store?.getState().allWorktrees()[0]?.id ?? null),
+        () => clientPage.evaluate(() => window.__store?.getState().allWorktrees()[0]?.id ?? null),
         { timeout: 30_000 }
       )
       .not.toBeNull()

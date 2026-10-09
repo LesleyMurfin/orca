@@ -31,6 +31,8 @@ type MainPressureSnapshot = {
 }
 
 type MainPressureAckGate = {
+  gatedPtyCount: number
+  heldAckCount: number
   heldAckChars: number
 }
 
@@ -214,8 +216,8 @@ async function measureAndAnnotateScroll<
   TMeasurement,
   TDebug,
   TScheduler extends MainPressureSchedulerSnapshot,
-  TMainPressure,
-  TAckGate
+  TMainPressure extends MainPressureSnapshot,
+  TAckGate extends MainPressureAckGate
 >({
   annotationSuffix,
   deps,

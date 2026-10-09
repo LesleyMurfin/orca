@@ -1,6 +1,8 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Page } from '@stablyai/playwright-test'
+import type { BrowserTabListResult } from '../../src/shared/runtime-browser-contracts'
+import type { RuntimeMobileSessionTabsResult } from '../../src/shared/runtime-session-contracts'
 import {
   readClientGuestState,
   readOwnedPageUrls,
@@ -72,18 +74,20 @@ async function readTabInventory(
       if (!browserResponse.ok) {
         throw new Error('host browser page inventory unavailable')
       }
+      // Why: runtimeEnvironments.call is untyped at the preload boundary (RuntimeRpcResponse<unknown>);
+      // these two methods answer with the shared result contracts, so name them here.
+      const hostSessionTabs = (sessionResponse.result as RuntimeMobileSessionTabsResult).tabs
+      const hostBrowserPages = (browserResponse.result as BrowserTabListResult).tabs
       return {
         clientBrowserWorkspaces: (state?.browserTabsByWorktree[worktreeId] ?? []).length,
         clientBrowserTabs: (state?.unifiedTabsByWorktree[worktreeId] ?? []).filter(
           (tab) => tab.contentType === 'browser'
         ).length,
         clientTerminalTabs: (state?.tabsByWorktree[worktreeId] ?? []).length,
-        hostAuthoritativeBrowserTabs: sessionResponse.result.tabs.filter(
-          (tab) => tab.type === 'browser'
-        ).length,
-        hostRegisteredBrowserPages: browserResponse.result.tabs.length,
-        hostTerminalTabs: sessionResponse.result.tabs.filter((tab) => tab.type === 'terminal')
-          .length
+        hostAuthoritativeBrowserTabs: hostSessionTabs.filter((tab) => tab.type === 'browser')
+          .length,
+        hostRegisteredBrowserPages: hostBrowserPages.length,
+        hostTerminalTabs: hostSessionTabs.filter((tab) => tab.type === 'terminal').length
       }
     },
     { environmentId, worktreeId }

@@ -3,10 +3,7 @@ import { constants } from 'node:fs'
 import { access, copyFile, mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { lock } from 'proper-lockfile'
-import {
-  extractReleaseCheckoutTree,
-  scavengeReleaseCheckoutStaging
-} from './release-checkout-tree.ts'
+import { extractReleaseCheckoutTree, scavengeReleaseCheckoutStaging } from './release-checkout-tree'
 import { selectLatestStableReleaseTag } from '../../../config/scripts/stable-release-tags.mjs'
 
 export { selectLatestStableReleaseTag }

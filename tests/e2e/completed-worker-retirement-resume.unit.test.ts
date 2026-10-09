@@ -7,7 +7,7 @@ import type { TerminalTab } from '../../src/shared/terminal-tab-types'
 import type { Worktree } from '../../src/shared/worktree/types'
 import { OrchestrationDb } from '../../src/main/runtime/orchestration/db'
 import { OrcaRuntimeService } from '../../src/main/runtime/orca-runtime'
-import type { RpcContext } from '../../src/main/runtime/rpc/core'
+import { eraseRpcMethods, type RpcContext } from '../../src/main/runtime/rpc/core'
 import { ORCHESTRATION_METHODS } from '../../src/main/runtime/rpc/methods/orchestration'
 import { closeTerminalTab } from '@/components/terminal/terminal-tab-actions'
 import {
@@ -227,7 +227,9 @@ function expectCanaryUnchanged(): void {
 }
 
 function orchestrationMethod(name: string) {
-  const method = ORCHESTRATION_METHODS.find((candidate) => candidate.name === name)
+  // Why: the erased registry view is how the dispatcher (and the other RPC tests) call handlers —
+  // it drops the per-method parsed-params type that makes the union uncallable here.
+  const method = eraseRpcMethods(ORCHESTRATION_METHODS).find((candidate) => candidate.name === name)
   if (!method) {
     throw new Error(`Missing orchestration method: ${name}`)
   }

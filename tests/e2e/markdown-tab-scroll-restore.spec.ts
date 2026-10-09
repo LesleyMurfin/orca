@@ -83,7 +83,14 @@ test('restores the Markdown viewport when an image gains height after a tab swit
     .filter({ hasText: path.basename(filePath) })
     .click()
   await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBe(4000)
-  await pendingImage.evaluate((element) => element.remove())
+  await pendingImage.evaluate((element) => {
+    // Why: addStyleTag resolves to ElementHandle<Node>, and Node has no remove(); the
+    // injected node is always the <style> element that clamps the image height.
+    if (!(element instanceof HTMLStyleElement)) {
+      throw new Error('Expected addStyleTag to return a <style> element')
+    }
+    element.remove()
+  })
   await expect
     .poll(() => image.evaluate((element) => element.getBoundingClientRect().height))
     .toBeGreaterThan(500)

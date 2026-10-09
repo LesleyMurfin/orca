@@ -360,11 +360,14 @@ async function clickVisibleDiffLine(page: Page): Promise<void> {
   // asynchronously, so the visible .view-line set is briefly empty on a loaded
   // CI runner. Poll until a line is painted in the viewport instead of reading
   // it once and throwing on the first miss.
-  let linePoint: { x: number; y: number } | null = null
+  // Why: holding the point on an object keeps its declared type after the poll callback —
+  // a plain `let` stays narrowed to the `null` initializer because TS cannot see the
+  // closure assignment, which makes the later `.x`/`.y` reads resolve to `never`.
+  const found: { point: { x: number; y: number } | null } = { point: null }
   await expect
     .poll(
       async () => {
-        linePoint = await page.evaluate(() => {
+        found.point = await page.evaluate(() => {
           const container = document.querySelector<HTMLElement>('.combined-diff-scroll-container')
           if (!container) {
             return null
@@ -392,16 +395,16 @@ async function clickVisibleDiffLine(page: Page): Promise<void> {
           }
           return null
         })
-        return linePoint !== null
+        return found.point !== null
       },
       { timeout: 10_000, message: 'visible combined diff line not found' }
     )
     .toBe(true)
 
-  if (!linePoint) {
+  if (!found.point) {
     throw new Error('visible combined diff line not found')
   }
-  await page.mouse.click(linePoint.x, linePoint.y)
+  await page.mouse.click(found.point.x, found.point.y)
 }
 
 test.describe('Combined diff scroll restore', () => {

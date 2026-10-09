@@ -138,7 +138,13 @@ async function readCodexStartupBackgroundTarget(
         throw new Error('Active Codex terminal pane is unavailable')
       }
       const screen = pane.container.querySelector<HTMLElement>('.xterm-screen')
-      const dimensions = pane.terminal._core?._renderService?.dimensions?.css?.cell
+      // Why: the measured CSS cell size only exists on xterm's untyped internals.
+      const terminal = pane.terminal as {
+        _core?: {
+          _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } }
+        }
+      }
+      const dimensions = terminal._core?._renderService?.dimensions?.css?.cell
       if (!screen || !dimensions) {
         throw new Error('Active Codex terminal has no measurable xterm screen')
       }
@@ -319,16 +325,18 @@ test.describe('Codex hidden startup composer background', () => {
       })
       .toContain(marker)
 
-    let target: CodexStartupBackgroundTarget | null = null
+    // Why: assignments inside the poll callback are invisible to control-flow
+    // analysis, so the captured target lives on a holder that keeps its type.
+    const captured: { target: CodexStartupBackgroundTarget | null } = { target: null }
     await expect
       .poll(
         async () => {
           try {
             const nextTarget = await readCodexStartupBackgroundTarget(orcaPage, marker)
-            target = nextTarget
+            captured.target = nextTarget
             return nextTarget.modelBackgroundCells >= Math.min(40, nextTarget.cols)
           } catch {
-            target = null
+            captured.target = null
             return false
           }
         },
@@ -338,9 +346,10 @@ test.describe('Codex hidden startup composer background', () => {
         }
       )
       .toBe(true)
-    if (!target) {
+    if (!captured.target) {
       throw new Error('Codex startup background target was not captured')
     }
+    const target = captured.target
     const visibleBackgroundPixels = await countVisibleBackgroundPixels(orcaPage, target)
     const minimumVisiblePixels = Math.round(
       target.modelBackgroundCells * target.cellWidth * target.cellHeight * 0.2

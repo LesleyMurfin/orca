@@ -58,7 +58,9 @@ test('publishes, updates, revokes, and deletes without losing local state', asyn
   const source = join(sourceRoot, '.agents', 'skills', SKILL_NAME)
   const home = await electronApp.evaluate(({ app }) => app.getPath('home'))
   const globalSkill = join(home, '.agents', 'skills', SKILL_NAME)
-  let packageId: string | null = null
+  // Why: the prepared id is captured in an array because an outer `let`
+  // assigned only inside the publish callback stays typed `null` to TS.
+  const preparedPackageIds: string[] = []
   let physicalEnvironmentId: string | null = null
   let pairedHost: HeadlessPairedRuntimeHost | null = null
   let sshTargetId: string | null = null
@@ -80,7 +82,7 @@ test('publishes, updates, revokes, and deletes without losing local state', asyn
       'Initial staging journey',
       undefined,
       (preview) => {
-        packageId = preview.packageId
+        preparedPackageIds.push(preview.packageId)
       }
     )
     for (const target of externalTargets(physicalEnvironmentId, sshTargetId)) {
@@ -205,12 +207,12 @@ test('publishes, updates, revokes, and deletes without losing local state', asyn
     expect(removed).toMatchObject({ status: 'ok', value: { status: 'removed' } })
     expect(existsSync(globalSkill)).toBe(false)
     expect(
-      await orcaPage.evaluate((id) => window.api.skills.getPackage(id), packageId)
+      await orcaPage.evaluate((id) => window.api.skills.getPackage(id), first.preview.packageId)
     ).toMatchObject({ status: 'ok' })
     expect(
-      await orcaPage.evaluate((id) => window.api.skills.deletePackage(id), packageId)
+      await orcaPage.evaluate((id) => window.api.skills.deletePackage(id), first.preview.packageId)
     ).toMatchObject({ status: 'ok' })
-    packageId = null
+    preparedPackageIds.length = 0
   } finally {
     for (const target of externalTargets(physicalEnvironmentId, sshTargetId)) {
       await orcaPage
@@ -242,9 +244,9 @@ test('publishes, updates, revokes, and deletes without losing local state', asyn
         .catch(() => undefined)
     }
     await pairedHost?.dispose().catch(() => undefined)
-    if (packageId) {
+    for (const id of preparedPackageIds) {
       await orcaPage
-        .evaluate((id) => window.api.skills.deletePackage(id), packageId)
+        .evaluate((value) => window.api.skills.deletePackage(value), id)
         .catch(() => undefined)
     }
     rmSync(globalSkill, { recursive: true, force: true })
@@ -353,7 +355,7 @@ type ExternalTarget = {
   installEnvironmentId?: string
   managedEnvironmentId: string
   kind: 'paired-posix' | 'windows' | 'wsl' | 'ssh'
-  destination: SkillInstallDestination
+  destination: Extract<SkillInstallDestination, { scope: 'global' }>
 }
 
 function externalTargets(
@@ -414,16 +416,20 @@ function expectPhysicalInstall(
     throw new Error('physical host install failed')
   }
   const skill = operation.value.skills[0]
-  expect(skill?.digest).toBe(bundleSkillDigest(published))
+  if (!skill?.canonicalPath) {
+    throw new Error('physical host install reported no installed skill path')
+  }
+  const canonicalPath = skill.canonicalPath
+  expect(skill.digest).toBe(bundleSkillDigest(published))
   if (target === 'windows') {
-    expect(skill?.canonicalPath).toMatch(/^[A-Za-z]:[\\/]/)
-    expect(skill?.canonicalPath).toContain(`.agents\\skills\\${SKILL_NAME}`)
+    expect(canonicalPath).toMatch(/^[A-Za-z]:[\\/]/)
+    expect(canonicalPath).toContain(`.agents\\skills\\${SKILL_NAME}`)
   } else if (target === 'wsl') {
-    expect(skill?.canonicalPath).toMatch(/^\/home\/[^/]+\/\.agents\/skills\//)
-    expect(skill?.canonicalPath.endsWith(`/${SKILL_NAME}`)).toBe(true)
+    expect(canonicalPath).toMatch(/^\/home\/[^/]+\/\.agents\/skills\//)
+    expect(canonicalPath.endsWith(`/${SKILL_NAME}`)).toBe(true)
   } else {
-    expect(skill?.canonicalPath).toMatch(/^\//)
-    expect(skill?.canonicalPath.endsWith(`/.agents/skills/${SKILL_NAME}`)).toBe(true)
+    expect(canonicalPath).toMatch(/^\//)
+    expect(canonicalPath.endsWith(`/.agents/skills/${SKILL_NAME}`)).toBe(true)
   }
 }
 
@@ -439,6 +445,10 @@ async function expectManagedRemoteVersion(
   if (installs.status !== 'ok') {
     throw new Error(`physical host managed-install listing failed: ${installs.status}`)
   }
+  const expectedSshConnectionId =
+    target.destination.executionTarget?.kind === 'ssh'
+      ? target.destination.executionTarget.connectionId
+      : null
   const install = installs.value.find((candidate) => {
     if (target.kind === 'windows' || target.kind === 'paired-posix') {
       return candidate.destination.scope === 'global' && !candidate.destination.executionTarget
@@ -453,8 +463,7 @@ async function expectManagedRemoteVersion(
     return (
       candidate.destination.scope === 'global' &&
       candidate.destination.executionTarget?.kind === 'ssh' &&
-      candidate.destination.executionTarget.connectionId ===
-        target.destination.executionTarget?.connectionId
+      candidate.destination.executionTarget.connectionId === expectedSshConnectionId
     )
   })
   expect(install).toMatchObject({

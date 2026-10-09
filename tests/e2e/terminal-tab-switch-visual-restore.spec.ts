@@ -455,7 +455,10 @@ async function readTabTerminalGeometry(
         throw new Error(`No xterm screen for tab ${tabId}`)
       }
       const screenRect = screen.getBoundingClientRect()
-      const cellWidth = pane.terminal._core?._renderService?.dimensions?.css?.cell?.width ?? 0
+      const terminalCore = pane.terminal as typeof pane.terminal & {
+        _core?: { _renderService?: { dimensions?: { css?: { cell?: { width?: number } } } } }
+      }
+      const cellWidth = terminalCore._core?._renderService?.dimensions?.css?.cell?.width ?? 0
       const renderedContentWidth = pane.terminal.cols * cellWidth
       const rowRight = screenRect.left + renderedContentWidth
       const contentWidthRatio = screenRect.width > 0 ? renderedContentWidth / screenRect.width : 0

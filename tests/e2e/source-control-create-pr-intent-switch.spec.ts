@@ -110,7 +110,9 @@ test.describe('Source Control Create PR intent worktree switching', () => {
                 blockedReason: 'needs_push' as const,
                 nextAction: 'push' as const,
                 defaultBaseRef: primaryBranch,
-                head: branch
+                head: branch,
+                // Why: a local blocker short-circuits before any authoritative review lookup.
+                reviewLookupOutcome: 'unavailable' as const
               }
             }
             return {
@@ -122,7 +124,8 @@ test.describe('Source Control Create PR intent worktree switching', () => {
               defaultBaseRef: primaryBranch,
               title: 'Create PR intent after switching worktrees',
               body: 'The intent flow should continue after navigation.',
-              head: branch
+              head: branch,
+              reviewLookupOutcome: 'not_found' as const
             }
           },
           fetchHostedReviewForBranch: async () => null,

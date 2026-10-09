@@ -162,7 +162,7 @@ async function main(): Promise<void> {
         return true
       },
       kill: () => false,
-      listProcesses: (options) => router.listProcesses(options),
+      listProcesses: (_connectionId, opts) => router.listProcesses(opts),
       hasPty: (ptyId) => router.hasPty(ptyId),
       getForegroundProcess: (ptyId) => router.getForegroundProcess(ptyId)
     })
@@ -187,43 +187,44 @@ async function main(): Promise<void> {
     } as never)
     runtime.attachWindow(1)
 
-    const snapshots: RuntimeMobileSessionTabsSnapshot[] = config.sessions.map((session, index) => {
+    // Why: `as const` keeps the discriminant a literal, so each leaf stays the terminal arm of
+    // RuntimeMobileSessionTab instead of widening to string and losing parentTabId/leafId/ptyId.
+    const leafTabs = config.sessions.map((session, index) => {
       const leafId = `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`
       return {
-        worktree: session.worktreeId,
-        publicationEpoch: `legacy-viewer-${index + 1}`,
-        snapshotVersion: 1,
-        activeGroupId: null,
-        activeTabId: `${session.tabId}::${leafId}`,
-        activeTabType: 'terminal',
-        tabs: [
-          {
-            type: 'terminal',
-            id: `${session.tabId}::${leafId}`,
-            parentTabId: session.tabId,
-            leafId,
-            ptyId: session.sessionId,
-            title: session.tabId,
-            isActive: true
-          }
-        ]
+        type: 'terminal' as const,
+        id: `${session.tabId}::${leafId}`,
+        parentTabId: session.tabId,
+        leafId,
+        ptyId: session.sessionId,
+        title: session.tabId,
+        isActive: true
       }
     })
+    const snapshots: RuntimeMobileSessionTabsSnapshot[] = leafTabs.map((tab, index) => ({
+      worktree: config.sessions[index]!.worktreeId,
+      publicationEpoch: `legacy-viewer-${index + 1}`,
+      snapshotVersion: 1,
+      activeGroupId: null,
+      activeTabId: tab.id,
+      activeTabType: 'terminal',
+      tabs: [tab]
+    }))
     runtime.syncWindowGraph(1, {
-      tabs: snapshots.map((snapshot) => ({
-        tabId: snapshot.tabs[0]!.parentTabId,
-        worktreeId: snapshot.worktree,
-        title: snapshot.tabs[0]!.title,
-        activeLeafId: snapshot.tabs[0]!.leafId,
+      tabs: leafTabs.map((tab, index) => ({
+        tabId: tab.parentTabId,
+        worktreeId: config.sessions[index]!.worktreeId,
+        title: tab.title,
+        activeLeafId: tab.leafId,
         layout: null
       })),
-      leaves: snapshots.map((snapshot, index) => ({
-        tabId: snapshot.tabs[0]!.parentTabId,
-        worktreeId: snapshot.worktree,
-        leafId: snapshot.tabs[0]!.leafId,
+      leaves: leafTabs.map((tab, index) => ({
+        tabId: tab.parentTabId,
+        worktreeId: config.sessions[index]!.worktreeId,
+        leafId: tab.leafId,
         paneRuntimeId: index + 1,
         ptyId: config.sessions[index]!.sessionId,
-        paneTitle: snapshot.tabs[0]!.title
+        paneTitle: tab.title
       })),
       mobileSessionTabs: snapshots
     })

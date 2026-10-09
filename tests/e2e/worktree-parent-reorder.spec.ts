@@ -53,7 +53,8 @@ for (const newCardStyle of [false, true]) {
         groupBy: 'none',
         sortBy: 'manual',
         sidebarOpen: true,
-        settings: { ...state.settings, experimentalNewWorktreeCardStyle: newCardStyle },
+        // Why: waitForSessionReady above guarantees settings hydrated before this evaluate runs.
+        settings: { ...state.settings!, experimentalNewWorktreeCardStyle: newCardStyle },
         showActiveOnly: false,
         showSleepingWorkspaces: true,
         hideDefaultBranchWorkspace: false,

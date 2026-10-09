@@ -178,7 +178,11 @@ describe('a chat a newer Orca saved, across versions', () => {
       const refusal = await newerChatRefusal()
       const released = await releasedReader(BEFORE_NEWER_REASON_REF)
       const code = { code: refusal.code }
-      const damage = { code: refusal.code, details: { reason: 'journalCorrupt' } }
+      // Why: annotated so `reason` keeps its literal type and pairs with the refusal's code.
+      const damage: Pick<AgentSessionRefusalReference, 'code' | 'details'> = {
+        code: refusal.code,
+        details: { reason: 'journalCorrupt' }
+      }
       expect(released.words(refusal)).toBe(released.words(code))
       expect(released.words(refusal)).not.toBe(released.words(damage))
       expect(released.isFinal(refusal)).toBe(false)
@@ -193,7 +197,10 @@ describe('a chat a newer Orca saved, across versions', () => {
       directory = mkdtempSync(join(tmpdir(), 'orca-newer-chat-xv-'))
       const refusal = await newerChatRefusal()
       const released = await releasedReader(resolveBaselineReleaseRef())
-      const damage = { code: refusal.code, details: { reason: 'journalCorrupt' } }
+      const damage: Pick<AgentSessionRefusalReference, 'code' | 'details'> = {
+        code: refusal.code,
+        details: { reason: 'journalCorrupt' }
+      }
       expect(released.words(refusal)).not.toBe('')
       expect(released.words(refusal)).not.toBe(released.words(damage))
     },

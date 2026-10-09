@@ -1,4 +1,5 @@
 import type { Page } from '@stablyai/playwright-test'
+import type { Terminal } from '@xterm/xterm'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { test, expect } from './helpers/orca-app'
@@ -48,6 +49,14 @@ const MAX_WORST_ECHO_LATENCY_MS = 150
 type CodexCursorBlinkSample = {
   elapsedMs: number
   paintedCursorCellCount: number
+}
+
+// Why: xterm publishes measured cell geometry only through its private render
+// service, so this probe declares that boundary instead of guessing at it.
+type TerminalWithRenderService = Terminal & {
+  _core?: {
+    _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } }
+  }
 }
 
 // Why the focus assert: a run that types into an unfocused pane records zero
@@ -118,7 +127,9 @@ async function readActiveTerminalRasterTarget(page: Page): Promise<TerminalRaste
     const manager = tabId ? window.__paneManagers?.get(tabId) : null
     const pane = manager?.getActivePane?.() ?? manager?.getPanes?.()[0] ?? null
     const screen = pane?.container.querySelector<HTMLElement>('.xterm-screen')
-    const dimensions = pane?.terminal._core?._renderService?.dimensions?.css?.cell
+    const dimensions = pane
+      ? (pane.terminal as TerminalWithRenderService)._core?._renderService?.dimensions?.css?.cell
+      : undefined
     if (!pane || !screen || !dimensions) {
       throw new Error('Active terminal screen is unavailable')
     }

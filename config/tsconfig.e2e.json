@@ -1,10 +1,12 @@
 {
-  // NOT ENFORCED YET, and deliberately so: tests/ has never been typechecked, so this currently
-  // reports ~198 errors across ~94 files. Wiring it into `typecheck` or CI today would just paint
-  // the whole build red. It earns its place anyway — pointing it at the SSH reconnect spec found
-  // two real bugs a passing suite had hidden (a targetId read off the wrong type, and a required
-  // argument omitted), because that spec had never actually executed. Run `pnpm typecheck:e2e`,
-  // fix a file, repeat; when the count reaches zero, add it to the `typecheck` chain.
+  // ENFORCED: this project is part of the `typecheck` chain, so CI fails on a type error in
+  // tests/. It spent a long time unenforced while the backlog it inherited (tests/ had never
+  // been typechecked) was burned down from 233 errors across 100 files to zero — see #31. It
+  // earns the enforcement: the errors it found were real bugs a green suite had hidden, in
+  // specs that never actually executed the broken line — a targetId read off the wrong type,
+  // an omitted required argument, a vacuous `expect(undefined ?? 0).toBe(0)`, an `app.evaluate`
+  // callback reading Electron where it expected its own argument, and a telemetry event the
+  // production zod schema would have rejected. Keep it at zero; do not re-park it.
   "extends": "@electron-toolkit/tsconfig/tsconfig.node.json",
   // Why: specs import renderer and main modules directly, so the ambient declarations those
   // modules rely on (vite client types, build-time defines) have to be in the program too.
@@ -14,7 +16,19 @@
     "../src/renderer/src/env.d.ts",
     "../src/types/**/*"
   ],
-  "exclude": ["../tests/e2e/.cross-version-checkouts/**"],
+  "exclude": [
+    "../tests/e2e/.cross-version-checkouts/**",
+    // These three reach into the `cloud/` and `mobile/` workspaces, which have their own
+    // lockfiles, their own tsconfigs and their own typecheck jobs, and which the desktop
+    // install deliberately does not provide (see pnpm-workspace.yaml and the dedicated
+    // "Install relay integration dependencies" step in unit-tests.yml). Compiling them here
+    // would report missing `@orca-cloud/*`, `pg` and `expo-crypto` modules that are a property
+    // of this install, not of the code. They are typechecked where their dependencies exist.
+    "../tests/e2e/relay-region-compatibility.unit.test.ts",
+    "../tests/e2e/relay-region-correction.unit.test.ts",
+    "../tests/e2e/native-chat-ssh-delivery.unit.test.ts",
+    "../tests/e2e/__mocks__/native-chat-ssh-delivery.ts"
+  ],
   "compilerOptions": {
     // Why: specs run browser code inside page.evaluate, so the DOM lib has to be visible here
     // even though the harness itself is Node.

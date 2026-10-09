@@ -69,9 +69,16 @@ export function envelope(args: {
   }
 }
 
-export function attachParams(fence: number | null): Record<string, unknown> {
-  const params = {
-    envelope: { sessionId: SESSION, clientOperationId: operationId(), expectedRuntimeFence: fence },
+export function attachParams(fence: number | null): AgentSessionAttachParams {
+  const params: AgentSessionAttachParams = {
+    envelope: {
+      sessionId: SESSION,
+      clientOperationId: operationId(),
+      expectedRuntimeFence: fence,
+      // Why: the fingerprint covers these fields, so it is computed from them below and the
+      // envelope this placeholder sits in is never the one a caller gets.
+      payloadFingerprint: ''
+    },
     location: {
       executionHostId: 'local',
       wslDistro: null,
@@ -91,7 +98,7 @@ export function attachParams(fence: number | null): Record<string, unknown> {
       payloadFingerprint: computeAgentSessionPayloadFingerprint({
         method: 'agentSession.attach',
         sessionId: SESSION,
-        fields: attachFingerprintFields(params as unknown as AgentSessionAttachParams)
+        fields: attachFingerprintFields(params)
       })
     }
   }

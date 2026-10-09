@@ -11,7 +11,10 @@ const BYTES_PER_GIB = 1024 ** 3
 export const TYPECHECK_PROJECTS = [
   { config: 'tsconfig.node.json', heapGib: 7 },
   { config: 'tsconfig.tc.web.json', heapGib: 6 },
-  { config: 'tsconfig.tc.cli.json', heapGib: 2 }
+  { config: 'tsconfig.tc.cli.json', heapGib: 2 },
+  // tests/ is a wide but shallow program: it pulls in src/shared and the renderer modules
+  // the specs import, and nothing else, so it costs about what the cli project does.
+  { config: 'tsconfig.e2e.json', heapGib: 2 }
 ]
 
 // The OS, node itself, and the runner agent need their share; the rest is what tsc may hold.

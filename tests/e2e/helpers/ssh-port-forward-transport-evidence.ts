@@ -11,7 +11,7 @@ import {
 
 type CapturedSshState = {
   status: string
-  providerEpoch?: string
+  providerEpoch?: string | null
   connectionGeneration?: number
 }
 

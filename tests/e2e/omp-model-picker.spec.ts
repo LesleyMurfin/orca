@@ -53,7 +53,8 @@ test('OMP model picker dispatches its advertised command and adopts the host rep
     state.setAgentStatus(
       paneKey,
       {
-        state: 'idle',
+        // Why: AGENT_STATUS_STATES dropped 'idle'; a pane sitting at rest reports 'done'.
+        state: 'done',
         prompt: '',
         agentType: 'omp',
         model: 'anthropic/claude-sonnet-4-5',
@@ -90,7 +91,7 @@ test('OMP model picker dispatches its advertised command and adopts the host rep
     window.__store?.getState().setAgentStatus(
       paneKey,
       {
-        state: 'idle',
+        state: 'done',
         prompt: '',
         agentType: 'omp',
         model: 'anthropic/claude-sonnet-4-6',

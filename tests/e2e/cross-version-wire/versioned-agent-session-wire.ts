@@ -91,11 +91,17 @@ async function loadClientProjection(
     load('/src/shared/agent-session-journal-schemas.ts')
   ])
   const client = Object.assign({}, ...modules)
+  const renderItemSchema: unknown = client.AgentJournalRenderItemSchema
   if (
     typeof client.reduceStructuredAgentSession !== 'function' ||
     typeof client.projectStructuredItemsToNativeChat !== 'function' ||
     !client.EMPTY_STRUCTURED_AGENT_SESSION ||
-    typeof client.AgentJournalRenderItemSchema?.parse !== 'function'
+    // Why: the merged release module is untyped, so narrow to an object that owns `parse`
+    // before reading it rather than asserting the schema's shape.
+    typeof renderItemSchema !== 'object' ||
+    renderItemSchema === null ||
+    !('parse' in renderItemSchema) ||
+    typeof renderItemSchema.parse !== 'function'
   ) {
     throw new Error('Release does not export the structured transcript reader')
   }

@@ -144,7 +144,7 @@ export async function runPairedTerminalColdActivationOracle(
             },
             {
               tabIds: pendingTabs.map((tab) => tab.tabId),
-              targetWorktreeId: worktreeId
+              targetWorktreeId: created.worktree.id
             }
           )
           return originalPtyIds
@@ -155,9 +155,10 @@ export async function runPairedTerminalColdActivationOracle(
     if (originalPtyIds === null) {
       throw new Error('Paired cold-activation PTY ids were not captured')
     }
+    const capturedPtyIds = originalPtyIds
     const tabs: ColdTab[] = pendingTabs.map((tab, index) => ({
       ...tab,
-      originalPtyId: originalPtyIds[index]!
+      originalPtyId: capturedPtyIds[index]!
     }))
     const tabIds = tabs.map((tab) => tab.tabId)
     // Why: background tabs park eagerly (parking delay is 100ms while tab

@@ -77,16 +77,13 @@ const fakeCodexCommand = buildFakeAgentCommandOverride(
 )
 
 const test = base.extend({
-  launchEnv: [
-    {
-      PATH: `${fakeCliDir}${path.delimiter}${process.env.PATH ?? ''}`,
-      ORCA_E2E_CODEX_SPAWN_LEDGER: spawnLedgerPath,
-      ORCA_E2E_SETUP_LEDGER: setupLedgerPath,
-      ORCA_E2E_CANARY_LEDGER: canaryLedgerPath,
-      ORCA_E2E_SIGNAL_LEDGER: signalLedgerPath
-    },
-    { option: true }
-  ]
+  launchEnv: {
+    PATH: `${fakeCliDir}${path.delimiter}${process.env.PATH ?? ''}`,
+    ORCA_E2E_CODEX_SPAWN_LEDGER: spawnLedgerPath,
+    ORCA_E2E_SETUP_LEDGER: setupLedgerPath,
+    ORCA_E2E_CANARY_LEDGER: canaryLedgerPath,
+    ORCA_E2E_SIGNAL_LEDGER: signalLedgerPath
+  }
 })
 
 function readSpawnLedger(): SpawnEvent[] {
@@ -550,7 +547,12 @@ test('adopts runtime-owned agent and Setup PTYs on first mount', async ({
             return false
           }
           await window.__store?.getState().updateRepo(repoId, {
-            hookSettings: { ...repo.hookSettings, setupAgentStartupPolicy: 'start-immediately' }
+            // Why: RepoHookSettings requires `mode` and `scripts`, and a repo added this turn
+            // carries no hook settings at all, so the app's defaults stand in for them.
+            hookSettings: {
+              ...(repo.hookSettings ?? { mode: 'auto', scripts: { setup: '', archive: '' } }),
+              setupAgentStartupPolicy: 'start-immediately'
+            }
           })
           await window.__store?.getState().updateSettings({
             agentCmdOverrides: { codex: command },

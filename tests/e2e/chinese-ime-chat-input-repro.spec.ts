@@ -661,6 +661,9 @@ test.describe('Chinese IME terminal chat input repro', () => {
       // still hits finally and removes the harness script.
       writeFileSync(scriptPath, terminalImeHarnessScript(runId))
       session = await orcaPage.context().newCDPSession(orcaPage)
+      // Why: `session` stays reassignable for the finally detach, so the commit
+      // callbacks below capture this const to keep the non-null narrowing.
+      const cdp = session
       await sendToTerminal(orcaPage, ptyId, `node ${JSON.stringify(scriptPath)}\r`)
       harnessStarted = true
       await waitForTerminalOutput(orcaPage, `IME_HARNESS_READY_${runId}`, 10_000, 20_000)
@@ -676,7 +679,7 @@ test.describe('Chinese IME terminal chat input repro', () => {
       await orcaPage.waitForTimeout(80)
       await dispatchSogouEmptyCompositionUpdate(orcaPage)
       await dispatchCandidateSelectionKey(session, { key: ' ', code: 'Space', keyCode: 32 }, () =>
-        commitImeText(session, '你')
+        commitImeText(cdp, '你')
       )
       await waitForLivePrompt(orcaPage, '你')
       await attachImeEvidence(orcaPage, testInfo, 'sogou-after-space-commit')
@@ -694,7 +697,7 @@ test.describe('Chinese IME terminal chat input repro', () => {
       await orcaPage.waitForTimeout(80)
       await dispatchSogouEmptyCompositionUpdate(orcaPage)
       await dispatchCandidateSelectionKey(session, { key: '2', code: 'Digit2', keyCode: 50 }, () =>
-        commitImeText(session, '你好')
+        commitImeText(cdp, '你好')
       )
       await waitForLivePrompt(orcaPage, '你好')
       await attachImeEvidence(orcaPage, testInfo, 'sogou-after-digit-commit')
@@ -714,7 +717,7 @@ test.describe('Chinese IME terminal chat input repro', () => {
       await dispatchSogouEmptyCompositionUpdate(orcaPage)
       await dispatchSogouPostCompositionEnd(orcaPage, '再见')
       await dispatchCandidateSelectionKey(session, { key: '3', code: 'Digit3', keyCode: 51 }, () =>
-        commitImeText(session, '再见')
+        commitImeText(cdp, '再见')
       )
       await waitForLivePrompt(orcaPage, '再见')
       const postCompositionLog = await readImeEventLog(orcaPage)

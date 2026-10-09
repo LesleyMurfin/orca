@@ -130,16 +130,17 @@ describe('remote terminal tab retirement publication', () => {
   it('removes a permanent host exit from simultaneous viewers without stale resurrection', async () => {
     let session = makePersistedSession()
     const flushOrThrow = vi.fn()
-    const runtime = new OrcaRuntimeService(
-      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This retirement fixture implements the Store session and durability operations used by the runtime.
-      withDurableRuntimeStore({
-        getWorkspaceSession: () => session,
-        setWorkspaceSession: (next) => {
-          session = next
-        },
-        flushOrThrow
-      }) as never
-    )
+    // Why the separate binding: `as never` in argument position becomes the contextual return
+    // type of withDurableRuntimeStore, which collapses its generic store parameter to `never`.
+    const store = withDurableRuntimeStore({
+      getWorkspaceSession: () => session,
+      setWorkspaceSession: (next: WorkspaceSessionState) => {
+        session = next
+      },
+      flushOrThrow
+    })
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: This retirement fixture implements the Store session and durability operations used by the runtime.
+    const runtime = new OrcaRuntimeService(store as never)
     runtime.attachWindow(1)
     const staleLiveSnapshot = makeHostSnapshot()
     runtime.syncWindowGraph(1, {

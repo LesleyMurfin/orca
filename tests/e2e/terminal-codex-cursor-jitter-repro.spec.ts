@@ -6,6 +6,7 @@ import { ensureTerminalVisible, waitForActiveWorktree, waitForSessionReady } fro
 import { waitForActiveTerminalManager } from './helpers/terminal'
 import { analyzeRasterCursorCells, type RasterCursorCell } from './terminal-cursor-raster-probe'
 import { quotePowerShellLiteral } from '../../src/shared/powershell-native-argument'
+import type { TerminalInputKind } from '../../src/shared/terminal-input-kind'
 
 type ShellCase = {
   label: string
@@ -94,7 +95,13 @@ type RasterFrameInput = {
 }
 
 type CursorReproWindow = Window & {
-  __cursorReproOriginalPtyWrite?: (ptyId: string, data: string) => void
+  // Why: pty.write carries the input kind, so the diagnostics wrapper must keep the real
+  // three-argument signature and forward it untouched.
+  __cursorReproOriginalPtyWrite?: (
+    ptyId: string,
+    data: string,
+    inputKind: TerminalInputKind
+  ) => void
   __cursorReproConptyDa1ReplyCount?: number
   __cursorReproRawChunks?: { id: string; data: string; at: number }[]
   __cursorReproRawUnsubscribe?: () => void
@@ -295,12 +302,12 @@ async function installPtyWriteDiagnostics(page: Page): Promise<void> {
     const reproWindow = window as CursorReproWindow
     if (!reproWindow.__cursorReproOriginalPtyWrite) {
       reproWindow.__cursorReproOriginalPtyWrite = window.api.pty.write.bind(window.api.pty)
-      window.api.pty.write = (ptyId, data) => {
+      window.api.pty.write = (ptyId, data, inputKind) => {
         if (data === da1Response) {
           reproWindow.__cursorReproConptyDa1ReplyCount =
             (reproWindow.__cursorReproConptyDa1ReplyCount ?? 0) + 1
         }
-        reproWindow.__cursorReproOriginalPtyWrite!(ptyId, data)
+        reproWindow.__cursorReproOriginalPtyWrite!(ptyId, data, inputKind)
       }
     }
     reproWindow.__cursorReproConptyDa1ReplyCount = 0

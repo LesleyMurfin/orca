@@ -1,4 +1,4 @@
-import { fork, type ChildProcess } from 'node:child_process'
+import { fork, type ChildProcess, type ForkOptions, type SpawnOptions } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test, type TestInfo } from '@playwright/test'
@@ -131,7 +131,8 @@ function launchReconnectClient(options: {
     })}\n`
   )
   let output = ''
-  const child = fork(runtime.reconnectClientEntryPath, ['--config', configPath], {
+  // Why: fork() forwards options to spawn(), which honors windowsHide; @types/node omits it from ForkOptions.
+  const forkOptions: ForkOptions & Pick<SpawnOptions, 'windowsHide'> = {
     cwd: runtime.userDataDir,
     execPath: runtime.electronPath,
     windowsHide: true,
@@ -142,7 +143,8 @@ function launchReconnectClient(options: {
       ORCA_USER_DATA_PATH: runtime.userDataDir
     },
     stdio: ['ignore', 'ignore', 'pipe', 'ipc']
-  })
+  }
+  const child = fork(runtime.reconnectClientEntryPath, ['--config', configPath], forkOptions)
   child.stderr?.on('data', (chunk: Buffer) => {
     output = `${output}${chunk.toString('utf8')}`.slice(-32_768)
   })

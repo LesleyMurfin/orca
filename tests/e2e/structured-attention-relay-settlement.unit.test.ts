@@ -200,7 +200,8 @@ it.each([
     expect(transport.settle).toHaveBeenCalledOnce()
     // Prompt settlement never touches a completion alert.
     const relayedCompletions = transport.dispatch.mock.calls.filter(
-      ([request]: [NotificationDispatchRequest]) =>
+      // Why: the shared transport mock is untyped, so its call row types as an argument array.
+      ([request]: NotificationDispatchRequest[]) =>
         request.structuredOrigin?.cause.kind === 'completion'
     )
     expect(relay.live('completion')).toHaveLength(relayedCompletions.length)
@@ -344,7 +345,7 @@ it('settles a prompt whose edge arrives after its own resolution row', async () 
   await waitFor(() =>
     expect(
       transport.dispatch.mock.calls.some(
-        ([request]: [NotificationDispatchRequest]) =>
+        ([request]: NotificationDispatchRequest[]) =>
           request.structuredOrigin?.cause.kind === 'prompt'
       )
     ).toBe(true)

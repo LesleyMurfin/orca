@@ -4,7 +4,7 @@ import {
   collectPackageImports,
   installMissingPackageStandIns,
   type PackageImports
-} from './release-missing-packages.ts'
+} from './release-missing-packages'
 
 const CHECKOUT_PROCESS_TIMEOUT_MS = 45_000
 const CHECKOUT_MAX_OUTPUT_BYTES = 1024 * 1024

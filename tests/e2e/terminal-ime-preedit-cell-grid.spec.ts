@@ -6,6 +6,12 @@ import {
   writeToActiveTerminal
 } from './terminal-ime-midline-occlusion-probe'
 
+// Why: xterm only exposes the measured css cell size on its internal render service, so this
+// spec declares exactly the internal surface it reaches into, as the other terminal specs do.
+type TerminalRenderCore = {
+  _core: { _renderService: { dimensions: { css: { cell: { width: number } } } } }
+}
+
 for (const dpr of [1, 1.25, 2]) {
   for (const gpu of ['on', 'off'] as const) {
     test.describe(`IME preedit grid DPR ${dpr} GPU ${gpu} @headful`, () => {
@@ -55,7 +61,8 @@ for (const dpr of [1, 1.25, 2]) {
                 const screen = terminal.element!.querySelector<HTMLElement>('.xterm-screen')!
                 const preedit = screen.querySelector<HTMLElement>('.xterm-composition-preedit')!
                 // The canvas width rounds independently of fractional WebGL cell widths.
-                const cellWidth = terminal._core._renderService.dimensions.css.cell.width
+                const cellWidth = (terminal as typeof terminal & TerminalRenderCore)._core
+                  ._renderService.dimensions.css.cell.width
                 const line = terminal.buffer.active.getLine(terminal.buffer.active.baseY)!
                 const committed: { text: string; column: number; width: number }[] = []
                 const end = line.translateToString(true).length
@@ -164,7 +171,8 @@ for (const dpr of [1, 1.25, 2]) {
                 const terminal = window
                   .__paneManagers!.get(state.activeTabId!)!
                   .getActivePane()!.terminal
-                const cellWidth = terminal._core._renderService.dimensions.css.cell.width
+                const cellWidth = (terminal as typeof terminal & TerminalRenderCore)._core
+                  ._renderService.dimensions.css.cell.width
                 const preedit = terminal.element!.querySelector('.xterm-composition-preedit')!
                 return Math.abs(preedit.getBoundingClientRect().width - 16 * cellWidth)
               })

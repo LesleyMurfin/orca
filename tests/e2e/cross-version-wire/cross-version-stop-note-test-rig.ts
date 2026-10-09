@@ -12,9 +12,11 @@ import type { AgentSessionJournal } from '../../../src/main/native-chat/agent-se
 import { agentJournalItemKey } from '../../../src/shared/agent-session-journal-item-key'
 import { agentSessionFailureFact } from '../../../src/shared/agent-session-failure'
 import { agentSessionFailureWords } from '../../../src/shared/agent-session-failure-words'
+import { isAdmissibleAgentJournalRenderItem } from '../../../src/shared/agent-session-journal-schemas'
 import {
   AGENT_JOURNAL_THREAD_SCOPE,
   type AgentJournalItemBody,
+  type AgentJournalRenderItem,
   type AgentJournalTurnLifecycle
 } from '../../../src/shared/agent-session-journal-types'
 import type {
@@ -125,6 +127,19 @@ export function createReleasedStopNoteRig(port: ScenarioPort, ref: string) {
       port.runtimeStub()
     )
   }
+  /** The released client's schema admits the row first — it throws on one that build refuses —
+   *  and this build's own guard then types it: both schemas stay deliberately wider than the
+   *  canonical item on its open string fields, so the parse alone cannot name the item's type. */
+  function admitRenderItem(
+    reader: AgentSessionClientProjection,
+    item: unknown
+  ): AgentJournalRenderItem {
+    const parsed = reader.AgentJournalRenderItemSchema.parse(item)
+    if (!isAdmissibleAgentJournalRenderItem(parsed)) {
+      throw new Error('the released client admitted a render item this build refuses')
+    }
+    return parsed
+  }
   async function page(params: Record<string, unknown>): Promise<AgentSessionHistoryPage> {
     const reply = (await call('agentSession.history', { sessionId: SESSION, ...params }))[0]
     expect(reply?.ok).toBe(true)
@@ -135,7 +150,7 @@ export function createReleasedStopNoteRig(port: ScenarioPort, ref: string) {
     }
     return {
       ...result.page,
-      items: result.page.items.map((item) => client.AgentJournalRenderItemSchema.parse(item))
+      items: result.page.items.map((item) => admitRenderItem(client, item))
     }
   }
   async function subscribe(cursor = journal.cursor()): Promise<RpcReply[]> {
@@ -151,9 +166,7 @@ export function createReleasedStopNoteRig(port: ScenarioPort, ref: string) {
             ...event,
             batch: {
               ...event.batch,
-              items: event.batch.items.map((item) =>
-                client.AgentJournalRenderItemSchema.parse(item)
-              )
+              items: event.batch.items.map((item) => admitRenderItem(client, item))
             }
           }
         : event

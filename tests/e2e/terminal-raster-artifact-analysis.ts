@@ -34,8 +34,40 @@ export type GraySlabAnalysis = {
 
 export const MAX_FINAL_GRAY_SLABS = 0
 
+// Why: the theme and render services xterm exposes only on its private `_core`
+// handle are the sole source of palette RGBA and measured cell geometry.
+type XtermInternalCore = {
+  _themeService?: {
+    colors?: {
+      ansi?: { rgba?: number }[]
+      background?: { rgba?: number }
+    }
+  }
+  _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } }
+}
+
+type SchedulerDebugWindow = Window & {
+  __terminalOutputSchedulerDebug?: { snapshot?: () => Record<string, unknown> }
+}
+
 async function readActiveTerminalRasterTarget(page: Page): Promise<TerminalRasterTarget> {
   return page.evaluate(() => {
+    const state = window.__store?.getState()
+    const worktreeId = state?.activeWorktreeId
+    const tabId =
+      state?.activeTabType === 'terminal'
+        ? state.activeTabId
+        : worktreeId
+          ? (state?.activeTabIdByWorktree?.[worktreeId] ?? null)
+          : null
+    const manager = tabId ? window.__paneManagers?.get(tabId) : null
+    const pane = manager?.getActivePane?.() ?? manager?.getPanes?.()[0] ?? null
+    if (!pane) {
+      throw new Error('No active terminal pane')
+    }
+    const terminalCore = (pane.terminal as typeof pane.terminal & { _core?: XtermInternalCore })
+      ._core
+
     const isGrayRgb = (red: number, green: number, blue: number): boolean => {
       const max = Math.max(red, green, blue)
       const min = Math.min(red, green, blue)
@@ -55,8 +87,8 @@ async function readActiveTerminalRasterTarget(page: Page): Promise<TerminalRaste
       if (record?.isBgPalette?.()) {
         const index = record.getBgColor?.() ?? -1
         const rgba =
-          pane.terminal._core?._themeService?.colors?.ansi?.[index]?.rgba ??
-          pane.terminal._core?._themeService?.colors?.background?.rgba
+          terminalCore?._themeService?.colors?.ansi?.[index]?.rgba ??
+          terminalCore?._themeService?.colors?.background?.rgba
         if (typeof rgba !== 'number') {
           return false
         }
@@ -65,21 +97,8 @@ async function readActiveTerminalRasterTarget(page: Page): Promise<TerminalRaste
       return false
     }
 
-    const state = window.__store?.getState()
-    const worktreeId = state?.activeWorktreeId
-    const tabId =
-      state?.activeTabType === 'terminal'
-        ? state.activeTabId
-        : worktreeId
-          ? (state?.activeTabIdByWorktree?.[worktreeId] ?? null)
-          : null
-    const manager = tabId ? window.__paneManagers?.get(tabId) : null
-    const pane = manager?.getActivePane?.() ?? manager?.getPanes?.()[0] ?? null
-    if (!pane) {
-      throw new Error('No active terminal pane')
-    }
     const screen = pane.container.querySelector<HTMLElement>('.xterm-screen')
-    const dimensions = pane.terminal._core?._renderService?.dimensions?.css?.cell
+    const dimensions = terminalCore?._renderService?.dimensions?.css?.cell
     if (!screen || !dimensions) {
       throw new Error('Active terminal has no measurable xterm screen')
     }
@@ -267,7 +286,7 @@ export async function captureGraySlabAnalysis(page: Page): Promise<{
 }> {
   const target = await readActiveTerminalRasterTarget(page)
   const schedulerDebug = await page.evaluate(
-    () => window.__terminalOutputSchedulerDebug?.snapshot?.() ?? null
+    () => (window as SchedulerDebugWindow).__terminalOutputSchedulerDebug?.snapshot?.() ?? null
   )
   const viewport = await page.evaluate(() => ({
     width: window.innerWidth,

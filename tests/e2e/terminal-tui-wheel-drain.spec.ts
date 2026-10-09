@@ -91,11 +91,17 @@ async function terminalWheelTarget(
       throw new Error('Active terminal screen unavailable')
     }
     const rect = screen.getBoundingClientRect()
+    // Why: measured cell geometry lives only on xterm's private `_core` handle.
+    const terminalCore = (
+      pane.terminal as typeof pane.terminal & {
+        _core?: { _renderService?: { dimensions?: { css?: { cell?: { height: number } } } } }
+      }
+    )._core
     return {
       x: rect.left + rect.width / 2,
       y: rect.top + Math.min(rect.height - 1, 40),
       cellHeight:
-        pane.terminal._core?._renderService?.dimensions?.css?.cell?.height ??
+        terminalCore?._renderService?.dimensions?.css?.cell?.height ??
         rect.height / pane.terminal.rows
     }
   })

@@ -8,7 +8,11 @@ import type {
   AgentSessionStatusSummary,
   AgentSessionSubscribeEvent
 } from '../../src/shared/agent-session-wire'
-import type { AgentJournalCursor } from '../../src/shared/agent-session-journal-types'
+import {
+  AGENT_JOURNAL_THREAD_SCOPE,
+  type AgentJournalCursor
+} from '../../src/shared/agent-session-journal-types'
+import { LOCAL_EXECUTION_HOST_ID } from '../../src/shared/execution-host'
 import {
   EMPTY_STRUCTURED_AGENT_SESSION,
   reduceStructuredAgentSession
@@ -65,7 +69,8 @@ async function fixture() {
     await journal.appendItem(
       { provider: 'orca', clientMessageId: `output-${index}` },
       { kind: 'status', text: `Tool output ${index}` },
-      { fence: 1 }
+      // Why: tool output belongs to no turn record of its own.
+      { fence: 1, turnScope: AGENT_JOURNAL_THREAD_SCOPE }
     )
   }
   for (let index = 1; index < 99; index += 1) {
@@ -133,8 +138,16 @@ describe('structured session cursor/body regression', () => {
             SESSION,
             {
               journal,
-              fence: 1,
-              params: { location: { workspaceId: 'folder-workspace' }, provider: 'codex' }
+              params: {
+                // Why: the session's own folder workspace, spelled as the record's location type.
+                location: {
+                  executionHostId: LOCAL_EXECUTION_HOST_ID,
+                  wslDistro: null,
+                  workspaceId: 'folder-workspace',
+                  workspaceKind: 'folder'
+                },
+                provider: 'codex'
+              }
             }
           ]
         ]),
@@ -225,7 +238,8 @@ describe('structured session cursor/body regression', () => {
       await journal.appendItem(
         { provider: 'orca', clientMessageId: 'completed-turn' },
         { kind: 'turn', turnId: 'turn-1', state: 'completed' },
-        { fence: 1 }
+        // Why: a turn record is always thread-scoped — it is the turn, it is not in one.
+        { fence: 1, turnScope: AGENT_JOURNAL_THREAD_SCOPE }
       )
       subscribers.publish(SESSION, journal)
       await vi.waitFor(() => expect(owner.getSnapshot().state.cursor).toEqual(journal.cursor()))

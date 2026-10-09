@@ -262,7 +262,9 @@ describe('account restart through renderer connection and host spawn', () => {
     registerWithFakes(mainWindow, host.runtime, host.store)
     rendererState = createInitialStoreState(() => rendererState)
     rendererState.tabsByWorktree[worktreeId][0].ptyId = 'pty-old'
-    rendererState.ptyIdsByTabId[tabId] = ['pty-old']
+    // Why: createInitialStoreState always seeds these optional maps for tab-1, so the suite
+    // can index them directly.
+    rendererState.ptyIdsByTabId![tabId] = ['pty-old']
     rendererState.sleepingAgentSessionsByPaneKey[paneKey] = {
       paneKey,
       tabId,
@@ -274,7 +276,7 @@ describe('account restart through renderer connection and host spawn', () => {
       capturedAt: 1,
       updatedAt: 1
     }
-    rendererState.terminalLayoutsByTabId[tabId].ptyIdsByLeafId[leafId] = 'pty-old'
+    rendererState.terminalLayoutsByTabId![tabId]!.ptyIdsByLeafId![leafId] = 'pty-old'
     await installTerminalTestGlobals()
     installIpcPtyWindow(window, {})
     window.api.pty.claimViewport = vi.fn()
@@ -308,7 +310,7 @@ describe('account restart through renderer connection and host spawn', () => {
       paneTransportsRef: { current: transports },
       clearTabPtyId: vi.fn(() => {
         rendererState.tabsByWorktree[worktreeId][0].ptyId = null
-        rendererState.ptyIdsByTabId[tabId] = []
+        rendererState.ptyIdsByTabId![tabId] = []
       })
     })
     const controller = {

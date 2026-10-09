@@ -2,6 +2,10 @@
 // like any other block (so code fences, indented code, quotes and lists keep their meaning), and the
 // line itself is judged by the one shared grammar.
 
+// Why: `micromarkExtensions` / `fromMarkdownExtensions` are declared on unified's `Data` by
+// remark-parse, so the plugin below only compiles where that declaration is in the program.
+// The renderer build reaches it transitively; the e2e typecheck project does not.
+/// <reference types="remark-parse" />
 import type { Paragraph, Root, RootContent } from 'mdast'
 import type { Extension as FromMarkdownExtension } from 'mdast-util-from-markdown'
 import type {

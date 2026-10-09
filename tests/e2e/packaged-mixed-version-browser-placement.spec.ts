@@ -23,6 +23,7 @@ import {
   type PairedElectronClient,
   type RuntimeDesktopPairingOffer
 } from './helpers/paired-electron-client'
+import type { RuntimeStatus } from '../../src/shared/runtime-session-contracts'
 
 const PACKAGED_EXECUTABLE_ENV = 'ORCA_CROSS_VERSION_PACKAGED_EXECUTABLE'
 const CLIENT_HOST_CAPABILITY = 'browser.clientHost.v1'
@@ -37,7 +38,7 @@ type PackagedPairedClient = {
   app: ElectronApplication
   environmentId: string
   page: Page
-  status: { capabilities: string[] }
+  status: RuntimeStatus
   version: string
   dispose(): Promise<void>
 }
@@ -210,8 +211,11 @@ async function launchPackagedPairedClient(args: {
       }
     }
   } catch (error) {
+    // Why: `app` is a `let` the closures below capture, so TS cannot narrow it inside the
+    // arrow; bind the launched app once and close over that.
+    const launched = app
     const cleanupErrors = await collectCleanupFailures([
-      ...(app ? [() => closeElectronAppForE2E(app)] : []),
+      ...(launched ? [() => closeElectronAppForE2E(launched)] : []),
       () => cleanupE2EDaemons(userDataDir),
       () => removeProfile(userDataDir)
     ])
@@ -407,8 +411,10 @@ test.describe('packaged mixed-version browser placement', () => {
         testInfo
       })
       registerCleanup(() => client.dispose())
-      expect(client.status.capabilities).not.toContain(CLIENT_HOST_CAPABILITY)
-      expect(client.status.capabilities).not.toContain(TUNNEL_CAPABILITY)
+      // Why `?? []`: RuntimeStatus.capabilities is optional, and a host old enough to omit it
+      // entirely is exactly the skew this spec exercises — absent still means "not advertised".
+      expect(client.status.capabilities ?? []).not.toContain(CLIENT_HOST_CAPABILITY)
+      expect(client.status.capabilities ?? []).not.toContain(TUNNEL_CAPABILITY)
 
       const created = await createBrowserThroughPackagedClient({
         client,
