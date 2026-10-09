@@ -168,14 +168,26 @@ export function createRuntimeClientEventsSync(
       clearRetryTimer(environmentId)
       pending.add(environmentId)
       const subscribeGeneration = generation
+      let droppedDuringPending = false
       void deps
         .subscribe(
           environmentId,
           (event) => deps.onEvent(environmentId, event),
-          (error) => handleSubscriptionDrop(environmentId, subscribeGeneration, error)
+          (error) => {
+            if (pending.has(environmentId)) {
+              droppedDuringPending = true
+            }
+            handleSubscriptionDrop(environmentId, subscribeGeneration, error)
+          }
         )
         .then((subscription) => {
           pending.delete(environmentId)
+          if (droppedDuringPending) {
+            subscription.unsubscribe()
+            throw new Error(
+              'Dependency contract violation: onError fired before subscribe resolved'
+            )
+          }
           if (
             subscribeGeneration !== generation ||
             !deps.getDesiredEnvironmentIds().includes(environmentId)

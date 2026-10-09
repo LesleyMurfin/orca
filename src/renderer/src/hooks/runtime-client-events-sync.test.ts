@@ -531,6 +531,62 @@ describe('createRuntimeClientEventsSync', () => {
       vi.useRealTimers()
     }
   })
+  it('aborts and retries if onError fires during the pending window but the promise resolves', async () => {
+    vi.useFakeTimers()
+    try {
+      let attempt = 0
+      let onErrorCb: ((error: unknown) => void) | undefined
+      let resolveFirst: ((val: RuntimeClientEventSubscriptionHandle) => void) | undefined
+      const unsubscribe = vi.fn()
+      const subscribe = vi.fn(
+        (
+          _environmentId: string,
+          _onEvent: (event: RuntimeClientEvent) => void,
+          onError: (error: unknown) => void
+        ): Promise<RuntimeClientEventSubscriptionHandle> => {
+          attempt += 1
+          if (attempt === 1) {
+            onErrorCb = onError
+            const { promise, resolve } =
+              Promise.withResolvers<RuntimeClientEventSubscriptionHandle>()
+            resolveFirst = resolve
+            return promise
+          }
+          return Promise.resolve({ unsubscribe })
+        }
+      )
+      const sync = createRuntimeClientEventsSync({
+        getDesiredEnvironmentIds: () => ['A'],
+        subscribe,
+        onEvent: vi.fn(),
+        retryDelayMs: 10,
+        random: () => 1
+      })
+
+      sync.sync()
+      await Promise.resolve()
+      expect(attempt).toBe(1)
+
+      // A transport error arrives while the subscribe promise is still pending.
+      onErrorCb!(new Error('pre-establishment drop'))
+      expect(unsubscribe).not.toHaveBeenCalled()
+
+      // The promise resolves instead of rejecting (a transport layer bug).
+      // The sync layer must detect the violation, immediately unsubscribe the dead handle,
+      // and enter the retry flow instead of latching the dead transport.
+      resolveFirst!({ unsubscribe })
+      await Promise.resolve()
+      expect(unsubscribe).toHaveBeenCalledTimes(1) // Immediately aborted
+
+      await vi.advanceTimersByTimeAsync(9)
+      expect(attempt).toBe(1)
+      await vi.advanceTimersByTimeAsync(1)
+      await Promise.resolve()
+      expect(attempt).toBe(2) // Retried!
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 
   it('feeds mid-stream drops into the failure counter so a failed re-subscribe escalates', async () => {
     vi.useFakeTimers()
