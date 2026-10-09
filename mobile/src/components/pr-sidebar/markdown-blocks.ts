@@ -1,4 +1,5 @@
 import { createMarkdownInlineMatcher } from '../markdown-inline-matcher'
+import { splitTableRow } from '../rich-markdown/markdown-table-rows'
 
 // Tiny, dependency-free markdown model for PR comment bodies. We render GitHub
 // markdown without a third-party RN markdown library (the previous dependency hung
@@ -44,7 +45,14 @@ const SUMMARY = /<summary\b[^>]*>([\s\S]*?)<\/summary>/i
 // show literally. Conservative: only matches `<tag ...>` / `</tag>` shapes, so a bare
 // "a < b" in prose is left alone.
 export function stripHtmlTags(text: string): string {
-  return text.replace(/<\/?[a-zA-Z][a-zA-Z0-9-]*(?:\s[^>]*)?\/?>/g, '')
+  const end = text.lastIndexOf('>') + 1
+  if (end === 0) {
+    return text
+  }
+  // No tag can close in this suffix; keep it literal without retrying every opener.
+  return (
+    text.slice(0, end).replace(/<\/?[a-zA-Z][a-zA-Z0-9-]*(?:\s[^>]*)?\/?>/g, '') + text.slice(end)
+  )
 }
 
 export function parseMarkdownBlocks(content: string): MarkdownBlock[] {
@@ -187,36 +195,7 @@ function parseLines(content: string): MarkdownBlock[] {
   return blocks
 }
 
-// Splits a `| a | b |` table row into trimmed cells. Tolerates missing outer
-// pipes and escaped `\|` inside cells. Total: never throws on odd input.
-function splitTableRow(line: string): string[] {
-  const cells: string[] = []
-  let cell = ''
-  let trimmed = line.trim()
-  if (trimmed.startsWith('|')) {
-    trimmed = trimmed.slice(1)
-  }
-  if (trimmed.endsWith('|')) {
-    trimmed = trimmed.slice(0, -1)
-  }
-  for (let j = 0; j < trimmed.length; j += 1) {
-    const ch = trimmed[j]
-    if (ch === '\\' && trimmed[j + 1] === '|') {
-      cell += '|'
-      j += 1
-      continue
-    }
-    if (ch === '|') {
-      cells.push(cell.trim())
-      cell = ''
-      continue
-    }
-    cell += ch
-  }
-  cells.push(cell.trim())
-  return cells
-}
-
+// A single dash is a delimiter cell here, unlike the editor's three-dash separator.
 function isTableDelimiter(line: string): boolean {
   return splitTableRow(line).every((cell) => /^:?-+:?$/.test(cell))
 }

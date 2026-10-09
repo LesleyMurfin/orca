@@ -1,4 +1,8 @@
-import { movePaneCacheState } from '../../../shared/agent-hook-listener/listener-state'
+import {
+  admitLegacyAgentStatus,
+  movePaneCacheState
+} from '../../../shared/agent-hook-listener/listener-state'
+import { AGENT_STATUS_2A_CURRENT_PRODUCER_MODE } from '../../../shared/agent-status-legacy-adapter'
 import { canRegisterPaneKeyAlias, isOpaqueRemintedPaneKey } from '../../../shared/pane-key-alias'
 import { parsePaneKey } from '../../../shared/stable-pane-id'
 import { PANE_KEY_ALIASES_MAX } from './server-constants'
@@ -140,6 +144,17 @@ export abstract class AgentHookServerAuthorityAliases extends AgentHookServerAut
     }
     const previousOwnerPaneKey = this.resolvePaneKeyAlias(fromPaneKey)
     const physicalPaneKey = this.getPhysicalPaneKeyForAuthority(fromPaneKey, ptyId)
+    const requestedPtyId = ptyId?.trim()
+    // Why: a repeat would clear the owner's own polls; a pane move announces from main and renderer.
+    if (
+      previousOwnerPaneKey === toPaneKey &&
+      (!requestedPtyId || this.legacyPaneKeyAliases.get(physicalPaneKey)?.ptyId === requestedPtyId)
+    ) {
+      return
+    }
+    for (const key of [fromPaneKey, previousOwnerPaneKey, physicalPaneKey, toPaneKey]) {
+      this.takeRetiredPaneRestartId(key)
+    }
     const existing = this.legacyPaneKeyAliases.get(physicalPaneKey)
     const normalizedPtyId = ptyId?.trim() || existing?.ptyId || null
     const previousStatus = this.state.lastStatusByPaneKey.get(previousOwnerPaneKey) as
@@ -152,11 +167,16 @@ export abstract class AgentHookServerAuthorityAliases extends AgentHookServerAut
       | undefined
     if (movedStatus) {
       const owner = parsePaneKey(toPaneKey)
-      this.state.lastStatusByPaneKey.set(toPaneKey, {
-        ...movedStatus,
-        paneKey: toPaneKey,
-        tabId: owner?.tabId
-      })
+      admitLegacyAgentStatus(
+        this.state,
+        'main-pane-alias-transfer',
+        {
+          ...movedStatus,
+          paneKey: toPaneKey,
+          tabId: owner?.tabId
+        },
+        AGENT_STATUS_2A_CURRENT_PRODUCER_MODE
+      )
     }
     const transferredStatus = this.state.lastStatusByPaneKey.get(toPaneKey) as
       | EnrichedAgentHookEventPayload
@@ -214,7 +234,7 @@ export abstract class AgentHookServerAuthorityAliases extends AgentHookServerAut
       this.promptSentDedupeByPaneKey.set(toPaneKey, promptDedupe)
     }
     this.clearAssistantMessageRetry(previousOwnerPaneKey)
-    this.clearCodexSubagentPoll(previousOwnerPaneKey)
+    this.clearTranscriptPoll(previousOwnerPaneKey)
     // Why: the live process keeps posting the physical source key after detach; persist a chain-safe mapping to the current owner.
     this.legacyPaneKeyAliases.set(physicalPaneKey, {
       stablePaneKey: toPaneKey,

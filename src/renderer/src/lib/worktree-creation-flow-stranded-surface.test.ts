@@ -17,8 +17,7 @@ type TestActiveView = 'terminal' | 'tasks'
 const store = {
   settings: {
     activeRuntimeEnvironmentId: null as string | null,
-    experimentalNativeChat: undefined as boolean | undefined,
-    openAgentTabsInChatByDefault: undefined as boolean | undefined
+    experimentalNativeChat: undefined
   },
   activeView: 'terminal' as TestActiveView,
   activePendingCreationId: 'creation-1' as string | null,
@@ -63,7 +62,7 @@ vi.mock('@/store', () => ({
 }))
 
 vi.mock('sonner', () => ({
-  toast: { error: vi.fn() }
+  toast: { error: vi.fn(), success: vi.fn() }
 }))
 
 vi.mock('@/lib/worktree-activation', () => ({
@@ -175,8 +174,8 @@ beforeEach(() => {
 })
 
 describe('a throw after createWorktree succeeds no longer strands the creation surface', () => {
-  it('activating branch: a throw in activateAndRevealWorktree recovers a terminal and completes', async () => {
-    const request = makeRequest()
+  it('activating branch: a planless agent throw recovers a terminal and completes', async () => {
+    const request = makeRequest({ agent: 'claude' })
     seedPendingCreation(request)
     vi.mocked(ensureWorktreeHasInitialTerminal).mockReturnValue('recovered-tab')
     vi.mocked(activateAndRevealWorktree).mockImplementation(() => {
@@ -197,7 +196,7 @@ describe('a throw after createWorktree succeeds no longer strands the creation s
       undefined,
       undefined,
       undefined,
-      {}
+      undefined
     )
     // Contained: completion still tears the surface down.
     expect(store.removePendingWorktreeCreation).toHaveBeenCalledWith('creation-1', {
