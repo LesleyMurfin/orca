@@ -1,4 +1,5 @@
 import { ipcMain, Menu, Notification, type BrowserWindow } from 'electron'
+import { QUIT_RENDERER_ACK_TIMEOUT_MS } from '../../shared/quit-teardown-deadline'
 import { translateMain } from '../i18n/main-i18n'
 import type { Store } from '../persistence'
 import { resolveWindowCloseAction } from './window-close-decision'
@@ -6,8 +7,9 @@ import type { CreateMainWindowOptions } from './main-window-contracts'
 import type { MainWindowFocusLifecycle } from './main-window-focus-lifecycle'
 import type { MainWindowStateLifecycle } from './main-window-state-lifecycle'
 import { syncTrafficLightPosition } from './main-window-visual-lifecycle'
+import { consumeUserQuitWindowClose } from './user-quit-window-close'
 
-export const WINDOW_QUIT_RENDERER_ACK_TIMEOUT_MS = 10_000
+export const WINDOW_QUIT_RENDERER_ACK_TIMEOUT_MS = QUIT_RENDERER_ACK_TIMEOUT_MS
 
 export function installMainWindowCloseLifecycle(args: {
   focus: MainWindowFocusLifecycle
@@ -89,8 +91,9 @@ export function installMainWindowCloseLifecycle(args: {
   }
 
   mainWindow.on('close', (e) => {
+    const userQuitClose = consumeUserQuitWindowClose(mainWindow)
     // Why: Alt+F4/programmatic closes hit the native event; apply the same minimize-to-tray guard the renderer-drawn X uses.
-    if (!windowCloseConfirmed && hideToTrayIfEnabled()) {
+    if (!windowCloseConfirmed && !userQuitClose && hideToTrayIfEnabled()) {
       e.preventDefault()
       return
     }
@@ -114,7 +117,8 @@ export function installMainWindowCloseLifecycle(args: {
     e.preventDefault()
     const isQuitting = opts?.getIsQuitting?.() ?? false
     const requestId = ++closeRequestSequence
-    if (isQuitting) {
+    // Why userQuitClose: a serve host's user Quit only closes windows, yet a frozen renderer must not trap it.
+    if (isQuitting || userQuitClose) {
       armQuitRendererAckTimer(requestId)
     }
     // Why: renderer owns the close decision; the always-mounted App root subscription lets even pre-workspace states reply (#5144).

@@ -1,18 +1,19 @@
+import { makePaneKey } from '../../../../../shared/stable-pane-id'
 import { useAppStore } from '@/store'
 import { safeFit } from '@/lib/pane-manager/pane-tree-ops'
 import { bindPanePtyId, getFitOverrideForPty } from '@/lib/pane-manager/mobile-fit-overrides'
 import { inspectRuntimeTerminalProcess } from '@/runtime/runtime-terminal-inspection'
-import { parseAppSshPtyId } from '../../../../../shared/ssh-pty-id'
 import { isFreshNonDoneAgentStatus } from '../../../../../shared/agent-status-types'
 import { isCtrlCKeyEvent, isPlainEscapeKeyEvent } from '../agent-interrupt-inference'
 import { createAgentCompletionCoordinator } from '../agent-completion-coordinator'
 import { dispatchAgentHookTerminalLifecycle } from '../agent-hook-terminal-lifecycle'
-import { createCodexAutoApprovalHookCompletionSuppressor } from '../codex-auto-approval-notification-suppression'
 import { resolveCompatibleAgentTypeForOwner } from '../../../../../shared/agent-title-owner'
 import { registerTerminalSideEffectFactConsumer } from '../terminal-side-effect-facts-handler'
 
 import { isAgentTaskCompleteTrackingEnabled } from './agent-task-complete-settings'
+import { isAgentProcessInspectionCostly } from '../agent-process-inspection-cost'
 import { isRemoteRuntimePtyId } from './paired-parked-terminal-restore'
+import { isRemoteExecutionHostPtyId } from '../remote-execution-host-pty'
 
 import type { ConnectPanePtySession } from './connect-pane-pty-session'
 
@@ -133,7 +134,12 @@ export function installTerminalKeydownFit(session: ConnectPanePtySession): void 
         onPrLink: (link) =>
           useAppStore
             .getState()
-            .observeTerminalGitHubPullRequestLink(session.deps.worktreeId, link),
+            .observeTerminalGitHubPullRequestLink(session.deps.worktreeId, link, {
+              tabId: session.deps.tabId,
+              paneKey: makePaneKey(session.deps.tabId, session.pane.leafId),
+              ptyId: session.transport.getPtyId(),
+              executionHostId: session.transport.getExecutionHostId?.() ?? undefined
+            }),
         // Why: the Command Code settle policy stays here — the done settle
         // timer must consult the live store row (which hook events and
         // renderer seeds also write), so main only emits scrape facts.
@@ -175,6 +181,9 @@ export function installTerminalKeydownFit(session: ConnectPanePtySession): void 
     paneKey: session.cacheKey,
     statusLane: 'pty',
     getPtyId: () => session.transport.getPtyId(),
+    isRemotePtyId: (ptyId) =>
+      Boolean(isRemoteExecutionHostPtyId(ptyId) || isRemoteRuntimePtyId(ptyId)),
+    getExpectedIncarnationId: () => session.remotePtyIncarnationId ?? null,
     getSettings: () => useAppStore.getState().settings,
     inspectProcess: inspectRuntimeTerminalProcess,
     dispatchHookLifecycle: (payload) =>
@@ -204,6 +213,9 @@ export function installTerminalKeydownFit(session: ConnectPanePtySession): void 
         currentAgentForExited !== exited.agent
       )
     },
+    // Why: the pane's only re-derivation of a process read where the shell emits no command marks.
+    onForegroundAgentExited: (exited) =>
+      session.paneForegroundAgentTracker?.onProcessExitConfirmed(exited),
     dispatchCompletion: (title, meta) => {
       if (meta?.source === 'process-exit') {
         session.clearSuppressedTitleSideEffects()
@@ -227,19 +239,19 @@ export function installTerminalKeydownFit(session: ConnectPanePtySession): void 
       session.scheduleAgentTaskCompleteNotification(title, {
         agentStatusSnapshot: meta.agentStatus
       }),
-    shouldPollProcessCadence: () =>
-      isAgentTaskCompleteTrackingEnabled() && session.deps.isVisibleRef.current,
-    isProcessInspectionCostly: () => {
-      // Why: local Windows inspection forks a powershell.exe whole-process-table
-      // CIM scan per poll (~10-40x heavier than POSIX `ps`); SSH/remote PTYs run
-      // their scans on the remote host, so only local Windows panes relax the
-      // no-evidence cadence.
-      if (!navigator.userAgent.includes('Windows')) {
+    shouldPollProcessCadence: () => {
+      const ptyId = session.transport.getPtyId()
+      if (ptyId && (isRemoteExecutionHostPtyId(ptyId) || isRemoteRuntimePtyId(ptyId))) {
         return false
       }
-      const ptyId = session.transport.getPtyId()
-      return ptyId !== null && !isRemoteRuntimePtyId(ptyId) && parseAppSshPtyId(ptyId) === null
+      return isAgentTaskCompleteTrackingEnabled() && session.deps.isVisibleRef.current
     },
+    shouldPollNoEvidenceProcessCadence: () => {
+      const ptyId = session.transport.getPtyId()
+      return !(ptyId && (isRemoteExecutionHostPtyId(ptyId) || isRemoteRuntimePtyId(ptyId)))
+    },
+    isProcessInspectionCostly: () =>
+      isAgentProcessInspectionCostly(navigator.userAgent, session.transport.getPtyId()),
     isLive: () => {
       if (session.disposed) {
         return false
@@ -248,13 +260,6 @@ export function installTerminalKeydownFit(session: ConnectPanePtySession): void 
         return true
       }
       return (useAppStore.getState().ptyIdsByTabId[session.deps.tabId] ?? []).length > 0
-    },
-    shouldSuppressHookCompletion: createCodexAutoApprovalHookCompletionSuppressor(
-      session.cacheKey,
-      () => ({
-        tabId: session.deps.tabId,
-        ...(session.launchToken ? { launchToken: session.launchToken } : {})
-      })
-    )
+    }
   })
 }

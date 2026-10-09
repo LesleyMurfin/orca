@@ -11,10 +11,14 @@ import {
 } from './agent-hook-listener/endpoint-publication'
 import {
   HOOK_REQUEST_MAX_BYTES,
+  parseAgentHookJson,
   parseFormEncodedBody,
   readRequestBody
 } from './agent-hook-listener/request-body'
+import { mergeAgentHookRequestHeaders } from './agent-hook-listener/hook-envelope'
+import { createHookListenerState } from './agent-hook-listener/listener-state'
 import { resolveHookSource } from './agent-hook-listener/source-routing'
+import { normalizeHookPayload } from './agent-hook-listener'
 import { clearGrokSessionPathLookupCacheForTests } from './grok-session-paths'
 
 type FakeIncomingMessage = EventEmitter & {
@@ -38,6 +42,10 @@ function expectRequestParserListenersReleased(req: FakeIncomingMessage): void {
 }
 
 describe('shared agent-hook-listener', () => {
+  const paneKey = 'tab-1:11111111-1111-4111-8111-111111111111'
+  const b64 = (value: string): string => Buffer.from(value, 'utf8').toString('base64')
+  const packedMetadata = (...values: string[]): string => b64(values.join('\x1f'))
+
   afterEach(() => {
     clearGrokSessionPathLookupCacheForTests()
     vi.unstubAllEnvs()
@@ -58,6 +66,76 @@ describe('shared agent-hook-listener', () => {
 
     await expect(body).resolves.toEqual({ ok: true })
     expectRequestParserListenersReleased(req)
+  })
+
+  it('normalizes a raw JSON hook body with metadata headers', async () => {
+    const req = createReadableRequest({
+      'content-type': 'application/json',
+      'x-orca-pane-key': paneKey,
+      'x-orca-worktree-id': 'repo::/tmp/work',
+      'x-orca-agent-hook-env': 'production',
+      'x-orca-agent-hook-version': '1'
+    })
+    const body = readRequestBody(req as unknown as IncomingMessage)
+    req.emit('data', Buffer.from('{"hook_event_name":"UserPromptSubmit","prompt":"hello"}'))
+    req.emit('end')
+
+    const merged = mergeAgentHookRequestHeaders(await body, req.headers)
+    expect(
+      normalizeHookPayload(createHookListenerState(), 'claude', merged, 'production')
+    ).toMatchObject({
+      paneKey,
+      worktreeId: 'repo::/tmp/work',
+      payload: { state: 'working', prompt: 'hello' }
+    })
+  })
+
+  it('decodes base64 metadata headers without corrupting path text', () => {
+    const worktreeId = 'repo::/tmp/中文 worktree'
+    const merged = mergeAgentHookRequestHeaders(
+      { hook_event_name: 'UserPromptSubmit', prompt: 'hello' },
+      {
+        'x-orca-agent-hook-meta-encoding': 'base64',
+        'x-orca-agent-hook-meta': packedMetadata(
+          paneKey,
+          'tab-1',
+          '',
+          worktreeId,
+          'production',
+          '1'
+        )
+      }
+    )
+
+    expect(
+      normalizeHookPayload(createHookListenerState(), 'claude', merged, 'production')
+    ).toMatchObject({
+      paneKey,
+      tabId: 'tab-1',
+      worktreeId,
+      payload: { state: 'working', prompt: 'hello' }
+    })
+  })
+
+  it('keeps raw envelope-like fields inside the agent payload', () => {
+    const rawBody = {
+      paneKey: 'payload-owned-pane',
+      payload: { hook_event_name: 'PayloadField' },
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'hello'
+    }
+    const merged = mergeAgentHookRequestHeaders(rawBody, {
+      'x-orca-pane-key': paneKey,
+      'x-orca-tab-id': 'tab-1'
+    })
+
+    expect(merged).toMatchObject({ paneKey, tabId: 'tab-1', payload: rawBody })
+    expect(
+      normalizeHookPayload(createHookListenerState(), 'claude', merged, 'production')
+    ).toMatchObject({
+      paneKey,
+      payload: { state: 'working', prompt: 'hello' }
+    })
   })
 
   it('releases request parser listeners after rejecting an oversized body', async () => {
@@ -84,12 +162,66 @@ describe('shared agent-hook-listener', () => {
     expectRequestParserListenersReleased(req)
   })
 
-  it('strips exactly one outer JSON BOM', async () => {
+  it.each([0, 1, 2, 3])(
+    'reads %i outer BOMs with every UTF-8 byte in a separate chunk',
+    async (count) => {
+      const req = createReadableRequest({ 'content-type': 'application/json' })
+      const body = readRequestBody(req as unknown as IncomingMessage)
+      const bytes = Buffer.concat([
+        ...Array.from({ length: count }, () => Buffer.from([0xef, 0xbb, 0xbf])),
+        Buffer.from('{"text":"café 日本語 😀"}')
+      ])
+      for (const byte of bytes) {
+        req.emit('data', Buffer.from([byte]))
+      }
+      req.emit('end')
+      await expect(body).resolves.toEqual({ text: 'café 日本語 😀' })
+      expectRequestParserListenersReleased(req)
+    }
+  )
+
+  it.each(['', '\uFEFF', '\uFEFF\uFEFF'])(
+    'preserves JSON whitespace and string BOMs after prefix %j',
+    (prefix) => {
+      expect(parseAgentHookJson(`${prefix} \r\n\t{"text":"a\uFEFFb"} \t\r\n`)).toEqual({
+        text: 'a\uFEFFb'
+      })
+    }
+  )
+
+  it.each([
+    '',
+    ' ',
+    '\uFEFF',
+    '\uFEFF\uFEFF',
+    '\uFEFF\uFEFFnot json',
+    ' \uFEFF{}',
+    '\uFEFF \uFEFF{}',
+    '{\uFEFF"ok":true}',
+    '{}\uFEFF',
+    '\uFEFF\uFEFF{"ok":}'
+  ])('rejects invalid JSON %j without trimming misplaced BOMs', (body) => {
+    expect(() => parseAgentHookJson(body)).toThrow()
+  })
+
+  it('keeps an empty HTTP body as an empty envelope', async () => {
     const req = createReadableRequest({ 'content-type': 'application/json' })
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The existing request harness supplies the headers and stream events used by the reader.
     const body = readRequestBody(req as unknown as IncomingMessage)
-    req.emit('data', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"ok":true}')]))
     req.emit('end')
-    await expect(body).resolves.toEqual({ ok: true })
+    await expect(body).resolves.toEqual({})
+    expectRequestParserListenersReleased(req)
+  })
+
+  it('counts BOM bytes toward the cap across incremental chunks', async () => {
+    const req = createReadableRequest({ 'content-type': 'application/json' })
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The existing request harness supplies the headers and stream events used by the reader.
+    const body = readRequestBody(req as unknown as IncomingMessage)
+    req.emit('data', Buffer.from([0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf]))
+    req.emit('data', Buffer.from(JSON.stringify({ x: 'a'.repeat(HOOK_REQUEST_MAX_BYTES - 8) })))
+    await expect(body).rejects.toThrow('payload too large')
+    expect(req.destroy).toHaveBeenCalledTimes(1)
+    expectRequestParserListenersReleased(req)
   })
 
   it('rejects JSON beyond the nesting-depth limit', async () => {
@@ -139,6 +271,7 @@ describe('shared agent-hook-listener', () => {
     expect(resolveHookSource('/hook/omp')).toBe('omp')
     expect(resolveHookSource('/hook/prime-agent')).toBe('prime-agent')
     expect(resolveHookSource('/hook/command-code')).toBe('command-code')
+    expect(resolveHookSource('/hook/opencode2')).toBe('opencode2')
     expect(resolveHookSource('/hook/mimo-code')).toBe('mimo-code')
     expect(resolveHookSource('/hook/unknown')).toBeNull()
     expect(resolveHookSource('/')).toBeNull()
@@ -168,13 +301,15 @@ describe('shared agent-hook-listener', () => {
         port: 12345,
         token: 'abcdef-0123',
         env: 'production',
-        version: '1'
+        version: '1',
+        transport: 'raw-json-v1'
       })
       expect(ok).toBe(true)
       const text = readFileSync(finalPath, 'utf8')
       expect(text).toContain('ORCA_AGENT_HOOK_PORT=12345')
       expect(text).toContain('ORCA_AGENT_HOOK_TOKEN=abcdef-0123')
       expect(text).toContain('ORCA_AGENT_HOOK_VERSION=1')
+      expect(text).toContain('ORCA_AGENT_HOOK_TRANSPORT=raw-json-v1')
       // POSIX 0o600 — owner read/write only.
       if (process.platform !== 'win32') {
         const mode = statSync(finalPath).mode & 0o777

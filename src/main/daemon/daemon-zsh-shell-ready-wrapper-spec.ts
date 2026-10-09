@@ -7,13 +7,14 @@ export function getDaemonZshWrapperSpec(): ZshStartupHookSpec {
     headerLabel: 'Orca daemon zsh shell-ready wrapper',
     readyMarkerEscaped: SHELL_READY_MARKER,
     osc133CommandMarkers: true,
+    startupCommandDelivery: false,
     overlayRestoreComment:
       "# Why: ~/.zshrc can export the user's default OpenCode config after spawn.",
     restores: {
+      managedWslCli: false,
       agentTeamsPath: true,
       remoteCliBinDir: false,
-      codexHome: true,
-      codexLaunchPreflight: true
+      codexHome: true
     }
   }
 }

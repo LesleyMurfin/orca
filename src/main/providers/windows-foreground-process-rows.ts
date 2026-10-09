@@ -1,7 +1,10 @@
+import { collectDescendantsFromIndex, getProcessTableIndex } from '../../shared/process-table-index'
 import {
+  readWindowsProcessIdentityTableFresh,
   readWindowsProcessTable,
   readWindowsProcessTableFresh,
   resetWindowsProcessTableForTests,
+  type WindowsProcessIdentityRow,
   type WindowsProcessRow as NativeWindowsProcessRow
 } from '../windows/windows-process-table'
 
@@ -26,62 +29,84 @@ function toProcessRow(row: NativeWindowsProcessRow): WindowsProcessRow {
 }
 
 /**
- * Rows from a scan that starts after this call.
+ * One projection per snapshot identity, mirroring `getProcessTableIndex`.
  *
- * PID-identity checks in teardown must not reuse a cached row — it can predate
- * the very recycle it is meant to detect. Rejects when the table is unreadable,
- * so "unavailable" stays distinguishable from "nothing is running".
+ * The TTL cache already gives every pane the same native rows array; without
+ * this each of them still rebuilt ~1050 row objects, which also handed
+ * `getProcessTableIndex` a new array each time and defeated its memo by
+ * construction. Keyed weakly, so a projection dies with its snapshot. Rows are
+ * shared, never mutated: descendants are copied with their depth, and
+ * `anchorRow` is read-only to every caller.
  */
-export async function queryWindowsProcessRowsFresh(): Promise<WindowsProcessRow[]> {
-  return (await readWindowsProcessTableFresh()).map(toProcessRow)
+const projectedRows = new WeakMap<readonly NativeWindowsProcessRow[], WindowsProcessRow[]>()
+
+function projectProcessRows(native: readonly NativeWindowsProcessRow[]): WindowsProcessRow[] {
+  const cached = projectedRows.get(native)
+  if (cached) {
+    return cached
+  }
+  const rows = native.map(toProcessRow)
+  projectedRows.set(native, rows)
+  return rows
+}
+
+/**
+ * A fresh scan for an ancestry walk, which reads only pid/ppid.
+ *
+ * Returns identity rows so the command line is not merely unused but absent:
+ * asking for it costs an `OpenProcess` per process on the box.
+ */
+export async function queryWindowsProcessLinksFresh(): Promise<WindowsProcessIdentityRow[]> {
+  return readWindowsProcessIdentityTableFresh()
 }
 
 export async function queryWindowsProcessDescendants(
   rootPid: number,
   options: { fresh?: boolean } = {}
 ): Promise<WindowsProcessCandidate[] | null> {
+  return (await queryWindowsPaneProcessInventory(rootPid, options))?.candidates ?? null
+}
+
+export type WindowsPaneProcessInventory = {
+  candidates: WindowsProcessCandidate[]
+  /**
+   * Full-table row for `anchorPid`. From the whole snapshot, not the ppid
+   * projection: a pane-job member whose creator exited is orphaned out of the
+   * descendant walk yet can still hold a recycled anchor pid.
+   */
+  anchorRow: WindowsProcessRow | null
+}
+
+export async function queryWindowsPaneProcessInventory(
+  rootPid: number,
+  options: { fresh?: boolean; anchorPid?: number } = {}
+): Promise<WindowsPaneProcessInventory | null> {
   let rows: WindowsProcessRow[]
   try {
     const native =
       options.fresh === true
         ? await readWindowsProcessTableFresh()
         : await readWindowsProcessTable()
-    rows = native.map(toProcessRow)
+    rows = projectProcessRows(native)
   } catch {
     return null
   }
+  // One index per snapshot, shared by every pane inspecting inside the TTL
+  // window: `byPid` answers both lookups that used to be linear scans, and
+  // `childrenByPpid` replaces a per-call Map rebuild over the whole table.
+  const index = getProcessTableIndex(rows)
   // Why: a snapshot that omitted the PTY root may be stale or permission-
   // filtered; only an observed root can authoritatively have no descendants.
-  if (!rows.some((row) => row.pid === rootPid)) {
+  if (!index.byPid.has(rootPid)) {
     return null
   }
-  return collectDescendants(rows, rootPid).sort((a, b) => b.depth - a.depth)
+  return {
+    candidates: collectDescendantsFromIndex(index, rootPid).sort((a, b) => b.depth - a.depth),
+    anchorRow: options.anchorPid !== undefined ? (index.byPid.get(options.anchorPid) ?? null) : null
+  }
 }
 
 /** Test-only: clear the shared snapshot so one case's rows never serve the next. */
 export function resetWindowsProcessRowsSnapshotForTests(): void {
   resetWindowsProcessTableForTests()
-}
-
-function collectDescendants<Row extends { pid: number; ppid: number }>(
-  rows: Row[],
-  rootPid: number
-): (Row & { depth: number })[] {
-  const childrenByParent = new Map<number, Row[]>()
-  for (const row of rows) {
-    const children = childrenByParent.get(row.ppid) ?? []
-    children.push(row)
-    childrenByParent.set(row.ppid, children)
-  }
-
-  const descendants: (Row & { depth: number })[] = []
-  const stack = (childrenByParent.get(rootPid) ?? []).map((row) => ({ row, depth: 1 }))
-  while (stack.length > 0) {
-    const { row, depth } = stack.pop()!
-    descendants.push({ ...row, depth })
-    for (const child of childrenByParent.get(row.pid) ?? []) {
-      stack.push({ row: child, depth: depth + 1 })
-    }
-  }
-  return descendants
 }

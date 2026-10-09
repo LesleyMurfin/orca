@@ -1,19 +1,18 @@
+import { resolveComposerAttachmentTarget } from './composer-attachment-target'
 import { getAttachmentLabel } from '@/lib/new-workspace'
-import {
-  getFullComposerCreateDisabled,
-  getQuickComposerCreateDisabled
-} from '@/lib/new-workspace-create-gates'
+import { getQuickComposerCreateDisabled } from '@/lib/new-workspace-create-gates'
 import type { ComposerModel } from './composer-model'
 import type { ComposerCardActionProps, ComposerCardSourceProps } from './composer-card-contract'
 
 export function buildComposerCardProps(state: ComposerModel) {
+  const attachmentTarget = resolveComposerAttachmentTarget(state)
   const {
     advancedOpen,
     agentPrompt,
     attachmentPaths,
     baseBranch,
     branchNameOverride,
-    createGateMode,
+    parentWorktreeId,
     createError,
     createMultiple,
     creating,
@@ -85,8 +84,8 @@ export function buildComposerCardProps(state: ComposerModel) {
     selectedRepoConnectionId,
     selectedRepoGitHubSourceContext,
     selectedRepoIsGit,
+    selectedRepoProjectId,
     selectedRepoRequiresConnection,
-    shouldWaitForIssueAutomationCheck,
     sourceIntentBlocksCreate,
     sparseError,
     selectedRepoSshStatus,
@@ -96,6 +95,7 @@ export function buildComposerCardProps(state: ComposerModel) {
     setCreateMultiple,
     setLinkQuery,
     setNote,
+    setParentWorktreeId,
     setSelectedEphemeralVmRecipeId,
     setSetupDecision,
     setSmartNameMode,
@@ -107,30 +107,24 @@ export function buildComposerCardProps(state: ComposerModel) {
     shouldWaitForSetupCheck,
     workspaceSeedName,
     smartNameJiraSourceContext,
+    smartNameMode,
     smartNameSelection,
     sparsePresets,
     sparseSelectedPresetId,
     startFromResetHint,
-    submit,
     tuiAgent
   } = state
 
-  const createGateInput = {
+  const repoCreateDisabled = getQuickComposerCreateDisabled({
     repoId,
     workspaceSeedName,
     creating,
-    shouldWaitForSetupCheck,
-    shouldWaitForIssueAutomationCheck,
     sourceIntentBlocksCreate,
     requiresExplicitSetupChoice,
     hasSetupDecision: Boolean(setupDecision),
     selectedRepoRequiresConnection,
     sparseError
-  }
-  const repoCreateDisabled =
-    createGateMode === 'quick'
-      ? getQuickComposerCreateDisabled(createGateInput)
-      : getFullComposerCreateDisabled(createGateInput)
+  })
   const createDisabled = isProjectGroupTarget ? folderCreateDisabled : repoCreateDisabled
   const cardProps: ComposerCardSourceProps & ComposerCardActionProps = {
     eligibleRepos: isProjectGroupTarget ? folderSourceRepos : eligibleRepos,
@@ -157,6 +151,10 @@ export function buildComposerCardProps(state: ComposerModel) {
     onNameValueChange: handleNameValueChange,
     branchNameOverride: isProjectGroupTarget ? undefined : branchNameOverride,
     onBranchNameOverrideChange: isProjectGroupTarget ? () => {} : handleBranchNameOverrideChange,
+    parentWorktreeId: isProjectGroupTarget ? null : parentWorktreeId,
+    onParentWorktreeIdChange: isProjectGroupTarget ? () => {} : setParentWorktreeId,
+    selectedRepoExecutionHostId: attachmentTarget.hostId,
+    selectedRepoProjectId: isProjectGroupTarget ? null : selectedRepoProjectId,
     onSmartGitHubItemSelect: handleSmartGitHubItemSelect,
     onSmartGitLabItemSelect: handleSmartGitLabItemSelect,
     onSmartBranchSelect: isProjectGroupTarget ? () => {} : handleSmartBranchSelect,
@@ -166,6 +164,7 @@ export function buildComposerCardProps(state: ComposerModel) {
     onOpenJiraSettings: handleOpenJiraSettings,
     smartNameGitHubSourceContext: selectedRepoGitHubSourceContext,
     smartNameJiraSourceContext,
+    smartNameMode,
     smartNameSelection,
     onClearSmartNameSelection: handleClearSmartNameSelection,
     canReuseSelectedBranch:
@@ -183,6 +182,8 @@ export function buildComposerCardProps(state: ComposerModel) {
     linkedOnlyTemplatePreview: shouldApplyLinkedOnlyTemplate ? linkedOnlyTemplatePrompt : null,
     attachmentPaths,
     getAttachmentLabel,
+    // Quick create has no attachment display or launch-prompt destination.
+    onNativeFileDrop: undefined,
     onAddAttachment: () => void handleAddAttachment(),
     onRemoveAttachment: (pathValue) =>
       setAttachmentPaths((current) => current.filter((currentPath) => currentPath !== pathValue)),
@@ -206,14 +207,13 @@ export function buildComposerCardProps(state: ComposerModel) {
     createDisabled,
     projectError: isProjectGroupTarget ? pathStatusProjectError : projectError,
     creating,
-    onCreate: () => void submit(),
     baseBranch: isProjectGroupTarget ? undefined : baseBranch,
     onBaseBranchChange: isProjectGroupTarget ? () => {} : handleBaseBranchChange,
     onBaseBranchPrSelect: isProjectGroupTarget ? () => {} : handleBaseBranchPrSelect,
     onBaseBranchMrSelect: isProjectGroupTarget ? () => {} : handleBaseBranchMrSelect,
     baseBranchLinkedPrNumber:
       linkedWorkItem?.type === 'pr' && baseBranch ? linkedWorkItem.number : null,
-    selectedRepoPath: isProjectGroupTarget ? null : (selectedRepo?.path ?? null),
+    selectedRepoPath: attachmentTarget.path,
     selectedRepoIsRemote: isProjectGroupTarget
       ? folderTargetIsRemote
       : Boolean(selectedRepo?.connectionId),

@@ -398,8 +398,6 @@ describe('paired runtime navigation isolation', () => {
   })
 
   it('still reveals to every client when a paired caller asks for all-surface navigation', async () => {
-    // Why: the CLI pairs as a runtime device but has no viewer of its own, so
-    // `orca worktree create --activate` against a remote runtime sends navigation 'all'.
     const harness = await startHarness()
     await subscribeBothClientEventStreams(harness)
 
@@ -424,6 +422,8 @@ describe('paired runtime navigation isolation', () => {
       'activateWorktree'
     ])
     expect(harness.activateWorktree).toHaveBeenCalled()
+    expect(eventA).toMatchObject({ result: { navigation: 'all' } })
+    expect(eventB).toMatchObject({ result: { navigation: 'all' } })
   })
 
   it('keeps create activation caller-scoped on a headless orca serve host', async () => {
@@ -449,43 +449,103 @@ describe('paired runtime navigation isolation', () => {
     expect(observed).not.toContain('activateWorktree')
     expect(observed).toContain('worktreesChanged')
 
-    // A headless host with no viewer of its own still reveals an in-process/CLI create.
+    // A headless host does not borrow a paired observer's view for CLI activation.
     await harness.runtime.createManagedWorktree({
       repoSelector: `id:${FOLDER_REPO_ID}`,
       name: 'headless-cli-workspace',
       activate: true
     })
-    expect(
-      resultType(
-        await harness.readerB.next(
-          'events-b',
-          (response) => resultType(response) === 'activateWorktree'
-        )
-      )
-    ).toBe('activateWorktree')
+    harness.runtime.notifyReposChangedForRemoteClients()
+    const afterCliCreate: string[] = []
+    for (;;) {
+      const type = resultType(await harness.readerB.next('events-b'))
+      afterCliCreate.push(type ?? 'unknown')
+      if (type === 'reposChanged' || type === 'activateWorktree') {
+        break
+      }
+    }
+    expect(afterCliCreate).not.toContain('activateWorktree')
+    expect(afterCliCreate).toContain('worktreesChanged')
   })
 
-  it('still reveals a host-originated create-with-activate on the host and every client', async () => {
+  it('normalizes a paired focused terminal.create before host-renderer activation', async () => {
+    const harness = await startHarness()
+    const created = { handle: 'term-b', worktreeId: CLIENT_B_WORKTREE_ID, title: null }
+    const createTerminal = vi
+      .spyOn(harness.runtime, 'createTerminal')
+      .mockImplementation(async (_worktree, options) => {
+        if (options?.presentation === 'focused') {
+          harness.hostSelections.worktreeId = CLIENT_B_WORKTREE_ID
+        }
+        return created as never
+      })
+    vi.spyOn(harness.runtime, 'dedupeTerminalCreate').mockImplementation(
+      async (_owner, worktree, _mutationId, _reconcile, run) => run(worktree, undefined)
+    )
+
+    send(harness.clientB, {
+      id: 'terminal-create-b',
+      method: 'terminal.create',
+      params: {
+        worktree: `id:${CLIENT_B_WORKTREE_ID}`,
+        presentation: 'focused'
+      }
+    })
+    await expect(harness.readerB.next('terminal-create-b')).resolves.toMatchObject({
+      ok: true,
+      result: { terminal: created }
+    })
+    expect(createTerminal).toHaveBeenCalledWith(
+      `id:${CLIENT_B_WORKTREE_ID}`,
+      expect.objectContaining({ presentation: 'background', focus: false, activate: false })
+    )
+    expect(harness.hostSelections).toEqual({
+      worktreeId: HOST_WORKTREE_ID,
+      tabId: 'host-tab'
+    })
+  })
+
+  it.each([false, true])(
+    'keeps host create activation off paired observers (runHooks=%s)',
+    async (runHooks) => {
+      const harness = await startHarness()
+      await subscribeBothClientEventStreams(harness)
+
+      await harness.runtime.createManagedWorktree({
+        repoSelector: `id:${FOLDER_REPO_ID}`,
+        name: 'cli-created-workspace',
+        activate: !runHooks,
+        runHooks
+      })
+
+      harness.runtime.notifyReposChangedForRemoteClients()
+      for (const [reader, id] of [
+        [harness.readerA, 'events-a'],
+        [harness.readerB, 'events-b']
+      ] as const) {
+        const observed: string[] = []
+        for (;;) {
+          const type = resultType(await reader.next(id))
+          observed.push(type ?? 'unknown')
+          if (type === 'reposChanged' || type === 'activateWorktree') {
+            break
+          }
+        }
+        expect(observed).not.toContain('activateWorktree')
+        expect(observed).toContain('worktreesChanged')
+      }
+      expect(harness.activateWorktree).toHaveBeenCalled()
+    }
+  )
+
+  it('keeps host worktree activation off paired observers', async () => {
     const harness = await startHarness()
     await subscribeBothClientEventStreams(harness)
-
-    // Why: a headless server's only viewer is a remote client, so an in-process/CLI
-    // create must keep reaching clients; only paired-client callers are scoped.
-    await harness.runtime.createManagedWorktree({
-      repoSelector: `id:${FOLDER_REPO_ID}`,
-      name: 'cli-created-workspace',
-      activate: true
-    })
-
-    const [eventA, eventB] = await Promise.all([
-      harness.readerA.next('events-a', (response) => resultType(response) === 'activateWorktree'),
-      harness.readerB.next('events-b', (response) => resultType(response) === 'activateWorktree')
-    ])
-    expect([resultType(eventA), resultType(eventB)]).toEqual([
-      'activateWorktree',
-      'activateWorktree'
-    ])
-    expect(harness.activateWorktree).toHaveBeenCalled()
+    await harness.runtime.activateManagedWorktree(`id:${CLIENT_A_WORKTREE_ID}`)
+    harness.runtime.notifyReposChangedForRemoteClients()
+    expect(resultType(await harness.readerA.next('events-a'))).toBe('reposChanged')
+    expect(resultType(await harness.readerB.next('events-b'))).toBe('reposChanged')
+    expect(harness.hostSelections.worktreeId).toBe(CLIENT_A_WORKTREE_ID)
   })
 
   it('projects session-tab activation only to the paired caller across fanout and reconnect', async () => {

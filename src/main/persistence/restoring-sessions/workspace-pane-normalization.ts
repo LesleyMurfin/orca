@@ -2,15 +2,20 @@ import type { LegacyPaneKeyAliasEntry, PersistedState } from '../../../shared/pe
 import type { TerminalLayoutSnapshot } from '../../../shared/terminal-tab-types'
 import type { WorkspaceSessionState } from '../../../shared/workspace-session-state-types'
 import type { MigrationUnsupportedPtyEntry } from '../../../shared/agent-status-types'
+import { agentHookServer } from '../../agent-hooks/server'
 import {
   LOCAL_EXECUTION_HOST_ID,
   toSshExecutionHostId,
   type ExecutionHostId
 } from '../../../shared/execution-host'
 import type { SshRemotePtyLease } from '../../../shared/ssh-types'
-import { isTerminalLeafId, makePaneKey, parsePaneKey } from '../../../shared/stable-pane-id'
+import { isTerminalLeafId, parsePaneKey } from '../../../shared/stable-pane-id'
 import { findCrossHostPaneTabIds, withoutPaneTabIds } from './cross-host-pane-tab-ids'
-import { registerLegacyPaneKeyAliasesForTab } from './pane-identity-migration'
+import {
+  createLazyTerminalTabLookup,
+  collectLegacyPaneKeyAliasesForTab,
+  type PaneAliasNormalizationOptions
+} from './pane-identity-migration'
 import { normalizeTerminalLayoutSnapshotForPersistence } from './terminal-layout-normalization'
 import {
   legacyMigrationUnsupportedRowsToAliasEntries,
@@ -19,11 +24,22 @@ import {
   migrationUnsupportedEntriesEqual,
   normalizeLegacyPaneKeyAliasEntries
 } from './pane-alias-normalization'
+import {
+  remapAcknowledgedAgentPaneKeys,
+  remapActivityClearedAtPaneKeys,
+  remapManuallyUnreadTurnPaneKeys
+} from './pane-key-remapping'
+
+export {
+  remapAcknowledgedAgentPaneKeys,
+  remapActivityClearedAtPaneKeys,
+  remapManuallyUnreadTurnPaneKeys
+} from './pane-key-remapping'
 
 export function normalizeWorkspaceSessionPaneIdentities(
   session: WorkspaceSessionState,
   priorLayoutsByTabId: Record<string, TerminalLayoutSnapshot> = {},
-  options: { skipAliasTabIds?: ReadonlySet<string> } = {}
+  options: PaneAliasNormalizationOptions & { skipAliasTabIds?: ReadonlySet<string> } = {}
 ): {
   session: WorkspaceSessionState
   changed: boolean
@@ -35,11 +51,9 @@ export function normalizeWorkspaceSessionPaneIdentities(
   let changed = false
   const leafIdByInputLeafIdByTabId = new Map<string, Map<string, string>>()
   const leafIdByPtyIdByTabId = new Map<string, Map<string, string>>()
-  // Why always empty: legacy numeric pane keys are bridged by aliases now, not persisted as
-  // restart-required rows; the field stays so callers keep clearing stale rows written by old builds.
-  const migrationUnsupportedEntries: MigrationUnsupportedPtyEntry[] = []
   const legacyPaneKeyAliasEntries: LegacyPaneKeyAliasEntry[] = []
   const terminalLayoutsByTabId: Record<string, TerminalLayoutSnapshot> = {}
+  let tabsById: ReturnType<typeof createLazyTerminalTabLookup> | null = null
   for (const [tabId, layout] of Object.entries(session.terminalLayoutsByTabId ?? {})) {
     const normalized = normalizeTerminalLayoutSnapshotForPersistence(
       layout,
@@ -48,16 +62,28 @@ export function normalizeWorkspaceSessionPaneIdentities(
     terminalLayoutsByTabId[tabId] = normalized.snapshot
     leafIdByInputLeafIdByTabId.set(tabId, normalized.leafIdByInputLeafId)
     if (!options.skipAliasTabIds?.has(tabId)) {
-      const tabAliasEntries = registerLegacyPaneKeyAliasesForTab({
-        session,
+      tabsById ??= createLazyTerminalTabLookup(session)
+      const tabAliasEntries = collectLegacyPaneKeyAliasesForTab({
         tabId,
+        tab: tabsById.get(tabId),
         inputLayout: layout,
         normalizedLayout: normalized.snapshot,
         leafIdByInputLeafId: normalized.leafIdByInputLeafId
       })
       // Why: old split layouts can generate enough alias rows to exceed V8's argument limit if spread into push().
       for (const entry of tabAliasEntries) {
-        legacyPaneKeyAliasEntries.push(entry)
+        if (options.registerAliases !== false) {
+          agentHookServer.registerPaneKeyAlias(
+            entry.legacyPaneKey,
+            entry.stablePaneKey,
+            entry.ptyId
+          )
+        }
+        if (entry.ptyId) {
+          legacyPaneKeyAliasEntries.push({ ...entry, ptyId: entry.ptyId })
+        } else {
+          options.collectUnboundPaneAlias?.(entry)
+        }
       }
     }
     const leafIdByPtyId = new Map<string, string>()
@@ -81,7 +107,8 @@ export function normalizeWorkspaceSessionPaneIdentities(
     changed,
     leafIdByInputLeafIdByTabId,
     leafIdByPtyIdByTabId,
-    migrationUnsupportedEntries,
+    // Aliases replace old restart-required rows; callers still clear that legacy field.
+    migrationUnsupportedEntries: [],
     legacyPaneKeyAliasEntries
   }
 }
@@ -147,7 +174,10 @@ function mergeAcknowledgementLeafIdMapsByTabId(
   return merged
 }
 
-export function normalizePersistedPaneIdentityState(state: PersistedState): {
+export function normalizePersistedPaneIdentityState(
+  state: PersistedState,
+  options: PaneAliasNormalizationOptions = {}
+): {
   state: PersistedState
   changed: boolean
   migrationUnsupportedEntries: MigrationUnsupportedPtyEntry[]
@@ -158,6 +188,7 @@ export function normalizePersistedPaneIdentityState(state: PersistedState): {
     state.workspaceSession,
     {},
     {
+      ...options,
       skipAliasTabIds: crossHostTabIds
     }
   )
@@ -184,6 +215,7 @@ export function normalizePersistedPaneIdentityState(state: PersistedState): {
         hostSession,
         {},
         {
+          ...options,
           skipAliasTabIds: crossHostTabIds
         }
       )
@@ -215,6 +247,14 @@ export function normalizePersistedPaneIdentityState(state: PersistedState): {
     state.ui?.acknowledgedAgentsByPaneKey,
     withoutPaneTabIds(acknowledgementLeafIdByInputLeafIdByTabId, crossHostTabIds)
   )
+  const remappedActivityCutoffs = remapActivityClearedAtPaneKeys(
+    state.ui?.activityClearedAtByPaneKey,
+    withoutPaneTabIds(acknowledgementLeafIdByInputLeafIdByTabId, crossHostTabIds)
+  )
+  const remappedManualUnread = remapManuallyUnreadTurnPaneKeys(
+    state.ui?.manuallyUnreadTurnsByPaneKey,
+    withoutPaneTabIds(acknowledgementLeafIdByInputLeafIdByTabId, crossHostTabIds)
+  )
   const migrationUnsupportedChanged = !migrationUnsupportedEntriesEqual(
     state.migrationUnsupportedPtyEntries ?? [],
     mergedMigrationUnsupportedEntries
@@ -229,7 +269,9 @@ export function normalizePersistedPaneIdentityState(state: PersistedState): {
     !remappedLeases.changed &&
     !migrationUnsupportedChanged &&
     !legacyAliasesChanged &&
-    !remappedAcknowledgements.changed
+    !remappedAcknowledgements.changed &&
+    !remappedActivityCutoffs.changed &&
+    !remappedManualUnread.changed
   ) {
     return {
       state,
@@ -246,11 +288,21 @@ export function normalizePersistedPaneIdentityState(state: PersistedState): {
       sshRemotePtyLeases: remappedLeases.leases,
       migrationUnsupportedPtyEntries: mergedMigrationUnsupportedEntries,
       legacyPaneKeyAliasEntries: mergedLegacyPaneKeyAliasEntries,
-      ...(remappedAcknowledgements.changed
+      ...(remappedAcknowledgements.changed ||
+      remappedActivityCutoffs.changed ||
+      remappedManualUnread.changed
         ? {
             ui: {
               ...state.ui,
-              acknowledgedAgentsByPaneKey: remappedAcknowledgements.acknowledgements
+              ...(remappedAcknowledgements.changed
+                ? { acknowledgedAgentsByPaneKey: remappedAcknowledgements.acknowledgements }
+                : {}),
+              ...(remappedActivityCutoffs.changed
+                ? { activityClearedAtByPaneKey: remappedActivityCutoffs.cutoffs }
+                : {}),
+              ...(remappedManualUnread.changed
+                ? { manuallyUnreadTurnsByPaneKey: remappedManualUnread.turns }
+                : {})
             }
           }
         : {})
@@ -259,51 +311,4 @@ export function normalizePersistedPaneIdentityState(state: PersistedState): {
     migrationUnsupportedEntries: mergedMigrationUnsupportedEntries,
     legacyPaneKeyAliasEntries: mergedLegacyPaneKeyAliasEntries
   }
-}
-
-export function remapAcknowledgedAgentPaneKeys(
-  acknowledgements: PersistedState['ui']['acknowledgedAgentsByPaneKey'],
-  leafIdByInputLeafIdByTabId: Map<string, Map<string, string>>
-): { acknowledgements: PersistedState['ui']['acknowledgedAgentsByPaneKey']; changed: boolean } {
-  if (!acknowledgements || Object.keys(acknowledgements).length === 0) {
-    return { acknowledgements, changed: false }
-  }
-
-  let changed = false
-  const next: NonNullable<PersistedState['ui']['acknowledgedAgentsByPaneKey']> = {}
-  const setAcknowledgement = (paneKey: string, acknowledgedAt: number): void => {
-    const existing = next[paneKey]
-    next[paneKey] = existing === undefined ? acknowledgedAt : Math.max(existing, acknowledgedAt)
-  }
-  for (const [paneKey, acknowledgedAt] of Object.entries(acknowledgements)) {
-    const parsed = parsePaneKey(paneKey)
-    if (parsed) {
-      setAcknowledgement(paneKey, acknowledgedAt)
-      continue
-    }
-
-    const delimiter = paneKey.indexOf(':')
-    if (delimiter <= 0 || delimiter === paneKey.length - 1) {
-      setAcknowledgement(paneKey, acknowledgedAt)
-      continue
-    }
-
-    const tabId = paneKey.slice(0, delimiter)
-    const legacyLeafId = paneKey.slice(delimiter + 1)
-    const remappedLeafId = leafIdByInputLeafIdByTabId.get(tabId)?.get(legacyLeafId)
-    if (!remappedLeafId || !isTerminalLeafId(remappedLeafId)) {
-      setAcknowledgement(paneKey, acknowledgedAt)
-      continue
-    }
-
-    try {
-      // Why: when a legacy leaf is promoted to a UUID, carry the read marker over so seen rows don't come back unread.
-      setAcknowledgement(makePaneKey(tabId, remappedLeafId), acknowledgedAt)
-      changed = true
-    } catch {
-      setAcknowledgement(paneKey, acknowledgedAt)
-    }
-  }
-
-  return { acknowledgements: next, changed }
 }

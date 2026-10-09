@@ -26,19 +26,36 @@ fi
 [[ -n "${ORCA_OPENCODE_CONFIG_DIR:-}" ]] && export OPENCODE_CONFIG_DIR="${ORCA_OPENCODE_CONFIG_DIR}"
 [[ -n "${ORCA_MIMOCODE_HOME:-}" ]] && export MIMOCODE_HOME="${ORCA_MIMOCODE_HOME}"
 [[ -n "${ORCA_REMOTE_CLI_BIN_DIR:-}" ]] && case ":$PATH:" in *:"${ORCA_REMOTE_CLI_BIN_DIR}":*) ;; *) export PATH="${ORCA_REMOTE_CLI_BIN_DIR}:$PATH" ;; esac
+if [ -n "${ORCA_CLI_BIN_DIR:-}" ]; then
+  case "${PATH:-}" in
+    "$ORCA_CLI_BIN_DIR"|"$ORCA_CLI_BIN_DIR":*) ;;
+    *) export PATH="$ORCA_CLI_BIN_DIR${PATH:+:$PATH}" ;;
+  esac
+fi
 # Why: OMP does not auto-load Orca's managed status extension; wrap only
 # interactive launch invocations so subcommands such as `omp config` keep
 # their normal argv shape.
 __orca_omp_should_skip_extension() {
   case "${1:-}" in
-    help|--help|-h|--version|-v) return 0 ;;
-    __complete|acp|agents|auth-broker|auth-gateway|bench|commit|completions|config|dry-balance|gallery|grep|grievances|install|join|models|plugin|read|say|search|setup|shell|ssh|stats|tiny-models|token|ttsr|update|usage|worktree|q|wt) return 0 ;;
+    'help'|'--help'|'-h'|'--version'|'-v') return 0 ;;
+    '__complete'|'acp'|'agents'|'auth-broker'|'auth-gateway'|'bench'|'commit'|'completions'|'config'|'dry-balance'|'gallery'|'grep'|'grievances'|'install'|'join'|'models'|'plugin'|'read'|'say'|'search'|'setup'|'shell'|'ssh'|'stats'|'tiny-models'|'token'|'ttsr'|'update'|'usage'|'worktree'|'q'|'wt') return 0 ;;
   esac
   return 1
 }
-__orca_omp() {
-  local __orca_use_extension=1
-  __orca_omp_should_skip_extension "${1:-}" && __orca_use_extension=0
+__orca_omp_cwd_is_usable() {
+  local __orca_physical_cwd
+  [[ -x . ]] || return 1
+  if [[ -n "${PWD:-}" && -d "${PWD:-}" ]]; then
+    [[ "${PWD}" -ef . ]]
+  else
+    # Why compare the path: shell builtins can print a cached path for a deleted cwd.
+    __orca_physical_cwd="$(builtin pwd -P 2>/dev/null)" || return 1
+    [[ -d "$__orca_physical_cwd" && "$__orca_physical_cwd" -ef . ]]
+  fi
+}
+__orca_omp_invoke() {
+  local __orca_use_extension="$1"
+  shift
   if [[ $__orca_use_extension -eq 1 && -n "${ORCA_OMP_STATUS_EXTENSION:-}" && -f "${ORCA_OMP_STATUS_EXTENSION}" ]]; then
     if [[ "${1:-}" == "launch" ]]; then
       shift
@@ -50,12 +67,59 @@ __orca_omp() {
     command omp "$@"
   fi
 }
+__orca_omp() {
+  local __orca_use_extension=1
+  __orca_omp_should_skip_extension "${1:-}" && __orca_use_extension=0
+  if ! __orca_omp_cwd_is_usable; then
+    local __orca_logical_cwd="${PWD:-${ORCA_WORKTREE_PATH:-${ORCA_ROOT_PATH:-}}}"
+    # Why: a restored shell can retain the deleted directory inode after its path is recreated.
+    (
+      if [[ -z "$__orca_logical_cwd" ]]; then
+        printf 'Orca: OMP cannot start because no terminal working directory is available. Open a new terminal in an existing directory.\n' >&2
+        return 1
+      fi
+      if ! builtin cd -P -- "$__orca_logical_cwd" 2>/dev/null; then
+        printf 'Orca: OMP cannot access the terminal working directory "%s". Open a new terminal in an existing directory.\n' "$__orca_logical_cwd" >&2
+        return 1
+      fi
+      __orca_omp_invoke "$__orca_use_extension" "$@"
+    )
+  else
+    __orca_omp_invoke "$__orca_use_extension" "$@"
+  fi
+}
 if [[ -n "${ORCA_OMP_STATUS_EXTENSION:-}" ]]; then
   # Why the function reserved word: it suppresses alias expansion of the name, which
   # an `alias omp` otherwise rewrites at parse time, aborting the rest of the file.
   function omp { __orca_omp "$@"; }
 fi
 
+# Why: a typed alias expands inside the shell, after pane launch prep.
+# Why unalias inside the substitution: an alias named codex makes command -v
+# report the alias text, and the subshell leaves the user's own alias intact.
+# Why || : twice — zsh alone aborts inside the substitution, but every shell's
+# assignment adopts its exit status, so an absent codex trips set -e in bash too.
+__orca_codex_binary="$(unalias codex 2>/dev/null || :; command -v codex 2>/dev/null || :)"
+if [[ -n "${__orca_codex_binary:-}" && -x "${__orca_codex_binary}" ]]; then
+  # Why the function reserved word: it suppresses alias expansion of the name,
+  # which otherwise rewrites this header at parse time and aborts the whole file.
+  function codex {
+    # Why local: zsh's warn_create_global warns for each global a function creates.
+    local __orca_codex_arg __orca_codex_isolate="${ORCA_CODEX_ISOLATE:-1}"
+    if [[ -n "${ORCA_CODEX_LAUNCH_PREFLIGHT:-}" && -x "${ORCA_CODEX_LAUNCH_PREFLIGHT}" ]]; then
+      "${ORCA_CODEX_LAUNCH_PREFLIGHT}" agent hooks prepare-codex >/dev/null 2>&1 || :
+    fi
+    for __orca_codex_arg in "$@"; do
+      case "$__orca_codex_arg" in agents|queue|--no-daemon|--remote|--remote=*) __orca_codex_isolate=0 ;; esac
+    done
+    # Why probe every launch: a cached answer goes stale across an upgrade, and 0.155 and older exit 2 on the flag.
+    if [[ "$__orca_codex_isolate" != 0 ]]; then
+      case "$(command codex --help 2>/dev/null </dev/null)" in *--no-daemon*) set -- --no-daemon "$@" ;; esac
+    fi
+    command codex "$@"
+  }
+fi
+unset __orca_codex_binary
 if [[ -n "${ORCA_HISTFILE:-}" ]]; then
   HISTFILE="$ORCA_HISTFILE"
   builtin unset ORCA_HISTFILE

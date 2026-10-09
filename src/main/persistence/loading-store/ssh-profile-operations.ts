@@ -14,6 +14,7 @@ import {
   removeClaudeLivePtySessionId as removeClaudeLivePtySessionIdOperation,
   removeDeletedSshConfigAlias as removeDeletedSshConfigAliasOperation,
   removeRemovedSshTargetTombstone as removeRemovedSshTargetTombstoneOperation,
+  releaseRemovedSshTargetTombstone as releaseRemovedSshTargetTombstoneOperation,
   removeSshTarget as removeSshTargetOperation,
   updateSshTarget as updateSshTargetOperation
 } from '../leasing-ssh-ptys/ssh-target-state'
@@ -21,6 +22,7 @@ import {
   reassignSshTargetId as reassignSshTargetIdOperation,
   type SshTargetReassignmentOperations
 } from '../leasing-ssh-ptys/ssh-target-reassignment'
+import { allocateSshTargetGeneration as allocateSshTargetGenerationOperation } from '../scheduling-automations/automation-owner-projection'
 
 import type { StoreRuntimeState } from './store-runtime-state'
 import type { WriteSchedulingOperations } from './write-scheduling'
@@ -28,8 +30,12 @@ import type { WriteFlushBarrierOperations } from './write-flush-barriers'
 import type { RepoLifecycleOperations } from './repo-lifecycle-operations'
 import { syncProjectHostSetupCompatibilityState } from './repo-lifecycle-operations'
 import { scheduleSave } from './write-scheduling'
+import { forgetSshConnectionGeneration } from '../../ssh/ssh-connection-generation'
 
-type SshProfileOperationsRuntime = Pick<StoreRuntimeState, 'protectedSecrets' | 'state'>
+type SshProfileOperationsRuntime = Pick<
+  StoreRuntimeState,
+  'dirtyProfileStateDomains' | 'protectedSecrets' | 'state'
+>
 
 const sshProfileOperationsContext = Symbol('SshProfileOperations')
 type SshProfileOperationsContext = {
@@ -68,7 +74,18 @@ export class SshProfileOperations {
   }
 
   removeSshTarget(id: string): void {
+    const existed = this.getSshTarget(id) !== undefined
     removeSshTargetOperation(getSshTargetStateOperations(this), id)
+    if (existed) {
+      forgetSshConnectionGeneration(id)
+    }
+  }
+
+  allocateSshTargetGeneration(): number {
+    const context = this[sshProfileOperationsContext]
+    return allocateSshTargetGenerationOperation(context.runtime.state, () =>
+      scheduleSave(context.scheduling)
+    )
   }
 
   getClaudeLivePtySessionIds(): string[] {
@@ -107,6 +124,10 @@ export class SshProfileOperations {
     addRemovedSshTargetTombstoneOperation(getSshTargetStateOperations(this), tombstone)
   }
 
+  releaseRemovedSshTargetTombstone(oldTargetId: string): void {
+    releaseRemovedSshTargetTombstoneOperation(getSshTargetStateOperations(this), oldTargetId)
+  }
+
   removeRemovedSshTargetTombstone(oldTargetId: string): void {
     removeRemovedSshTargetTombstoneOperation(getSshTargetStateOperations(this), oldTargetId)
   }
@@ -128,12 +149,17 @@ export function getSshTargetStateOperations(owner: SshProfileOperations): SshTar
     state: owner[sshProfileOperationsContext].runtime.state,
     protectedSecrets: owner[sshProfileOperationsContext].runtime.protectedSecrets,
     scheduleSave: () => scheduleSave(owner[sshProfileOperationsContext].scheduling),
-    flush: () => owner[sshProfileOperationsContext].flushBarriers.flush()
+    flush: () => {
+      owner[sshProfileOperationsContext].runtime.dirtyProfileStateDomains?.add(
+        'claudeLivePtySessionIds'
+      )
+      owner[sshProfileOperationsContext].flushBarriers.flush()
+    }
   }
 }
 
 export function installSshProfileOperationsContext(
-  target: object,
+  target: SshProfileOperations,
   source: SshProfileOperations
 ): void {
   Object.defineProperty(target, sshProfileOperationsContext, {

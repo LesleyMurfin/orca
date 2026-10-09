@@ -10,25 +10,28 @@ import type { GitStatusResult } from '../../../../shared/git-status-types'
 import { parseExecutionHostId } from '../../../../shared/execution-host'
 import { getWorktreeHostIdentity } from '../../../../shared/worktree/host-qualified-identity'
 import { isFolderWorkspaceDelete } from './delete-worktree-dialog-copy'
+import { orderDeleteWorktreeStatusHydrationTargets } from './delete-worktree-dirty-change-counts'
 
-const EMPTY_STATUS_BY_IDENTITY = new Map<string, GitStatusResult['entries']>()
+const EMPTY_STATUS_BY_IDENTITY = new Map<string, GitStatusResult['entries'] | null>()
 
 export function useDeleteWorktreeStatusHydration({
   isOpen,
   deleteTargets,
+  visibleTargets,
   repoMap
 }: {
   isOpen: boolean
   deleteTargets: readonly Worktree[]
+  visibleTargets: readonly Worktree[]
   repoMap: ReadonlyMap<string, Repo>
-}): ReadonlyMap<string, GitStatusResult['entries']> {
+}): ReadonlyMap<string, GitStatusResult['entries'] | null> {
   const repos = useAppStore((state) => state.repos)
   const settings = useAppStore((state) => state.settings)
   const generation = isOpen ? deleteTargets.map(getWorktreeHostIdentity).join('\n') : ''
   const generationRef = useRef(generation)
-  const [statusByIdentity, setStatusByIdentity] = useState<Map<string, GitStatusResult['entries']>>(
-    () => new Map()
-  )
+  const [statusByIdentity, setStatusByIdentity] = useState<
+    Map<string, GitStatusResult['entries'] | null>
+  >(() => new Map())
   const currentStatusByIdentity =
     generationRef.current === generation ? statusByIdentity : EMPTY_STATUS_BY_IDENTITY
 
@@ -39,9 +42,15 @@ export function useDeleteWorktreeStatusHydration({
       return
     }
     const gitStatusByWorktree = useAppStore.getState().gitStatusByWorktree
-    const targets = deleteTargets.filter(
-      (target) => !target.isMainWorktree && !isFolderWorkspaceDelete(repoMap, target)
-    )
+    const currentState = useAppStore.getState()
+    const targets = orderDeleteWorktreeStatusHydrationTargets({
+      targets: deleteTargets.filter(
+        (target) => !target.isMainWorktree && !isFolderWorkspaceDelete(repoMap, target)
+      ),
+      visibleTargets,
+      activeWorktreeId: currentState.activeWorktreeId,
+      activeExecutionHostId: currentState.activeWorkspaceExecutionHostId
+    })
     const controller = new AbortController()
     for (const target of targets) {
       const identity = getWorktreeHostIdentity(target)
@@ -72,7 +81,7 @@ export function useDeleteWorktreeStatusHydration({
             ? (owner?.connectionId ?? undefined)
             : (getConnectionId(target.id) ?? undefined)
         },
-        { signal: controller.signal }
+        { admissionTier: 'background', includeLineStats: false, signal: controller.signal }
       )
         .then((status) => {
           if (!controller.signal.aborted && generationRef.current === generation) {
@@ -80,13 +89,15 @@ export function useDeleteWorktreeStatusHydration({
           }
         })
         .catch(() => {
-          // Best effort only; deletion performs the authoritative backend check.
+          if (!controller.signal.aborted && generationRef.current === generation) {
+            setStatusByIdentity((current) => new Map(current).set(identity, null))
+          }
         })
     }
     return () => {
       controller.abort()
     }
-  }, [deleteTargets, generation, isOpen, repoMap, repos, settings])
+  }, [deleteTargets, generation, isOpen, repoMap, repos, settings, visibleTargets])
 
   return currentStatusByIdentity
 }

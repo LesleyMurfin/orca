@@ -1,3 +1,4 @@
+import { shouldUseShellReadyStartupDelivery } from '../../../shared/codex-startup-delivery'
 import { win32 as pathWin32 } from 'node:path'
 import { isWindowsGitBashShellPath, resolveWindowsGitBashShellPath } from '../../git-bash'
 import { isPwshAvailable } from '../../pwsh'
@@ -32,7 +33,6 @@ import {
   recognizeAgentProcessFromCommandLine,
   type RecognizedAgentProcess
 } from '../../../shared/agent-process-recognition'
-import { shouldUseShellReadyStartupDelivery } from '../../../shared/codex-startup-delivery'
 import { ORCA_HERMES_STARTUP_QUERY_ENV } from '../../../shared/hermes-startup-query'
 import { WINDOWS_GIT_BASH_SHELL } from '../../../shared/windows-terminal-shell'
 import { getShellLaunchConfig, resolvePtyShellPath } from '../shell-ready'
@@ -60,7 +60,6 @@ export function createPtyShellLaunchPlan(
   let startupCommandDeliveredInShellArgs = false
   let windowsFallbackAttempts: WindowsShellSpawnAttempt[] = []
   const startupAgentRecognition = recognizeAgentProcessFromCommandLine(opts.command)
-  const isCodexStartupCommand = startupAgentRecognition?.agent === 'codex'
   const requestedCwd = opts.cwd || resolveSafePtyDefaultCwd()
   if (opts.command && startupAgentRecognition) {
     assertSafeAgentStartupCwd(requestedCwd, opts.command)
@@ -170,6 +169,9 @@ export function createPtyShellLaunchPlan(
       if (env.CLAUDE_CONFIG_DIR) {
         addWslEnvKeys(env, ['CLAUDE_CONFIG_DIR'])
       }
+      if (env.ORCA_CLAUDE_PROFILE_POINTER) {
+        addWslEnvKeys(env, ['ORCA_CLAUDE_PROFILE_POINTER', 'ORCA_CLAUDE_INJECTED_CONFIG_DIR'])
+      }
       if (env[ORCA_HERMES_STARTUP_QUERY_ENV] !== undefined) {
         addWslEnvKeys(env, [ORCA_HERMES_STARTUP_QUERY_ENV])
       }
@@ -192,12 +194,14 @@ export function createPtyShellLaunchPlan(
     }
     const waitsForShellReady =
       Boolean(opts.command) &&
-      (!isCodexStartupCommand ||
+      (startupAgentRecognition?.agent !== 'codex' ||
         shouldUseShellReadyStartupDelivery({
-          command: opts.command as string,
-          startupCommandDelivery: opts.startupCommandDelivery
+          command: opts.command,
+          startupCommandDelivery: opts.startupCommandDelivery,
+          shellPath
         }))
     delete env.ORCA_SHELL_FEATURES
+    const userShellArgs = !opts.command && !opts.launchAgent ? opts.terminalShellArgs : undefined
     const shellLaunch = getShellLaunchConfig(
       shellPath,
       selectShellStartupFeatures({
@@ -206,10 +210,15 @@ export function createPtyShellLaunchPlan(
         hasStartupCommand: Boolean(opts.command),
         waitsForShellReady,
         emitsStartupIdentity: waitsForShellReady
-      })
+      }),
+      {
+        hasStartupCommand: Boolean(opts.command),
+        inheritedXdgDataDirs: env.XDG_DATA_DIRS,
+        shellArgs: userShellArgs
+      }
     )
     Object.assign(env, shellLaunch.env)
-    shellArgs = shellLaunch.args ?? ['-l']
+    shellArgs = userShellArgs ?? shellLaunch.args ?? ['-l']
   }
 
   seedPowerlevel10kWizardEnv(env, { envToDelete: opts.envToDelete })

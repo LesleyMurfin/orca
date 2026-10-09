@@ -2,20 +2,20 @@ import { useEffect, type Dispatch, type SetStateAction } from 'react'
 import { getShortcutPlatform } from '@/hooks/useShortcutLabel'
 import { useAppStore } from '@/store'
 import { keybindingMatchesAction } from '../../../../../shared/keybindings'
-import { browserOverlayOwnsShortcutTarget } from '../describe-page/browser-overlay-shortcut-target'
-import type { BrowserFindShortcutScope } from '../describe-page/browser-page-types'
+import { browserChromeShortcutOwnsEvent } from '../describe-page/browser-overlay-shortcut-target'
+import type { BrowserChromeShortcutScope } from '../describe-page/browser-page-types'
 
 export function useBrowserPageFindShortcuts({
   browserTabId,
   workspaceId,
   isActive,
-  findShortcutScope,
+  chromeShortcutScope,
   setFindOpen
 }: {
   browserTabId: string
   workspaceId: string
   isActive: boolean
-  findShortcutScope: BrowserFindShortcutScope
+  chromeShortcutScope: BrowserChromeShortcutScope
   setFindOpen: Dispatch<SetStateAction<boolean>>
 }): void {
   const keybindings = useAppStore((state) => state.keybindings)
@@ -23,7 +23,7 @@ export function useBrowserPageFindShortcuts({
   // Cmd/Ctrl+F — find in page (renderer path: focus on browser chrome)
   // Why: unlike bare C/S grab shortcuts, Cmd+F should always open find even from the address bar (matches Chrome/Safari).
   useEffect(() => {
-    if (findShortcutScope === 'inactive') {
+    if (chromeShortcutScope === 'inactive') {
       return
     }
     const shortcutPlatform = getShortcutPlatform()
@@ -31,10 +31,7 @@ export function useBrowserPageFindShortcuts({
       if (!keybindingMatchesAction('browser.find', e, shortcutPlatform, keybindings)) {
         return
       }
-      if (
-        findShortcutScope === 'owned-target' &&
-        !browserOverlayOwnsShortcutTarget(e.target, workspaceId)
-      ) {
+      if (!browserChromeShortcutOwnsEvent(chromeShortcutScope, e, workspaceId)) {
         return
       }
       e.preventDefault()
@@ -43,7 +40,7 @@ export function useBrowserPageFindShortcuts({
     }
     window.addEventListener('keydown', handleKeyDown, true)
     return () => window.removeEventListener('keydown', handleKeyDown, true)
-  }, [findShortcutScope, keybindings, setFindOpen, workspaceId])
+  }, [chromeShortcutScope, keybindings, setFindOpen, workspaceId])
 
   // Cmd/Ctrl+F — find in page (IPC path: focus inside webview guest)
   // Why: a focused guest is a separate Chromium process, so main forwards the chord back here.

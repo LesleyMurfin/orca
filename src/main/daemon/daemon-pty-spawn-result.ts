@@ -1,5 +1,7 @@
 import { isAgentSessionClaimedSpawnResult } from '../../shared/agent-session-host-authority'
 import { parseTerminalKittyKeyboardFlags } from '../../shared/terminal-kitty-keyboard-flags'
+import { daemonSpawnResultIdentity } from './daemon-spawn-result-identity'
+import { retireUnexpectedAttachOnlySpawn } from './daemon-attach-only-retirement'
 import { DaemonPtySpawnRequest, type DaemonPtySpawnContext } from './daemon-pty-spawn-request'
 import { providerSequenceFromCreateOrAttach } from './daemon-pty-provider-sequence'
 import { takeHistoryRecoveryFreeze } from './daemon-history-recovery-freeze'
@@ -17,9 +19,8 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
       operation,
       historyRecovery,
       requestedSessionId,
-      emulateLegacyAttachOnly,
-      restoreSkippedForLiveSession,
-      detectColdRestore
+      attachOnly,
+      restoreSkippedForLiveSession
     } = context
     let { sessionId, wslDistro, restoreInfo, effectiveCwd, effectiveCols, effectiveRows } = context
     const createOrAttach = (historySeedSegments: readonly string[] | null) => {
@@ -32,6 +33,8 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
       return this.createOrAttachSpawn(context, historySeedSegments)
     }
     let result = initialResult
+    const finalizeSpawnResult = (spawnResult: PtySpawnResult): PtySpawnResult =>
+      this.resultForExitBeforeSpawnReply(sessionId, result, operation) ?? spawnResult
     let historySeedSegments = restoreInfo ? getRecoveredHistorySeedSegments(restoreInfo) : null
     const adoptSpawnResultSession = async (spawnResult: CreateOrAttachResult): Promise<void> => {
       const requestedSessionId = sessionId
@@ -58,9 +61,11 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
       restoreInfo = null
       historySeedSegments = null
     }
-    if (emulateLegacyAttachOnly && result.isNew) {
+    if (attachOnly && result.isNew) {
       operation.ignoreNextExit = true
-      await this.client.request('kill', { sessionId: requestedSessionId, immediate: true })
+      await retireUnexpectedAttachOnlySpawn(requestedSessionId, () =>
+        this.client.request('kill', { sessionId: requestedSessionId, immediate: true })
+      )
       throw new SessionNotFoundError(requestedSessionId)
     }
     await adoptSpawnResultSession(result)
@@ -74,10 +79,6 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
     if (result.incarnationId) {
       this.sessionIncarnations.set(sessionId, result.incarnationId)
     }
-    const claimResult = (): Pick<PtySpawnResult, 'agentSessionEnsure'> | Record<string, never> =>
-      result.agentSessionEnsure ? { agentSessionEnsure: result.agentSessionEnsure } : {}
-    const incarnationResult = (): Pick<PtySpawnResult, 'incarnationId'> | Record<string, never> =>
-      result.incarnationId ? { incarnationId: result.incarnationId } : {}
     let providerWslDistro = result.wslDistro === undefined ? wslDistro : result.wslDistro
     // Why: explicit null from a current daemon overrides the caller's WSL preference; undefined keeps compatibility with older daemons.
     wslDistro = providerWslDistro ?? undefined
@@ -87,8 +88,6 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
     } else if (providerWslDistro === null || result.isNew) {
       this.wslDistrosBySessionId.delete(sessionId)
     }
-    const launchIdentity = (): { launchAgent?: NonNullable<typeof result.launchAgent> } =>
-      result.launchAgent ? { launchAgent: result.launchAgent } : {}
 
     if (effectiveCwd) {
       this.initialCwds.set(sessionId, effectiveCwd)
@@ -110,22 +109,20 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
           this.historyManager.reopenSession(sessionId, recoveryFreeze)
         }
       }
-      return {
+      return finalizeSpawnResult({
         id: sessionId,
-        ...incarnationResult(),
+        ...daemonSpawnResultIdentity(result),
         pid,
-        ...claimResult(),
-        ...launchIdentity(),
         coldRestore: cachedRestore,
         ...(providerWslDistro !== undefined ? { wslDistro: providerWslDistro } : {}),
         ...(!result.isNew ? { isReattach: true } : {})
-      }
+      })
     }
 
     // Why: the probe→createOrAttach gap is racy — the session can exit in between, so re-detect to match the unprobed restore path.
     // Why ignoreCleanEnd: the raced exit event can write endedAt before the reply; nulling the restore here would delete the checkpoint instead of restoring it.
     if (!historyRecovery.identityChanged && result.isNew && restoreSkippedForLiveSession) {
-      restoreInfo = await detectColdRestore({ ignoreCleanEnd: true })
+      restoreInfo = await context.detectColdRestore({ ignoreCleanEnd: true })
       historySeedSegments = restoreInfo ? getRecoveredHistorySeedSegments(restoreInfo) : null
       if (restoreInfo && historySeedSegments && historySeedSegments.length > 0) {
         // Why: the aliveness probe raced with session death, so the first
@@ -163,7 +160,7 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
       !result.isNew &&
       result.historySeeded === false
     ) {
-      restoreInfo = await detectColdRestore()
+      restoreInfo = await context.detectColdRestore()
       historySeedSegments = restoreInfo ? getRecoveredHistorySeedSegments(restoreInfo) : null
     }
 
@@ -204,27 +201,23 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
       }
       if (coldRestore) {
         this.coldRestoreCache.set(sessionId, coldRestore)
-        return {
+        return finalizeSpawnResult({
           id: sessionId,
-          ...incarnationResult(),
+          ...daemonSpawnResultIdentity(result),
           pid,
-          ...claimResult(),
-          ...launchIdentity(),
           coldRestore,
           ...(providerWslDistro !== undefined ? { wslDistro: providerWslDistro } : {}),
           ...(providerSequence ? { providerSequence } : {}),
           ...(!result.isNew ? { isReattach: true } : {})
-        }
+        })
       }
-      return {
+      return finalizeSpawnResult({
         id: sessionId,
-        ...incarnationResult(),
+        ...daemonSpawnResultIdentity(result),
         pid,
-        ...claimResult(),
-        ...launchIdentity(),
         ...(providerWslDistro !== undefined ? { wslDistro: providerWslDistro } : {}),
         ...(providerSequence ? { providerSequence } : {})
-      }
+      })
     }
 
     if (this.historyManager && !historyRecovery.identityChanged && result.isNew) {
@@ -264,16 +257,14 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
 
     const isReattach = !result.isNew
     if (!isReattach || !result.snapshot) {
-      return {
+      return finalizeSpawnResult({
         id: sessionId,
-        ...incarnationResult(),
+        ...daemonSpawnResultIdentity(result),
         pid,
-        ...claimResult(),
-        ...launchIdentity(),
         ...(providerWslDistro !== undefined ? { wslDistro: providerWslDistro } : {}),
         ...(providerSequence ? { providerSequence } : {}),
         ...(isReattach ? { isReattach: true } : {})
-      }
+      })
     }
 
     const reattachSnapshot = await this.overlayDurableRestoreSnapshot(sessionId, result.snapshot)
@@ -285,18 +276,16 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
     const snapshotPrefix = reattachSnapshot.scrollbackAnsi + reattachSnapshot.rehydrateSequences
     const snapshotFrame = reattachSnapshot.snapshotAnsi
     const snapshotPayload = snapshotPrefix + snapshotFrame
-    // Why kitty flags ride beside the payload, not inside it: the snapshot reaches renderer xterms where POST_REPLAY_REATTACH_RESET's kitty reset must win (terminal-query-authority.md §kitty).
+    // Why kitty flags ride beside the payload, not inside it: renderers re-assert them in the replay epilogue, after the payload's screen switches (terminal-query-authority.md §kitty).
     // Why known `0` is no longer dropped: the pane tracker must be able to tell
     // "the app negotiated nothing" from "this reattach proved nothing".
     const kittyKeyboardFlags = parseTerminalKittyKeyboardFlags(
       reattachSnapshot.modes.kittyKeyboardFlags
     )
-    return {
+    return finalizeSpawnResult({
       id: sessionId,
-      ...incarnationResult(),
+      ...daemonSpawnResultIdentity(result),
       pid,
-      ...claimResult(),
-      ...launchIdentity(),
       ...(providerWslDistro !== undefined ? { wslDistro: providerWslDistro } : {}),
       snapshot: snapshotPayload,
       snapshotCols: reattachSnapshot.cols,
@@ -313,6 +302,9 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
       ...(kittyKeyboardFlags !== undefined
         ? { snapshotKittyKeyboardFlags: kittyKeyboardFlags }
         : {}),
+      ...(reattachSnapshot.terminalOwner
+        ? { snapshotTerminalOwner: reattachSnapshot.terminalOwner }
+        : {}),
       isReattach: true,
       isAlternateScreen: isAltScreen,
       // Why: the snapshot ANSI has no title frame; carry lastTitle beside it so main can seed title records after a relaunch.
@@ -321,6 +313,6 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
       ...(reattachSnapshot.pendingEscapeTailAnsi
         ? { pendingEscapeTailAnsi: reattachSnapshot.pendingEscapeTailAnsi }
         : {})
-    }
+    })
   }
 }

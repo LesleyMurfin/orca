@@ -4,14 +4,15 @@ import type { PtyRuntimeControllerDeps } from './controller-deps'
 import { spawnPtyFromRuntimeController } from './spawn'
 import {
   killPtyFromRuntimeController,
-  markReversibleStopsFromRuntimeController,
   retireRejectedPtyFromRuntimeController,
   stopAndWaitPtyFromRuntimeController
 } from './kill'
 import {
   attachPtyFromRuntimeController,
   clearBufferFromRuntimeController,
+  resetInputModesFromRuntimeController,
   confirmForegroundProcessFromRuntimeController,
+  confirmShellForegroundFromRuntimeController,
   getCwdFromRuntimeController,
   getForegroundProcessFromRuntimeController,
   getRendererSerializerGenerationFromRuntimeController,
@@ -20,14 +21,18 @@ import {
   hasPtyFromRuntimeController,
   hasRendererSerializerFromRuntimeController,
   inspectProcessFromRuntimeController,
-  listProcessesFromRuntimeController,
-  listProcessesWithHostScopeFromRuntimeController,
   probePtyLivenessFromRuntimeController,
   resizePtyFromRuntimeController,
   serializeProviderBufferFromRuntimeController,
   waitForRendererSerializerFromRuntimeController,
   writePtyFromRuntimeController
 } from './operations'
+import { recordUnconfirmedExplicitSshStop } from './undelivered-ssh-kill'
+import { supportsForegroundProcessEvidenceFromRuntimeController } from './foreground-process-evidence-capability'
+import {
+  listProcessesFromRuntimeController,
+  listProcessesWithHostScopeFromRuntimeController
+} from './inventory-operations'
 
 export function installPtyRuntimeController(deps: PtyRuntimeControllerDeps): void {
   const { runtime, adoptStablePane, requestSerializedBuffer } = deps
@@ -40,7 +45,9 @@ export function installPtyRuntimeController(deps: PtyRuntimeControllerDeps): voi
     },
     adoptStablePane,
     spawn: async (args) => spawnPtyFromRuntimeController(deps, args),
-    write: (ptyId, data) => writePtyFromRuntimeController(ptyId, data),
+    write: (ptyId, data, inputKind) => writePtyFromRuntimeController(deps, ptyId, data, inputKind),
+    writeWithSettlement: (ptyId, data, inputKind) =>
+      writePtyFromRuntimeController(deps, ptyId, data, inputKind, { waitForSettlement: true }),
     probePtyLiveness: (ptyId) => probePtyLivenessFromRuntimeController(deps, ptyId),
     // Why: subscriber-driven ingestion for daemon sessions no renderer pane
     // ever attached. Local daemon sessions only — SSH panes have their own
@@ -50,19 +57,28 @@ export function installPtyRuntimeController(deps: PtyRuntimeControllerDeps): voi
     kill: (ptyId) => killPtyFromRuntimeController(deps, ptyId),
     retireRejectedPty: (ptyId, stopConfirmed) =>
       retireRejectedPtyFromRuntimeController(deps, ptyId, stopConfirmed),
-    markReversibleStops: (ptyIds) => markReversibleStopsFromRuntimeController(deps, ptyIds),
     stopAndWait: (ptyId, opts) => stopAndWaitPtyFromRuntimeController(deps, ptyId, opts),
+    recordUnconfirmedStop: (ptyId) =>
+      recordUnconfirmedExplicitSshStop({
+        store: deps.store,
+        ptyId,
+        reversible: runtime?.intentionalPtyStops?.isReversibleStopInFlight(ptyId) ?? false
+      }),
     getForegroundProcess: (ptyId) => getForegroundProcessFromRuntimeController(ptyId),
-    inspectProcess: (ptyId) => inspectProcessFromRuntimeController(ptyId),
+    inspectProcess: (ptyId, options) => inspectProcessFromRuntimeController(ptyId, options),
     confirmForegroundProcess: (ptyId) => confirmForegroundProcessFromRuntimeController(ptyId),
+    confirmShellForeground: (ptyId) => confirmShellForegroundFromRuntimeController(ptyId),
     getCwd: (ptyId) => getCwdFromRuntimeController(ptyId),
     hasChildProcesses: (ptyId) => hasChildProcessesFromRuntimeController(ptyId),
     clearBuffer: (ptyId) => clearBufferFromRuntimeController(deps, ptyId),
-    hasPty: (ptyId) => hasPtyFromRuntimeController(ptyId),
+    resetInputModes: (ptyId) => resetInputModesFromRuntimeController(deps, ptyId),
+    hasPty: (ptyId) => hasPtyFromRuntimeController(deps, ptyId),
     listProcesses: (connectionId, opts) =>
       listProcessesFromRuntimeController(deps, connectionId, opts),
     listProcessesWithHostScope: (opts) =>
       listProcessesWithHostScopeFromRuntimeController(deps, opts),
+    supportsForegroundProcessEvidence: (connectionId) =>
+      supportsForegroundProcessEvidenceFromRuntimeController(connectionId),
     serializeBuffer: (ptyId, opts) => {
       // Why: mobile xterm must start from the desktop's exact screen state/dimensions before live TUI chunks render correctly.
       return requestSerializedBuffer(ptyId, opts)

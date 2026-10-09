@@ -8,6 +8,7 @@ import { createPtySpawnTiming } from '../../pty-spawn-timing'
 import { noCodexResumeLaunch, type CodexResumeLaunch } from '../host-env/codex-resume'
 import type { StablePaneOwner } from '../pane/stable-owner'
 import type { PaneSpawnReservation } from '../pane/spawn-reservation'
+import type { ReplacedPaneOwner } from '../pane/pane-owner-replacement'
 import { localProvider } from '../provider/registry'
 import type { AdoptStablePaneResult, PtySpawnIpcArgs, PtySpawnIpcDeps } from './spawn-types'
 
@@ -25,6 +26,7 @@ export type PtyIpcSpawnState = {
   earlyWorktreeId: string | undefined
   paneSpawnReservationKey: string | null
   paneSpawnReservation: PaneSpawnReservation | null
+  replacedPaneOwner: ReplacedPaneOwner | null
   finishTerminalInstall: () => void
   result: PtySpawnResult
   stablePaneOwner: StablePaneOwner | null
@@ -61,6 +63,7 @@ export type PtyIpcSpawnState = {
   metadataLeafId: string | null
   metadataPaneKey: string | null
   legacySpawnPaneKey: { tabId: string; numericPaneId: string; paneKey: string } | null
+  opaqueRemintedSpawnPaneKey: string | null
   migrationUnsupportedPaneKey: string | null
   reservationPaneKey: string | null
   validatedPaneKey: string | null
@@ -102,6 +105,7 @@ export function createPtyIpcSpawnState(
     earlyWorktreeId: undefined,
     paneSpawnReservationKey: null,
     paneSpawnReservation: null,
+    replacedPaneOwner: null,
     finishTerminalInstall: () => {},
     result: { id: '' },
     stablePaneOwner: null,
@@ -134,6 +138,7 @@ export function createPtyIpcSpawnState(
     metadataLeafId: null,
     metadataPaneKey: null,
     legacySpawnPaneKey: null,
+    opaqueRemintedSpawnPaneKey: null,
     migrationUnsupportedPaneKey: null,
     reservationPaneKey: null,
     validatedPaneKey: null,

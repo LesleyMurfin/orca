@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as LocalCommandResolver from './command-path-resolver'
 
 const {
   handleMock,
@@ -13,6 +14,7 @@ const {
   getGiteaAuthStatusMock,
   resolveCliCommandsMock,
   isCommandOnLocalPathMock,
+  listLocalCommandPathsMock,
   mergePersistedWindowsPathAsyncMock,
   mergePersistedWindowsPathMock
 } = vi.hoisted(() => ({
@@ -28,6 +30,7 @@ const {
   getGiteaAuthStatusMock: vi.fn(),
   resolveCliCommandsMock: vi.fn(),
   isCommandOnLocalPathMock: vi.fn(),
+  listLocalCommandPathsMock: vi.fn(),
   mergePersistedWindowsPathAsyncMock: vi.fn(),
   mergePersistedWindowsPathMock: vi.fn()
 }))
@@ -63,8 +66,10 @@ vi.mock('../../shared/node-cli-command-resolution', () => ({
 // Why (#9297): local PATH resolution is now fs-based (no where/which spawn).
 // These tests express "which commands are on PATH" via the where/which mock,
 // so route the resolver through that same mock to preserve their intent.
-vi.mock('./command-path-resolver', () => ({
-  isCommandOnLocalPath: isCommandOnLocalPathMock
+vi.mock('./command-path-resolver', async (importOriginal) => ({
+  ...(await importOriginal<typeof LocalCommandResolver>()),
+  isCommandOnLocalPath: isCommandOnLocalPathMock,
+  listLocalCommandPaths: listLocalCommandPathsMock
 }))
 
 vi.mock('../pty/windows-environment-path', () => ({
@@ -88,7 +93,7 @@ vi.mock('../gitea/client', () => ({
   getGiteaAuthStatus: getGiteaAuthStatusMock
 }))
 
-import { registerPreflightHandlers, runPreflightCheck } from './preflight'
+import { _resetPreflightCache, registerPreflightHandlers, runPreflightCheck } from './preflight'
 import {
   defaultAzureDevOpsStatus,
   defaultBitbucketStatus,
@@ -115,6 +120,7 @@ describe('preflight', () => {
         getGiteaAuthStatusMock,
         resolveCliCommandsMock,
         isCommandOnLocalPathMock,
+        listLocalCommandPathsMock,
         mergePersistedWindowsPathAsyncMock,
         mergePersistedWindowsPathMock
       },
@@ -123,6 +129,7 @@ describe('preflight', () => {
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     Object.defineProperty(process, 'platform', {
       configurable: true,
       value: originalPlatform
@@ -162,17 +169,29 @@ describe('preflight', () => {
     })
   })
 
-  it('treats gh as unauthenticated when gh auth status fails without auth markers', async () => {
-    execFileAsyncMock
-      .mockResolvedValueOnce({ stdout: 'git version 2.0.0\n' })
-      .mockResolvedValueOnce({ stdout: 'gh version 2.0.0\n' })
-      .mockResolvedValueOnce({ stdout: 'glab version 1.92.1\n' })
-      .mockRejectedValueOnce({ stderr: 'You are not logged into any GitHub hosts.\n' })
-      .mockResolvedValueOnce({ stdout: 'Logged in to gitlab.com\n' })
+  it.each(['gh', 'glab'])('does not switch %s copies after authentication fails', async (cli) => {
+    const first = `/test/first/${cli}`
+    const second = `/test/second/${cli}`
+    listLocalCommandPathsMock.mockImplementation(async (command: string) =>
+      command === cli ? [first, second] : []
+    )
+    execFileAsyncMock.mockImplementation(async (command: string, args: string[]) => {
+      if (command === first && args[0] === 'auth') {
+        throw Object.assign(new Error('not authenticated'), { code: 1, stderr: 'not logged in' })
+      }
+      return { stdout: 'fixture success', stderr: '' }
+    })
 
     const status = await runPreflightCheck()
 
-    expect(status.gh).toEqual({ installed: true, authenticated: false })
+    expect(cli === 'gh' ? status.gh : status.glab).toEqual({
+      installed: true,
+      authenticated: false
+    })
+    expect(
+      execFileAsyncMock.mock.calls.filter(([command]) => command === first).map(([, args]) => args)
+    ).toEqual([['--version'], ['auth', 'status']])
+    expect(execFileAsyncMock.mock.calls.some(([command]) => command === second)).toBe(false)
   })
 
   it('keeps older gh stderr success output from showing a false auth warning', async () => {
@@ -186,6 +205,88 @@ describe('preflight', () => {
     const status = await runPreflightCheck()
 
     expect(status.gh).toEqual({ installed: true, authenticated: true })
+  })
+
+  // Why (#22975): these two cases key the spawn mock on (command, args) instead
+  // of call order, because the fallback probes exactly which copy runs is the
+  // behaviour under test — and `gh auth status` runs in parallel with
+  // `glab auth status`, so a fixed sequence would not be the real one.
+  it('authenticates the gh copy that actually ran, not the shim PATH chose', async () => {
+    const shim = '/Users/octocat/.asdf/shims/gh'
+    const working = '/opt/homebrew/bin/gh'
+    const glabShim = '/Users/octocat/.asdf/shims/glab'
+    const glabWorking = '/usr/local/bin/glab'
+    const shims = new Set([shim, glabShim])
+    listLocalCommandPathsMock.mockImplementation(async (command: string) => {
+      if (command === 'gh') {
+        return [shim, working]
+      }
+      return command === 'glab' ? [glabShim, glabWorking] : []
+    })
+    execFileAsyncMock.mockImplementation(async (command: string, args: string[]) => {
+      if (shims.has(command)) {
+        throw Object.assign(new Error('spawn failed'), { code: 126 })
+      }
+      const auth = args[0] === 'auth'
+      if (command === working) {
+        return { stdout: auth ? 'github.com\n  - Active account: true\n' : 'gh version 2.6.0\n' }
+      }
+      if (command === glabWorking) {
+        return { stdout: auth ? 'Logged in to gitlab.com\n' : 'glab version 1.92.1\n' }
+      }
+      if (command === 'git') {
+        return { stdout: 'git version 2.0.0\n' }
+      }
+      throw new Error(`unexpected command ${command}`)
+    })
+
+    const status = await runPreflightCheck()
+
+    expect(status).toMatchObject({
+      gh: { installed: true, authenticated: true },
+      glab: { installed: true, authenticated: true }
+    })
+    for (const [cli, copy] of [
+      ['gh', working],
+      ['glab', glabWorking]
+    ]) {
+      expect(execFileAsyncMock).toHaveBeenCalledWith(copy, ['auth', 'status'], {
+        encoding: 'utf-8',
+        timeout: 5000,
+        windowsHide: true
+      })
+      expect(execFileAsyncMock).not.toHaveBeenCalledWith(cli, ['auth', 'status'], {
+        encoding: 'utf-8',
+        timeout: 5000,
+        windowsHide: true
+      })
+    }
+  })
+
+  it('marks gh not installed when no copy PATH offers can run', async () => {
+    const doomed = ['/Users/octocat/.asdf/shims/gh', '/Users/octocat/.local/bin/gh']
+    listLocalCommandPathsMock.mockImplementation(async (command: string) =>
+      command === 'gh' ? doomed : []
+    )
+    execFileAsyncMock.mockImplementation(async (command: string, args: string[]) => {
+      if (doomed.includes(command)) {
+        throw Object.assign(new Error('spawn failed'), { code: 126 })
+      }
+      if (command === 'git') {
+        return { stdout: 'git version 2.0.0\n' }
+      }
+      if (command === 'glab') {
+        return {
+          stdout: args[0] === 'auth' ? 'Logged in to gitlab.com\n' : 'glab version 1.92.1\n'
+        }
+      }
+      throw new Error(`unexpected command ${command}`)
+    })
+
+    const status = await runPreflightCheck()
+
+    expect(status.gh).toEqual({ installed: false, authenticated: false })
+    expect(execFileAsyncMock).toHaveBeenCalledTimes(5)
   })
 
   it('marks glab as not installed when `glab --version` fails', async () => {
@@ -315,7 +416,177 @@ describe('preflight', () => {
     )
   })
 
+  describe('WSL preflight caching', () => {
+    // Why win32 + these stubs: a WSL target probes git/gh/glab through the
+    // runner, so every case below counts runner spawns rather than execFile.
+    function stubWslProbes(): void {
+      Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+      execFileAsyncMock.mockImplementation(async () => {
+        throw Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })
+      })
+      runWslProcessMock.mockImplementation(async ({ script }: { script: string }) => ({
+        environmentResolved: true,
+        code: 0,
+        stdout: script.includes('auth status')
+          ? 'github.com\n  - Active account: true\n'
+          : 'version 2.0.0\n',
+        stderr: '',
+        timedOut: false
+      }))
+    }
+
+    it('reuses the cached result instead of re-spawning wsl.exe probes', async () => {
+      stubWslProbes()
+
+      const first = await runPreflightCheck(false, { wslDistro: 'Ubuntu' })
+      const spawnsAfterFirst = runWslProcessMock.mock.calls.length
+      const second = await runPreflightCheck(false, { wslDistro: 'Ubuntu' })
+
+      expect(spawnsAfterFirst).toBeGreaterThan(0)
+      expect(runWslProcessMock.mock.calls.length).toBe(spawnsAfterFirst)
+      expect(second).toEqual(first)
+    })
+
+    it('keeps each distro on its own cache entry', async () => {
+      stubWslProbes()
+
+      await runPreflightCheck(false, { wslDistro: 'Ubuntu' })
+      const spawnsAfterUbuntu = runWslProcessMock.mock.calls.length
+      await runPreflightCheck(false, { wslDistro: 'Debian' })
+
+      expect(runWslProcessMock.mock.calls.length).toBeGreaterThan(spawnsAfterUbuntu)
+      expect(runWslProcessMock).toHaveBeenCalledWith(expect.objectContaining({ distro: 'Debian' }))
+    })
+
+    it('re-probes when the caller forces a refresh', async () => {
+      stubWslProbes()
+
+      await runPreflightCheck(false, { wslDistro: 'Ubuntu' })
+      const spawnsAfterFirst = runWslProcessMock.mock.calls.length
+      await runPreflightCheck(true, { wslDistro: 'Ubuntu' })
+
+      expect(runWslProcessMock.mock.calls.length).toBeGreaterThan(spawnsAfterFirst)
+    })
+
+    it('collapses concurrent callers onto one probe set', async () => {
+      stubWslProbes()
+
+      const [first, second] = await Promise.all([
+        runPreflightCheck(false, { wslDistro: 'Ubuntu' }),
+        runPreflightCheck(false, { wslDistro: 'Ubuntu' })
+      ])
+      const singleRunSpawns = runWslProcessMock.mock.calls.length
+
+      runWslProcessMock.mockClear()
+      await runPreflightCheck(true, { wslDistro: 'Ubuntu' })
+
+      expect(first).toEqual(second)
+      // One shared run, not two: a second full set would double the spawn count.
+      expect(singleRunSpawns).toBe(runWslProcessMock.mock.calls.length)
+    })
+
+    // Why this matters: an unreachable distro reports the same `installed:
+    // false` as a distro with no tooling, so a session-lifetime cache would pin
+    // "git not installed" until relaunch. The TTL must let it recover.
+    // Why these two: a slower run settling last must not overwrite a newer
+    // answer, or a forced refresh silently returns to the status it replaced.
+    it('does not let a superseded probe overwrite a newer forced refresh', async () => {
+      stubWslProbes()
+      // Why gate on phase captured at call time: the stale run's three
+      // --version probes all start before the refresh, and all report nothing
+      // installed, so it never issues auth calls. The two runs are then
+      // trivially distinguishable in the cached result.
+      let phase: 'stale' | 'fresh' = 'stale'
+      let releaseStale!: () => void
+      const staleGate = new Promise<void>((resolve) => {
+        releaseStale = resolve
+      })
+      runWslProcessMock.mockImplementation(async ({ script }: { script: string }) => {
+        const isStale = phase === 'stale'
+        if (isStale) {
+          await staleGate
+        }
+        return {
+          environmentResolved: true,
+          code: isStale ? 1 : 0,
+          stdout: isStale
+            ? ''
+            : script.includes('auth status')
+              ? 'github.com\n  - Active account: true\n'
+              : 'version 2.0.0\n',
+          stderr: '',
+          timedOut: false
+        }
+      })
+
+      const stalePending = runPreflightCheck(false, { wslDistro: 'Ubuntu' })
+      phase = 'fresh'
+      const fresh = await runPreflightCheck(true, { wslDistro: 'Ubuntu' })
+      expect(fresh.git).toEqual({ installed: true })
+
+      releaseStale()
+      const staleResult = await stalePending
+      expect(staleResult.git).toEqual({ installed: false })
+
+      // The superseded run still returns its own answer to its own caller, but
+      // must not have become the cached one.
+      const cachedNow = await runPreflightCheck(false, { wslDistro: 'Ubuntu' })
+      expect(cachedNow.git).toEqual({ installed: true })
+    })
+
+    it('does not repopulate a cache that was reset while a probe was in flight', async () => {
+      stubWslProbes()
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      runWslProcessMock.mockImplementation(async ({ script }: { script: string }) => {
+        await gate
+        return {
+          environmentResolved: true,
+          code: 0,
+          stdout: script.includes('auth status')
+            ? 'github.com\n  - Active account: true\n'
+            : 'version 2.0.0\n',
+          stderr: '',
+          timedOut: false
+        }
+      })
+
+      const inFlight = runPreflightCheck(false, { wslDistro: 'Ubuntu' })
+      _resetPreflightCache()
+      release()
+      await inFlight
+
+      runWslProcessMock.mockClear()
+      await runPreflightCheck(false, { wslDistro: 'Ubuntu' })
+      expect(runWslProcessMock.mock.calls.length).toBeGreaterThan(0)
+    })
+
+    it('re-probes after the cache entry expires so a transient failure self-heals', async () => {
+      vi.useFakeTimers()
+      try {
+        stubWslProbes()
+        runWslProcessMock.mockRejectedValue(new Error('distro not running'))
+
+        const failed = await runPreflightCheck(false, { wslDistro: 'Ubuntu' })
+        expect(failed.git).toEqual({ installed: false })
+
+        stubWslProbes()
+        runWslProcessMock.mockClear()
+        vi.advanceTimersByTime(30_000 + 1)
+        const recovered = await runPreflightCheck(false, { wslDistro: 'Ubuntu' })
+
+        expect(runWslProcessMock.mock.calls.length).toBeGreaterThan(0)
+        expect(recovered.git).toEqual({ installed: true })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+
   it('uses the persisted Windows Path when probing host CLIs', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_000)
     Object.defineProperty(process, 'platform', {
       configurable: true,
       value: 'win32'

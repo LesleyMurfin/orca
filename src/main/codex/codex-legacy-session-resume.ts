@@ -9,6 +9,7 @@ import type {
 import { isPerAccountManagedCodexHome } from '../../shared/ai-vault-resume-preparation'
 import { LOCAL_EXECUTION_HOST_ID } from '../../shared/execution-host'
 import { normalizeRuntimePathForComparison } from '../../shared/cross-platform-path'
+import { parseWslUncPath } from '../../shared/wsl-paths'
 import {
   appendCodexSessionHealAuditRecord,
   createCodexSessionBackfillAuditWriter
@@ -28,7 +29,7 @@ const materializations = new Map<string, Promise<void>>()
 export async function prepareLegacySharedCodexSessionResume(
   args: AiVaultPrepareSessionResumeArgs,
   options: {
-    isHostSystemDefaultRealHome: () => boolean
+    isHostSystemDefaultRealHomeSelected: () => boolean
     getSelectedHostAccountCodexHomePath?: () => string | null
     legacyCodexHomePath?: string
     systemCodexHomePath?: string
@@ -46,7 +47,7 @@ export async function prepareLegacySharedCodexSessionResume(
     args.executionHostId !== LOCAL_EXECUTION_HOST_ID ||
     !args.codexHome ||
     !sameRuntimePath(args.codexHome, legacyCodexHomePath) ||
-    !options.isHostSystemDefaultRealHome()
+    !options.isHostSystemDefaultRealHomeSelected()
   ) {
     return { useRealCodexHome: false }
   }
@@ -85,6 +86,32 @@ export async function prepareLegacySharedCodexSessionResume(
   return { useRealCodexHome: true }
 }
 
+/** Explicit account restarts must move the verified rollout before changing credentials. */
+export async function prepareCodexAccountRestartResume(args: {
+  sourceHome: string
+  transcriptPath: string
+  targetHome: string
+  systemCodexHomePath: string
+}): Promise<string> {
+  if (sameRuntimePath(args.sourceHome, args.targetHome)) {
+    return args.targetHome
+  }
+  const relativePath = relative(
+    resolve(join(args.sourceHome, 'sessions')),
+    resolve(args.transcriptPath)
+  )
+  if (!isDatedRolloutRelativePath(relativePath)) {
+    throw new Error(RETRYABLE_RESUME_ERROR)
+  }
+  const paths = resolveCodexSessionBackfillPaths(args.systemCodexHomePath)
+  await materializeLegacyRollout(
+    args.transcriptPath,
+    join(args.targetHome, 'sessions', relativePath),
+    paths.auditLogPath
+  )
+  return args.targetHome
+}
+
 /**
  * Repins a per-account resume to the selected account's home, or null to keep
  * the session's own home.
@@ -104,6 +131,7 @@ async function resolveSelectedAccountCodexHomeForResume(
     args.agent !== 'codex' ||
     args.executionHostId !== LOCAL_EXECUTION_HOST_ID ||
     !args.codexHome ||
+    parseWslUncPath(args.codexHome) !== null ||
     !isPerAccountManagedCodexHome(args.codexHome)
   ) {
     return null

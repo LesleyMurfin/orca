@@ -1,3 +1,5 @@
+import { normalizeReconcileText } from './mobile-native-chat-draft-reconcile'
+
 export type MobileNativeChatPendingMessage = {
   id: string
   text: string
@@ -14,11 +16,15 @@ export type MobileNativeChatPendingMessage = {
 
 export type MobileNativeChatSendOrigin = {
   draftKey: string
+  draftEditGeneration: number
   pendingKey: string | null
   normalizedText: string
   baselineOccurrences: number
   baselineTailMessageId: string | null
   baselineResolved: boolean
+  /** Queued-draft cards already on screen at send time, so an earlier identical
+   *  card cannot confirm this send. Structured lane, on any host that publishes cards. */
+  baselineQueuedMessageIds?: readonly string[]
 }
 
 type PendingByKey = Record<string, MobileNativeChatPendingMessage[]>
@@ -43,13 +49,17 @@ export function appendMobileNativeChatPending(
   images?: string[]
 ): PendingByKey {
   const current = previous[key] ?? []
+  // Count outstanding repeats with the same normalized key.
   const earlierOutstanding = current.filter(
     (pending) =>
-      pending.text.trim() === origin.normalizedText &&
+      normalizeReconcileText(pending.text) === origin.normalizedText &&
       pending.expectedOccurrence > origin.baselineOccurrences
   ).length
+  // Image ordinal selection and counting must share the empty-text discriminator.
   const expectedImageEchoOrdinal =
-    current.filter((pending) => pending.text.trim() === '' && pending.images?.length).length + 1
+    current.filter(
+      (pending) => normalizeReconcileText(pending.text) === '' && pending.images?.length
+    ).length + 1
   return {
     ...previous,
     [key]: [

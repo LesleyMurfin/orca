@@ -2,7 +2,8 @@ import { addWslEnvKeys } from '../../wsl-env'
 import { extractExecError, parseRetryAfterMs } from '../exec-error'
 import { resolveCommand, resolveDefaultWslCli } from './wsl-command-resolution'
 import { isHostCommandMissing } from './github-cli-host-fallback'
-import { execFileCapture } from './exec-file-capture'
+import { execFileCaptureToTermination } from './exec-file-capture'
+import { logHostedCliDeadlineKill } from './hosted-cli-deadline-log'
 import type { GitExecOptions } from './git-exec-options'
 import { argsLookIdempotent } from './gh-idempotency'
 import {
@@ -13,6 +14,7 @@ import {
 } from './gh-retry-policy'
 
 // Why: cloned from the gh runner rather than abstracted behind a generic runner, to avoid touching the working gh path.
+const DEFAULT_GLAB_EXEC_TIMEOUT_MS = 30_000
 
 export type GlabExecOptions = Omit<GitExecOptions, 'cwd'> & {
   cwd?: string
@@ -58,18 +60,27 @@ export async function glabExecFileAsync(
 ): Promise<{ stdout: string; stderr: string }> {
   ;({ args, options } = redirectPortedHostnameToEnv(args, options))
   let resolved = resolveCommand('glab', args, options.cwd, options.wslDistro)
+  const timeoutMs = options.timeout ?? DEFAULT_GLAB_EXEC_TIMEOUT_MS
   let lastError: unknown
   let attemptedDefaultWslFallback = false
   for (let attempt = 0; attempt <= GH_RETRY_DELAYS_MS.length; attempt++) {
     try {
-      const { stdout, stderr } = await execFileCapture(resolved.binary, resolved.args, {
-        cwd: resolved.cwd,
-        encoding: (options.encoding ?? 'utf-8') as BufferEncoding,
-        maxBuffer: options.maxBuffer,
-        timeout: options.timeout,
-        env: options.env,
-        signal: options.signal
-      })
+      // Why to-termination: same shim chain as gh — the deadline has to reap the
+      // whole tree, not just the wrapper that spawned it (#18234).
+      const { stdout, stderr } = await execFileCaptureToTermination(
+        resolved.binary,
+        resolved.args,
+        {
+          cwd: resolved.cwd,
+          encoding: (options.encoding ?? 'utf-8') as BufferEncoding,
+          maxBuffer: options.maxBuffer,
+          timeout: timeoutMs,
+          env: options.env,
+          signal: options.signal,
+          onDeadlineKill: () => logHostedCliDeadlineKill('glab', resolved.binary, args, timeoutMs)
+        },
+        resolved.termination
+      )
       return { stdout: stdout as string, stderr: stderr as string }
     } catch (err) {
       lastError = err
@@ -101,7 +112,7 @@ export async function glabExecFileAsync(
           retryAfterMs !== null
             ? Math.min(retryAfterMs, GH_RETRY_AFTER_MAX_MS)
             : GH_RETRY_DELAYS_MS[attempt]
-        await sleep(delayMs)
+        await sleep(delayMs, options.signal)
         continue
       }
       throw err

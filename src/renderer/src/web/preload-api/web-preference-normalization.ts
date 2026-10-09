@@ -1,3 +1,4 @@
+import { normalizeNativeChatAppearanceSettings } from '../../../../shared/native-chat-appearance-settings'
 import { normalizeAutoRenameBranchFromWorkDefaultOn } from '../../../../shared/auto-rename-branch-from-work-settings'
 import {
   getDefaultSettings,
@@ -65,9 +66,23 @@ export function mergeHostWebUIState(
   // Why `satisfies Record<...>` rather than a `Pick<...>` annotation: every member is optional in
   // PersistedUIState, so Pick would accept a literal that silently skipped a newly added member.
   const pinned = {
+    automationHostFilter: local.automationHostFilter,
     hideWorkspacesFromOtherDevices: local.hideWorkspacesFromOtherDevices === true,
     manualRepoOrder: local.manualRepoOrder,
-    workspaceHostOrder: local.workspaceHostOrder
+    workspaceHostOrder: local.workspaceHostOrder,
+    sidebarOpen: local.sidebarOpen,
+    agentsVisibleHostIds: local.agentsVisibleHostIds,
+    agentsFilterRepoIds: local.agentsFilterRepoIds,
+    agentsHideWorkspacesFromOtherDevices: local.agentsHideWorkspacesFromOtherDevices === true,
+    agentsHideAutomationGeneratedWorkspaces: local.agentsHideAutomationGeneratedWorkspaces === true,
+    agentsHideCliCreatedWorkspaces: local.agentsHideCliCreatedWorkspaces === true,
+    agentsShowChildAgents: local.agentsShowChildAgents,
+    agentsCompactMode: local.agentsCompactMode,
+    agentsShowSearch: local.agentsShowSearch,
+    agentsReadFilter: local.agentsReadFilter,
+    agentsGroupBy: local.agentsGroupBy,
+    activityClearedAtByPaneKey: local.activityClearedAtByPaneKey,
+    manuallyUnreadTurnsByPaneKey: local.manuallyUnreadTurnsByPaneKey
   } satisfies Record<PairingLocalUiField, unknown> & Partial<PersistedUIState>
   return { ...mergeWebUIState(local, incoming), ...pinned }
 }
@@ -129,6 +144,8 @@ export function mergeSettings(
     ...base,
     ...updates,
     notifications: {
+      // Why: browser-stored settings can predate a newer notification field.
+      ...defaults.notifications,
       ...base.notifications,
       ...updates.notifications
     },
@@ -152,6 +169,11 @@ export function mergeSettings(
       : (base.activeRuntimeEnvironmentId ?? null),
     terminalCustomThemes: normalizeTerminalCustomThemes(
       updates.terminalCustomThemes ?? base.terminalCustomThemes
+    ),
+    nativeChatAppearance: normalizeNativeChatAppearanceSettings(
+      Object.hasOwn(updates, 'nativeChatAppearance')
+        ? updates.nativeChatAppearance
+        : base.nativeChatAppearance
     ),
     uiLanguage: normalizeUiLanguage(updates.uiLanguage ?? base.uiLanguage)
   }

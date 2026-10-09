@@ -19,6 +19,8 @@ export type WebSessionFocusIntent = {
   expectedCurrentLocalTabId?: string | null
 }
 
+export const MAX_WEB_SESSION_FOCUS_INTENTS = 512
+
 const pendingFocusByOwnerAndWorktree = new Map<string, WebSessionFocusIntent>()
 
 type WebSessionVisibleTabState = Pick<
@@ -82,6 +84,11 @@ export function resolveWebSessionVisibleTabId(
     const tabId = state.activeTabIdByWorktree?.[worktreeId]
     return tabId && tabs.some((tab) => tab.id === tabId) ? tabId : null
   }
+  // Why: a structured chat tab has no per-worktree active-entity map to address it by, so the
+  // entityId lookup below would always miss. There is at most one per worktree here.
+  if (currentType === 'agent-session') {
+    return tabs.find((tab) => tab.contentType === 'agent-session')?.id ?? null
+  }
   const entityId =
     currentType === 'browser'
       ? state.activeBrowserTabIdByWorktree?.[worktreeId]
@@ -138,11 +145,20 @@ export function recordWebSessionFocusIntent(
     return
   }
   const trimmedLeafId = leafId?.trim()
-  pendingFocusByOwnerAndWorktree.set(focusIntentPartitionKey(owner, worktreeId), {
+  const key = focusIntentPartitionKey(owner, worktreeId)
+  pendingFocusByOwnerAndWorktree.delete(key)
+  pendingFocusByOwnerAndWorktree.set(key, {
     hostTabId: trimmed,
     ...(trimmedLeafId ? { leafId: trimmedLeafId } : {}),
     ...(expectedCurrentLocalTabId !== undefined ? { expectedCurrentLocalTabId } : {})
   })
+  while (pendingFocusByOwnerAndWorktree.size > MAX_WEB_SESSION_FOCUS_INTENTS) {
+    const oldest = pendingFocusByOwnerAndWorktree.keys().next()
+    if (oldest.done || oldest.value === key) {
+      break
+    }
+    pendingFocusByOwnerAndWorktree.delete(oldest.value)
+  }
 }
 
 export function peekWebSessionFocusIntent(
@@ -159,10 +175,12 @@ export function clearWebSessionFocusIntent(owner: WebSessionIntentOwner, worktre
 export function clearWebSessionFocusIntentIfMatches(
   owner: WebSessionIntentOwner,
   worktreeId: string,
-  hostTabId: string
+  hostTabId: string,
+  leafId?: string
 ): void {
   const key = focusIntentPartitionKey(owner, worktreeId)
-  if (pendingFocusByOwnerAndWorktree.get(key)?.hostTabId === hostTabId) {
+  const intent = pendingFocusByOwnerAndWorktree.get(key)
+  if (intent?.hostTabId === hostTabId && (leafId === undefined || intent.leafId === leafId)) {
     pendingFocusByOwnerAndWorktree.delete(key)
   }
 }

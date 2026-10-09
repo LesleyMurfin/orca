@@ -54,8 +54,12 @@ function buildFixture(options: { aliasCodex?: boolean } = {}): Fixture {
   mkdirSync(codexDir, { recursive: true })
   mkdirSync(homePath, { recursive: true })
 
-  // The CLI Orca ships, at the absolute path Orca controls.
-  writeStub(getBundledLauncherPath(process.platform, resourcesPath) as string, intendedMarker)
+  // The CLI Orca ships, at the absolute path Orca controls; only WSL panes run it.
+  const launcherPath = getBundledLauncherPath('win32', resourcesPath)
+  if (!launcherPath) {
+    throw new Error('Windows has a bundled launcher path')
+  }
+  writeStub(launcherPath, intendedMarker)
   // The impostor a user's own bin directory could hold under every CLI name Orca uses.
   for (const name of ['orca', 'orca-ide', 'orca-dev']) {
     writeStub(join(hijackDir, name), hijackMarker)
@@ -126,11 +130,12 @@ describe.skipIf(!bashAvailable)('Codex preflight under a profile-rewritten PATH'
     const preflightCommand = resolveCodexShellLaunchPreflightCommand({
       hooksEnabled: true,
       isPackaged: true,
+      isWsl: true,
       managedHomePath: join(fixture.root, 'codex-home'),
-      userDataPath: join(fixture.root, 'user-data'),
-      resourcesPath: fixture.resourcesPath
+      resourcesPath: fixture.resourcesPath,
+      platform: 'win32'
     })
-    expect(preflightCommand).toBe(getBundledLauncherPath(process.platform, fixture.resourcesPath))
+    expect(preflightCommand).toBe(getBundledLauncherPath('win32', fixture.resourcesPath))
 
     launchCodexThroughRcfile(fixture, preflightCommand as string)
 
@@ -148,9 +153,10 @@ describe.skipIf(!bashAvailable)('Codex preflight under a profile-rewritten PATH'
     const preflightCommand = resolveCodexShellLaunchPreflightCommand({
       hooksEnabled: true,
       isPackaged: true,
+      isWsl: true,
       managedHomePath: join(fixture.root, 'codex-home'),
-      userDataPath: join(fixture.root, 'user-data'),
-      resourcesPath: fixture.resourcesPath
+      resourcesPath: fixture.resourcesPath,
+      platform: 'win32'
     })
 
     launchCodexThroughRcfile(fixture, preflightCommand as string)
@@ -162,13 +168,13 @@ describe.skipIf(!bashAvailable)('Codex preflight under a profile-rewritten PATH'
     expect(readFileSync(fixture.codexMarker, 'utf-8').trim()).toBe('--alias-flag --version')
   })
 
-  // Why: pins the defect itself, so a regression back to an unqualified name fails here.
-  it('would run the impostor if the preflight carried an unqualified command name', () => {
+  // Why: an unqualified preflight is rejected so profile PATH entries cannot hijack it.
+  it('skips an unqualified preflight value while still launching codex', () => {
     const fixture = buildFixture()
 
     launchCodexThroughRcfile(fixture, 'orca')
 
-    expect(existsSync(fixture.hijackMarker)).toBe(true)
+    expect(existsSync(fixture.hijackMarker)).toBe(false)
     expect(existsSync(fixture.intendedMarker)).toBe(false)
     expect(existsSync(fixture.codexMarker)).toBe(true)
   })

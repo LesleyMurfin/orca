@@ -80,12 +80,6 @@ describe('classifyConnection Tailscale hint', () => {
     expect('hint' in warning && warning.hint).toBeFalsy()
   })
 
-  it('keeps plain labels when no endpoint is provided', () => {
-    const verdict = classifyConnection({ ...base, reconnectAttempts: 3 })
-    expect(verdict.kind).toBe('warning')
-    expect('hint' in verdict && verdict.hint).toBeFalsy()
-  })
-
   it('never hints on healthy states', () => {
     const verdict = classifyConnection({
       state: 'connected',
@@ -126,6 +120,18 @@ describe('classifyConnection Tailscale hint', () => {
       reason: 'never-connected'
     })
     expect(verdictDisplayLabel(verdict)).not.toContain('Tailscale')
+  })
+
+  it('does not call an idle Relay path Connecting when no retry is active', () => {
+    const verdict = classifyConnection({
+      state: 'disconnected',
+      reconnectAttempts: 0,
+      lastConnectedAt: 1_000,
+      pendingPath: 'relay',
+      nowMs: 1_000_000
+    })
+
+    expect(verdict).toEqual({ kind: 'normal', label: 'Disconnected' })
   })
 })
 

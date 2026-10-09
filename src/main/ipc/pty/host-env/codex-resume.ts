@@ -30,7 +30,7 @@ export type PrepareCodexResumeHomeArgs = {
   providerSession?: AgentProviderSessionMetadata
   target: CodexAccountSelectionTarget
   launchEnv?: NodeJS.ProcessEnv
-  workspacePath?: string
+  useSelectedAccount?: boolean
 }
 
 export function prepareCodexResumeHome(
@@ -50,7 +50,7 @@ export function prepareCodexResumeHome(
       providerSession,
       target: args.target,
       launchEnv: args.launchEnv,
-      workspacePath: args.workspacePath
+      ...(args.useSelectedAccount ? { useSelectedAccount: true } : {})
     })
   }
 }
@@ -103,14 +103,14 @@ export function resolveCodexResumeLaunch(
   })
 }
 
-export function reconcileSharedRuntimeResumeHome(
+export async function reconcileSharedRuntimeResumeHome(
   resumeHome: Extract<CodexSessionResumePreparation, { outcome: 'resume' }>,
-  resolveCurrentHome: () => string | null
-): string {
+  resolveCurrentHome: () => string | null | Promise<string | null>
+): Promise<string> {
   if (!resumeHome.reconcileSharedRuntimeAuth) {
     return resumeHome.codexHomePath
   }
-  const currentHome = resolveCurrentHome()
+  const currentHome = await resolveCurrentHome()
   if (!codexHomePathsEqual(currentHome, resumeHome.codexHomePath)) {
     throw new Error(CODEX_RESUME_AUTH_UNAVAILABLE_MESSAGE)
   }

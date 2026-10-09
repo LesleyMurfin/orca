@@ -1,8 +1,11 @@
 import type { StateCreator } from 'zustand'
 import type { AppState } from '../types'
 import type { TerminalSlice } from '../terminals/terminal-state'
+
+export type { TerminalSlice } from '../terminals/terminal-state'
 import { createTerminalEphemeralActions } from '../terminals/terminal-ephemeral-state'
 import { createTerminalTabCreationActions } from '../terminals/terminal-tab-creation'
+import { createTerminalTabAgentLaunchPaneActions } from '../terminals/terminal-tab-agent-launch-pane'
 import { createActiveWorkspaceTerminalActions } from '../terminals/terminal-active-workspace-creation'
 import { createTerminalTabCloseActions } from '../terminals/terminal-tab-close'
 import { createTerminalTabNavigationActions } from '../terminals/terminal-tab-navigation'
@@ -10,6 +13,8 @@ import { createTerminalTabPresentationActions } from '../terminals/terminal-tab-
 import { createTerminalTabAttentionActions } from '../terminals/terminal-tab-attention'
 import { createTerminalPtyBindingActions } from '../terminals/terminal-pty-bindings'
 import { createTerminalPtyReleaseActions } from '../terminals/terminal-pty-release'
+import { createTerminalUnverifiedPtyLossActions } from '../terminals/terminal-unverified-pty-loss'
+import { createTerminalDisownedPtySourceActions } from '../terminals/terminal-disowned-pty-sources'
 import { createTerminalPaneHibernationActions } from '../terminals/terminal-pane-hibernation'
 import { createDirectSshTerminalBindingActions } from '../terminals/direct-ssh-terminal-bindings'
 import { createTerminalShutdownActions } from '../terminals/terminal-shutdown'
@@ -38,6 +43,8 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
   expandedPaneByTabId: {},
   canExpandPaneByTabId: {},
   terminalLayoutsByTabId: {},
+  pendingDirectSshLayoutEditsByTabId: {},
+  localOnlyScrollbackByTabId: {},
   pendingStartupByTabId: {},
   pendingInitialCwdByTabId: {},
   pendingSetupSplitByTabId: {},
@@ -47,13 +54,22 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
   nativeChatLaunchDraftByTabId: {},
   tabBarOrderByWorktree: {},
   workspaceSessionReady: false,
+  terminalStartupRestorationReady: false,
+  setTerminalStartupRestorationReady: (value) => {
+    set({ terminalStartupRestorationReady: value })
+  },
   restoredRuntimeHostIdByWorkspaceSessionKey: {},
+  contestedHostWorkspaceSessions: {},
+  contestedPrimaryHostBySessionKey: {},
   defaultTerminalTabsAppliedByWorktreeId: {},
+  closedTerminalTabTombstonesByTabId: {},
   hydrationSucceeded: false,
   pendingReconnectWorktreeIds: [],
   pendingReconnectTabByWorktree: {},
   pendingReconnectPtyIdByTabId: {},
   lastKnownRelayPtyIdByTabId: {},
+  unverifiedPtyLossTabIds: {},
+  disownedPtyIds: {},
   pendingSnapshotByPtyId: {},
   pendingColdRestoreByPtyId: {},
   deferredSshReconnectTargets: [],
@@ -63,6 +79,7 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
   recentQuickCommandIdByGroup: {},
   ...createTerminalEphemeralActions(set, get),
   ...createTerminalTabCreationActions(set, get),
+  ...createTerminalTabAgentLaunchPaneActions(set),
   ...createActiveWorkspaceTerminalActions(set, get),
   ...createTerminalTabCloseActions(set, get),
   ...createTerminalTabNavigationActions(set, get),
@@ -70,6 +87,8 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
   ...createTerminalTabAttentionActions(set, get),
   ...createTerminalPtyBindingActions(set, get),
   ...createTerminalPtyReleaseActions(set, get),
+  ...createTerminalUnverifiedPtyLossActions(set),
+  ...createTerminalDisownedPtySourceActions(set),
   ...createTerminalPaneHibernationActions(set, get),
   ...createDirectSshTerminalBindingActions(set, get),
   ...createTerminalShutdownActions(set, get),

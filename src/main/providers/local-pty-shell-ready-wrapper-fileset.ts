@@ -3,24 +3,40 @@
  * caller-supplied root so the tree can be content-addressed (see
  * shell-wrapper-content-address.ts).
  */
+import {
+  buildFishVendorConfWrapperFile,
+  getFishVendorConfSnippetPath
+} from '../fish-xdg-data-dirs-handoff'
 import { ZSH_WRAPPER_DIR_MARKER_CONTENT, ZSH_WRAPPER_DIR_MARKER_FILE } from '../shell-templates'
 import type { ShellWrapperFile } from '../shell-wrapper-file-writer'
 import { buildZshStartupHook, type ZshStartupHookSpec } from '../zsh-startup-wrapper-builder'
 import { getBashShellReadyRcfileContent } from './local-pty-shell-ready-bash-rcfile'
 import { SHELL_READY_MARKER_ESCAPED } from './local-pty-shell-ready-marker'
 
+/** Paths in the generated tree, kept separate so existence checks do not rebuild wrapper bytes. */
+export function getLocalShellReadyWrapperPaths(root: string): readonly string[] {
+  const zshDir = `${root}/zsh`
+  return [
+    `${zshDir}/.zshenv`,
+    `${zshDir}/${ZSH_WRAPPER_DIR_MARKER_FILE}`,
+    `${root}/bash/rcfile`,
+    getFishVendorConfSnippetPath(root)
+  ]
+}
+
 export function getLocalZshWrapperSpec(): ZshStartupHookSpec {
   return {
     headerLabel: 'Orca zsh shell-ready wrapper',
     readyMarkerEscaped: SHELL_READY_MARKER_ESCAPED,
     osc133CommandMarkers: true,
+    startupCommandDelivery: true,
     overlayRestoreComment:
       "# Why: ~/.zshrc can export the user's default OpenCode config after spawn.",
     restores: {
+      managedWslCli: true,
       agentTeamsPath: true,
       remoteCliBinDir: false,
-      codexHome: true,
-      codexLaunchPreflight: true
+      codexHome: true
     }
   }
 }
@@ -34,10 +50,11 @@ export function getLocalZshWrapperSpec(): ZshStartupHookSpec {
 // .zprofile, .zshrc and .zlogin from the user's own directory. Nothing Orca
 // writes is read after this file.
 export function buildLocalShellReadyWrapperFiles(root: string): readonly ShellWrapperFile[] {
-  const zshDir = `${root}/zsh`
+  const [zshEnvPath, zshMarkerPath, bashRcfilePath] = getLocalShellReadyWrapperPaths(root)
   return [
-    [`${zshDir}/.zshenv`, buildZshStartupHook(getLocalZshWrapperSpec())],
-    [`${zshDir}/${ZSH_WRAPPER_DIR_MARKER_FILE}`, ZSH_WRAPPER_DIR_MARKER_CONTENT],
-    [`${root}/bash/rcfile`, getBashShellReadyRcfileContent()]
+    [zshEnvPath, buildZshStartupHook(getLocalZshWrapperSpec())],
+    [zshMarkerPath, ZSH_WRAPPER_DIR_MARKER_CONTENT],
+    [bashRcfilePath, getBashShellReadyRcfileContent()],
+    buildFishVendorConfWrapperFile(root)
   ]
 }

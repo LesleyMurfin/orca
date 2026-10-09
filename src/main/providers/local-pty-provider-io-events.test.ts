@@ -10,7 +10,7 @@ const {
   spawnMock,
   prepareMacosTccLoginShellMock,
   resolveAgentForegroundProcessMock,
-  readWindowsConptyProcessIdsMock,
+  readWindowsPtyJobProcessIdsMock,
   killWithDescendantSweepMock,
   isWslAvailableAsyncMock,
   wslUncDirectoryExistsMock,
@@ -24,7 +24,7 @@ const {
   spawnMock: vi.fn(),
   prepareMacosTccLoginShellMock: vi.fn(),
   resolveAgentForegroundProcessMock: vi.fn(),
-  readWindowsConptyProcessIdsMock: vi.fn(),
+  readWindowsPtyJobProcessIdsMock: vi.fn(),
   killWithDescendantSweepMock: vi.fn(),
   isWslAvailableAsyncMock: vi.fn(),
   wslUncDirectoryExistsMock: vi.fn(),
@@ -84,8 +84,9 @@ vi.mock('./agent-foreground-process', () => ({
     resolveAgentForegroundProcessMock(...args)
 }))
 
-vi.mock('./windows-conpty-process-membership', () => ({
-  readWindowsConptyProcessIds: (...args: unknown[]) => readWindowsConptyProcessIdsMock(...args)
+vi.mock('./windows-pty-job-membership', () => ({
+  readWindowsPtyJobProcessIds: (...args: unknown[]) => readWindowsPtyJobProcessIdsMock(...args),
+  isWindowsPtyJobReadable: () => true
 }))
 
 vi.mock('../wsl', () => ({
@@ -137,7 +138,7 @@ describe('LocalPtyProvider', () => {
       writeFileSyncMock,
       prepareMacosTccLoginShellMock,
       resolveAgentForegroundProcessMock,
-      readWindowsConptyProcessIdsMock,
+      readWindowsPtyJobProcessIdsMock,
       killWithDescendantSweepMock,
       isWslAvailableAsyncMock,
       wslUncDirectoryExistsMock,
@@ -264,7 +265,7 @@ describe('LocalPtyProvider', () => {
       ])
     })
 
-    it('consumes a native Windows OSC color query before renderer delivery', async () => {
+    it('answers a native Windows OSC color query from pushed colours before renderer delivery', async () => {
       Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
       const dataHandler = vi.fn()
       provider.onData(dataHandler)
@@ -277,6 +278,8 @@ describe('LocalPtyProvider', () => {
       const query = '\x1b]10;?\x07'
 
       onDataCb(query)
+      provider.setColorQueryReplyColors({ foreground: '#123456', background: '#000000' })
+      onDataCb(query)
 
       expect(dataHandler).toHaveBeenCalledWith({
         id,
@@ -285,7 +288,10 @@ describe('LocalPtyProvider', () => {
         seq: query.length,
         transformed: true
       })
-      expect(mockProc.write).not.toHaveBeenCalled()
+      expect(mockProc.write.mock.calls).toEqual([
+        ['\x1b]10;rgb:ffff/ffff/ffff\x1b\\'],
+        ['\x1b]10;rgb:1212/3434/5656\x1b\\']
+      ])
     })
 
     it('keeps forwarded OSC color replies for a Windows-owned WSL PTY', async () => {

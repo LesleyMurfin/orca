@@ -1,3 +1,4 @@
+import '../unused-default-rpc-methods.test-fixture'
 import { describe, expect, it, vi } from 'vitest'
 import { getDefaultUIState } from '../../../../shared/constants'
 import { PAIRING_LOCAL_UI_FIELDS } from '../../../../shared/pairing-local-ui-fields'
@@ -39,11 +40,25 @@ describe('client UI RPC pairing-local field seams', () => {
   // Driven off the census so a field added to PAIRING_LOCAL_UI_FIELDS without wiring a seam
   // fails here rather than shipping. Sample values are what a paired web client actually sends.
   const pairingLocalSamples: Record<(typeof PAIRING_LOCAL_UI_FIELDS)[number], unknown> = {
+    automationHostFilter: { kind: 'host', hostKey: 'authority:desktop|selector:self' },
     hideWorkspacesFromOtherDevices: true,
     manualRepoOrder: [
       { hostId: 'runtime:web-11111111-2222-3333-4444-555555555555', repoId: 'repo-a' }
     ],
-    workspaceHostOrder: ['runtime:web-11111111-2222-3333-4444-555555555555', 'local']
+    workspaceHostOrder: ['runtime:web-11111111-2222-3333-4444-555555555555', 'local'],
+    sidebarOpen: false,
+    agentsVisibleHostIds: ['runtime:web-11111111-2222-3333-4444-555555555555'],
+    agentsFilterRepoIds: ['repo-a'],
+    agentsHideWorkspacesFromOtherDevices: true,
+    agentsHideAutomationGeneratedWorkspaces: true,
+    agentsHideCliCreatedWorkspaces: true,
+    agentsShowChildAgents: true,
+    agentsCompactMode: false,
+    agentsShowSearch: false,
+    agentsReadFilter: 'unread',
+    agentsGroupBy: 'project',
+    activityClearedAtByPaneKey: { 'tab-1:leaf-1': 123 },
+    manuallyUnreadTurnsByPaneKey: { 'tab-1:leaf-1': 321 }
   }
 
   it.each(PAIRING_LOCAL_UI_FIELDS.map((field) => [field] as const))(

@@ -14,7 +14,11 @@ export type ComposerCardSourceProps = Pick<
   | 'ephemeralVmRecipeError'
   | 'name'
   | 'branchNameOverride'
+  | 'parentWorktreeId'
+  | 'selectedRepoExecutionHostId'
+  | 'selectedRepoProjectId'
   | 'smartNameSelection'
+  | 'smartNameMode'
   | 'reuseSelectedBranch'
   | 'createMultiple'
   | 'agentPrompt'
@@ -63,6 +67,7 @@ export type ComposerCardActionProps = {
   smartNameRepoSwitchTarget?: 'project' | 'task-source'
   onNameValueChange: ComposerModel['handleNameValueChange']
   onBranchNameOverrideChange: ComposerModel['handleBranchNameOverrideChange']
+  onParentWorktreeIdChange: ComposerModel['setParentWorktreeId']
   onSmartGitHubItemSelect: ComposerModel['handleSmartGitHubItemSelect']
   onSmartGitLabItemSelect: ComposerModel['handleSmartGitLabItemSelect']
   onSmartBranchSelect: ComposerModel['handleSmartBranchSelect']
@@ -81,6 +86,7 @@ export type ComposerCardActionProps = {
   onAgentPromptChange: ComposerModel['setAgentPrompt']
   linkedOnlyTemplatePreview: string | null
   getAttachmentLabel: (pathValue: string) => string
+  onNativeFileDrop?: ComposerModel['applyNativeDrop']
   onAddAttachment: () => void
   onRemoveAttachment: (pathValue: string) => void
   onRemoveLinkedWorkItem: ComposerModel['handleRemoveLinkedWorkItem']
@@ -91,7 +97,6 @@ export type ComposerCardActionProps = {
   onOpenAgentSettings: ComposerModel['handleOpenAgentSettings']
   onToggleAdvanced: () => void
   createDisabled: boolean
-  onCreate: () => void
   onNoteChange: ComposerModel['setNote']
   onBaseBranchChange: ComposerModel['handleBaseBranchChange']
   onBaseBranchPrSelect: ComposerModel['handleBaseBranchPrSelect']

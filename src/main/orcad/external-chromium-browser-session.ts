@@ -51,6 +51,25 @@ function classifyAgentBrowserError(message: string): string {
   return 'browser_error'
 }
 
+// Why no AGENT_BROWSER_IDLE_TIMEOUT_MS here: unlike a per-tab helper daemon, this one owns the
+// user's remote Chromium tree, so idling it out would close their live browser and every tab in it.
+// The stable session name plus the `close` in start() is what reclaims a killed orcad's tree (#16367).
+export function externalChromiumAgentBrowserEnvironment(options: {
+  inheritedEnv: NodeJS.ProcessEnv
+  executablePath: string
+  profilePath: string
+  sessionName: string
+  browserArgs?: readonly string[]
+}): NodeJS.ProcessEnv {
+  return {
+    ...options.inheritedEnv,
+    AGENT_BROWSER_EXECUTABLE_PATH: options.executablePath,
+    AGENT_BROWSER_PROFILE: options.profilePath,
+    AGENT_BROWSER_SESSION: options.sessionName,
+    AGENT_BROWSER_ARGS: options.browserArgs?.join('\n') ?? ''
+  }
+}
+
 export class ExternalChromiumBrowserSession {
   private readonly profilePath: string
   private readonly sessionName: string
@@ -68,18 +87,42 @@ export class ExternalChromiumBrowserSession {
     this.profilePath = join(statePath, `browser-${launch.provider}`)
   }
 
-  async start(): Promise<string> {
+  async start(signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted()
     await mkdir(this.profilePath, { recursive: true })
-    await this.run(['open', 'about:blank'])
-    const tabs = await this.readTabs()
-    const active = tabs.find((tab) => tab.active) ?? tabs[0]
-    if (!active) {
+    signal?.throwIfAborted()
+    // Why: the session name is stable across runs, so a daemon an earlier orcad left behind is
+    // still driving the user's Chromium. Unlike the pane bridge this session never passes --cdp,
+    // so nothing binds it to the old process — a surviving one is reusable as-is, and closing it
+    // would take the remote user's browser and every tab with it (#16367).
+    const reusable = await this.readActiveTabId(signal)
+    signal?.throwIfAborted()
+    if (reusable) {
+      return reusable
+    }
+    // Nothing answered, so anything under this name is wedged or half-dead; reclaim it.
+    await this.stop()
+    signal?.throwIfAborted()
+    await this.run(['open', 'about:blank'], COMMAND_TIMEOUT_MS, signal)
+    const opened = await this.readActiveTabId(signal)
+    signal?.throwIfAborted()
+    if (!opened) {
       throw new BrowserError(
         BROWSER_UNAVAILABLE_ERROR_CODE,
         'The browser launched without an automation target.'
       )
     }
-    return active.tabId
+    return opened
+  }
+
+  private async readActiveTabId(signal?: AbortSignal): Promise<string | null> {
+    try {
+      const tabs = await this.readTabs(signal)
+      return (tabs.find((tab) => tab.active) ?? tabs[0])?.tabId ?? null
+    } catch {
+      signal?.throwIfAborted()
+      return null
+    }
   }
 
   async stop(): Promise<void> {
@@ -94,8 +137,10 @@ export class ExternalChromiumBrowserSession {
     await this.run(['tab', agentPageId])
   }
 
-  async readTabs(): Promise<AgentBrowserTab[]> {
-    return AgentBrowserTabsResult.parse(await this.run(['tab'])).tabs ?? []
+  async readTabs(signal?: AbortSignal): Promise<AgentBrowserTab[]> {
+    return (
+      AgentBrowserTabsResult.parse(await this.run(['tab'], COMMAND_TIMEOUT_MS, signal)).tabs ?? []
+    )
   }
 
   async screenshot(params: Record<string, unknown>, full: boolean): Promise<unknown> {
@@ -115,26 +160,33 @@ export class ExternalChromiumBrowserSession {
     return { data }
   }
 
-  async run(command: readonly string[], timeoutMs = COMMAND_TIMEOUT_MS): Promise<unknown> {
+  async run(
+    command: readonly string[],
+    timeoutMs = COMMAND_TIMEOUT_MS,
+    signal?: AbortSignal
+  ): Promise<unknown> {
+    signal?.throwIfAborted()
     const args = ['--session', this.sessionName, '--profile', this.profilePath]
     if (this.launch.browserArgs?.length) {
       args.push('--args', this.launch.browserArgs.join('\n'))
     }
     args.push(...command, '--json')
-    const env = {
-      ...process.env,
-      AGENT_BROWSER_EXECUTABLE_PATH: this.launch.executablePath,
-      AGENT_BROWSER_PROFILE: this.profilePath,
-      AGENT_BROWSER_SESSION: this.sessionName,
-      AGENT_BROWSER_ARGS: this.launch.browserArgs?.join('\n') ?? ''
-    }
+    const env = externalChromiumAgentBrowserEnvironment({
+      inheritedEnv: process.env,
+      executablePath: this.launch.executablePath,
+      profilePath: this.profilePath,
+      sessionName: this.sessionName,
+      browserArgs: this.launch.browserArgs
+    })
     const result = await runProcess({
       program: this.agentBrowserPath,
       args,
       env,
       timeoutMs,
+      signal,
       maxOutputBytes: MAX_OUTPUT_BYTES
     })
+    signal?.throwIfAborted()
     if (result.timedOut) {
       throw new BrowserError('browser_timeout', 'Browser command timed out.')
     }

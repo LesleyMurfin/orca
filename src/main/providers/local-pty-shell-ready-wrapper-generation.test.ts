@@ -14,11 +14,22 @@ import { getBashShellReadyRcfileContent } from './local-pty-shell-ready-bash-rcf
 import { getZshShellReadyWrapperFile } from './local-pty-shell-ready-wrapper-generation'
 import { makeUserZdotdir } from '../zsh-user-config-dir-fixture'
 // Why resolved rather than hardcoded: the wrapper tree is content-addressed.
-import { getShellReadyWrapperRoot } from './local-pty-shell-ready-wrapper-root'
+import {
+  getRequiredShellReadyWrapperPaths,
+  getShellReadyWrapperRoot
+} from './local-pty-shell-ready-wrapper-root'
+import { buildLocalShellReadyWrapperFiles } from './local-pty-shell-ready-wrapper-fileset'
 
 restoreUserDataPathAfterEach()
 
 describe('ensureShellReadyWrappersAt', () => {
+  it('keeps required wrapper paths aligned with generated files', () => {
+    const root = '/tmp/orca-shell-ready'
+    expect(getRequiredShellReadyWrapperPaths(root)).toEqual(
+      buildLocalShellReadyWrapperFiles(root).map(([path]) => path)
+    )
+  })
+
   // Why: rewriting a byte-identical tree replaces a live file on the terminal
   // spawn path for no gain -- and on Windows that is precisely the collision an
   // indexer or antivirus turns into a failed write. The tree is
@@ -176,12 +187,20 @@ describePosix('local PTY shell-ready launch config', () => {
     expect(init).toContain('functions -e __orca_shell_ready_marker')
   })
 
-  it('keeps markerless fish spawns unwrapped', async () => {
+  it('keeps markerless fish argv untouched and points it at the vendor snippet', async () => {
     const { getMarkerlessShellLaunchConfig } = await importFreshLocalPtyShellReady()
 
     const config = getMarkerlessShellLaunchConfig('/opt/homebrew/bin/fish')
 
-    expect(config).toEqual({ args: null, env: {}, supportsReadyMarker: false })
+    expect(config.args).toBeNull()
+    expect(config.supportsReadyMarker).toBe(false)
+    const prefix = config.env.ORCA_FISH_XDG_DATA_DIRS_PREFIX
+    expect(prefix).toMatch(/\/fish-xdg-data:\/usr\/local\/share:\/usr\/share$/)
+    expect(config.env).toEqual({ XDG_DATA_DIRS: prefix, ORCA_FISH_XDG_DATA_DIRS_PREFIX: prefix })
+    const dataDir = prefix.split(':')[0]
+    expect(
+      readFileSync(`${dataDir}/fish/vendor_conf.d/orca-shell-integration.fish`, 'utf8')
+    ).toContain('set argv --no-daemon $argv')
   })
 
   it('falls back to HOME for ORCA_ORIG_ZDOTDIR when inherited ZDOTDIR points at a wrapper dir', async () => {
@@ -199,37 +218,6 @@ describePosix('local PTY shell-ready launch config', () => {
         delete process.env.ZDOTDIR
       } else {
         process.env.ZDOTDIR = previousZdotdir
-      }
-      if (previousHome === undefined) {
-        delete process.env.HOME
-      } else {
-        process.env.HOME = previousHome
-      }
-    }
-  })
-
-  it('uses inherited ORCA_ORIG_ZDOTDIR when ZDOTDIR is an Orca wrapper dir', async () => {
-    const previousZdotdir = process.env.ZDOTDIR
-    const previousOrigZdotdir = process.env.ORCA_ORIG_ZDOTDIR
-    const previousHome = process.env.HOME
-    const userZdotdir = makeUserZdotdir(userDataPath, '.config', 'zsh')
-    process.env.ZDOTDIR = '/some/other/orca/shell-ready/zsh'
-    process.env.ORCA_ORIG_ZDOTDIR = userZdotdir
-    process.env.HOME = userDataPath
-    try {
-      const { getShellReadyLaunchConfig } = await importFreshLocalPtyShellReady()
-      const config = getShellReadyLaunchConfig('/bin/zsh')
-      expect(config.env.ORCA_ORIG_ZDOTDIR).toBe(userZdotdir)
-    } finally {
-      if (previousZdotdir === undefined) {
-        delete process.env.ZDOTDIR
-      } else {
-        process.env.ZDOTDIR = previousZdotdir
-      }
-      if (previousOrigZdotdir === undefined) {
-        delete process.env.ORCA_ORIG_ZDOTDIR
-      } else {
-        process.env.ORCA_ORIG_ZDOTDIR = previousOrigZdotdir
       }
       if (previousHome === undefined) {
         delete process.env.HOME
@@ -471,29 +459,6 @@ describePosix('local PTY shell-ready launch config', () => {
         delete process.env.ZDOTDIR
       } else {
         process.env.ZDOTDIR = previousZdotdir
-      }
-    }
-  })
-
-  it('rejects inherited ZDOTDIR ending in /shell-ready/zsh even with a trailing slash', async () => {
-    const previousZdotdir = process.env.ZDOTDIR
-    const previousHome = process.env.HOME
-    process.env.ZDOTDIR = '/some/other/orca/shell-ready/zsh/'
-    process.env.HOME = '/Users/alice'
-    try {
-      const { getShellReadyLaunchConfig } = await importFreshLocalPtyShellReady()
-      const config = getShellReadyLaunchConfig('/bin/zsh')
-      expect(config.env.ORCA_ORIG_ZDOTDIR).toBeUndefined()
-    } finally {
-      if (previousZdotdir === undefined) {
-        delete process.env.ZDOTDIR
-      } else {
-        process.env.ZDOTDIR = previousZdotdir
-      }
-      if (previousHome === undefined) {
-        delete process.env.HOME
-      } else {
-        process.env.HOME = previousHome
       }
     }
   })

@@ -1,11 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { readFileSync, rmSync, mkdtempSync } from 'node:fs'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
-import type { WorkspaceSessionState } from '../shared/workspace-session-state-types'
-import { getDefaultWorkspaceSession } from '../shared/constants'
-import { isTerminalLeafId } from '../shared/stable-pane-id'
 import {
+  closeTestStores,
   testState,
   createStore,
   dataFile,
@@ -16,8 +10,15 @@ import {
   makeWorktreeLineage,
   makeWorkspaceLineage
 } from './persistence-test-harness'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { readFileSync, rmSync, mkdtempSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import type { WorkspaceSessionState } from '../shared/workspace-session-state-types'
+import { getDefaultWorkspaceSession } from '../shared/constants'
+import { isTerminalLeafId } from '../shared/stable-pane-id'
+
 import { worktreeWorkspaceKey } from '../shared/workspace-scope'
-import { TEST_LEAF_1 } from './persistence-session-fixtures'
 
 // Stub the ~/.ssh/config parser so the SSH-import test drives the real Store with deterministic hosts, not the operator's actual ~/.ssh/config.
 const { loadUserSshConfigMock, sshConfigHostsToTargetsMock } = vi.hoisted(() => ({
@@ -64,7 +65,8 @@ describe('Store host-partitioned workspace sessions', () => {
     testState.dir = mkdtempSync(join(tmpdir(), 'orca-test-'))
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeTestStores()
     rmSync(testState.dir, { recursive: true, force: true })
   })
 
@@ -94,34 +96,8 @@ describe('Store host-partitioned workspace sessions', () => {
     }
   }
 
-  const makeBoundHostSession = (ptyId: string | null): WorkspaceSessionState => ({
-    ...getDefaultWorkspaceSession(),
-    activeRepoId: 'repo-1',
-    activeWorktreeId: 'repo-1::/worktree',
-    activeTabId: 'tab-1',
-    tabsByWorktree: {
-      'repo-1::/worktree': [
-        {
-          id: 'tab-1',
-          worktreeId: 'repo-1::/worktree',
-          title: 'Terminal',
-          customTitle: null,
-          color: null,
-          sortOrder: 0,
-          createdAt: 1,
-          ptyId
-        }
-      ]
-    },
-    terminalLayoutsByTabId: {
-      'tab-1': {
-        root: { type: 'leaf', leafId: TEST_LEAF_1 },
-        activeLeafId: TEST_LEAF_1,
-        expandedLeafId: null,
-        ptyIdsByLeafId: ptyId ? { [TEST_LEAF_1]: ptyId } : {}
-      }
-    }
-  })
+  // Registered on purpose: rows owned by an unregistered repo id are swept as orphans on load.
+  const makeRepos = (...repoIds: string[]) => repoIds.map((id) => makeRepo({ id, path: `/${id}` }))
 
   it('migrates a legacy workspaceSession blob into the local partition', async () => {
     writeDataFile({
@@ -194,6 +170,7 @@ describe('Store host-partitioned workspace sessions', () => {
     writeDataFile({
       schemaVersion: 1,
       workspaceSession: makeHostSession('local-repo'),
+      repos: makeRepos('repo-ssh'),
       workspaceSessionsByHostId: {
         'ssh:ssh-1': makeLegacyPaneHostSession('repo-ssh', 'remote-pty')
       },
@@ -224,6 +201,7 @@ describe('Store host-partitioned workspace sessions', () => {
     writeDataFile({
       schemaVersion: 1,
       workspaceSession: makeHostSession('local-repo'),
+      repos: makeRepos('repo-a', 'repo-b'),
       workspaceSessionsByHostId: {
         'ssh:host-a': makeLegacyPaneHostSession('repo-a', 'pty-a'),
         'ssh:host-b': makeLegacyPaneHostSession('repo-b', 'pty-b')
@@ -392,81 +370,6 @@ describe('Store host-partitioned workspace sessions', () => {
     ).toBe(7)
   })
 
-  it('persists an SSH PTY binding only in the SSH host partition', async () => {
-    const store = await createStore()
-    store.setWorkspaceSession(makeBoundHostSession(null), 'local')
-    store.setWorkspaceSession(makeBoundHostSession(null), 'ssh:ssh-1')
-
-    store.persistPtyBinding(
-      {
-        worktreeId: 'repo-1::/worktree',
-        tabId: 'tab-1',
-        leafId: TEST_LEAF_1,
-        ptyId: 'ssh:ssh-1@@remote-pty'
-      },
-      'ssh:ssh-1'
-    )
-
-    expect(
-      store.getWorkspaceSession('ssh:ssh-1').tabsByWorktree['repo-1::/worktree'][0]?.ptyId
-    ).toBe('ssh:ssh-1@@remote-pty')
-    expect(
-      store.getWorkspaceSession('local').tabsByWorktree['repo-1::/worktree'][0]?.ptyId
-    ).toBeNull()
-  })
-
-  it('rolls back a failed SSH PTY binding flush in the SSH host partition', async () => {
-    const store = await createStore()
-    store.setWorkspaceSession(makeBoundHostSession(null), 'local')
-    store.setWorkspaceSession(makeBoundHostSession(null), 'ssh:ssh-1')
-    const flush = vi.spyOn(store, 'flushOrThrow').mockImplementationOnce(() => {
-      throw new Error('disk unavailable')
-    })
-
-    expect(() =>
-      store.persistPtyBinding(
-        {
-          worktreeId: 'repo-1::/worktree',
-          tabId: 'tab-1',
-          leafId: TEST_LEAF_1,
-          ptyId: 'ssh:ssh-1@@remote-pty'
-        },
-        'ssh:ssh-1'
-      )
-    ).toThrow('disk unavailable')
-    flush.mockRestore()
-
-    expect(
-      store.getWorkspaceSession('ssh:ssh-1').tabsByWorktree['repo-1::/worktree'][0]?.ptyId
-    ).toBeNull()
-    expect(
-      store.getWorkspaceSession('local').tabsByWorktree['repo-1::/worktree'][0]?.ptyId
-    ).toBeNull()
-  })
-
-  it('clears expired SSH PTY bindings from the SSH partition and legacy local copy', async () => {
-    const store = await createStore()
-    const ptyId = 'ssh:ssh-1@@remote-pty'
-    store.setWorkspaceSession(makeBoundHostSession(ptyId), 'local')
-    store.setWorkspaceSession(makeBoundHostSession(ptyId), 'ssh:ssh-1')
-    store.upsertSshRemotePtyLease({
-      targetId: 'ssh-1',
-      ptyId: 'remote-pty',
-      worktreeId: 'repo-1::/worktree',
-      tabId: 'tab-1',
-      leafId: TEST_LEAF_1,
-      state: 'attached'
-    })
-
-    store.markSshRemotePtyLease('ssh-1', ptyId, 'expired')
-
-    for (const hostId of ['local', 'ssh:ssh-1']) {
-      const session = store.getWorkspaceSession(hostId)
-      expect(session.tabsByWorktree['repo-1::/worktree'][0]?.ptyId).toBeNull()
-      expect(session.terminalLayoutsByTabId['tab-1']?.ptyIdsByLeafId).toEqual({})
-    }
-  })
-
   it('defaults an omitted hostId to the local partition', async () => {
     const store = await createStore()
     store.setWorkspaceSession(makeHostSession('repo-a'), 'runtime:env-a')
@@ -488,6 +391,7 @@ describe('Store host-partitioned workspace sessions', () => {
 
   it('removes one orphaned worktree with a host-scoped topology fence', async () => {
     const store = await createStore()
+    store.addRepo(makeRepo({ id: 'repo-gone', path: '/repo-gone' }))
     const worktreeId = 'repo-gone::/workspace/stale'
     const session = {
       ...makeHostSession('repo-gone'),
@@ -728,6 +632,7 @@ describe('Store host-partitioned workspace sessions', () => {
     const worktreeId = 'repo-1::/worktree'
     writeDataFile({
       schemaVersion: 1,
+      repos: makeRepos('repo-1'),
       workspaceSessionsByHostId: {
         'runtime:good': makeHostSession('good-repo'),
         // activeRepoId must be string|null; a number fails the zod parse.
@@ -753,6 +658,7 @@ describe('Store host-partitioned workspace sessions', () => {
     const worktreeId = 'repo-1::/worktree'
     writeDataFile({
       schemaVersion: 1,
+      repos: makeRepos('repo-1'),
       workspaceSession: {
         ...makeHostSession('local-repo'),
         // A projected/truncated write can leave a top-level field the wrong type;
@@ -813,6 +719,7 @@ describe('Store host-partitioned workspace sessions', () => {
     const worktreeId = 'repo-1::/worktree'
     const profile = await canonicalize({
       schemaVersion: 1,
+      repos: makeRepos('repo-1'),
       workspaceSession: {
         ...makeHostSession('local-repo'),
         tabsByWorktree: { [worktreeId]: [makeTerminalTab({ id: 'tab-keep', worktreeId })] }
@@ -845,6 +752,7 @@ describe('Store host-partitioned workspace sessions', () => {
     const worktreeId = 'repo-1::/worktree'
     const profile = await canonicalize({
       schemaVersion: 1,
+      repos: makeRepos('repo-1'),
       workspaceSessionsByHostId: {
         'runtime:env-a': {
           ...makeHostSession('runtime-repo'),

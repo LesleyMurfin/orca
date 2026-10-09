@@ -9,12 +9,21 @@ import {
   DEFAULT_RENDERER_RECOVERY_WINDOW_MS,
   RendererRecoveryCircuitBreaker
 } from '../crash-reporting/renderer-recovery-circuit-breaker'
+import { createLowCommitOomRecoveryGate } from '../crash-reporting/low-commit-oom-recovery-gate'
 import {
   buildEditableContextMenuTemplate,
   matchingRichMarkdownContextMenuTableTarget,
   parseRichMarkdownContextMenuTableTarget
 } from './editable-context-menu'
-import type { CreateMainWindowOptions } from './main-window-contracts'
+import type { CreateMainWindowOptions, MainWindowLoadObserver } from './main-window-contracts'
+import { browserRouteWebContentsRegistry } from '../browser/browser-route-session-runtime'
+import {
+  attachBrowserClientPageRenderer,
+  retireBrowserClientPageRenderer
+} from '../browser/browser-client-page-renderer-runtime'
+import { registerRendererDocumentNavigation } from './renderer-document-navigation'
+import { createRendererRecoveryReloadWatchdog } from './renderer-recovery-reload-watchdog'
+import { createRendererLaunchFailureBackoff } from './renderer-launch-failure-backoff'
 
 export type MainWindowFocusLifecycle = {
   dispose: () => void
@@ -24,13 +33,15 @@ export type MainWindowFocusLifecycle = {
   isRendererProcessGone: () => boolean
   isShortcutRecorderFocused: () => boolean
   isTerminalInputFocused: () => boolean
+  /** Relays powerMonitor 'resume' so a suspend-frozen recovery-reload timer does not fire against an unbudgeted load. */
+  notifySystemResume: () => void
 }
 
 export function installMainWindowFocusLifecycle(args: {
   isWindowClosing: () => boolean
   mainWindow: BrowserWindow
   opts?: CreateMainWindowOptions
-  reloadMainWindow: () => void
+  reloadMainWindow: (observer: MainWindowLoadObserver) => void
   rendererWebContentsId: number
 }): MainWindowFocusLifecycle {
   const { isWindowClosing, mainWindow, opts, reloadMainWindow, rendererWebContentsId } = args
@@ -125,18 +136,49 @@ export function installMainWindowFocusLifecycle(args: {
     shortcutRecorderFocused = false
   }
   let rendererProcessGone = false
+  const rendererWebContents = mainWindow.webContents
+  registerRendererDocumentNavigation(rendererWebContents, () => {
+    const frame = rendererWebContents.mainFrame
+    retireBrowserClientPageRenderer(rendererWebContents)
+    resetMarkdownEditorFocus()
+    resetTerminalInputFocus()
+    resetFloatingTerminalInputFocus()
+    resetShortcutRecorderFocus()
+    return () => {
+      if (
+        rendererProcessGone ||
+        rendererWebContents.isDestroyed() ||
+        rendererWebContents.mainFrame !== frame
+      ) {
+        return
+      }
+      attachBrowserClientPageRenderer(rendererWebContents)
+    }
+  })
   let rendererRecoveryTimer: ReturnType<typeof setTimeout> | null = null
   // Why: stop a deterministic per-load renderer fault from auto-reloading forever; breaker opens after too many recoveries in a rolling window.
   const rendererRecoveryCircuitBreaker = new RendererRecoveryCircuitBreaker({
     windowMs: DEFAULT_RENDERER_RECOVERY_WINDOW_MS,
     maxRecoveries: DEFAULT_RENDERER_RECOVERY_MAX_RECOVERIES
   })
+  const launchFailureBackoff = createRendererLaunchFailureBackoff()
+  const lowCommitOomGate = createLowCommitOomRecoveryGate()
   const clearRendererRecoveryTimer = (): void => {
     if (rendererRecoveryTimer) {
       clearTimeout(rendererRecoveryTimer)
       rendererRecoveryTimer = null
     }
   }
+  // Why: the reload can stall with a live window and no document — no did-fail-load fires, and the breaker counts
+  // renderer deaths, so a load that never lands is invisible to every other observer on this path.
+  const recoveryReloadWatchdog = createRendererRecoveryReloadWatchdog({
+    isRecoveryPending: () => rendererRecoveryTimer !== null,
+    isWindowClosing,
+    mainWindow,
+    opts,
+    reloadMainWindow,
+    rendererWebContentsId
+  })
   const scheduleRendererRecovery = (details: Electron.RenderProcessGoneDetails): void => {
     if (
       rendererRecoveryTimer ||
@@ -149,6 +191,12 @@ export function installMainWindowFocusLifecycle(args: {
     ) {
       return
     }
+    const launchFailed = details.reason === 'launch-failed'
+    const useLaunchBackoff = launchFailed && process.platform !== 'win32'
+    const launchRetryDelayMs = useLaunchBackoff ? launchFailureBackoff.nextDelayMs() : null
+    const goneAt = Date.now()
+    // Why read at gone time: the sampler's next tick would see commit the corpse just released.
+    const lowCommit = lowCommitOomGate.assess(details, goneAt)
     rendererRecoveryTimer = setTimeout(() => {
       rendererRecoveryTimer = null
       if (
@@ -159,24 +207,48 @@ export function installMainWindowFocusLifecycle(args: {
       ) {
         return
       }
+      lowCommitOomGate.recordRecoveredDeath(details, goneAt)
+      if (lowCommit) {
+        // Why: a reload would OOM again on the starved host; only the user can free commit.
+        recoveryReloadWatchdog.escalate(
+          {
+            details,
+            recentRecoveryCount: rendererRecoveryCircuitBreaker.recentRecoveryCount(Date.now())
+          },
+          'low-commit',
+          lowCommit
+        )
+        return
+      }
+      // Why outside the breaker: a refused spawn is not a crash loop; its own bounded backoff owns the budget.
+      if (useLaunchBackoff) {
+        const subject = { details, recentRecoveryCount: launchFailureBackoff.attempts() }
+        if (launchRetryDelayMs === null) {
+          recoveryReloadWatchdog.escalate(subject, 'launch-failed')
+        } else {
+          recoveryReloadWatchdog.issue(details, subject.recentRecoveryCount)
+        }
+        return
+      }
       const recovery = rendererRecoveryCircuitBreaker.registerRecoveryAttempt(Date.now())
       if (!recovery.allowed) {
         // Why: too many reloads means it will just crash again; stop and let the host surface a recovery prompt.
-        opts?.onRendererRecoveryExhausted?.({
-          details,
-          webContentsId: rendererWebContentsId,
-          recentRecoveryCount: recovery.recentRecoveryCount
-        })
+        // Why through the watchdog: it owns the one-prompt-at-a-time guard, and the prompt's manual retry is a
+        // recovery reload too — unwatched, one that stalls leaves a blank window and no further prompt.
+        recoveryReloadWatchdog.escalate(
+          { details, recentRecoveryCount: recovery.recentRecoveryCount },
+          launchFailed ? 'launch-failed' : 'crash-loop'
+        )
         return
       }
       // Why: a transient renderer/Network Service loss can blank Chromium; reload the app document once to recover.
-      // Why: mark this in-place reload so the did-finish-load orphan sweep spares live PTYs until session restore (#5787).
-      opts?.onBeforeRecoveryReload?.(mainWindow.webContents.id)
-      reloadMainWindow()
-    }, 250)
+      recoveryReloadWatchdog.issue(details, recovery.recentRecoveryCount)
+    }, launchRetryDelayMs ?? 250)
   }
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     rendererProcessGone = true
+    retireBrowserClientPageRenderer(rendererWebContents)
+    browserRouteWebContentsRegistry.retireRenderer(rendererWebContentsId)
     resetMarkdownEditorFocus()
     resetTerminalInputFocus()
     resetFloatingTerminalInputFocus()
@@ -192,22 +264,18 @@ export function installMainWindowFocusLifecycle(args: {
     scheduleRendererRecovery(details)
   })
   mainWindow.webContents.on('destroyed', () => {
+    retireBrowserClientPageRenderer(rendererWebContents)
     resetMarkdownEditorFocus()
     resetTerminalInputFocus()
     resetFloatingTerminalInputFocus()
     resetShortcutRecorderFocus()
   })
-  mainWindow.webContents.on('did-start-navigation', (_e, _url, _isInPlace, isMainFrame) => {
-    if (isMainFrame) {
-      resetMarkdownEditorFocus()
-      resetTerminalInputFocus()
-      resetFloatingTerminalInputFocus()
-      resetShortcutRecorderFocus()
-    }
-  })
   mainWindow.webContents.on('did-finish-load', () => {
     rendererProcessGone = false
+    attachBrowserClientPageRenderer(rendererWebContents)
     clearRendererRecoveryTimer()
+    launchFailureBackoff.reset()
+    recoveryReloadWatchdog.notifyDocumentLoaded()
   })
 
   const dispose = (): void => {
@@ -216,6 +284,7 @@ export function installMainWindowFocusLifecycle(args: {
     resetFloatingTerminalInputFocus()
     resetShortcutRecorderFocus()
     clearRendererRecoveryTimer()
+    recoveryReloadWatchdog.clear()
     ipcMain.removeListener(markdownFocusChannel, onMarkdownEditorFocused)
     ipcMain.removeListener(terminalInputFocusChannel, onTerminalInputFocused)
     ipcMain.removeListener(floatingFocusChannel, onFloatingFocus)
@@ -229,6 +298,7 @@ export function installMainWindowFocusLifecycle(args: {
     isMarkdownEditorFocused: () => markdownEditorFocused,
     isRendererProcessGone: () => rendererProcessGone,
     isShortcutRecorderFocused: () => shortcutRecorderFocused,
-    isTerminalInputFocused: () => terminalInputFocused
+    isTerminalInputFocused: () => terminalInputFocused,
+    notifySystemResume: recoveryReloadWatchdog.notifySystemResume
   }
 }

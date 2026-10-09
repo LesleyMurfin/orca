@@ -26,7 +26,6 @@ const {
   mockStore: {
     getRepos: vi.fn().mockReturnValue([]),
     addRepo: vi.fn(),
-    removeProject: vi.fn(),
     getRepo: vi.fn(),
     updateRepo: vi.fn()
   },
@@ -45,6 +44,11 @@ vi.mock('electron', () => ({
 
 vi.mock('../git/repo', () => ({
   isGitRepo: isGitRepoMock,
+  inspectGitRepoForRegistration: vi.fn((path: string) => ({
+    isRepo: isGitRepoMock(path),
+    rootPath: getGitRepoRootMock(path),
+    mainRepoPath: getLinkedWorktreeMainRepoRootMock(path)
+  })),
   getGitRepoRoot: getGitRepoRootMock,
   getLinkedWorktreeMainRepoRoot: getLinkedWorktreeMainRepoRootMock,
   getRepoName: vi.fn().mockImplementation((path: string) => path.split('/').pop()),
@@ -113,7 +117,7 @@ describe('repos:add with git worktrees', () => {
     invalidateAuthorizedRootsCacheMock.mockReset()
     prepareLocalWorktreeRootForRepoMock.mockReset().mockResolvedValue(undefined)
 
-    registerRepoHandlers(mockWindow as never, mockStore as never)
+    registerRepoHandlers(mockWindow as never, mockStore as never, {} as never)
   })
 
   it('returns the tracked main checkout instead of adding its linked worktree', async () => {
@@ -151,6 +155,8 @@ describe('repos:add with git worktrees', () => {
 
     await callAdd({ path: '/Users/dev/notes', kind: 'folder' })
 
+    expect(isGitRepoMock).not.toHaveBeenCalled()
+    expect(getGitRepoRootMock).not.toHaveBeenCalled()
     expect(getLinkedWorktreeMainRepoRootMock).not.toHaveBeenCalled()
     expect(mockStore.addRepo).toHaveBeenCalledTimes(1)
   })

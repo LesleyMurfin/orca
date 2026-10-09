@@ -1,11 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { rmSync, mkdtempSync } from 'node:fs'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
-import type { PersistedState } from '../shared/persisted-state-types'
-import type { ProjectGroup } from '../shared/project-group-types'
-import { getDefaultWorkspaceSession } from '../shared/constants'
 import {
+  closeTestStores,
   testState,
   createStore,
   writeDataFile,
@@ -14,6 +8,26 @@ import {
   makeTerminalTab,
   makeWorktreeLineage
 } from './persistence-test-harness'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { rmSync, mkdtempSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import type { PersistedState } from '../shared/persisted-state-types'
+import type { ProjectGroup } from '../shared/project-group-types'
+import { getDefaultWorkspaceSession } from '../shared/constants'
+import { makeTerminalTab as makeSessionTerminalTab } from './persistence-session-fixtures'
+
+import {
+  advanceSshConnectionGeneration,
+  assertSshMutationExpectation,
+  resetSshConnectionGenerations
+} from './ssh/ssh-connection-generation'
+import { getRuntimeOwnedSshTargetId } from './ssh/ssh-connection-store'
+import {
+  _getLocalWorktreeScanGenerationCacheSize,
+  getLocalWorktreeScanGeneration,
+  isLocalWorktreeScanGenerationCurrent
+} from './local-worktree-scan-generation'
 
 // Stub the ~/.ssh/config parser so the SSH-import test drives the real Store with deterministic hosts, not the operator's actual ~/.ssh/config.
 const { loadUserSshConfigMock, sshConfigHostsToTargetsMock } = vi.hoisted(() => ({
@@ -63,9 +77,14 @@ describe('Store', () => {
     getCohortAtEmitMock.mockReturnValue({ nth_repo_added: 2 })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeTestStores()
     rmSync(testState.dir, { recursive: true, force: true })
   })
+  it('keeps the persistence harness terminal-tab fixture as the same public function', () => {
+    expect(makeTerminalTab).toBe(makeSessionTerminalTab)
+  })
+
   // ── 5. addRepo and getRepo ──────────────────────────────────────────
 
   it('addRepo stores a repo retrievable by getRepo', async () => {
@@ -77,6 +96,35 @@ describe('Store', () => {
     expect(fetched!.displayName).toBe('test')
     // No username has been resolved yet — hydration must not probe git/gh.
     expect(fetched!.gitUsername).toBe('')
+  })
+
+  it('invalidates local scans across add, remove, and same-id re-add', async () => {
+    const store = await createStore()
+    const repoId = 'scan-lifecycle'
+    const beforeAdd = getLocalWorktreeScanGeneration(repoId)
+
+    store.addRepo(makeRepo({ id: repoId }))
+    expect(isLocalWorktreeScanGenerationCurrent(repoId, beforeAdd)).toBe(false)
+
+    const beforeRemove = getLocalWorktreeScanGeneration(repoId)
+    store.removeProjectForHost(repoId, 'local')
+    expect(isLocalWorktreeScanGenerationCurrent(repoId, beforeRemove)).toBe(false)
+
+    const beforeReAdd = getLocalWorktreeScanGeneration(repoId)
+    store.addRepo(makeRepo({ id: repoId, path: '/replacement' }))
+    expect(isLocalWorktreeScanGenerationCurrent(repoId, beforeReAdd)).toBe(false)
+  })
+
+  it('forgets scan generations when repos are removed', async () => {
+    const store = await createStore()
+    const initialCacheSize = _getLocalWorktreeScanGenerationCacheSize()
+    for (let index = 0; index < 200; index += 1) {
+      const repoId = `scan-churn-${index}`
+      store.addRepo(makeRepo({ id: repoId }))
+      store.removeProjectForHost(repoId, 'local')
+    }
+
+    expect(_getLocalWorktreeScanGenerationCacheSize()).toBe(initialCacheSize)
   })
 
   it('setResolvedRepoGitUsername persists the enriched username for hydration', async () => {
@@ -230,9 +278,9 @@ describe('Store', () => {
     expect(store.getRepo('nonexistent')).toBeUndefined()
   })
 
-  // ── 6. removeProject cleans up worktree meta ──────────────────────────
+  // ── 6. removeProjectForHost cleans up worktree meta ──────────────────────────
 
-  it('removeProject deletes the repo and its worktree meta', async () => {
+  it('removeProjectForHost deletes the repo and its worktree meta', async () => {
     const store = await createStore()
     store.addRepo(makeRepo({ id: 'r1' }))
     store.addRepo(makeRepo({ id: 'r2', path: '/repo2' }))
@@ -241,7 +289,7 @@ describe('Store', () => {
     store.setWorktreeMeta('r1::/path/wt2', { displayName: 'wt2' })
     store.setWorktreeMeta('r2::/other', { displayName: 'other' })
 
-    store.removeProject('r1')
+    store.removeProjectForHost('r1', 'local')
 
     expect(store.getRepo('r1')).toBeUndefined()
     expect(store.getWorktreeMeta('r1::/path/wt1')).toBeUndefined()
@@ -260,13 +308,13 @@ describe('Store', () => {
         ...store.getWorkspaceSession(),
         terminalTopologyRevisionByRepoId: { [repoId]: 1 }
       })
-      store.removeProject(repoId)
+      store.removeProjectForHost(repoId, 'local')
     }
 
     expect(store.getWorkspaceSession().terminalTopologyRevisionByRepoId).toEqual({})
   })
 
-  it('removeProject prunes the repo worktrees from workspace session state', async () => {
+  it('removeProjectForHost prunes the repo worktrees from workspace session state', async () => {
     const store = await createStore()
     store.addRepo(makeRepo({ id: 'r1' }))
     store.addRepo(makeRepo({ id: 'r2', path: '/repo2' }))
@@ -279,14 +327,14 @@ describe('Store', () => {
       lastVisitedAtByWorktreeId: { 'r1::/path/wt1': 111, 'r2::/other': 222 }
     })
 
-    store.removeProject('r1')
+    store.removeProjectForHost('r1', 'local')
 
     const session = store.getWorkspaceSession()
     expect(session.lastVisitedAtByWorktreeId?.['r1::/path/wt1']).toBeUndefined()
     expect(session.lastVisitedAtByWorktreeId?.['r2::/other']).toBe(222)
   })
 
-  it('removeProject prunes the repo worktrees from per-host workspace session partitions', async () => {
+  it('removeProjectForHost prunes the repo worktrees from per-host workspace session partitions', async () => {
     const store = await createStore()
     store.addRepo(makeRepo({ id: 'r1' }))
 
@@ -301,7 +349,7 @@ describe('Store', () => {
       hostId
     )
 
-    store.removeProject('r1')
+    store.removeProjectForHost('r1', 'local')
 
     const hostSession = store.getWorkspaceSession(hostId)
     expect(hostSession.lastVisitedAtByWorktreeId?.['r1::/path/wt1']).toBeUndefined()
@@ -322,18 +370,18 @@ describe('Store', () => {
     ])
   })
 
-  it('removeProject removes the derived project host setup compatibility record', async () => {
+  it('removeProjectForHost removes the derived project host setup compatibility record', async () => {
     const store = await createStore()
     store.addRepo(makeRepo({ id: 'r1' }))
     store.addRepo(makeRepo({ id: 'r2', path: '/repo2' }))
 
-    store.removeProject('r1')
+    store.removeProjectForHost('r1', 'local')
 
     expect(store.getProjects().map((project) => project.id)).toEqual(['repo:r2'])
     expect(store.getProjectHostSetups().map((setup) => setup.id)).toEqual(['r2'])
   })
 
-  it('removeProject deletes child and parent lineage for the repo', async () => {
+  it('removeProjectForHost deletes child and parent lineage for the repo', async () => {
     const store = await createStore()
     store.addRepo(makeRepo({ id: 'r1' }))
     store.addRepo(makeRepo({ id: 'r2', path: '/repo2' }))
@@ -360,7 +408,7 @@ describe('Store', () => {
       })
     )
 
-    store.removeProject('r1')
+    store.removeProjectForHost('r1', 'local')
 
     expect(store.getWorktreeLineage('r1::/path/child')).toBeUndefined()
     expect(store.getWorktreeLineage('r2::/other-child')).toBeUndefined()
@@ -368,6 +416,24 @@ describe('Store', () => {
   })
 
   // ── 6b. removeProjectForHost is host-scoped ───────────────────────────
+
+  it('invalidates local scans when one host registration is removed', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo({ id: 'shared', path: '/local/repo' }))
+    store.addRepo(
+      makeRepo({
+        id: 'shared',
+        path: '/remote/repo',
+        connectionId: 'ssh-old',
+        executionHostId: 'ssh:ssh-old'
+      })
+    )
+    const beforeRemove = getLocalWorktreeScanGeneration('shared')
+
+    store.removeProjectForHost('shared', 'ssh:ssh-old')
+
+    expect(isLocalWorktreeScanGenerationCurrent('shared', beforeRemove)).toBe(false)
+  })
 
   it('removeProjectForHost removes only the target host row for a shared repo id', async () => {
     const store = await createStore()
@@ -395,6 +461,12 @@ describe('Store', () => {
     // Local worktree meta survives; the SSH host's meta is pruned.
     expect(store.getWorktreeMeta('shared::/local/repo/wt')).toBeDefined()
     expect(store.getWorktreeMeta('shared::/remote/repo/wt')).toBeUndefined()
+    store.flush()
+    const persisted = readDataFile() as PersistedState
+    const identityMetadata = Object.values(persisted.worktreeMetaByIdentity ?? {})
+    expect(identityMetadata).toEqual([
+      expect.objectContaining({ hostId: 'local', displayName: 'local-wt' })
+    ])
   })
 
   it('removeProjectForHost keeps the surviving host session for a shared repo id + path', async () => {
@@ -641,6 +713,39 @@ describe('Store', () => {
     expect(store.getWorktreeMeta('only::/repo/wt')).toBeUndefined()
   })
 
+  it('removing and recreating a runtime-owned SSH target fences the old incarnation', async () => {
+    resetSshConnectionGenerations(3)
+    try {
+      const store = await createStore()
+      const targetId = getRuntimeOwnedSshTargetId('vm-1')
+      const target = {
+        id: targetId,
+        label: 'ephemeral vm',
+        host: 'vm-old.example.com',
+        port: 22,
+        username: 'dev',
+        source: 'manual' as const,
+        owner: { type: 'on-demand-runtime' as const, runtimeId: 'vm-1' }
+      }
+      store.addSshTarget(target)
+      const staleGeneration = advanceSshConnectionGeneration(targetId)
+
+      store.removeSshTarget(targetId)
+      store.addSshTarget({ ...target, host: 'vm-new.example.com' })
+      const replacementGeneration = advanceSshConnectionGeneration(targetId)
+
+      // A delayed write from the discarded VM must not pass the replacement's fence.
+      expect(() => assertSshMutationExpectation(targetId, targetId, staleGeneration)).toThrow(
+        'SSH connection changed; refresh and try again'
+      )
+      expect(() =>
+        assertSshMutationExpectation(targetId, targetId, replacementGeneration)
+      ).not.toThrow()
+    } finally {
+      resetSshConnectionGenerations()
+    }
+  })
+
   // ── 6c. reassignSshTargetId re-adopts orphaned workspaces ─────────────
 
   it('reassignSshTargetId re-points repos and worktree metas onto the new id', async () => {
@@ -692,7 +797,10 @@ describe('Store', () => {
 
   it('reassignSshTargetId persists a worktree-meta-only re-point (no matching repo)', async () => {
     const store = await createStore()
-    // A meta on the old SSH host with no repo row — the re-point must still be persisted, not memory-only.
+    // A meta on the old SSH host with no repo row for that host — the re-point must still be
+    // persisted, not memory-only. The repo id stays registered so the load-time orphan sweep,
+    // which only reads repo ids, leaves the row alone.
+    store.addRepo(makeRepo({ id: 'r1', path: '/r1' }))
     store.setWorktreeMeta('r1::/remote/wt', { displayName: 'wt', hostId: 'ssh:ssh-old' })
 
     const repoIds = store.reassignSshTargetId('ssh-old', 'ssh-new')
@@ -742,6 +850,7 @@ describe('Store', () => {
 
   it('reassignSshTargetId re-keys a session partition stored under the old ssh host id', async () => {
     const store = await createStore()
+    store.addRepo(makeRepo({ id: 'r1', path: '/r1' }))
     store.setWorkspaceSession(
       {
         activeRepoId: null,

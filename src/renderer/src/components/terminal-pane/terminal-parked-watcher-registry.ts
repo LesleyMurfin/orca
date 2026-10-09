@@ -7,17 +7,25 @@
  * mid-evaluation. Keeping the maps and pure disposal here lets the slice
  * import cycle-free, mirroring how pty-dispatcher exports its handler maps.
  */
+import type { NotificationWorkspaceOwner } from '../../../../shared/notification-source'
 import { discardPreHandlerPtyState, hasPreHandlerPtyExit } from './pty-pre-handler-buffer'
 import { parseRemoteRuntimePtyId } from '../../../../shared/remote-runtime-pty-id'
 import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../../shared/constants'
+import { releaseTerminalScrollIntentKey } from '../../lib/pane-manager/terminal-scroll-intent-key-store'
 
 export type ParkedTerminalPaneCapture = {
+  workspaceOwner?: NotificationWorkspaceOwner
   ptyId: string | null
   /** PaneManager numeric pane id the live pane used for runtime titles. */
   paneId: number
   /** Stable terminal-layout leaf UUID (paneKey attribution). */
   leafId: string
   drivesTabTitle: boolean
+  /** The unmounted pane fresh-spawned this PTY and no terminal input was ever
+   *  sent. Plain-value carry of the session facts behind the sole-newborn
+   *  guard (pty-exit-hibernate), so the parked sidecar preserves a dead
+   *  never-typed shell's tab the same way the session observer did. */
+  untouchedFreshSpawn?: boolean
 }
 
 export type CapturedTabPanes = { worktreeId: string; panes: ParkedTerminalPaneCapture[] }
@@ -135,7 +143,16 @@ export function retireParkedTerminalTab(tabId: string): void {
   // Why: explicit tab retirement permanently invalidates both live parked
   // observers and unmounted-pane candidates; neither may reattach later.
   disposeParkedTabWatchers(tabId)
-  capturedPanesByTabId.delete(tabId)
+  const capture = capturedPanesByTabId.get(tabId)
+  if (capture) {
+    // Parked panes never run PaneManager's close teardown. Release their
+    // strong scroll-intent keys here or every closed parked tab leaks one per
+    // leaf for the renderer lifetime.
+    for (const pane of capture.panes) {
+      releaseTerminalScrollIntentKey(pane.leafId)
+    }
+    capturedPanesByTabId.delete(tabId)
+  }
 }
 
 /**
@@ -210,6 +227,11 @@ export function pruneParkedTerminalWatchers(liveWorktreeIds: ReadonlySet<string>
   }
   for (const [tabId, capture] of capturedPanesByTabId) {
     if (!liveWorktreeIds.has(capture.worktreeId)) {
+      for (const pane of capture.panes) {
+        // Worktree removal can bypass closeTab while panes are parked; release
+        // the same strong scroll-intent keys as explicit tab retirement.
+        releaseTerminalScrollIntentKey(pane.leafId)
+      }
       capturedPanesByTabId.delete(tabId)
     }
   }

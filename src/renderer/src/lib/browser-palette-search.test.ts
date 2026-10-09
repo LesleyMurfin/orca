@@ -8,7 +8,6 @@ import {
   searchBrowserPages,
   formatBrowserPaletteUrl,
   isBlankBrowserUrl,
-  isBrowserPaletteQueryTooLarge,
   type SearchableBrowserPage
 } from './browser-palette-search'
 
@@ -100,6 +99,26 @@ describe('browser-palette-search', () => {
       ''
     )
     expect(result.executionHostId).toBe('ssh:box')
+  })
+
+  it('carries the page favicon into palette results', () => {
+    const faviconUrl = 'https://example.com/favicon.ico'
+    const [result] = searchBrowserPages(
+      [
+        makeEntry({
+          page: makePage({ faviconUrl }),
+          workspace: makeWorkspace(),
+          worktree: makeWorktree(),
+          repoName: 'repo/one',
+          worktreeSortIndex: 0,
+          isCurrentPage: false,
+          isCurrentWorktree: false
+        })
+      ],
+      ''
+    )
+
+    expect(result.faviconUrl).toBe(faviconUrl)
   })
 
   it('keeps empty-query ordering deterministic and context-first', () => {
@@ -460,7 +479,6 @@ describe('browser-palette-search', () => {
       })
     } as SearchableBrowserPage
 
-    expect(isBrowserPaletteQueryTooLarge(oversizedQuery)).toBe(true)
     expect(searchBrowserPages([entry], oversizedQuery)).toEqual([])
   })
 

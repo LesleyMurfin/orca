@@ -45,6 +45,8 @@ export function registerBrowserRequestIpcBridge(
 
         // Why: a user-initiated open (data.activate, e.g. mobile tapping an HTML path) foregrounds the tab so it lands in active-group order and publishes to mobile.
         // Agent/automation opens stay in the background (activate:false) in the active browser group.
+        // A paired device's create is deliberately in that second class now: it must not move this host's
+        // view, so it groups with the other browser tabs rather than landing in the UI-active group.
         const workspace = store.createBrowserTab(worktreeId, data.url, {
           title: data.url,
           browserPageId: data.browserPageId,
@@ -105,7 +107,10 @@ export function registerBrowserRequestIpcBridge(
         const workspacePages = store.browserPagesByWorkspace[owningWorkspace.id] ?? []
         if (workspacePages.length > 0) {
           for (const page of workspacePages) {
-            destroyPersistentWebview(page.id)
+            // Document previews use a fixed partition, so profile changes must preserve their guests.
+            if (!page.docLocation) {
+              destroyPersistentWebview(page.id)
+            }
           }
         } else {
           destroyPersistentWebview(data.browserPageId)

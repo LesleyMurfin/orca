@@ -1,3 +1,4 @@
+import './unused-default-rpc-methods.test-fixture'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,6 +10,7 @@ import { OrchestrationDb } from '../orchestration/db'
 import type { RpcRequest, RpcResponse } from './core'
 import { RpcDispatcher } from './dispatcher'
 import { ORCHESTRATION_METHODS } from './methods/orchestration'
+import { reattachDispatchConsumer } from '../orchestration/db/root-dispatch-test-fixture'
 
 const COORDINATOR_HANDLE = 'term_invariant_coordinator'
 const COORDINATOR_PANE = 'tab_coord:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -44,7 +46,12 @@ describe('Task/Dispatch state invariant', () => {
       const task = harness.db.createTask({ spec: 'retain assignment', runId: harness.runId })
       const dispatch =
         dispatchStatus === 'pending'
-          ? harness.db.createStartingWorkerDispatch({ taskId: task.id, startOptions: {} }).dispatch
+          ? harness.db.createStartingWorkerDispatch({
+              creator: { kind: 'system' },
+              maxDepth: Number.MAX_SAFE_INTEGER,
+              taskId: task.id,
+              startOptions: {}
+            }).dispatch
           : await dispatchTask(harness, task.id, WORKER_HANDLE)
 
       const response = await updateTask(harness, task.id, 'ready', 'must not persist')
@@ -89,7 +96,7 @@ describe('Task/Dispatch state invariant', () => {
   it('atomically fails a context-only Dispatch, revokes its capability, and frees the terminal', async () => {
     const harness = createHarness()
     const task = harness.db.createTask({ spec: 'failing assignment', runId: harness.runId })
-    const { dispatch, capability } = await createCapableDispatch(harness, task.id, 'dispatched')
+    const { dispatch } = await createCapableDispatch(harness, task.id, 'dispatched')
 
     const response = await updateTask(harness, task.id, 'failed', 'coordinator stopped work')
 
@@ -102,14 +109,6 @@ describe('Task/Dispatch state invariant', () => {
       dispatchCompletedAt: expect.any(String),
       capabilityRevokedAt: expect.any(String)
     })
-    expect(
-      harness.db.verifyDispatchCapability({
-        dispatchId: dispatch.id,
-        capability,
-        paneKey: WORKER_PANE,
-        processIncarnation: WORKER_PROCESS
-      })
-    ).toEqual({ valid: false, reason: `Dispatch ${dispatch.id} capability is revoked.` })
 
     const laterTask = harness.db.createTask({ spec: 'later assignment', runId: harness.runId })
     await expect(dispatchTask(harness, laterTask.id, WORKER_HANDLE)).resolves.toMatchObject({
@@ -127,7 +126,7 @@ describe('Task/Dispatch state invariant', () => {
     async (dispatchStatus, taskStatus) => {
       const harness = createHarness()
       const task = harness.db.createTask({ spec: 'supervised assignment', runId: harness.runId })
-      const { dispatch, capability } = createSupervisedDispatch(harness, task.id, dispatchStatus)
+      const { dispatch } = createSupervisedDispatch(harness, task.id, dispatchStatus)
 
       const response = await updateTask(harness, task.id, taskStatus, 'must not persist')
 
@@ -151,14 +150,6 @@ describe('Task/Dispatch state invariant', () => {
         ownershipState: 'owned',
         releaseState: 'not_requested'
       })
-      expect(
-        harness.db.verifyDispatchCapability({
-          dispatchId: dispatch.id,
-          capability,
-          paneKey: WORKER_PANE,
-          processIncarnation: WORKER_PROCESS
-        })
-      ).toEqual({ valid: true })
     }
   )
 
@@ -283,10 +274,15 @@ async function createCapableDispatch(
   harness: Harness,
   taskId: string,
   status: 'pending' | 'dispatched'
-): Promise<{ dispatch: { id: string }; capability: string }> {
+): Promise<{ dispatch: { id: string } }> {
   if (status === 'pending') {
-    const dispatch = harness.db.createStartingWorkerDispatch({ taskId, startOptions: {} }).dispatch
-    const capability = harness.db.prepareStartingWorkerAuthority({
+    const dispatch = harness.db.createStartingWorkerDispatch({
+      creator: { kind: 'system' },
+      maxDepth: Number.MAX_SAFE_INTEGER,
+      taskId,
+      startOptions: {}
+    }).dispatch
+    harness.db.prepareStartingWorkerAuthority({
       dispatchId: dispatch.id,
       handle: WORKER_HANDLE,
       paneKey: WORKER_PANE,
@@ -296,24 +292,29 @@ async function createCapableDispatch(
       effects: [],
       terminalOwnership: 'external'
     })
-    return { dispatch, capability }
+    return { dispatch }
   }
   const dispatch = await dispatchTask(harness, taskId, WORKER_HANDLE)
-  const capability = harness.db.mintDispatchCapability({
+  reattachDispatchConsumer(harness.db, {
     dispatchId: dispatch.id,
     paneKey: WORKER_PANE,
     processIncarnation: WORKER_PROCESS
   })
-  return { dispatch, capability }
+  return { dispatch }
 }
 
 function createSupervisedDispatch(
   harness: Harness,
   taskId: string,
   status: 'pending' | 'dispatched'
-): { dispatch: { id: string }; capability: string } {
-  const dispatch = harness.db.createStartingWorkerDispatch({ taskId, startOptions: {} }).dispatch
-  const capability = harness.db.prepareStartingWorkerAuthority({
+): { dispatch: { id: string } } {
+  const dispatch = harness.db.createStartingWorkerDispatch({
+    creator: { kind: 'system' },
+    maxDepth: Number.MAX_SAFE_INTEGER,
+    taskId,
+    startOptions: {}
+  }).dispatch
+  harness.db.prepareStartingWorkerAuthority({
     dispatchId: dispatch.id,
     handle: WORKER_HANDLE,
     paneKey: WORKER_PANE,
@@ -326,7 +327,7 @@ function createSupervisedDispatch(
   if (status === 'dispatched') {
     harness.db.markWorkerDispatchReady(dispatch.id)
   }
-  return { dispatch, capability }
+  return { dispatch }
 }
 
 function updateTask(

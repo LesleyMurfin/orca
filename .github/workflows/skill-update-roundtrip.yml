@@ -10,7 +10,6 @@ on:
       - 'skills/**'
       - 'resources/skills/**'
       - 'config/scripts/verify-skill-update-roundtrip.mjs'
-      - 'config/scripts/skill-update-roundtrip-workflow.test.mjs'
       - 'src/main/skills/skill-freshness-eligibility.ts'
       - 'src/shared/skill-freshness.ts'
       - '.github/workflows/skill-update-roundtrip.yml'
@@ -21,6 +20,10 @@ on:
     branches:
       - main
     paths: *skill-roundtrip-paths
+
+concurrency:
+  group: skill-roundtrip-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   roundtrip:
@@ -41,7 +44,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          # Historical skill snapshots need tags, but only their blobs are read.
           fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
       - uses: actions/setup-node@v6
         with:

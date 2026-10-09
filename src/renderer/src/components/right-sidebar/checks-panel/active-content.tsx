@@ -1,3 +1,4 @@
+import { ImeInput } from '@/lib/ime-text-field'
 import React from 'react'
 import { Check, LoaderCircle, Pencil, X } from 'lucide-react'
 import { toast } from 'sonner'
@@ -8,7 +9,7 @@ import { SourceControlAgentActionDialog } from '../SourceControlAgentActionDialo
 import { ChecksPanelUpdatedAtMetadata } from '../checks-panel-updated-at-metadata'
 import { getChecksPanelRefreshErrorBannerLine } from '../github-refresh-error-copy'
 import { resolveChecksPanelHostedReviewModifierDestination } from '../checks-panel-hosted-review-click-routing'
-import { readSourceControlLaunchRecipeAgentId } from '@/lib/source-control-launch-agent-selection'
+import { readSourceControlLaunchRecipeAgentId } from '../../../../../shared/source-control-launch-agent-selection'
 import { resolveSourceControlActionRecipe } from '../../../../../shared/source-control-ai'
 import { clearPendingPRCommentAiAck } from '../pr-comments-ai-launch-ack'
 import { getBrokenChecks } from '../../pr-checks-fix-prompt'
@@ -23,12 +24,12 @@ import type { ChecksPanelActiveContentModel } from './active-content-props'
 type ReviewHeaderComponentProps = {
   review: ChecksPanelReview
   isRefreshing: boolean
-  canUnlinkPullRequest: boolean
+  canUnlinkReview: boolean
   modifierHintDestination: ChecksPanelHostedReviewModifierDestination
   onRefresh: () => void
   onOpenReview: (event: React.MouseEvent<HTMLButtonElement>) => void
-  onUnlinkPullRequest: () => void
-  onLinkAnotherPullRequest: () => void
+  onUnlinkReview: () => void
+  onLinkAnotherReview: () => void
 }
 
 export function ChecksPanelActiveContent({
@@ -69,7 +70,7 @@ export function ChecksPanelActiveContent({
     handleFixChecksWithAI,
     handleLaunchAborted,
     handleLaunchAccepted,
-    handleLinkAnotherPullRequest,
+    handleLinkAnotherReview,
     handleLoadCheckDetails,
     handleOpenPR,
     handleOpenStackPR,
@@ -82,11 +83,11 @@ export function ChecksPanelActiveContent({
     handleSetReaction,
     handleStartEdit,
     handleTitleKeyDown,
-    handleUnlinkPullRequest,
+    handleUnlinkReview,
     isFixingChecksWithAI,
     isRefreshing,
     isResolvingConflictsWithAI,
-    linkedPR,
+    linkedGitLabMR,
     pendingCommentResolutionRef,
     pr,
     prRefreshState,
@@ -131,12 +132,12 @@ export function ChecksPanelActiveContent({
         <ReviewHeaderComponent
           review={activeReview}
           isRefreshing={isRefreshing}
-          canUnlinkPullRequest={linkedPR !== null}
+          canUnlinkReview={activeReview.provider === 'github' ? true : linkedGitLabMR !== null}
           modifierHintDestination={hostedReviewModifierHintDestination}
           onRefresh={() => void handleRefresh()}
           onOpenReview={handleOpenPR}
-          onUnlinkPullRequest={handleUnlinkPullRequest}
-          onLinkAnotherPullRequest={handleLinkAnotherPullRequest}
+          onUnlinkReview={handleUnlinkReview}
+          onLinkAnotherReview={handleLinkAnotherReview}
         />
 
         {detachedHeadDisplay && <DetachedHeadBadge display={detachedHeadDisplay} side="bottom" />}
@@ -152,7 +153,7 @@ export function ChecksPanelActiveContent({
         {/* Review title */}
         {editingTitle ? (
           <div className="flex items-center gap-1">
-            <input
+            <ImeInput
               ref={titleInputRef}
               className="flex-1 text-[12px] bg-background border border-border rounded px-2 py-1 text-foreground outline-none focus:ring-1 focus:ring-ring"
               value={titleDraft}

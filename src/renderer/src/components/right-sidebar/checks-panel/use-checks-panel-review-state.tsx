@@ -11,10 +11,6 @@ import { resolveHostedReviewCreationProvider } from '../../../../../shared/hoste
 import { localizedHostedReviewCopy } from '@/i18n/hosted-review-localized-copy'
 import { resolveChecksPanelReviewLookup } from '../checks-panel-review-lookup-authority'
 import {
-  getChecksPanelForegroundReviewEvidenceKey,
-  resolveChecksPanelReviewEvidenceProvider
-} from '../checks-panel-pr-refresh-request'
-import {
   computeChecksPanelConfirmedReadiness,
   isChecksPanelHardErrorCleared,
   type ChecksPanelConfirmedReadinessInput
@@ -60,10 +56,10 @@ export function useChecksPanelReviewState(model: ChecksPanelReviewStateInput) {
     panelContextKey,
     pr,
     prCacheKey,
+    prRefreshStateNow,
     prCachedHasPR,
     prGenerationRecords,
     prNumber,
-    refreshContextKey,
     remoteStatusInvalidation,
     repo,
     repoConnectionId,
@@ -207,32 +203,6 @@ export function useChecksPanelReviewState(model: ChecksPanelReviewStateInput) {
     eligibilityReview: hostedReviewCreation?.review ?? null
   })
   const checksPanelReviewLookup = checksPanelReviewLookupResult.state
-  const hasUnrenderedReviewEvidence =
-    checksPanelReviewLookup === 'positive_unresolved' ||
-    (checksPanelReviewLookup !== 'found' &&
-      hostedReviewCreation?.blockedReason === 'existing_review')
-  const unrenderedReviewEvidenceIdentity =
-    linkedReviewNumber ??
-    hostedReview?.number ??
-    hostedReviewCreation?.review?.number ??
-    checksPanelReviewLookupResult.openReviewUrl ??
-    'unknown'
-  const unrenderedReviewEvidenceProvider = resolveChecksPanelReviewEvidenceProvider({
-    linkedGitHubPR: linkedPR,
-    linkedGitLabMR,
-    linkedBitbucketPR,
-    linkedAzureDevOpsPR,
-    linkedGiteaPR,
-    eligibilityProvider: hostedReviewCreation?.provider,
-    cachedProvider: hostedReview?.provider
-  })
-  const foregroundReviewEvidenceKey = getChecksPanelForegroundReviewEvidenceKey({
-    refreshContextKey,
-    reviewEvidenceIdentity: unrenderedReviewEvidenceIdentity,
-    reviewEvidenceProvider: unrenderedReviewEvidenceProvider,
-    hasUnrenderedReviewEvidence,
-    isGitHubReviewContext
-  })
   // Confirmed readiness from the last eligibility snapshot, not live canCreate (which would be circular and flap during transient failures).
   const hardErrorObservedAt =
     isGitHubReviewContext && hardRefreshError && hardRefreshError.contextKey === panelContextKey
@@ -248,7 +218,7 @@ export function useChecksPanelReviewState(model: ChecksPanelReviewStateInput) {
     gitSnapshotMatches:
       eligibilityGitFingerprint !== null &&
       hostedReviewCreationSnapshot?.gitFingerprint === eligibilityGitFingerprint,
-    now: Date.now()
+    now: prRefreshStateNow
   }
   const confirmedReadiness = computeChecksPanelConfirmedReadiness(confirmedReadinessInput)
   // A hard error persists until a qualifying eligibility request clears it; queued/in-flight status no longer un-hides Create.
@@ -356,10 +326,6 @@ export function useChecksPanelReviewState(model: ChecksPanelReviewStateInput) {
     prCachedHasPRForContext,
     checksPanelReviewLookupResult,
     checksPanelReviewLookup,
-    hasUnrenderedReviewEvidence,
-    unrenderedReviewEvidenceIdentity,
-    unrenderedReviewEvidenceProvider,
-    foregroundReviewEvidenceKey,
     hardErrorObservedAt,
     confirmedReadinessInput,
     confirmedReadiness,

@@ -1,3 +1,4 @@
+import { normalizeExplorerDisplayRootByWorktree } from '../../../shared/file-explorer-display-root'
 import type { PersistedState } from '../../../shared/persisted-state-types'
 import {
   getDefaultUIState,
@@ -53,11 +54,14 @@ export type UIUpdateOperations = {
   notifyUIChanged: () => void
 }
 
+/** Applies a sanitized partial update while keeping active-view persistence separate from durable UI fields. */
 export function updatePersistedUI(
   operations: UIUpdateOperations,
   updates: Partial<PersistedState['ui']>
 ): void {
-  if ('browserKagiSessionLink' in updates && !updates.browserKagiSessionLink) {
+  const clearsProtectedSecret =
+    'browserKagiSessionLink' in updates && !updates.browserKagiSessionLink
+  if (clearsProtectedSecret) {
     operations.removeRetainedBlob(PROTECTED_SECRET_SLOT.browserKagiSessionLink)
   }
   const sanitizedUpdates = stripMainOwnedTelemetryMarkerFromUI(updates)
@@ -152,6 +156,10 @@ export function updatePersistedUI(
       sanitizedUpdates.visibleWorkspaceHostIds !== undefined
         ? normalizeVisibleExecutionHostIds(sanitizedUpdates.visibleWorkspaceHostIds)
         : normalizeVisibleExecutionHostIds(operations.state.ui?.visibleWorkspaceHostIds),
+    agentsVisibleHostIds:
+      sanitizedUpdates.agentsVisibleHostIds !== undefined
+        ? normalizeVisibleExecutionHostIds(sanitizedUpdates.agentsVisibleHostIds)
+        : normalizeVisibleExecutionHostIds(operations.state.ui?.agentsVisibleHostIds),
     workspaceHostOrder:
       sanitizedUpdates.workspaceHostOrder !== undefined
         ? normalizeExecutionHostOrder(sanitizedUpdates.workspaceHostOrder)
@@ -163,6 +171,12 @@ export function updatePersistedUI(
     browserDefaultZoomLevel: normalizeBrowserPageZoomLevel(
       sanitizedUpdates.browserDefaultZoomLevel ?? operations.state.ui?.browserDefaultZoomLevel
     ),
+    explorerDisplayRootByWorktree:
+      sanitizedUpdates.explorerDisplayRootByWorktree !== undefined
+        ? normalizeExplorerDisplayRootByWorktree(sanitizedUpdates.explorerDisplayRootByWorktree)
+        : normalizeExplorerDisplayRootByWorktree(
+            operations.state.ui?.explorerDisplayRootByWorktree
+          ),
     showDotfilesByWorktree:
       sanitizedUpdates.showDotfilesByWorktree !== undefined
         ? normalizeShowDotfilesByWorktree(sanitizedUpdates.showDotfilesByWorktree)
@@ -188,7 +202,8 @@ export function updatePersistedUI(
           )
         : normalizeFeatureInteractions(operations.state.ui?.featureInteractions)
   }
-  if (persistedUIValuesEqual(previousUI, nextUI)) {
+  // A sealed secret looks empty in memory; an explicit clear must still reach disk.
+  if (!clearsProtectedSecret && persistedUIValuesEqual(previousUI, nextUI)) {
     if (activeViewChanged) {
       operations.notifyUIChanged()
     }

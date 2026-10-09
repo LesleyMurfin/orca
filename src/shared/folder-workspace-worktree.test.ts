@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { FolderWorkspace } from './folder-workspace-types'
-import { folderWorkspaceToWorktree } from './folder-workspace-worktree'
+import type { WorkspaceAttachment } from './worktree/types'
+import { getWorkspaceAttachments } from './workspace-attachments'
+import {
+  folderWorkspaceRepoId,
+  folderWorkspaceToWorktree,
+  projectGroupIdFromRepoId
+} from './folder-workspace-worktree'
 
 function makeFolderWorkspace(overrides: Partial<FolderWorkspace> = {}): FolderWorkspace {
   return {
@@ -24,6 +30,25 @@ function makeFolderWorkspace(overrides: Partial<FolderWorkspace> = {}): FolderWo
 }
 
 describe('folderWorkspaceToWorktree', () => {
+  it('preserves multiple attachments and projects a bare Linear task without enabling review checks', () => {
+    const linkedItems: WorkspaceAttachment[] = [
+      { provider: 'github', type: 'pr', number: 7 },
+      {
+        provider: 'linear',
+        type: 'issue',
+        number: 0,
+        identifier: 'APP-42',
+        linearOrganizationUrlKey: 'acme'
+      },
+      { provider: 'github', type: 'issue', number: 8 }
+    ]
+    const worktree = folderWorkspaceToWorktree(makeFolderWorkspace({ linkedItems }))
+    expect(worktree.linkedItems).toEqual(linkedItems)
+    expect(getWorkspaceAttachments(worktree)).toHaveLength(3)
+    expect(worktree.linkedLinearIssue).toBe('APP-42')
+    expect(worktree.linkedLinearIssueOrganizationUrlKey).toBe('acme')
+    expect(worktree.linkedPR).toBeNull()
+  })
   it('projects attached issue tasks without creating linked PR metadata', () => {
     const githubIssue = folderWorkspaceToWorktree(
       makeFolderWorkspace({
@@ -171,5 +196,38 @@ describe('folderWorkspaceToWorktree', () => {
     expect(githubPr.linkedIssue).toBeNull()
     expect(gitlabMr.linkedGitLabMR).toBeNull()
     expect(gitlabMr.linkedGitLabIssue).toBeNull()
+  })
+})
+
+describe('recognising a folder workspace repoId', () => {
+  // The defect this exists for: a folder workspace's repoId is NEVER null, so code that tests for
+  // absence to mean "no git repo" takes the repo branch and renders the raw synthetic id.
+  it('never mints a null repoId, so absence cannot be the test for having no repo', () => {
+    const worktree = folderWorkspaceToWorktree(makeFolderWorkspace({ projectGroupId: 'group-9' }))
+
+    expect(worktree.repoId).not.toBeNull()
+    expect(projectGroupIdFromRepoId(worktree.repoId)).toBe('group-9')
+  })
+
+  it('round-trips the project group through the id it mints', () => {
+    expect(projectGroupIdFromRepoId(folderWorkspaceRepoId('4c3c3452-758b'))).toBe('4c3c3452-758b')
+  })
+
+  // A real git repo id must not be mistaken for a project group, or a repo would lose its own name.
+  // The long id is the one that DISCRIMINATES: anything shorter than the prefix slices to an empty
+  // string and reads as null even with no prefix check, so short fixtures alone prove nothing.
+  it.each([
+    'repo-1',
+    'acme/app',
+    '',
+    'folder-workspace:',
+    'a-repo-id-comfortably-longer-than-the-prefix'
+  ])('reports no project group for %s', (repoId) => {
+    expect(projectGroupIdFromRepoId(repoId)).toBeNull()
+  })
+
+  it('reports no project group for an absent repoId', () => {
+    expect(projectGroupIdFromRepoId(null)).toBeNull()
+    expect(projectGroupIdFromRepoId(undefined)).toBeNull()
   })
 })

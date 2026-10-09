@@ -20,12 +20,25 @@ import { getLinkedWorkItemProvider, isGitLabIssueUrl } from '@/lib/new-workspace
 import {
   type SmartNameMode,
   isBlockingJiraUrlIntent
-} from '@/components/new-workspace/smart-workspace-source-results'
+} from '../../../../shared/new-workspace/smart-workspace-source-results'
 import type { GitPushTarget } from '../../../../shared/worktree/types'
 import type { TuiAgent } from '../../../../shared/tui-agent'
 import { filterEnabledTuiAgents, isTuiAgentEnabled } from '../../../../shared/tui-agent-selection'
 import { getAgentCatalog } from '@/lib/agent-catalog'
 import { useAppStore } from '@/store'
+
+/**
+ * Whether a restored draft's `baseBranch` still names the workspace.
+ *
+ * A draft written before the flag existed carries no intent, so it restores as a branch pick —
+ * the behavior it had when it was saved.
+ */
+export function resolveDraftBaseBranchNamesWorkspace(args: {
+  persistDraft: boolean
+  draftValue: boolean | undefined
+}): boolean {
+  return args.persistDraft ? (args.draftValue ?? true) : true
+}
 
 export function useWorkspaceIdentityState(input: WorkspaceIdentityStateInput) {
   const {
@@ -91,6 +104,14 @@ export function useWorkspaceIdentityState(input: WorkspaceIdentityStateInput) {
   const [baseBranch, setBaseBranch] = useState<string | undefined>(
     persistDraft ? newWorkspaceDraft?.baseBranch : initialBaseBranch
   )
+  // Why: a branch picked to name the workspace shows as a source pill; a base ref chosen in
+  // the composer's own picker must not, or it would hide the name the user typed.
+  const [baseBranchNamesWorkspace, setBaseBranchNamesWorkspace] = useState(() =>
+    resolveDraftBaseBranchNamesWorkspace({
+      persistDraft,
+      draftValue: newWorkspaceDraft?.baseBranchNamesWorkspace
+    })
+  )
 
   const [compareBaseRef, setCompareBaseRef] = useState<string | undefined>(
     persistDraft ? newWorkspaceDraft?.compareBaseRef : undefined
@@ -99,6 +120,8 @@ export function useWorkspaceIdentityState(input: WorkspaceIdentityStateInput) {
   const [branchNameOverride, setBranchNameOverride] = useState<string | undefined>(
     initialLinearBranchName
   )
+
+  const [parentWorktreeId, setParentWorktreeId] = useState<string | null>(null)
 
   const [branchNameOverridePreservesNameEdits, setBranchNameOverridePreservesNameEdits] = useState(
     Boolean(initialLinearBranchName)
@@ -191,10 +214,14 @@ export function useWorkspaceIdentityState(input: WorkspaceIdentityStateInput) {
     setLinkedGitLabMR,
     baseBranch,
     setBaseBranch,
+    baseBranchNamesWorkspace,
+    setBaseBranchNamesWorkspace,
     compareBaseRef,
     setCompareBaseRef,
     branchNameOverride,
     setBranchNameOverride,
+    parentWorktreeId,
+    setParentWorktreeId,
     branchNameOverridePreservesNameEdits,
     setBranchNameOverridePreservesNameEdits,
     smartNameMode,

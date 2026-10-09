@@ -1,3 +1,4 @@
+import '../unused-default-rpc-methods.test-fixture'
 import { describe, expect, it, vi } from 'vitest'
 import { RpcDispatcher } from '../dispatcher'
 import type { RpcRequest } from '../core'
@@ -18,16 +19,86 @@ function makeRequest(method: string, params?: unknown): RpcRequest {
 }
 
 describe('browser RPC methods', () => {
-  it('validates profile user-agent modes', () => {
-    expect(
-      ProfileCreate.safeParse({ label: 'Google', scope: 'isolated', userAgentMode: 'native' })
-        .success
-    ).toBe(true)
-    expect(ProfileCreate.safeParse({ label: 'Work', scope: 'isolated' }).success).toBe(true)
-    expect(
-      ProfileCreate.safeParse({ label: 'Bad', scope: 'isolated', userAgentMode: 'rotating' })
-        .success
-    ).toBe(false)
+  it('passes authenticated caller identity to client page creation outside the payload', async () => {
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      browserTabCreate: vi.fn().mockResolvedValue({ browserPageId: 'page-1' })
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: BROWSER_CORE_METHODS })
+    const replies: string[] = []
+    const params = {
+      worktree: 'id:wt-1',
+      placement: { kind: 'client', browserHostClientId: 'host-a' }
+    }
+
+    await dispatcher.dispatchStreaming(
+      makeRequest('browser.tabCreate', params),
+      (reply) => {
+        replies.push(reply)
+      },
+      {
+        clientKind: 'runtime',
+        pairedDeviceId: 'device-a'
+      }
+    )
+
+    expect(JSON.parse(replies[0]!)).toMatchObject({ ok: true })
+    expect(runtime.browserTabCreate).toHaveBeenCalledWith(params, {
+      pairedDeviceId: 'device-a',
+      clientKind: 'runtime'
+    })
+  })
+
+  it('routes host browser-open requests through the dedicated client opener', async () => {
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      browserOpenUrlOnClient: vi.fn().mockResolvedValue({ browserPageId: 'page-local' })
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: BROWSER_CORE_METHODS })
+
+    await dispatcher.dispatch(
+      makeRequest('browser.openUrl', {
+        url: 'https://example.com/login',
+        worktree: 'id:wt-1'
+      })
+    )
+
+    expect(runtime.browserOpenUrlOnClient).toHaveBeenCalledWith({
+      url: 'https://example.com/login',
+      worktree: 'id:wt-1'
+    })
+  })
+
+  it('rejects the retired profile user-agent field with changed-semantics guidance', () => {
+    expect(() =>
+      ProfileCreate.parse({ label: 'Google', scope: 'isolated', userAgentMode: 'native' })
+    ).toThrow('browser_profile_user_agent_mode_is_now_app_wide')
+  })
+
+  // The schema check above proves the shape; this proves an older client actually gets the
+  // rejection over the wire instead of a success with the field quietly dropped.
+  it('rejects the retired profile user-agent field through the dispatcher', async () => {
+    const browserProfileCreate = vi.fn().mockResolvedValue({ id: 'profile-1' })
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the dispatcher reads only getRuntimeId and the single browser method stubbed here.
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      browserProfileCreate
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: BROWSER_CORE_METHODS })
+
+    const response = await dispatcher.dispatch(
+      makeRequest('browser.profileCreate', {
+        label: 'Google',
+        scope: 'isolated',
+        userAgentMode: 'native'
+      })
+    )
+
+    // Why a working runtime stub: if the field were accepted and stripped again the call would
+    // succeed, so every assertion below is load-bearing rather than passing on a missing method.
+    expect(response).toMatchObject({ ok: false })
+    expect(JSON.stringify(response)).toContain('browser_profile_user_agent_mode_is_now_app_wide')
+    expect(browserProfileCreate).not.toHaveBeenCalled()
   })
 
   it('routes core browser automation commands to the runtime server', async () => {
@@ -80,11 +151,14 @@ describe('browser RPC methods', () => {
       page: 'page-1',
       url: 'https://example.com'
     })
-    expect(runtime.browserTabCreate).toHaveBeenCalledWith({
-      worktree: 'id:wt-1',
-      url: 'https://example.com',
-      profileId: 'profile-1'
-    })
+    expect(runtime.browserTabCreate).toHaveBeenCalledWith(
+      {
+        worktree: 'id:wt-1',
+        url: 'https://example.com',
+        profileId: 'profile-1'
+      },
+      { clientKind: undefined }
+    )
     expect(runtime.browserTabSwitch).toHaveBeenCalledWith({
       worktree: 'id:wt-1',
       index: 0,

@@ -6,12 +6,11 @@ import {
   deferPtyShutdownExit,
   isHostPtySleepPending
 } from '../pty-shutdown-exit-deferral'
-import { replayIntoTerminal } from '../replay-guard'
 import { POST_REPLAY_MODE_RESET } from '../../../../../shared/terminal-mode-reset-profiles'
-import {
-  getProviderSessionClaimKey,
-  isPassiveCompletedHibernationEvidence
-} from '@/lib/sleeping-agent-pane-ownership'
+import { isProvenProcessExit } from '../../../../../shared/terminal-exit-cause'
+import { getProviderSessionClaimKey } from '@/lib/sleeping-agent-pane-ownership'
+import type { SleepingAgentSessionRecord } from '../../../../../shared/agent-session-resume'
+import { agentTurnEndedUncleanly } from '../../../../../shared/agent-main-agent-verdict'
 import {
   createGitBashConsoleCapacityDetector,
   type GitBashConsoleCapacityDetector
@@ -19,6 +18,16 @@ import {
 import type { PtyPaneStartup } from '../pty-connection-types'
 
 import type { ConnectPanePtySession } from './connect-pane-pty-session'
+import { isPtyExitReplacedByRestart } from '../pty-exit-delivery'
+
+// Why live+done arms too: kept from #16308's wake-sweep widening; hibernation itself only writes worktree-sleep notes.
+export function noteArmsHibernatedPaneWake(record: SleepingAgentSessionRecord): boolean {
+  return (
+    record.state === 'done' &&
+    record.origin !== 'quit' &&
+    !(record.origin === 'live' && agentTurnEndedUncleanly(record))
+  )
+}
 
 /** PTY exit handling, hibernated-pane wake targets, and post-exit focus transfer. */
 export function installPtyExitHibernate(session: ConnectPanePtySession): void {
@@ -183,6 +192,7 @@ export function installPtyExitHibernate(session: ConnectPanePtySession): void {
       })
       return
     }
+    const isUnverifiedExit = !isProvenProcessExit(exitCode)
     const preserveRendererBinding =
       opts.preserveRendererBinding === true ||
       consumeCommittedPtyShutdownExit(ptyId, session.runtimeEnvironmentId)
@@ -193,7 +203,7 @@ export function installPtyExitHibernate(session: ConnectPanePtySession): void {
       // rebound to a replacement PTY; only clear ownership for the exited id.
       session.handledExitPtyId = ptyId
       session.processExitStateByPtyId.delete(ptyId)
-      if (!preserveRendererBinding) {
+      if (!preserveRendererBinding && !isUnverifiedExit) {
         session.deps.clearTabPtyId(session.deps.tabId, ptyId)
       }
       session.deps.consumeSuppressedPtyExit(ptyId)
@@ -209,16 +219,20 @@ export function installPtyExitHibernate(session: ConnectPanePtySession): void {
     // Why: main clears gate state on PTY exit too; this only resets the
     // pane-local marker so a reused pane cannot skip re-marking a new PTY.
     session.releaseHiddenRendererPtyDelivery()
-    session.clearPanePtyFitBinding()
-    // Why: the negotiating application died with its PTY; any replacement
-    // session starts with kitty keyboard flags at zero.
-    session.kittyKeyboardModes.reset()
-    const isSuppressedExit = session.deps.consumeSuppressedPtyExit(ptyId) || preserveRendererBinding
-    if (!isSuppressedExit) {
-      session.deps.clearExitedPanePtyLayoutBinding(session.pane.id, ptyId)
+    // A synthetic host-loss exit only retires this transport. Keep the mounted
+    // leaf↔PTY identity so reconnect/replay can adopt it after the host returns.
+    if (!isUnverifiedExit) {
+      session.clearPanePtyFitBinding()
+    }
+    const isSuppressedExit =
+      session.deps.consumeSuppressedPtyExit(ptyId) ||
+      preserveRendererBinding ||
+      isPtyExitReplacedByRestart(ptyId)
+    if (!isSuppressedExit && !isUnverifiedExit) {
+      session.clearExitedPanePtyLayoutBinding(ptyId)
     }
     session.deps.clearRuntimePaneTitle(session.deps.tabId, session.pane.id)
-    if (!preserveRendererBinding) {
+    if (!preserveRendererBinding && !isUnverifiedExit) {
       session.deps.clearTabPtyId(session.deps.tabId, ptyId)
     }
     // Why: if the PTY exits abruptly (Ctrl-D, crash, shell termination) without
@@ -233,6 +247,13 @@ export function installPtyExitHibernate(session: ConnectPanePtySession): void {
     // we must republish when a pane loses its PTY instead of waiting for a
     // broader layout change that may never happen.
     scheduleRuntimeGraphSync()
+    if (isUnverifiedExit && !isSuppressedExit) {
+      // The tab-level owner records liveness as unknown and leaves the row in
+      // place. This must happen before the split/sole-pane close branches.
+      session.manager.setPaneGpuRendering(session.pane.id, true)
+      session.deps.onPtyExitRef.current(ptyId, exitCode)
+      return
+    }
     // Why: intentional restarts suppress the PTY exit ahead of time so the
     // pane stays mounted and can reconnect in place. Without consuming the
     // suppression here, split-pane Codex restarts would still close the pane
@@ -242,22 +263,12 @@ export function installPtyExitHibernate(session: ConnectPanePtySession): void {
       // is a wake hint or should be discarded; runtime cleanup above is enough.
       session.manager.setPaneGpuRendering(session.pane.id, true)
       const sleepingRecordEntry = session.getSleepingRecordForPane(useAppStore.getState())
-      if (
-        sleepingRecordEntry &&
-        isPassiveCompletedHibernationEvidence(sleepingRecordEntry.record)
-      ) {
+      if (sleepingRecordEntry && noteArmsHibernatedPaneWake(sleepingRecordEntry.record)) {
         // Why: hibernation killed this pane's PTY while hidden. The frozen TUI
         // frame still has mouse-tracking/bracketed-paste armed, which silently
         // eats every click and keystroke against a dead transport — disarm the
         // modes now and arm the reveal-time wake.
-        replayIntoTerminal(session.pane, session.deps.replayingPanesRef, POST_REPLAY_MODE_RESET, {
-          breadcrumbIdentity: {
-            tabId: session.deps.tabId,
-            worktreeId: session.deps.worktreeId,
-            ptyId
-          },
-          shouldRefreshViewportSynchronously: session.shouldRefreshForegroundSynchronously
-        })
+        session.writeInputModeGround(POST_REPLAY_MODE_RESET)
         session.hibernatedWakeTarget = { ptyId, record: sleepingRecordEntry.record }
         const pendingWakeMatches =
           session.pendingHibernatedWakeTarget?.ptyId === ptyId &&
@@ -308,7 +319,7 @@ export function installPtyExitHibernate(session: ConnectPanePtySession): void {
       if (session.spawnedFreshPtyId === ptyId && !Number.isFinite(session.lastTerminalInputAt)) {
         return
       }
-      session.deps.onPtyExitRef.current(ptyId)
+      session.deps.onPtyExitRef.current(ptyId, exitCode)
       return
     }
     if (

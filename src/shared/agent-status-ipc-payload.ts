@@ -3,8 +3,14 @@
 // (states, entries, normalization) and the transport envelopes live next to each
 // other. Re-exported from agent-status-types, so existing import sites are unchanged.
 
+import type { StructuredHostStatus } from './agent-hook-listener/listener-event'
 import type { AgentProviderSessionMetadata } from './agent-session-resume'
 import type { WithAgentStatusObservation } from './agent-status-observation'
+import type {
+  AgentStatusExecutionId,
+  AgentStatusProviderAlias,
+  AgentStatusRunId
+} from './agent-status-run'
 import type {
   AgentStatusOrchestrationContext,
   ParsedAgentStatusPayload
@@ -24,7 +30,15 @@ export type MigrationUnsupportedPtyEntry = {
 }
 
 export type AgentStatusIpcPayload = ParsedAgentStatusPayload & {
+  /** Optional run-aware identity; absent on legacy hosts and compatibility projections. */
+  runId?: AgentStatusRunId
+  /** Host-owned process-incarnation attachment for the run-aware row. */
+  executionId?: AgentStatusExecutionId
+  /** Fully qualified provider identity; never a credential or mailbox lookup key. */
+  providerAlias?: AgentStatusProviderAlias
   paneKey: string
+  /** Live host acknowledgement of this renderer’s exact pane retirement. */
+  authorityRestartId?: string
   launchToken?: string
   terminalHandle?: string
   tabId?: string
@@ -34,8 +48,17 @@ export type AgentStatusIpcPayload = ParsedAgentStatusPayload & {
   connectionId: string | null
   /** Timestamp (ms) when the hook server received this latest status event. */
   receivedAt: number
+  /** When the reported evidence was first observed, as distinct from `receivedAt` (delivery
+   *  order). A relay reconnect replays cached rows, and `receivedAt` must restamp to stay
+   *  monotonic past the transient-clear watermark — so only this clock can measure staleness.
+   *  Optional: absent from old hosts, where consumers fall back to `receivedAt`. */
+  evidenceObservedAt?: number
   /** Timestamp (ms) when the current state first appeared for this pane. */
   stateStartedAt: number
+  /** When the main agent's current turn began, stamped by the hook server from the main agent's
+   *  own turn-opening event. Optional: old hosts and turns opened unseen omit it, and readers fall
+   *  back to `stateStartedAt`. */
+  turnStartedAt?: number
   orchestration?: AgentStatusOrchestrationContext
   providerSession?: AgentProviderSessionMetadata
   /** Resume identity update only; the status-shaped fields are transport placeholders. */
@@ -44,11 +67,24 @@ export type AgentStatusIpcPayload = ParsedAgentStatusPayload & {
   promptInteractionKey?: string
   /** See AgentStatusEntry.restoredUnconfirmed — hydrated nonterminal provenance. */
   restoredUnconfirmed?: boolean
+  /** Present on rows the structured session host projects; `owned` keeps them fresh past the
+   *  staleness window because the host still runs the provider child. */
+  structuredHost?: StructuredHostStatus
 } & WithAgentStatusObservation
+
+/** Identity used by UI-only cleanup to evict exactly the status it cleared.
+ *  Deliberately minimal — receivedAt + stateStartedAt pin the exact event instance
+ *  (the same baseline the interrupt-inference guard uses). Renderer-enriched fields
+ *  (connectionId, worktreeId) diverge from main's cache and must not participate. */
+export type AgentStatusCacheIdentity = {
+  paneKey: string
+  receivedAt: number
+  stateStartedAt: number
+}
 
 /** Wire shape for ordinary pane teardown or a stamped SSH disconnect batch. */
 export type AgentStatusClearIpcPayload =
-  | { paneKey: string }
+  | { paneKey: string; statusUnavailable?: true }
   | {
       transient: true
       connectionId: string

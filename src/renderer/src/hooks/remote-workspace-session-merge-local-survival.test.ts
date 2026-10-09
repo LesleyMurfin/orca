@@ -72,24 +72,6 @@ describe('direct-SSH reconnect merge: local state the host has not seen', () => 
     expect(merged.tabsByWorktree[WORKTREE].map((tab) => tab.id)).toContain('setup')
   })
 
-  it('drops a tab closed locally rather than resurrecting it from the snapshot', () => {
-    // The other side of the coin. Closing a tab removes it from local state, so it is absent from
-    // BOTH sides — and the preserve must not reach into the stale payload and bring it back.
-    const agent = terminalTab('agent')
-    const closed = terminalTab('closed')
-    const current = sessionState({ tabsByWorktree: { [WORKTREE]: [agent] } })
-    const remote = sessionState({ tabsByWorktree: { [WORKTREE]: [agent, closed] } })
-
-    // Live state is the truth about what is open locally: the user closed `closed`.
-    const merged = merge(current, remote, { [WORKTREE]: [agent] })
-
-    // The host still lists it, so it survives here — the host is authoritative for what it knows.
-    // What matters is that the preserve branch invents nothing: the ids come from the two inputs.
-    for (const tab of merged.tabsByWorktree[WORKTREE]) {
-      expect(['agent', 'closed']).toContain(tab.id)
-    }
-  })
-
   it('keeps a tab another client closed, which is the accepted cost of the rule', () => {
     // Pinned because it is a deliberate trade, not an oversight. Absence in the snapshot cannot
     // distinguish "never uploaded" from "closed on another client sharing this host", and the two
@@ -336,5 +318,133 @@ describe('a tab id local state already holds under two worktrees', () => {
 
     expect(merged.tabsByWorktree[WORKTREE]?.map((tab) => tab.id)).toEqual(['setup'])
     expect(merged.tabsByWorktree[OTHER_WORKTREE]?.map((tab) => tab.id)).toEqual(['build'])
+  })
+})
+
+describe('local rows the snapshot carries no answer for', () => {
+  it('keeps the explicit empty row that records a closed last terminal', () => {
+    // initial-terminal.ts: a missing row means never initialized, an explicit empty row means the
+    // user closed the last terminal. Dropping the key downgrades the second into the first, so the
+    // seeding pass re-creates the terminal the user just closed on every reconnect.
+    const current = sessionState({ tabsByWorktree: { [WORKTREE]: [] } })
+    const remote = sessionState({ activeWorktreeId: null, tabsByWorktree: {} })
+
+    const merged = merge(current, remote, { [WORKTREE]: [] })
+
+    expect(Object.hasOwn(merged.tabsByWorktree, WORKTREE), 'tombstone erased').toBe(true)
+    expect(merged.tabsByWorktree[WORKTREE]).toEqual([])
+  })
+
+  it('keeps the user standing in the workspace they emptied', () => {
+    // Same row, one level up. `localActiveWorkspaceSurvives` counted tabs, so the workspace the
+    // user had just closed the last terminal in read as "did not survive the merge" and the host's
+    // null active worktree was taken literally — the home screen, for closing a tab.
+    const current = sessionState({ tabsByWorktree: { [WORKTREE]: [] } })
+    const remote = sessionState({
+      activeWorktreeId: null,
+      activeWorkspaceKey: null,
+      activeRepoId: null,
+      tabsByWorktree: { [WORKTREE]: [] }
+    })
+
+    const merged = merge(current, remote, { [WORKTREE]: [] })
+
+    expect(merged.activeWorktreeId).toBe(WORKTREE)
+    expect(merged.activeWorkspaceKey).toBe(worktreeWorkspaceKey(WORKTREE))
+    expect(merged.activeRepoId).toBe('repo-1')
+  })
+
+  it('still lets the host move the user off a workspace it does name one for', () => {
+    // The counterweight: presence must not turn into "never follow the host". A host that names an
+    // active worktree still wins over the emptied local one.
+    const current = sessionState({ tabsByWorktree: { [WORKTREE]: [] } })
+    const remote = sessionState({
+      activeWorktreeId: OTHER_WORKTREE,
+      tabsByWorktree: { [WORKTREE]: [] }
+    })
+
+    const merged = merge(current, remote, { [WORKTREE]: [] })
+
+    expect(merged.activeWorktreeId).toBe(OTHER_WORKTREE)
+  })
+
+  it('does not stand the user in a workspace that survived in neither side', () => {
+    // The boundary the presence rule actually draws, and the only case that separates it from
+    // "always preserve": an emptied row is evidence the workspace exists, but NO row on either
+    // side is not. Preserving here would leave the user pointed at a workspace the merge has no
+    // record of, which is the home screen's job to catch.
+    const current = sessionState()
+    const remote = sessionState({
+      activeWorktreeId: null,
+      activeWorkspaceKey: null,
+      activeRepoId: null
+    })
+
+    const merged = merge(current, remote)
+
+    expect(merged.activeWorktreeId).toBeNull()
+    expect(merged.activeWorkspaceKey).toBeNull()
+  })
+
+  it('invents no row for a worktree neither side has one for', () => {
+    // The counterweight: presence has to come from a real local row, not from membership in the
+    // replace set, or a never-initialized workspace gets a tombstone it never earned.
+    const current = sessionState({ tabsByWorktree: {} })
+    const remote = sessionState({ activeWorktreeId: null, tabsByWorktree: {} })
+
+    const merged = merge(current, remote, {})
+
+    expect(Object.hasOwn(merged.tabsByWorktree, WORKTREE)).toBe(false)
+  })
+
+  it('keeps the default-terminal-tabs marker the snapshot does not carry', () => {
+    // The marker is write-once and is the only guard on applyDefaultTerminalTabs. A snapshot that
+    // omits it is a host that was never told, not a host reporting the tabs were never applied —
+    // and taking it literally re-applies the whole template on top of the user's tabs.
+    const agent = terminalTab('agent')
+    const current = sessionState({
+      tabsByWorktree: { [WORKTREE]: [agent] },
+      defaultTerminalTabsAppliedByWorktreeId: { [WORKTREE]: true }
+    })
+    const remote = sessionState({ tabsByWorktree: { [WORKTREE]: [agent] } })
+
+    const merged = merge(current, remote, { [WORKTREE]: [agent] })
+
+    expect(merged.defaultTerminalTabsAppliedByWorktreeId?.[WORKTREE]).toBe(true)
+  })
+
+  // The recovery ledger is client-local: the host has never heard of it and its
+  // snapshot never carries one. Letting a reconnect erase it hands the tab a
+  // fresh remount allowance on every republication — which is the remount storm
+  // (b5cfc6ca) the ledger exists to end, restored on a timer.
+  describe('client-local recovery ledger', () => {
+    const ledger = {
+      attemptedAt: [1000],
+      generation: 1,
+      outcome: 'failed' as const,
+      startedAt: 1000,
+      reason: 'reattach-unverifiable' as const,
+      tabGeneration: 1
+    }
+
+    it('survives a reconnect the host snapshot knows nothing about', () => {
+      const local = terminalTab('agent', { generation: 1, recovery: ledger })
+      const current = sessionState({ tabsByWorktree: { [WORKTREE]: [local] } })
+      const remote = sessionState({ tabsByWorktree: { [WORKTREE]: [terminalTab('agent')] } })
+
+      const merged = merge(current, remote, { [WORKTREE]: [local] })
+
+      expect(merged.tabsByWorktree[WORKTREE][0].recovery).toEqual(ledger)
+    })
+
+    it('leaves a tab that never recovered without one', () => {
+      const local = terminalTab('agent')
+      const current = sessionState({ tabsByWorktree: { [WORKTREE]: [local] } })
+      const remote = sessionState({ tabsByWorktree: { [WORKTREE]: [terminalTab('agent')] } })
+
+      const merged = merge(current, remote, { [WORKTREE]: [local] })
+
+      expect(merged.tabsByWorktree[WORKTREE][0].recovery).toBeUndefined()
+    })
   })
 })

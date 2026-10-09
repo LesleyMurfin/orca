@@ -4,7 +4,10 @@ import { waitForTerminalReplayWritesParsed } from '../replay-guard'
 import {
   POST_REPLAY_LIVE_AGENT_SNAPSHOT_RESET,
   POST_REPLAY_LIVE_SNAPSHOT_RESET,
-  RESET_AFTER_BYTE_GAP
+  POST_REPLAY_DEAD_TUI_RESET,
+  POST_REPLAY_REATTACH_RESET,
+  RESET_AFTER_BYTE_GAP,
+  buildKittyKeyboardRestore
 } from '../../../../../shared/terminal-mode-reset-profiles'
 import {
   discardTerminalOutput,
@@ -28,9 +31,18 @@ import { recordTerminalFreezeBreadcrumb } from '../terminal-freeze-breadcrumbs'
 import type { ConnectPanePtySession } from './connect-pane-pty-session'
 
 export function bindHiddenOutputRestoreSnapshot(session: ConnectPanePtySession): void {
+  // Why the kitty restore: an abandoned restore discards queued chunks the
+  // mirror already scanned, so xterm re-adopts the mirror's flags.
+  session.writeAbandonedRestoreGap = function (): void {
+    session.writePtyOutputToXterm(
+      `${RESET_AFTER_BYTE_GAP}${buildKittyKeyboardRestore(session.kittyKeyboardModes.snapshotFlags)}`,
+      true
+    )
+  }
+
   session.writeRestoreUnavailableWarning = function (): void {
     // The reset must parse before both the warning and any foreground drain.
-    session.writePtyOutputToXterm(RESET_AFTER_BYTE_GAP, true)
+    session.writeAbandonedRestoreGap()
     if (!shouldWritePtyOutputForeground(session.deps.isVisibleRef.current)) {
       return
     }
@@ -49,8 +61,10 @@ export function bindHiddenOutputRestoreSnapshot(session: ConnectPanePtySession):
     pendingDeliveryStartSeq?: number
     alternateScreen?: boolean
     scrollbackAnsi?: string
+    carriesNormalBuffer?: boolean
     pendingEscapeTailAnsi?: string
     kittyKeyboardFlags?: number
+    terminalOwner?: 'shell'
   }): Promise<void> {
     const restorePtyId = session.transport.getPtyId()
     const restoreGeneration = session.hiddenOutputRestoreGeneration
@@ -140,12 +154,20 @@ export function bindHiddenOutputRestoreSnapshot(session: ConnectPanePtySession):
               session.writeReplayData(replayChunk)
             }
           }
-          // Why: live agents own ?25l/?1004h; a forced ?1004l here would silence focus events until restart (agents enable focus reporting only at startup).
-          session.writeReplayData(
-            session.hasLiveAgentReattachStatusOrTitleSignal()
-              ? POST_REPLAY_LIVE_AGENT_SNAPSHOT_RESET
-              : POST_REPLAY_LIVE_SNAPSHOT_RESET
-          )
+          const hasLiveAgent = session.hasLiveAgentReattachStatusOrTitleSignal()
+          // Why the pane-local fallback: every owner-publishing host also fills
+          // alternateScreen, but the reattach site falls back to pane state for
+          // an absent flag and this site must not drift from it (?1049l on a
+          // normal-buffer pane still runs cursor restore).
+          const postReplayReset =
+            snapshot.terminalOwner === 'shell'
+              ? (snapshot.alternateScreen ?? session.isPaneOnAlternateScreen())
+                ? POST_REPLAY_DEAD_TUI_RESET
+                : POST_REPLAY_REATTACH_RESET
+              : hasLiveAgent
+                ? POST_REPLAY_LIVE_AGENT_SNAPSHOT_RESET
+                : POST_REPLAY_LIVE_SNAPSHOT_RESET
+          session.writeReplayEpilogue(postReplayReset)
           if (snapshot.pendingEscapeTailAnsi) {
             // Why last: snapshot taken mid-escape; re-arm as the FINAL replay write (any later ESC aborts it) so the live tail completes it, not render literally (Bug E / #7329).
             session.writeReplayData(snapshot.pendingEscapeTailAnsi)
@@ -199,8 +221,13 @@ export function bindHiddenOutputRestoreSnapshot(session: ConnectPanePtySession):
                     session.pane.terminal.rows !== snapshot.rows
                   : session.pane.terminal.cols !== colsBeforeReplay ||
                     session.pane.terminal.rows !== rowsBeforeReplay
-                if (skippedAltFrame) {
-                  session.pulseVisibleLocalPtySizeForTuiRepaint(currentPtyId)
+                if (skippedAltFrame && !replayChangedDimensions) {
+                  // Why: the fit landed back on the capture grid, so no SIGWINCH repaints the skipped frame; the model still holds it.
+                  const restoreWasInFlight = session.hiddenOutputRestoreInFlight !== null
+                  session.markHiddenOutputRestoreNeeded()
+                  if (restoreWasInFlight) {
+                    session.hiddenOutputRestoreFreshSnapshotNeeded = true
+                  }
                   return
                 }
                 if (replayChangedDimensions && session.isRendererPtyResizeAuthoritative()) {
