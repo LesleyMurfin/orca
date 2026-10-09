@@ -18,6 +18,9 @@ import {
   RELAY_HOST_CAPABILITY_IDLE_REGIONAL_REHOME,
   RELAY_PROTOCOL_LIMITS,
   RELAY_CLOSE_CODE,
+  type IdleRegionalRehomeCommit,
+  type IdleRegionalRehomeDeferReason,
+  type IdleRegionalRehomeResult,
   type RelayHostCloseReason,
   type RelayRegion
 } from '@orca-cloud/relay-contract'
@@ -73,6 +76,9 @@ const CONTROL_ACTIVITY_LEASE_MS =
   CONTROL_ACTIVITY_RENEWAL_INTERVAL_MS -
   RELAY_PROTOCOL_LIMITS.controlPingIntervalMs
 
+// Past the 135-150 s liveness close, so a host that wakes briefly then sleeps never gets a move.
+export const IDLE_REHOME_MIN_CONTROL_AGE_MS = 180_000
+
 export type HostSession = {
   identity: RelayTokenClaims
   readonly relayHostId: string
@@ -85,6 +91,8 @@ export type HostSession = {
   appVersion: string
   state: HostState
   socket: WebSocket | null
+  // When the current control socket was wired; a rebind restarts it.
+  controlWiredAt: number
   leaseExpiresAt: number
   orphanTimer: ReturnType<typeof setTimeout> | null
   heartbeatTimer: ReturnType<typeof setInterval> | null
@@ -157,6 +165,30 @@ function send(socket: WebSocket, type: string, message: object): void {
   socket.send(JSON.stringify({ type, ...message }))
 }
 
+function readControlFrame(
+  socket: WebSocket,
+  timeoutMs: number,
+  timeoutReason: string,
+  receive: (raw: RawData, isBinary: boolean) => void
+): void {
+  if (socket.readyState !== socket.OPEN) return
+  const timer = setTimeout(() => {
+    finish()
+    socket.close(RELAY_CLOSE_CODE.BAD_OUTER_CREDENTIAL, timeoutReason)
+  }, timeoutMs)
+  function finish(): void {
+    clearTimeout(timer)
+    socket.off('message', onMessage)
+    socket.off('close', finish)
+  }
+  function onMessage(raw: RawData, isBinary: boolean): void {
+    finish()
+    receive(raw, isBinary)
+  }
+  socket.once('message', onMessage)
+  socket.once('close', finish)
+}
+
 // Hosts abandon connects after 15s; waiting much longer than that behind a
 // stalled predecessor only accumulates doomed sockets.
 const ACTIVATION_QUEUE_WAIT_MS = 30_000
@@ -191,7 +223,7 @@ export class HostSessionRegistry {
     {
       attemptId: string
       authorityKey: string
-      promise: Promise<{ outcome: 'committed' | 'deferred' | 'stale' }>
+      promise: Promise<IdleRegionalRehomeResult>
     }
   >()
 
@@ -205,9 +237,9 @@ export class HostSessionRegistry {
       sourceCellIncarnation: string
       targetCellId: string
     },
-    commit: () => Promise<{ outcome: 'committed' | 'deferred' | 'stale' }>,
+    commit: () => Promise<IdleRegionalRehomeCommit>,
     reconcile: () => Promise<'committed' | 'not-committed' | 'stale'>
-  ): Promise<{ outcome: 'busy' | 'committed' | 'deferred' | 'stale' }> {
+  ): Promise<IdleRegionalRehomeResult> {
     const authorityKey = JSON.stringify([
       input.userId,
       input.sourceAssignmentEpoch,
@@ -236,22 +268,29 @@ export class HostSessionRegistry {
       !session.socket ||
       !this.hostCapabilities.get(session.socket)?.has(RELAY_HOST_CAPABILITY_IDLE_REGIONAL_REHOME)
     )
-      return { outcome: 'deferred' }
+      return { outcome: 'deferred', reason: 'host-unsupported' }
     if (
       (this.idleWork.get(input.relayHostId) ?? 0) !== 0 ||
       session.activeConnIds.size !== 0 ||
       session.activeSplices.size !== 0 ||
-      session.pendingConns.size !== 0
+      session.pendingConns.size !== 0 ||
+      this.now() - session.controlWiredAt < IDLE_REHOME_MIN_CONTROL_AGE_MS
     )
       return { outcome: 'busy' }
     const revision = session.authorityRevision
     const promise = Promise.resolve().then(async () => {
-      let outcome: 'committed' | 'deferred' | 'stale'
+      let outcome: IdleRegionalRehomeCommit['outcome']
+      // The commit's reason survives only while the outcome stays deferred;
+      // a reconcile that finds a durable outcome answers with that instead.
+      let reason: IdleRegionalRehomeDeferReason | undefined
       try {
-        outcome = (await commit()).outcome
+        const commitResult = await commit()
+        outcome = commitResult.outcome
+        reason = commitResult.reason
         if (outcome === 'deferred') {
           const durable = await reconcile()
           outcome = durable === 'not-committed' ? 'deferred' : durable
+          if (outcome !== 'deferred') reason = undefined
         }
       } catch {
         let delay = 100
@@ -259,6 +298,7 @@ export class HostSessionRegistry {
           try {
             const durable = await reconcile()
             outcome = durable === 'not-committed' ? 'deferred' : durable
+            reason = undefined
             break
           } catch {
             await new Promise<void>((resolve) => {
@@ -276,7 +316,7 @@ export class HostSessionRegistry {
       }
       if (this.idleAttempts.get(input.relayHostId)?.promise === promise)
         this.idleAttempts.delete(input.relayHostId)
-      return { outcome }
+      return reason === undefined ? { outcome } : { outcome, reason }
     })
     this.idleAttempts.set(input.relayHostId, { attemptId: input.attemptId, authorityKey, promise })
     return promise
@@ -784,12 +824,7 @@ export class HostSessionRegistry {
       socket.close(RELAY_CLOSE_CODE.DRAINING, 'relay draining')
       return
     }
-    let firstFrameTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-      socket.close(RELAY_CLOSE_CODE.BAD_OUTER_CREDENTIAL, 'host hello timeout')
-    }, 2_000)
-    socket.once('message', (raw, isBinary) => {
-      if (firstFrameTimer) clearTimeout(firstFrameTimer)
-      firstFrameTimer = null
+    readControlFrame(socket, 2_000, 'host hello timeout', (raw, isBinary) => {
       if (isBinary) {
         socket.close(RELAY_CLOSE_CODE.BAD_OUTER_CREDENTIAL, 'host hello must be text')
         return
@@ -981,6 +1016,7 @@ export class HostSessionRegistry {
       socket.close(RELAY_CLOSE_CODE.WRONG_CELL, 'wrong assignment epoch')
       return
     }
+    if (socket.readyState !== socket.OPEN) return
 
     const key = this.key(identity.sub, identity.relayHostId)
     const existing = this.sessions.get(key)
@@ -1025,11 +1061,7 @@ export class HostSessionRegistry {
       ciphertextB64: Buffer.from(ciphertext).toString('base64'),
       expiresAt
     })
-    const proofTimer = setTimeout(() => {
-      socket.close(RELAY_CLOSE_CODE.BAD_OUTER_CREDENTIAL, 'host proof timeout')
-    }, 10_000)
-    socket.once('message', (raw, isBinary) => {
-      clearTimeout(proofTimer)
+    readControlFrame(socket, 10_000, 'host proof timeout', (raw, isBinary) => {
       const ack = isBinary
         ? null
         : HostChallengeAckSchema.safeParse(payload(raw, 'host-challenge-ack'))
@@ -1093,7 +1125,7 @@ export class HostSessionRegistry {
       .catch(() => undefined)
       .then(async () => {
         clearTimeout(queueWaitTimer)
-        if (queueWaitExpired) return
+        if (queueWaitExpired || socket.readyState !== socket.OPEN) return
         if ((this.sessions.get(key) ?? null) !== existing) {
           socket.close(RELAY_CLOSE_CODE.PEER_DROPPED, 'control activation superseded')
           return
@@ -1234,6 +1266,7 @@ export class HostSessionRegistry {
       appVersion,
       state: 'active',
       socket,
+      controlWiredAt: this.now(),
       leaseExpiresAt: this.controlLeaseExpiresAt(),
       orphanTimer: null,
       heartbeatTimer: null,
@@ -1264,6 +1297,7 @@ export class HostSessionRegistry {
   private wireActiveControl(session: HostSession): void {
     const socket = session.socket!
     const wiredAt = this.now()
+    session.controlWiredAt = wiredAt
     // Why: pin the build to THIS socket. A rebind refreshes session.appVersion and
     // only then closes the predecessor, whose close event always lands after that
     // write, so reading it at log time would stamp the successor's build.
