@@ -123,6 +123,22 @@ describe('environment config RPC methods', () => {
     expect(response).toMatchObject({ ok: true, result: { settings: updated } })
   })
 
+  it('accepts worktree / git behavioral keys', async () => {
+    const updated = { branchPrefix: 'custom' as const, branchPrefixCustom: 'ai', autoRenameBranchFromWork: true }
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      updatePortableSettings: vi.fn(() => updated)
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: ENVIRONMENT_CONFIG_METHODS })
+
+    const response = await dispatcher.dispatch(
+      makeRequest('environment.config.setMany', updated)
+    )
+
+    expect(runtime.updatePortableSettings).toHaveBeenCalledWith(updated)
+    expect(response).toMatchObject({ ok: true, result: { settings: updated } })
+  })
+
   it('rejects the deprecated experimentalCompactWorktreeCards key', async () => {
     // Why: current main renamed this to `compactWorktreeCards` and Store.load()
     // resets the legacy key to undefined each load, so allowlisting it would be a

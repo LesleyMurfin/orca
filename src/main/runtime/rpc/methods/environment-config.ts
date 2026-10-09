@@ -56,6 +56,10 @@ const portableSettingsShape = {
   terminalMacOptionAsAlt: z.enum(['auto', 'true', 'false', 'left', 'right']).optional(),
   terminalJISYenToBackslash: z.boolean().optional(),
   terminalScopeHistoryByWorktree: z.boolean().optional(),
+  // Worktree / Git
+  branchPrefix: z.enum(['git-username', 'custom', 'none']).optional(),
+  branchPrefixCustom: z.string().optional(),
+  autoRenameBranchFromWork: z.boolean().optional(),
   // UI layout / chrome
   showGitIgnoredFiles: z.boolean().optional(),
   sourceControlViewMode: z.enum(['list', 'tree']).optional(),
