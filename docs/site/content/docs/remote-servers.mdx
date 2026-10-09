@@ -14,6 +14,30 @@ The easiest setup is the Orca desktop app on both computers, connected through [
   such as the same Tailscale tailnet or LAN.
 </Callout>
 
+## Getting started
+
+New to Orca, or setting up your first server? Work through these in order.
+
+1. **Install Orca on both computers.** Follow [Install](/docs/install) for macOS, Windows, and
+   Linux builds. On Linux the executable is `orca-ide` — see [Install → Linux](/docs/install#linux).
+1. **Update both computers to the same release.** A client and server on different protocol
+   versions refuse to pair.
+1. **Put both computers on one private network path.** [Tailscale](https://tailscale.com/) is the
+   shortest route; a trusted LAN, WireGuard, or SSH forwarding also works.
+1. **Pick a host mode.** Use the [desktop app](#recommended-desktop-app--tailscale) when a human
+   can stay signed in on the server computer. Use [`orca serve`](#alternative-orca-serve) for a
+   headless Linux box, VM, or container. Run only one of them per machine.
+1. **Pair the client**, then confirm the server row reads **Connected**.
+
+If you have never run Orca before, [Your first 3-agent session](/docs/first-session) is the
+faster place to start; come back here once the app works locally.
+
+<Callout title="Stuck at any step?">
+  Jump to [Troubleshooting](#troubleshooting) below, the general
+  [Troubleshooting](/docs/troubleshooting) page, or ask in
+  [Discord](https://discord.gg/fzjDKHxv8Q) — see [Getting help](#getting-help).
+</Callout>
+
 ## What runs where
 
 ```text
@@ -40,7 +64,7 @@ orca account list
 Install or refresh agent skills without a Settings UI:
 
 ```bash
-orca skills install --skill orca-cli --skill orchestration
+orca skills install --skill orca-cli --skill orca-server --skill orchestration
 orca skills update --all
 ```
 
@@ -128,10 +152,12 @@ Install Orca and its bundled CLI on the server, then run:
 
 <Callout title="On Linux, start it with orca-ide serve">
   The Linux CLI is named `orca-ide`, because GNOME Orca's screen reader already owns
-  `/usr/bin/orca`. A packaged `orca serve` does write a bare `orca` into `~/.local/bin`, but only
-  while it is starting, so that shim can never be the command that starts the server. Read `orca
-  serve` as `orca-ide serve` throughout this page when the host is Linux. See [Install →
-  Linux](/docs/install#linux).
+  `/usr/bin/orca`. A packaged `orca serve` also drops a bare `orca` dispatcher into
+  `~/.local/bin` on its first Linux start and leaves it there — Orca never removes it. Which
+  binary a later bare `orca` runs then depends entirely on your `PATH` order, so never type bare
+  `orca` on a Linux host: it is either the screen reader or a second Orca runtime refused by the
+  first. Read `orca serve` as `orca-ide serve` throughout this page when the host is Linux, and
+  use an absolute path in service units. See [Install → Linux](/docs/install#linux).
 </Callout>
 
 ```bash
@@ -168,6 +194,95 @@ orca-ide serve --port 6768 --pairing-address 100.64.1.20
 Use only one host mode at a time. If the Orca desktop app is already sharing that computer, do not start a second `orca serve` process for the same setup.
 
 `orca serve` runs on Orca's own Node server (orcad) by default. If orcad can't serve on this computer, it uses the desktop app's server instead and prints one line saying why. On a packaged macOS app it currently always uses the desktop app's server, so paired clients can still update it. To always use the desktop app's server, set `ORCA_SERVE_RUNTIME=electron`.
+
+### Running as a systemd service
+
+On a Linux server, let systemd own the process so it starts at boot and comes back after a crash. Give it an unprivileged user that owns the repos, agent CLIs, and provider credentials—agents run as that user.
+
+```ini
+# /etc/systemd/system/orca-serve.service
+[Unit]
+Description=Orca runtime server
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=orca
+Group=orca
+WorkingDirectory=/home/orca
+Environment=HOME=/home/orca
+Environment=XDG_RUNTIME_DIR=/run/user/1001
+ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=3 78
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=45
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Three settings carry the weight:
+
+- `Type=simple` — `orca serve` stays in the foreground and never forks or writes a PID file, so the process systemd starts is the main process. The unit is active as soon as it spawns; the bound endpoint and pairing URL arrive a moment later, in the journal.
+- `KillMode=mixed` — only the main process receives `SIGTERM`. That matters because `orca serve`'s graceful stop deliberately leaves the terminal daemon running, so a restarted runtime can adopt the PTYs. `KillMode=control-group` would signal the daemon and every agent at once and lose that work; the final `SIGKILL` still sweeps whatever remains in the cgroup.
+- `RestartPreventExitStatus=3 78` — two statuses a restart cannot repair. `78` is a configuration fault: a user-data root held by another runtime, a malformed `--bind` address, an unusable bundled runtime, or an unreadable profile store. `3` means another process already owns this user-data profile — the desktop app, or a `serve` that is still running. A busy port is neither: it exits `1` and `Restart=on-failure` will retry it every `RestartSec` forever, so fix `--port` when the journal shows `EADDRINUSE`.
+
+Write an absolute path in the unit rather than a bare `orca`, which resolves to the GNOME Orca screen reader. The deb/rpm install symlinks `/usr/bin/orca-ide`; an AppImage registers `~/.local/bin/orca-ide` instead, so resolve it with `readlink -f "$(command -v orca-ide)"` as the service user. Replace `1001` with the output of `id -u orca`, set `--pairing-address` to the reachable LAN or Tailscale address, then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now orca-serve.service
+journalctl -u orca-serve.service -f
+```
+
+The pairing URL is printed once at startup. Read it back from the journal instead of restarting the service to see it again.
+
+Agents working on this host can load the server-side runbook—unit layout, account registration, troubleshooting—with:
+
+```bash
+orca skills install --skill orca-server
+# Linux
+orca-ide skills install --skill orca-server
+```
+
+### Preserving live terminals across service restarts
+
+`systemctl restart orca-serve.service` kills whatever is still in the service cgroup. On Linux, Orca already keeps its terminal daemon out of that cgroup: it launches the daemon through `systemd-run --user --scope` as an `orca-daemon-<nonce>.scope` unit, a sibling of the service that no unit-scoped kill reaches. When that is not possible, Orca forks the daemon directly inside the service cgroup—and then every live terminal dies on restart.
+
+The scope needs a reachable user systemd manager, which a service account only gets when you ask for one. Lingering starts the `orca` user's manager at boot and provisions `/run/user/<uid>`, the bus the unit's `XDG_RUNTIME_DIR` points at:
+
+```bash
+sudo loginctl enable-linger orca
+```
+
+Work you start yourself is already protected when the daemon is in its own scope: the daemon owns the PTY, survives the restart, and the new runtime adopts it, so the pane comes back. Wrap work in its own unit only when it must also survive the daemon itself being replaced—an Orca update, or a host where the scope probe fails closed:
+
+```bash
+# A transient service, not a scope: nothing depends on the invoking shell surviving.
+systemd-run --user --unit=orca-build-1 --collect --same-dir --property=TimeoutStopSec=5s -- pnpm build
+journalctl --user -u orca-build-1 -f
+```
+
+The unit is registered with the user manager, so it is tracked by `orca-build-1.service` rather than `orca-serve.service` and survives both the stop sweep and the restart. Without lingering, `/run/user/<uid>` is absent, the capability check fails closed, and `systemd-run --user` cannot connect.
+
+To reattach a shell rather than read logs, give tmux its own server so the request cannot be answered by a tmux server already running in another cgroup:
+
+```bash
+systemd-run --user --scope --unit=orca-build-1 -- tmux -L orca-build-1 new-session -d -s build 'pnpm build'
+tmux -L orca-build-1 attach -t build
+```
+
+Transient units disappear when their process exits. Stop a finished one with `systemctl --user stop orca-build-1`.
+
+Confirm the daemon escaped with `systemctl --user list-units 'orca-daemon-*.scope'`; a daemon listed inside `orca-serve.service`'s cgroup instead will not survive a restart.
 
 ### Mobile from a headless server
 
@@ -228,6 +343,29 @@ orca serve --pairing-address <reachable-tailscale-ip-or-hostname>
 ```
 
 Do not use a wildcard address or `127.0.0.1` for a remote client.
+
+## Getting help
+
+Remote setups fail for boring, findable reasons — a sleeping server, an unreachable advertised
+address, a tailnet ACL. Collect these before asking, and the answer usually arrives in one round
+trip:
+
+- the host mode (desktop app or `orca serve`) and the server's OS;
+- the Orca version on **both** computers;
+- the startup output or `journalctl -u orca-serve.service -n 50`;
+- what the client shows — **Disconnected**, a timeout, or a protocol-version error.
+
+Then:
+
+- **[Discord](https://discord.gg/fzjDKHxv8Q)** — real-time help from the community and the team.
+- **[GitHub Issues](https://github.com/stablyai/orca/issues)** — bugs and feature requests.
+- **Help → Send Feedback** in the app — attaches context from the running build. Include
+  [logs](/docs/troubleshooting#logs) when the problem is hard to reproduce.
+- **[Troubleshooting](/docs/troubleshooting)** — app-wide fixes beyond the remote-server cases
+  above.
+
+Never paste a pairing URL, access link, or token into a public channel. It grants access to the
+runtime; redact it first, and revoke it under **Shared Server Access** if it leaks.
 
 ## Next steps
 
