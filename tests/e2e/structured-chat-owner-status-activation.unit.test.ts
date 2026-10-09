@@ -28,6 +28,8 @@ import { openTestJournalHostDatabase } from '../../src/main/native-chat/agent-se
 import { createStructuredAgentSessionLogger } from '../../src/main/native-chat/agent-session-wire/structured-agent-session-logger'
 import { codexProviderHandle } from '../../src/shared/agent-session-provider-handle-encoding'
 import { NO_STRUCTURED_AGENTS } from '../../src/main/native-chat/agent-session-wire/structured-agent-session-adapter-router-test-support'
+import { agentSessionFailureFact } from '../../src/shared/agent-session-failure'
+import { agentSessionFailureWords } from '../../src/shared/agent-session-failure-words'
 
 const WORKTREE = 'repo-1::/workspace/repo'
 
@@ -55,7 +57,13 @@ function openHost(): void {
       }),
       closeSession,
       releaseAcquisition: async () => true,
-      dispatch: async () => ({ state: 'rejected', reason: 'unused' }),
+      // Why: this spec never sends, and a rejection's words come only from the one constructor.
+      dispatch: async () => ({
+        state: 'rejected',
+        ...agentSessionFailureWords(agentSessionFailureFact('providerRejected'), {
+          surface: 'rejection'
+        })
+      }),
       cancelTurn: async () => ({ cancelled: false }),
       answerPrompt: async () => undefined,
       setOption: async () => undefined

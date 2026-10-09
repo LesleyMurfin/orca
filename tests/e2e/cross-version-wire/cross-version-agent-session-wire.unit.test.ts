@@ -485,7 +485,10 @@ describe('cross-version structured agent sessions', () => {
               observedAt: NOW
             }
           }),
-          dispatch: async () => ({ state: 'accepted' }),
+          dispatch: async () => ({
+            state: 'accepted',
+            providerIdentity: { provider: 'codex', threadId: THREAD, turnId: 'turn-1', ordinal: 1 }
+          }),
           cancelTurn: async () => ({ cancelled: true }),
           answerPrompt: async () => undefined,
           setOption: async () => undefined
@@ -496,7 +499,7 @@ describe('cross-version structured agent sessions', () => {
         now: () => NOW
       })
       setStructuredAgentSessionHost(host)
-      const attached = await host.attach({ callerKey: 'test' }, attachParams(null) as never)
+      const attached = await host.attach({ callerKey: 'test' }, attachParams(null))
       expect(attached.ok).toBe(true)
       createMobileSessionTerminal = vi.fn()
       runtime = {

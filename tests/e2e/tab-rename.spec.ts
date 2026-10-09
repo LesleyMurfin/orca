@@ -50,7 +50,7 @@ test.describe('Tab Rename (Inline)', () => {
     expect(tab).toBeDefined()
     // Why: mirror what the UI renders (customTitle ?? title) so locators that
     // key off the tab's visible text match what's actually on screen.
-    return tab!.customTitle ?? tab!.title ?? ''
+    return tab!.customTitle ?? tab!.title
   }
 
   function tabLocatorByTitle(

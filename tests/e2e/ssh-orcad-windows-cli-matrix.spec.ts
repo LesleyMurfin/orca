@@ -24,7 +24,7 @@ import { execInTerminal, waitForActivePanePtyId, waitForTerminalOutput } from '.
 import { connectSshTestTarget } from './helpers/ssh-test-target-connection'
 import { createRestartSession } from './helpers/orca-restart'
 import {
-  convertThenRetire,
+  convertAndRetain,
   managedServer,
   reconnect,
   targetLeases
@@ -593,7 +593,7 @@ test('@orcad-cli-convert a seeded relay-era profile converts its Windows host, k
     const upgraded = await session.launch({ onStderr: sshStderr })
     app = upgraded.app
     await waitForSessionReady(upgraded.page)
-    await convertThenRetire(upgraded.page, session.userDataDir, seeded, FLAGS_FILE)
+    await convertAndRetain(upgraded.page, session.userDataDir, seeded)
 
     const environmentId = await waitForManaged(upgraded.page, seeded.targetId)
     expect(await environmentIds(session.userDataDir)).toContain(environmentId)

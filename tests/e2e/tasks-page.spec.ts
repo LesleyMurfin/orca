@@ -5,9 +5,21 @@
  * source controls and close affordance are present.
  */
 
+import type { ElementHandle } from '@stablyai/playwright-test'
 import { test, expect } from './helpers/orca-app'
 import { waitForSessionReady, waitForActiveWorktree, getStoreState } from './helpers/store'
 import { GITHUB_TASK_SEARCH_IDLE_MS } from '../../src/renderer/src/components/use-github-task-search-commit'
+
+// Why: page.addStyleTag() resolves to ElementHandle<Node>, and Node has no remove(); the
+// injected node is always the <style> element, so narrow before dropping the override.
+async function removeInjectedStyle(handle: ElementHandle<Node>): Promise<void> {
+  await handle.evaluate((element) => {
+    if (!(element instanceof HTMLStyleElement)) {
+      throw new Error('Expected addStyleTag to return a <style> element')
+    }
+    element.remove()
+  })
+}
 
 // Why derived: a fixed 400ms cadence left only ~150ms of margin against the idle window
 // on a loaded runner, so one slow keystroke committed a prefix and failed the assertion.
@@ -324,7 +336,7 @@ test.describe('Tasks page', () => {
     )
     const restoredList = orcaPage.locator('[data-task-list-scroll="github"]')
     await expect.poll(() => restoredList.evaluate((element) => element.scrollTop)).toBe(0)
-    await clampedRowsStyle.evaluate((element) => element.remove())
+    await removeInjectedStyle(clampedRowsStyle)
     await expect(orcaPage.getByText('Issue page 28 item 1', { exact: true })).toBeVisible()
     await expect
       .poll(() => restoredList.evaluate((element) => element.scrollTop))
@@ -355,7 +367,7 @@ test.describe('Tasks page', () => {
       'page'
     )
     await orcaPage.getByRole('button', { name: 'Page 1', exact: true }).click()
-    await pendingRestoreStyle.evaluate((element) => element.remove())
+    await removeInjectedStyle(pendingRestoreStyle)
     await expect(orcaPage.getByRole('button', { name: 'Page 1', exact: true })).toHaveAttribute(
       'aria-current',
       'page'
@@ -399,7 +411,7 @@ test.describe('Tasks page', () => {
         return position.scrollTop
       })
       .toBeGreaterThan(300)
-    await permanentlyClampedRowsStyle.evaluate((element) => element.remove())
+    await removeInjectedStyle(permanentlyClampedRowsStyle)
   })
 
   test('GitHub search waits for idle, keeps rows visible, and Enter does not double-fetch', async ({

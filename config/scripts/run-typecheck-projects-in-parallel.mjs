@@ -11,7 +11,10 @@ const BYTES_PER_GIB = 1024 ** 3
 export const TYPECHECK_PROJECTS = [
   { config: 'tsconfig.node.json', heapGib: 7 },
   { config: 'tsconfig.tc.web.json', heapGib: 6 },
-  { config: 'tsconfig.tc.cli.json', heapGib: 2 }
+  { config: 'tsconfig.tc.cli.json', heapGib: 2 },
+  // tests/ is a wide but shallow program: it pulls in src/shared and the renderer modules
+  // the specs import, and nothing else, so it costs about what the cli project does.
+  { config: 'tsconfig.e2e.json', heapGib: 2 }
 ]
 
 // The OS, node itself, and the runner agent need their share; the rest is what tsc may hold.
@@ -52,17 +55,6 @@ export function planTypecheckBatches(projects, { budgetGib, parallelism }) {
   return batches
 }
 
-<<<<<<< HEAD
-// The four projects overlap heavily in src/shared but have no build dependency on
-// each other, so tsc can check them concurrently instead of in a `&&` chain.
-const projects = [
-  'tsconfig.node.json',
-  'tsconfig.tc.cli.json',
-  'tsconfig.tc.web.json',
-  'tsconfig.e2e.json'
-]
-=======
->>>>>>> origin/main
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url))
 const tsc = fileURLToPath(new URL('../../node_modules/typescript/bin/tsc', import.meta.url))
 

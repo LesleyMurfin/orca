@@ -72,6 +72,24 @@ async function cleanupHeadlessHostResources(cleanups: HeadlessHostCleanup[]): Pr
 }
 
 /**
+ * Why: ProcessEnv values are `string | undefined`, but Playwright's launch env takes only
+ * defined strings. Dropping the undefined entries is what the launcher does anyway.
+ */
+function definedLaunchEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined)
+  )
+}
+
+/**
+ * Why: `agentBrowserSocketDir` is a reassignable `string | null`, so its narrowing is lost
+ * inside a cleanup closure. Passing it as a parameter keeps the non-null type.
+ */
+function removeAgentBrowserSocketDir(dir: string | null): HeadlessHostCleanup[] {
+  return dir ? [() => rmSync(dir, { recursive: true, force: true })] : []
+}
+
+/**
  * Loopback port that is free right now, so a serve process can be relaunched onto the
  * same endpoint an already-paired client recorded. `--serve-port 0` cannot: the kernel
  * hands the second process a different port and the paired client keeps dialing the old one.
@@ -143,16 +161,19 @@ export async function launchHeadlessPairedRuntimeHost(
           '--serve-pairing-address',
           '127.0.0.1'
         ],
-        env: isolation.env
+        env: definedLaunchEnv(isolation.env)
       })
-    app = await launchServeProcess()
+    // Why: `app` stays the mutable handle the catch block cleans up, but the closures below
+    // need a const to keep the narrowing past the assignment.
+    const launchedApp = await launchServeProcess()
+    app = launchedApp
     const [offer] = await Promise.all([
-      readPairingOffer(app),
+      readPairingOffer(launchedApp),
       retryTransientMainEvaluate(() =>
-        app.evaluate(({ app: electronApp }) => electronApp.getPath('home'))
+        launchedApp.evaluate(({ app: electronApp }) => electronApp.getPath('home'))
       ).then((home) => assertElectronResolvedIsolatedHome(home, isolation))
     ])
-    let serveProcess = app
+    let serveProcess = launchedApp
     // Why: a failed relaunch leaves only the already-closed app, which dispose must not close again
     // (that throw would replace the launch error).
     let serveProcessOpen = true
@@ -185,28 +206,20 @@ export async function launchHeadlessPairedRuntimeHost(
           () => cleanupE2EDaemons(userDataDir),
           () => preserveProfileLogs(userDataDir),
           () => rmSync(userDataDir, PROFILE_REMOVAL),
-          ...(agentBrowserSocketDir
-            ? [
-                () =>
-                  rmSync(agentBrowserSocketDir, {
-                    recursive: true,
-                    force: true
-                  })
-              ]
-            : [])
+          ...removeAgentBrowserSocketDir(agentBrowserSocketDir)
         ])
       }
     }
   } catch (error) {
+    // Why: same narrowing loss as above — the closure cannot see the assignment on `app`.
+    const launchedApp = app
     try {
       await cleanupHeadlessHostResources([
-        ...(app ? [() => closeElectronAppForE2E(app)] : []),
+        ...(launchedApp ? [() => closeElectronAppForE2E(launchedApp)] : []),
         () => cleanupE2EDaemons(userDataDir),
         () => preserveProfileLogs(userDataDir),
         () => rmSync(userDataDir, PROFILE_REMOVAL),
-        ...(agentBrowserSocketDir
-          ? [() => rmSync(agentBrowserSocketDir, { recursive: true, force: true })]
-          : [])
+        ...removeAgentBrowserSocketDir(agentBrowserSocketDir)
       ])
     } catch (cleanupError) {
       throw new AggregateError([error, cleanupError], 'Headless runtime startup and cleanup failed')

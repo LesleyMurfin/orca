@@ -102,6 +102,9 @@ for (const closeMode of ['terminal-close-cli', 'worker-release'] as const) {
     if (!targetWorktreeId) {
       throw new Error('The seeded repository did not expose its secondary worktree')
     }
+    // Why: `targetWorktreeId` is a `let` assigned inside the poll above, so TypeScript drops the
+    // null guard again inside later closures; this const carries the guarded value into them.
+    const resolvedWorktreeId: string = targetWorktreeId
     const targetWorktreePath = splitWorktreeIdForFilesystem(targetWorktreeId)?.worktreePath
     if (!targetWorktreePath) {
       throw new Error('The secondary worktree did not expose a filesystem path')
@@ -283,7 +286,7 @@ for (const closeMode of ['terminal-close-cli', 'worker-release'] as const) {
               recoveryPresent: Boolean(state?.sleepingAgentSessionsByPaneKey[paneKey])
             }
           },
-          { paneKey: workerPaneKey, tabId: workerBefore.tabId, worktreeId: targetWorktreeId }
+          { paneKey: workerPaneKey, tabId: workerBefore.tabId, worktreeId: resolvedWorktreeId }
         )
       )
       .toEqual({ tabPresent: true, recoveryPresent: true })

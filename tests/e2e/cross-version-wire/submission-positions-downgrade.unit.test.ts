@@ -9,6 +9,7 @@ import type {
   AgentSessionJournalIdentity
 } from '../../../src/shared/agent-session-journal-types'
 import type { AgentSessionHistoryPage } from '../../../src/shared/agent-session-wire'
+import { codexProviderHandle } from '../../../src/shared/agent-session-provider-handle-encoding'
 import {
   createTrackedJournalOpener,
   type TrackedJournalOpener
@@ -27,7 +28,7 @@ const IDENTITY: AgentSessionJournalIdentity = {
   workspaceId: 'ws-1',
   hostId: 'host-1',
   agent: 'codex',
-  providerHandle: { kind: 'codex', threadId: 'thread-1' }
+  providerHandle: codexProviderHandle('thread-1')
 }
 
 /** A function the pinned release exports, typed as the caller calls it. */

@@ -5,10 +5,7 @@ import { OrcaRuntimeService } from '../../../src/main/runtime/orca-runtime'
 import { RpcDispatcher } from '../../../src/main/runtime/rpc/dispatcher'
 import { SESSION_TAB_METHODS } from '../../../src/main/runtime/rpc/methods/session-tabs'
 import { SESSION_TAB_CLOSE_INTENT_RUNTIME_CAPABILITY } from '../../../src/shared/protocol-version'
-import type {
-  RuntimeMobileSessionTabsSnapshot,
-  RuntimeMobileSessionTerminalTab
-} from '../../../src/shared/runtime-types'
+import type { RuntimeMobileSessionTabsSnapshot } from '../../../src/shared/runtime-types'
 import { createDesktopDiscoveredDaemonRouter } from './daemon-generation-desktop-discovery'
 import { createDaemonGenerationProfileStore } from './daemon-generation-profile-store'
 
@@ -190,10 +187,12 @@ async function main(): Promise<void> {
     } as never)
     runtime.attachWindow(1)
 
-    const leafTabs: RuntimeMobileSessionTerminalTab[] = config.sessions.map((session, index) => {
+    // Why: `as const` keeps the discriminant a literal, so each leaf stays the terminal arm of
+    // RuntimeMobileSessionTab instead of widening to string and losing parentTabId/leafId/ptyId.
+    const leafTabs = config.sessions.map((session, index) => {
       const leafId = `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`
       return {
-        type: 'terminal',
+        type: 'terminal' as const,
         id: `${session.tabId}::${leafId}`,
         parentTabId: session.tabId,
         leafId,

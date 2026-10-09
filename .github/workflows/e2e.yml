@@ -304,19 +304,6 @@ jobs:
         env:
           TEST_FILES_JSON: ${{ inputs.test_files }}
         run: |
-<<<<<<< HEAD
-          # Third exclusion: ssh-docker-bulk-open-freeze-repro is a perf oracle, not a
-          # correctness one — SOFT/HARD_FREEZE_LAG_MS are wall-clock thresholds on a 420s
-          # budget, which do not hold on a shared runner. It is owned by the dedicated
-          # `test:e2e:ssh-docker-bulk-open-freeze` harness. It only became reachable here
-          # when #31 made it compile for the first time; before that it died on its first
-          # call. See stablyai/orca#16764, which applies this same rule to its perf sibling.
-          mapfile -t TEST_FILES < <(jq -r '.[] | select(
-            . != "tests/e2e/ssh-startup-exec-readiness.spec.ts" and
-            . != "tests/e2e/paired-startup-exec-readiness.spec.ts" and
-            . != "tests/e2e/ssh-docker-bulk-open-freeze-repro.spec.ts"
-          )' <<<"$TEST_FILES_JSON")
-=======
           if [ -f config/scripts/ci-e2e-job-selection.mjs ]; then
             printf '%s\n' "$TEST_FILES_JSON" | node config/scripts/ci-e2e-job-selection.mjs > "$RUNNER_TEMP/general-e2e-specs"
           else
@@ -365,7 +352,6 @@ jobs:
             )' <<<"$TEST_FILES_JSON" > "$RUNNER_TEMP/general-e2e-specs"
           fi
           mapfile -t TEST_FILES < "$RUNNER_TEMP/general-e2e-specs"
->>>>>>> origin/main
           if [ "${#TEST_FILES[@]}" -eq 0 ]; then
             echo "Changed specs are all owned by dedicated lanes."
             exit 0

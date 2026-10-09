@@ -77,7 +77,19 @@ test('shows the SSH routing error cards and holds for review', async ({
   }, targetId)
 
   await orcaPage.evaluate(async () => {
-    await window.__store?.getState().openNewBrowserTabInActiveWorkspace()
+    const state = window.__store?.getState()
+    const worktreeId = state?.activeWorktreeId
+    if (!state || !worktreeId) {
+      throw new Error('no active workspace to open a browser tab in')
+    }
+    // Why: the store action now takes the target group id, the same way the new-browser-tab
+    // IPC bridge resolves it (active group first, then the workspace's first group).
+    const groupId =
+      state.activeGroupIdByWorktree[worktreeId] ?? state.groupsByWorktree[worktreeId]?.[0]?.id
+    if (!groupId) {
+      throw new Error(`no tab group for workspace ${worktreeId}`)
+    }
+    await state.openNewBrowserTabInActiveWorkspace(groupId)
   })
 
   await expect(orcaPage.getByText('SSH connection unavailable')).toBeVisible({

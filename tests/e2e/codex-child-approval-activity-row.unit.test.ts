@@ -16,7 +16,10 @@ import type {
   AgentSessionStatusEvent,
   AgentSessionStatusSummary
 } from '../../src/shared/agent-session-wire'
-import type { AgentJournalItemBody } from '../../src/shared/agent-session-journal-types'
+import {
+  AGENT_JOURNAL_THREAD_SCOPE,
+  type AgentJournalItemBody
+} from '../../src/shared/agent-session-journal-types'
 import { parseAgentJournalItemKey } from '../../src/shared/agent-session-journal-item-key'
 import type { Tab } from '../../src/shared/tab-types'
 import type { AppState } from '../../src/renderer/src/store/types'
@@ -151,7 +154,11 @@ async function openHost() {
   const feed = new StructuredAgentSessionStatusFeed({
     logger: createStructuredAgentSessionLogger(),
     sessions: new Map([
-      [SESSION, indexedStatusFeedSession({ journal, child: { phase: 'ready' } })]
+      // Why: the live child this host writes at — same lease fence the sink binds below.
+      [
+        SESSION,
+        indexedStatusFeedSession({ journal, child: { generation: null, fence: 1, phase: 'ready' } })
+      ]
     ]),
     getRecord: () => null,
     now: () => 1
@@ -188,12 +195,12 @@ async function openHost() {
   /** What the host's answer path commits before it tells Codex. */
   const answer = async (itemId: string): Promise<void> => {
     const identity = parseAgentJournalItemKey(itemId)
-    const asked = journal.snapshot().items.find((item) => item.itemId === itemId)?.body
-    if (!identity || asked?.kind !== 'approval') {
+    const asked = journal.snapshot().items.find((item) => item.itemId === itemId)
+    if (!identity || asked?.body.kind !== 'approval') {
       throw new Error(`approval ${itemId} missing`)
     }
     const resolved: AgentJournalItemBody = {
-      ...asked,
+      ...asked.body,
       resolution: {
         state: 'resolved',
         selectedOptionId: 'accept',
@@ -201,7 +208,11 @@ async function openHost() {
         resolvedAt: tick()
       }
     }
-    await journal.appendItem(identity, resolved, { fence: 1 })
+    // Why: a revision of the ask stays in the turn the ask was written into.
+    await journal.appendItem(identity, resolved, {
+      fence: 1,
+      turnScope: asked.turnScope ?? AGENT_JOURNAL_THREAD_SCOPE
+    })
     publish()
     translator.resolvePrompt(itemId)
   }
@@ -234,7 +245,8 @@ describe("a Codex subagent's answered approval on the settled parent's Activity 
     await host.journal.appendItem(
       { provider: 'orca', clientMessageId: 'prompt-1' },
       { kind: 'message', role: 'user', blocks: [{ type: 'text', text: 'fan out' }] },
-      { fence: 1 }
+      // Why: the prompt is appended before any turn starts, so it belongs to no turn yet.
+      { fence: 1, turnScope: AGENT_JOURNAL_THREAD_SCOPE }
     )
     host.on(CODEX_THREAD, 'turn/started', { turn: { id: 'parent-turn' } })
     const spawn = {

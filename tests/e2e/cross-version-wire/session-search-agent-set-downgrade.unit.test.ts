@@ -139,7 +139,17 @@ test.each([{ supportedAgents: [] }, { supportedAgents: ['future-agent'] }])(
       const retrieve = vi.spyOn(harness.engine, 'search')
       const service = createSessionSearchService({
         engine: harness.engine,
-        indexer: { status: unavailableSessionSearchStatus, reconcile: async () => {} }
+        indexer: {
+          // messagesIndexed and sessionsByAgent are optional on the wire and required of an
+          // indexer, which has read the rows; this one holds none.
+          status: () => ({
+            ...unavailableSessionSearchStatus(),
+            messagesIndexed: 0,
+            degradedRoots: [],
+            sessionsByAgent: {}
+          }),
+          reconcile: async () => {}
+        }
       })
       setSessionSearchService(service)
       const reply = await searchSessionService({ query: 'needle', supportedAgents }, 'runtime')
@@ -168,19 +178,18 @@ test.each(['v1.4.211', LEGACY_REF])(
       'src/shared/ai-vault-search-contract.ts'
     )
     const parser = baseline.AiVaultSearchRequestSchema
-    if (
-      !parser ||
-      typeof parser !== 'object' ||
-      !('parse' in parser) ||
-      typeof parser.parse !== 'function'
-    ) {
+    // Why: held as its own const so the narrowing survives into the call stub below, where a
+    // property's narrowing would not.
+    const parse =
+      parser && typeof parser === 'object' && 'parse' in parser ? parser.parse : undefined
+    if (typeof parse !== 'function') {
       throw new Error('Pinned release has no request parser')
     }
     const call = vi.fn(async (method: string, request: Record<string, unknown>) => {
       if (method === 'aiVault.searchStatus') {
         throw { code: 'method_not_found' }
       }
-      parser.parse(request)
+      parse(request)
       expect(request).toMatchObject({
         filters: {
           agents: AI_VAULT_AGENTS.filter(

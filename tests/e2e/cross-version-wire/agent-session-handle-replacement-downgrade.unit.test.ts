@@ -76,15 +76,24 @@ const REPLACED = [
   })
 ]
 
-function storeMaps(value: unknown) {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    !('records' in value) ||
-    !(value.records instanceof Map) ||
-    !('unreadableRecords' in value) ||
-    !(value.unreadableRecords instanceof Map)
-  ) {
+/** What an old build's store state must expose for this test. The map values stay `unknown`:
+ *  the record shape a release holds is exactly what this test proves, so it is read through
+ *  runtime narrowing rather than asserted from this build's types. */
+type OldStoreMaps = { records: Map<string, unknown>; unreadableRecords: Map<string, unknown> }
+
+function holdsStoreMaps(value: unknown): value is OldStoreMaps {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'records' in value &&
+    value.records instanceof Map &&
+    'unreadableRecords' in value &&
+    value.unreadableRecords instanceof Map
+  )
+}
+
+function storeMaps(value: unknown): OldStoreMaps {
+  if (!holdsStoreMaps(value)) {
     throw new Error('old store must expose its readable and unreadable rows')
   }
   return value

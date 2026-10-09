@@ -121,6 +121,7 @@ function App() {
             vaultScope="all"
             buildResumeStartup={(session) => ({ command: session.resumeCommand })}
             getOriginalPaneTarget={() => null}
+            isStructuredSessionOpen={() => false}
             getSessionLiveState={() => null}
             getWorktreeInfo={() => null}
             getSessionResumeState={() => ({
@@ -139,6 +140,7 @@ function App() {
             onResume={(session, target) => setResult(`Resume ${session.sessionId} in ${target}`)}
             onContinueInNewSession={ignore}
             onResumeInNewChat={ignore}
+            onResumeInNewCli={ignore}
             onCopyResume={ignore}
             onCopyId={ignore}
             onCopyPath={ignore}

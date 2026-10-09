@@ -37,6 +37,10 @@ export type PaneManagerLike = {
   setActivePane(paneId: number, opts?: { focus?: boolean }): void
   suspendRendering(): void
   resumeRendering(): void
+  // Why: PaneManager owns both reveal paths — repaint rebuilds the shared WebGL atlases,
+  // present keeps them — and the reveal specs drive each one directly.
+  scheduleRevealRepaint(): void
+  scheduleRevealPresent(): void
   setTerminalGpuAcceleration(mode: GlobalSettings['terminalGpuAcceleration']): void
   getRenderingDiagnostics(): PaneRenderingDiagnostics[]
   resetWebglTextureAtlases(): void

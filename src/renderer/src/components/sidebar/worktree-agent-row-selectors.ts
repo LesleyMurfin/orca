@@ -29,7 +29,7 @@ export const EMPTY_TERMINAL_LAYOUTS: Record<string, TerminalLayoutSnapshot | und
 // owns these maps, but missing mock maps should behave like empty slices.
 const EMPTY_RECORD = {}
 
-type WorktreeAgentRowsState = Pick<
+export type WorktreeAgentRowsState = Pick<
   AppState,
   | 'agentStatusByPaneKey'
   | 'migrationUnsupportedByPtyId'

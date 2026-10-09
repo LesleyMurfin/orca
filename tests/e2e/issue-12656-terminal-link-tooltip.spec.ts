@@ -138,10 +138,14 @@ test.describe('Issue #12656 terminal link tooltip', () => {
       .not.toBeNull()
     // Why: expect.poll drops the polled value, so read the probe once the URL is
     // known to be painted rather than capturing it from inside the poll closure.
-    const probe = await locateUrl(orcaPage, url)
-    if (!probe) {
+    // Why: the poll below re-locates the link after each hover attempt and keeps the latest
+    // probe for the post-hover assertions, so the binding is reassignable — and seeding it
+    // from the null-checked value keeps it non-nullable inside those later closures.
+    const initialProbe = await locateUrl(orcaPage, url)
+    if (!initialProbe) {
       throw new Error('URL probe disappeared before hover')
     }
+    let probe = initialProbe
     const idle = await readTooltipState(orcaPage, probe.tabId)
     expect(Math.abs(idle.paneBottom - idle.terminalBottom)).toBeLessThanOrEqual(1)
     await expect
