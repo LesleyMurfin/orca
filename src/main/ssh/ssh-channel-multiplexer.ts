@@ -20,8 +20,15 @@ import {
   type MultiplexerWriteSettlement,
   type MultiplexerWriterLane
 } from './ssh-multiplexer-transport-writer'
+import { MultiChannelMuxBackend } from './ssh-multi-channel-backend'
+import {
+  normalizeSshMultiplexerTransports,
+  type SshMultiplexerTransports,
+  type DualChannelTransports
+} from './ssh-multiplexer-transports'
 
 export type { MultiplexerTransport, MultiplexerWriteSettlement }
+export type { SshMultiplexerTransports, DualChannelTransports }
 
 type PendingRequest = {
   resolve: (result: unknown) => void
@@ -90,9 +97,11 @@ export function isSshRequestOutcomeUnverifiable(error: unknown): boolean {
 }
 
 export class SshChannelMultiplexer {
-  private decoder: FrameDecoder
-  private transport: MultiplexerTransport
-  private writer: SshMultiplexerTransportWriter
+  /** When set, all public API delegates here (2..N physical transports). */
+  private readonly multi: MultiChannelMuxBackend | null
+  private decoder!: FrameDecoder
+  private transport!: MultiplexerTransport
+  private writer!: SshMultiplexerTransportWriter
   private nextRequestId = 1
   private nextOutgoingSeq = 1
   private highestReceivedSeq = 0
@@ -118,7 +127,19 @@ export class SshChannelMultiplexer {
   // a keepalive ack proves the relay round-trip without a full RPC.
   private livenessProbeWaiters: { succeed: () => void; fail: () => void }[] = []
 
-  constructor(transport: MultiplexerTransport) {
+  /**
+   * @param input One transport (legacy single-pipe), an array of 1..N transports,
+   *   or `{ interactive, background }` dual pair. N≥2 isolates interactive lanes
+   *   from background/bulk; N===1 keeps full single-pipe behavior.
+   */
+  constructor(input: SshMultiplexerTransports) {
+    const transports = normalizeSshMultiplexerTransports(input)
+    if (transports.length >= 2) {
+      this.multi = new MultiChannelMuxBackend(transports)
+      return
+    }
+    this.multi = null
+    const transport = transports[0]!
     this.transport = transport
     this.writer = new SshMultiplexerTransportWriter(
       transport,
@@ -154,6 +175,9 @@ export class SshChannelMultiplexer {
   }
 
   onNotification(handler: NotificationHandler): () => void {
+    if (this.multi) {
+      return this.multi.onNotification(handler)
+    }
     if (this.disposed) {
       return () => {}
     }
@@ -167,6 +191,9 @@ export class SshChannelMultiplexer {
   }
 
   onNotificationByMethod(method: string, handler: MethodNotificationHandler): () => void {
+    if (this.multi) {
+      return this.multi.onNotificationByMethod(method, handler)
+    }
     if (this.disposed) {
       return () => {}
     }
@@ -189,6 +216,9 @@ export class SshChannelMultiplexer {
   }
 
   onRequest(method: string, handler: RequestHandler): () => void {
+    if (this.multi) {
+      return this.multi.onRequest(method, handler)
+    }
     this.requestHandlers.set(method, handler)
     return () => {
       if (this.requestHandlers.get(method) === handler) {
@@ -203,6 +233,9 @@ export class SshChannelMultiplexer {
   // and no recovery path — the SSH connection stays up so onStateChange
   // never fires the reconnect logic.
   onDispose(handler: (reason: 'shutdown' | 'connection_lost') => void): () => void {
+    if (this.multi) {
+      return this.multi.onDispose(handler)
+    }
     if (this.disposed) {
       // Why: a late subscriber must still learn the channel died; retaining it would leak the closure (#11953).
       try {
@@ -229,6 +262,9 @@ export class SshChannelMultiplexer {
     params?: Record<string, unknown>,
     options?: SshMultiplexerRequestOptions
   ): Promise<unknown> {
+    if (this.multi) {
+      return this.multi.request(method, params, options)
+    }
     if (this.disposed) {
       throw this.disposedError()
     }
@@ -299,6 +335,10 @@ export class SshChannelMultiplexer {
    * Send a JSON-RPC notification (no response expected).
    */
   notify(method: string, params?: Record<string, unknown>): void {
+    if (this.multi) {
+      this.multi.notify(method, params)
+      return
+    }
     if (this.disposed) {
       return
     }
@@ -317,6 +357,10 @@ export class SshChannelMultiplexer {
     params: Record<string, unknown> | undefined,
     onSettled: (result: MultiplexerWriteSettlement) => void
   ): void {
+    if (this.multi) {
+      this.multi.notifyWithSettlement(method, params, onSettled)
+      return
+    }
     if (this.disposed) {
       onSettled({
         outcome: 'refused',
@@ -341,6 +385,9 @@ export class SshChannelMultiplexer {
    * from a dead one before tearing the session down (#7773).
    */
   probeLiveness(timeoutMs: number): Promise<boolean> {
+    if (this.multi) {
+      return this.multi.probeLiveness(timeoutMs)
+    }
     if (this.disposed) {
       return Promise.resolve(false)
     }
@@ -361,6 +408,12 @@ export class SshChannelMultiplexer {
   }
 
   dispose(reason: 'shutdown' | 'connection_lost' = 'shutdown'): void {
+    if (this.multi) {
+      this.multi.dispose(reason)
+      this.disposed = true
+      this.disposeReason = reason
+      return
+    }
     if (this.disposed) {
       return
     }
@@ -408,7 +461,18 @@ export class SshChannelMultiplexer {
   }
 
   isDisposed(): boolean {
+    if (this.multi) {
+      return this.multi.isDisposed()
+    }
     return this.disposed
+  }
+
+  /** Number of physical transports (1 = legacy single-pipe). */
+  getTransportCount(): number {
+    if (this.multi) {
+      return this.multi.getTransportCount()
+    }
+    return this.disposed ? 0 : 1
   }
 
   // ── Private ───────────────────────────────────────────────────────

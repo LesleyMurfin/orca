@@ -23,6 +23,7 @@ import {
 import { attachHeldPtyThroughPreviousRelay } from '../providers/ssh-pty-legacy-relay-delegation'
 import { createSshLegacyRelayRouter } from './ssh-legacy-relay-routing'
 import { SshChannelMultiplexer } from './ssh-channel-multiplexer'
+import { createRelaySessionMultiplexer } from './ssh-relay-session-multiplexer'
 import { SshPtyProvider } from '../providers/ssh-pty-provider'
 import type { SshPtyAttachResult } from '../providers/ssh-pty-session-reattach'
 import type { SshPtyDataCallback, SshPtyExitCallback } from '../providers/ssh-pty-provider-contract'
@@ -610,7 +611,14 @@ export class SshRelaySession {
         throw new Error('Session disposed during establish')
       }
 
-      const mux = new SshChannelMultiplexer(transport)
+      const mux = await createRelaySessionMultiplexer(conn, {
+        transport,
+        remoteRelayDir,
+        nodePath,
+        sockPath,
+        credentialFile,
+        hostPlatform
+      })
       this.openCodeRuntimePreparation = prepareOpenCodeRuntime
         ? { run: prepareOpenCodeRuntime, controller: new AbortController() }
         : null
@@ -777,7 +785,18 @@ export class SshRelaySession {
         return
       }
 
-      const mux = new SshChannelMultiplexer(transport)
+      const mux = await createRelaySessionMultiplexer(
+        conn,
+        {
+          transport,
+          remoteRelayDir,
+          nodePath,
+          sockPath,
+          credentialFile,
+          hostPlatform
+        },
+        abortController.signal
+      )
       this.openCodeRuntimePreparation = prepareOpenCodeRuntime
         ? { run: prepareOpenCodeRuntime, controller: new AbortController() }
         : null
