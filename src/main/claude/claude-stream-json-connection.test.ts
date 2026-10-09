@@ -635,7 +635,7 @@ describe('Claude stream-json connection', () => {
     async () => {
       const scenario = scriptScenario([
         { stderr: 'claude: natural exit\n' },
-        { delayMs: 500 },
+        { delayMs: 2500 },
         { exit: 1 }
       ])
       let exit: Error | null = null

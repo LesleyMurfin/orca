@@ -164,11 +164,12 @@ export function createClaudeChildTreeReaper(
       return Promise.resolve()
     }
     const operation = (async () => {
-      const captured = await capture(rootPid).catch(() => null)
       if (exited()) {
         return
       }
-      const tree = admissibleTree(captured, false)
+      const captured = await capture(rootPid).catch(() => null)
+      const rootExited = exited()
+      const tree = admissibleTree(captured, rootExited)
       if (!tree) {
         return
       }

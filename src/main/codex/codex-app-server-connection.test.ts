@@ -122,6 +122,16 @@ function answerInitialize(child: StubChild): void {
   })
 }
 
+/** Only SIGKILL ends the stub child: a stopped one has to stay alive for the ladder. */
+function exitOnSigkill(child: StubChild): void {
+  child.kill.mockImplementation((signal) => {
+    if (signal === 'SIGKILL') {
+      child.emit('exit', null, 'SIGKILL')
+    }
+    return true
+  })
+}
+
 /** Stream writes land a tick later, so the stderr tail is only complete here. */
 async function flushStreams(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve))
@@ -506,10 +516,7 @@ describe('openCodexAppServerConnection', () => {
       {},
       spawnImpl
     )
-    child.kill.mockImplementation(() => {
-      child.emit('exit', null, 'SIGKILL')
-      return true
-    })
+    exitOnSigkill(child)
 
     const closing = connection.close()
     await vi.advanceTimersByTimeAsync(GRACEFUL_EXIT_MS + 500)
@@ -792,18 +799,16 @@ describe('openCodexAppServerConnection', () => {
       },
       spawnImpl
     )
-    child.kill.mockImplementation(() => {
-      child.emit('exit', null, 'SIGKILL')
-      return true
-    })
+    exitOnSigkill(child)
 
     const inFlight = rejection(connection.request('turn/start'))
     child.stdout.write(`${JSON.stringify(frame)}\n`)
 
     expect((await inFlight).message).toContain('structured sink failed')
-    expect(exits).toEqual([expect.stringContaining('structured sink failed')])
     expect(connection.closed).toBe(true)
-    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith('SIGKILL'))
+    // SIGKILL lands behind a real process-table walk, past waitFor's 1s default.
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith('SIGKILL'), { timeout: 10_000 })
+    expect(exits).toEqual([expect.stringContaining('structured sink failed')])
     await connection.close()
   })
 
@@ -865,20 +870,17 @@ describe('openCodexAppServerConnection', () => {
       { onExit: (error) => exits.push(error.message) },
       spawnImpl
     )
-    child.kill.mockImplementation(() => {
-      child.emit('exit', null, 'SIGKILL')
-      return true
-    })
+    exitOnSigkill(child)
 
     const inFlight = rejection(connection.request('turn/start'))
     child.stdin.emit('error', new Error('write EPIPE'))
 
     expect((await inFlight).message).toContain('EPIPE')
-    expect(exits).toHaveLength(1)
     // A child nobody can write to is not a live session: the owner must see the
     // connection as gone rather than keep issuing calls that can only time out.
     expect(connection.closed).toBe(true)
-    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith('SIGKILL'))
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith('SIGKILL'), { timeout: 10_000 })
+    expect(exits).toHaveLength(1)
     expect((await rejection(connection.request('turn/start'))).message).toContain('EPIPE')
     await connection.close()
   })
