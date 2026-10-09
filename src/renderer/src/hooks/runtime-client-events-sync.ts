@@ -114,6 +114,41 @@ export function createRuntimeClientEventsSync(
     retryTimers.set(environmentId, retryTimer)
   }
 
+  const handleSubscriptionDrop = (
+    environmentId: string,
+    subscribeGeneration: number,
+    error: unknown
+  ): void => {
+    console.warn('[runtime-client-events] subscription error:', error)
+    // Why: a mid-stream drop on an already-established subscription must re-enter
+    // the retry supervisor. Otherwise the map keeps a dead entry, sync()'s
+    // de-dupe guard skips re-subscribing, and the desired env stays silently
+    // unsubscribed until a full relaunch (the PRB-0001 wedge).
+    if (subscribeGeneration !== generation) {
+      return
+    }
+    const subscription = subscriptions.get(environmentId)
+    if (!subscription) {
+      // Not yet established (still pending) or already torn down — the initial
+      // subscribe promise's then/catch owns recovery for that window, so routing
+      // here too would double-count the failure.
+      return
+    }
+    subscription.unsubscribe()
+    subscriptions.delete(environmentId)
+    const subscriptionKey = subscription.key
+    if (deps.getDesiredEnvironmentIds().includes(environmentId)) {
+      const failure = consecutiveFailures.get(environmentId)
+      consecutiveFailures.set(environmentId, {
+        key: subscriptionKey,
+        count: failure?.key === subscriptionKey ? failure.count + 1 : 1
+      })
+      scheduleRetry(environmentId, subscriptionKey, subscribeGeneration)
+    } else {
+      consecutiveFailures.delete(environmentId)
+    }
+  }
+
   const stop = (): void => {
     generation += 1
     const stoppedSubscriptions = [...subscriptions.values()]
@@ -173,6 +208,7 @@ export function createRuntimeClientEventsSync(
       }
       clearRetryTimer(environmentId)
       const subscribeGeneration = generation
+      let droppedDuringPending = false
       const pendingSubscriptionToken = { key: subscriptionKey, generation: subscribeGeneration }
       pending.set(environmentId, pendingSubscriptionToken)
       const isCurrent = (): boolean =>
@@ -189,11 +225,25 @@ export function createRuntimeClientEventsSync(
             }
           },
           (error) => {
-            console.warn('[runtime-client-events] subscription error:', error)
+            if (pending.get(environmentId) === pendingSubscriptionToken) {
+              droppedDuringPending = true
+            }
+            handleSubscriptionDrop(environmentId, subscribeGeneration, error)
           },
           isCurrent
         )
         .then((subscription) => {
+          if (droppedDuringPending) {
+            // Why: the drop landed before subscribe settled, so
+            // handleSubscriptionDrop found no established entry and could not
+            // re-enter the supervisor. Discard the dead handle and fail this
+            // attempt into the catch path, which still owns the pending entry
+            // and schedules the retry.
+            subscription.unsubscribe()
+            throw new Error(
+              'Dependency contract violation: onError fired before subscribe resolved'
+            )
+          }
           const isCurrentPending = pending.get(environmentId) === pendingSubscriptionToken
           if (isCurrentPending) {
             pending.delete(environmentId)

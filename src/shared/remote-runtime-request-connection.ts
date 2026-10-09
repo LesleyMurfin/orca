@@ -36,6 +36,12 @@ import { remoteRuntimeClientCapabilities } from './remote-runtime-client-capabil
 import type { RuntimeCapability } from './protocol-version'
 type ConnectionState = 'closed' | 'awaiting_ready' | 'awaiting_authenticated' | 'ready'
 const IDLE_CLOSE_MS = 60_000
+// Why: a socket that opens but never completes the e2ee_ready/e2ee_authenticated
+// handshake (ws stuck OPEN in awaiting_ready/awaiting_authenticated) would
+// otherwise linger until some unrelated per-request timeout fires — or forever
+// if no request is pending. This bounds the handshake itself. Sized at the
+// subscribe request budget so a legitimately slow handshake is never torn down.
+const CONNECT_TIMEOUT_MS = 15_000
 
 export class RemoteRuntimeRequestConnection {
   private state: ConnectionState = 'closed'
@@ -45,6 +51,7 @@ export class RemoteRuntimeRequestConnection {
   private readonly pendingRequests = new Map<string, RemoteRuntimePendingRequest<unknown>>()
   private readonly readyWaiters: RemoteRuntimeRequestReadyWaiter[] = []
   private idleCloseTimer: ReturnType<typeof setTimeout> | null = null
+  private connectTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(
     private readonly pairing: PairingOffer,
@@ -130,6 +137,7 @@ export class RemoteRuntimeRequestConnection {
     this.socketCleanup = null
     this.state = 'closed'
     this.clearIdleCloseTimer()
+    this.clearConnectTimer()
 
     const closeError = error ?? remoteRuntimeUnavailableError()
     rejectRemoteRuntimeRequestReadyWaiters(this.readyWaiters, closeError)
@@ -193,6 +201,7 @@ export class RemoteRuntimeRequestConnection {
     this.sharedKey = opened.socket.sharedKey
     this.socketCleanup = opened.socket.cleanup
     this.state = 'awaiting_ready'
+    this.armConnectTimer()
   }
 
   private handleTextFrame(frame: string): void {
@@ -251,6 +260,7 @@ export class RemoteRuntimeRequestConnection {
       return
     }
     this.state = 'ready'
+    this.clearConnectTimer()
     resolveRemoteRuntimeRequestReadyWaiters(this.readyWaiters)
     this.scheduleIdleCloseIfUnused()
   }
@@ -319,6 +329,24 @@ export class RemoteRuntimeRequestConnection {
     if (this.idleCloseTimer) {
       clearTimeout(this.idleCloseTimer)
       this.idleCloseTimer = null
+    }
+  }
+
+  private armConnectTimer(): void {
+    this.clearConnectTimer()
+    this.connectTimer = setTimeout(
+      () => this.close(remoteRuntimeTimeoutError()),
+      CONNECT_TIMEOUT_MS
+    )
+    if (typeof this.connectTimer.unref === 'function') {
+      this.connectTimer.unref()
+    }
+  }
+
+  private clearConnectTimer(): void {
+    if (this.connectTimer) {
+      clearTimeout(this.connectTimer)
+      this.connectTimer = null
     }
   }
 }
