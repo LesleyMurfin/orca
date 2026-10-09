@@ -70,7 +70,8 @@ describe('applyWebSessionTabsSnapshot', () => {
         requestedInitialTerminal: false,
         snapshotIsFresh: staleIsFresh,
         localTerminalCount: 0,
-        hasPersistedTerminalState: false
+        hasPersistedTerminalState: false,
+        autoOpenInitialTerminal: true
       })
     ).toBe(false)
   })
@@ -89,7 +90,8 @@ describe('applyWebSessionTabsSnapshot', () => {
         requestedInitialTerminal: false,
         snapshotIsFresh: true,
         localTerminalCount: 1,
-        hasPersistedTerminalState: true
+        hasPersistedTerminalState: true,
+        autoOpenInitialTerminal: true
       })
     ).toBe(false)
   })
@@ -111,7 +113,8 @@ describe('applyWebSessionTabsSnapshot', () => {
         requestedInitialTerminal: false,
         snapshotIsFresh: true,
         localTerminalCount: 0,
-        hasPersistedTerminalState: true
+        hasPersistedTerminalState: true,
+        autoOpenInitialTerminal: true
       })
     ).toBe(false)
   })
@@ -130,7 +133,8 @@ describe('applyWebSessionTabsSnapshot', () => {
         requestedInitialTerminal: false,
         snapshotIsFresh: true,
         localTerminalCount: 0,
-        hasPersistedTerminalState: false
+        hasPersistedTerminalState: false,
+        autoOpenInitialTerminal: true
       })
     ).toBe(true)
   })
@@ -155,7 +159,8 @@ describe('applyWebSessionTabsSnapshot', () => {
         requestedInitialTerminal: false,
         snapshotIsFresh: true,
         localTerminalCount: 0,
-        hasPersistedTerminalState: false
+        hasPersistedTerminalState: false,
+        autoOpenInitialTerminal: true
       })
     ).toBe(false)
   })
@@ -179,7 +184,8 @@ describe('applyWebSessionTabsSnapshot', () => {
         requestedInitialTerminal: false,
         snapshotIsFresh: true,
         localTerminalCount: 0,
-        hasPersistedTerminalState: false
+        hasPersistedTerminalState: false,
+        autoOpenInitialTerminal: true
       })
 
     expect(bootstrapOn('none:client-navigation')).toBe(false)
@@ -226,7 +232,8 @@ describe('applyWebSessionTabsSnapshot', () => {
         requestedInitialTerminal: isWebRuntimeInitialTerminalBootstrapInFlight(OTHER_ENV, WT),
         snapshotIsFresh: true,
         localTerminalCount: 0,
-        hasPersistedTerminalState: false
+        hasPersistedTerminalState: false,
+        autoOpenInitialTerminal: true
       })
     ).toBe(false)
   })
@@ -267,7 +274,8 @@ describe('applyWebSessionTabsSnapshot', () => {
         requestedInitialTerminal: isWebRuntimeInitialTerminalBootstrapInFlight(ENV, WT),
         snapshotIsFresh: true,
         localTerminalCount: 0,
-        hasPersistedTerminalState: false
+        hasPersistedTerminalState: false,
+        autoOpenInitialTerminal: true
       })
 
     expect(decide()).toBe(true)

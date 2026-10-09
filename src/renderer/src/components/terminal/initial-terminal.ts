@@ -1,7 +1,7 @@
 export function shouldAutoCreateInitialTerminal(
   renderableTabCount: number,
-  hasPersistedTerminalState = false,
-  autoOpenInitialTerminal = true
+  hasPersistedTerminalState: boolean,
+  autoOpenInitialTerminal: boolean
 ): boolean {
   if (!autoOpenInitialTerminal) {
     return false
