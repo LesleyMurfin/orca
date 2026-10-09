@@ -20,6 +20,7 @@ import {
   type NativeChatGluedUserRow,
   type NativeChatUserRow
 } from './native-chat-pending-occurrence'
+import { LIFECYCLE_CLOCK_SKEW_SLACK_MS } from './native-chat-live-status'
 
 /** An optimistic, not-yet-confirmed composer send. */
 export type NativeChatPendingSend = {
@@ -130,11 +131,21 @@ function messageIsAfterPendingTimestamp(
     return true
   }
   const boundary = nativeChatPendingMatchingAfter(pending)
-  // A transcript-clock boundary describes an existing message, so exclude ties.
-  // Local send time has no existing record and remains inclusive.
-  return pending.afterMessageTimestamp == null
-    ? message.timestamp >= boundary
-    : message.timestamp > boundary
+  if (pending.afterMessageTimestamp == null) {
+    // Local send time has no existing record. Slack accounts for cross-host
+    // clock skew between the client renderer's sentAt and the host transcript clock.
+    if (
+      message.timestamp > 1e11 &&
+      boundary > 1e11 &&
+      message.timestamp + LIFECYCLE_CLOCK_SKEW_SLACK_MS >= boundary
+    ) {
+      return true
+    }
+    return message.timestamp >= boundary
+  }
+  // A transcript-clock boundary describes an existing message from the same host,
+  // so no cross-host clock skew exists and ties are strictly excluded.
+  return message.timestamp > boundary
 }
 
 /**
