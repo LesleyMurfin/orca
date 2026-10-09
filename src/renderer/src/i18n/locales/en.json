@@ -10804,7 +10804,16 @@
               "statusline": "statusline",
               "dim": "dim",
               "colors": "colors"
-            }
+            },
+            "autoOpenInitialTerminal": {
+              "title": "Open terminal on empty workspace",
+              "description": "Automatically open a new terminal tab when switching to an empty workspace."
+            },
+            "workspace": "workspace",
+            "empty": "empty",
+            "auto_open": "auto open",
+            "initial": "initial",
+            "tab": "tab"
           },
           "windows": {
             "search": {
@@ -18199,7 +18208,9 @@
     "settings": {
       "TerminalInteraction": {
         "copyTrimsGutter": "Trim Gutter on Copy",
-        "copyTrimsGutterDescription": "Drop the left gutter agent output is painted behind, so copied text is not indented. Only the indent every selected line shares is removed."
+        "copyTrimsGutterDescription": "Drop the left gutter agent output is painted behind, so copied text is not indented. Only the indent every selected line shares is removed.",
+        "autoOpenInitialTerminal": "Open terminal on empty workspace",
+        "autoOpenInitialTerminalDescription": "Automatically open a new terminal tab when switching to an empty workspace."
       },
       "terminal": {
         "clipboard": {
@@ -18593,5 +18604,14 @@
     "addTypedPath": "Add",
     "noDirectories": "No folders added yet.",
     "removePath": "Remove {{name}}"
+  },
+  "workspace": {
+    "zeroState": {
+      "noOpenTabs": "No open tabs in this workspace",
+      "subtitle": "Choose an action to get started",
+      "newTerminal": "New Terminal",
+      "newAgent": "New Agent",
+      "openFile": "Open File"
+    }
   }
 }
