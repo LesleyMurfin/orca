@@ -3,7 +3,7 @@ name: orca-cli
 description: >-
   Operate Orca-managed worktrees, folder contexts, terminals, repos, automations, artifacts,
   skill sharing, worktree comments, and Orca's embedded browser through the `orca` CLI. Use
-  when the user says "$orca-cli", "Orca worktree", "child worktree", "spawn codex/claude in a
+  when the user says "$orca-cli", "Orca worktree", "child worktree", "spawn an agent in a
   worktree", "read/wait/send Orca terminal", "handoff" / "handover" / "give this to another
   agent", "Orca browser", "orca artifacts", or "share skills". Prefer it over raw git
   worktree, ad hoc PTYs, or Computer Use when Orca state is involved. Use Computer Use only
@@ -13,6 +13,11 @@ description: >-
 # Orca CLI
 
 This discovery stub loads the version-matched guide from the Orca executable used for this session.
+
+These commands start a separate CLI agent process in a worktree; use them only when the
+user asked for one — a handoff, another worktree, a named agent, or supervision to report
+on. For plain concurrent work, use your own harness's subagents instead, and pass `--agent`
+only with the id the user named (there is no default).
 
 ## Resolve the CLI for this session
 

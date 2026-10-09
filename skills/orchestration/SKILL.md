@@ -22,8 +22,10 @@ decision gates, coordinator loops, or decomposing work across agents. Use the or
 instead for full ownership handoffs ("hand off", "handoff", "handover", "give this to
 another agent", "another worktree") when the user did not ask to supervise, monitor, wait
 for results, or coordinate a DAG — and for ordinary terminal control, shell commands,
-worktree management, and the built-in browser. Coordination requires real Orca runtime
-state; never substitute a non-Orca subagent tool.
+worktree management, and the built-in browser. When the user asked for Orca orchestration
+provenance (Orca-tracked workers, Runs, Tasks, Dispatches), coordination requires real Orca
+runtime state; never substitute a non-Orca subagent tool. Otherwise, your own harness's
+subagents are the right tool for concurrent work.
 
 ## Resolve the CLI for this session
 
