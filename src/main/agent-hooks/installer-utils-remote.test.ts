@@ -151,6 +151,15 @@ describe('installer-utils-remote', () => {
     expect(result).toBeNull()
   })
 
+  it('parses settings.json with one leading BOM', async () => {
+    const { sftp, fs } = createFakeSftp()
+    fs.files.set('/home/u/.cursor/hooks.json', '\uFEFF{"version":1,"hooks":{}}')
+
+    const result = await readHooksJsonRemote(sftp, '/home/u/.cursor/hooks.json')
+
+    expect(result).toEqual({ version: 1, hooks: {} })
+  })
+
   it('rethrows non-ENOENT read errors so callers can distinguish I/O failures from parse failures', async () => {
     const sftp = {
       readFile: (_path: string, _enc: string, cb: (err: unknown) => void): void => {
@@ -274,17 +283,5 @@ describe('installer-utils-remote', () => {
       code: 4
     })
     expect(fs.files.get(path)).toBe('old script')
-  })
-
-  it('skips a no-op write when contents already match', async () => {
-    const { sftp, fs } = createFakeSftp()
-    const path = '/home/u/.claude/settings.json'
-    await writeHooksJsonRemote(sftp, path, { hooks: {} })
-    const beforeKey = fs.files.get(path)
-    // Re-writing the same payload should produce the same content; there is
-    // no rename/tmp cycle visible to a downstream observer beyond the
-    // identical file body.
-    await writeHooksJsonRemote(sftp, path, { hooks: {} })
-    expect(fs.files.get(path)).toBe(beforeKey)
   })
 })

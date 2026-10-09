@@ -16,11 +16,18 @@ import {
   type HookDefinition,
   type HooksConfig
 } from '../agent-hooks/installer-utils'
+import { refreshManagedScriptIfPresent } from '../agent-hooks/managed-hook-script-refresh'
 import {
   readHooksJsonRemote,
   writeHooksJsonRemote,
   writeManagedScriptRemote
 } from '../agent-hooks/installer-utils-remote'
+import {
+  buildPosixHookPayloadCapture,
+  buildPosixHookSpoolLines,
+  buildWindowsHookEnvironmentGuardLines,
+  buildWindowsHookStdinDrainEpilogue
+} from '../agent-hooks/hook-stdin-contract'
 
 // Why: SessionStart is installed (not just listened for) so that resuming a
 // droid session via `droid --resume` resets the per-pane prompt/tool caches
@@ -77,25 +84,23 @@ function getManagedScript(target: 'local' | 'posix' = 'local'): string {
       '@echo off',
       'setlocal',
       'if defined ORCA_AGENT_HOOK_ENDPOINT if exist "%ORCA_AGENT_HOOK_ENDPOINT%" call "%ORCA_AGENT_HOOK_ENDPOINT%" 2>nul',
-      'if "%ORCA_AGENT_HOOK_PORT%"=="" exit /b 0',
-      'if "%ORCA_AGENT_HOOK_TOKEN%"=="" exit /b 0',
-      'if "%ORCA_PANE_KEY%"=="" exit /b 0',
+      ...buildWindowsHookEnvironmentGuardLines(),
       buildWindowsAgentHookPostCommand('droid'),
       'exit /b 0',
+      ...buildWindowsHookStdinDrainEpilogue(),
       ''
     ].join('\r\n')
   }
 
   return [
     '#!/bin/sh',
+    ...buildPosixHookPayloadCapture(),
+    ...buildPosixHookSpoolLines('droid'),
     'if [ -n "$ORCA_AGENT_HOOK_ENDPOINT" ] && [ -r "$ORCA_AGENT_HOOK_ENDPOINT" ]; then',
     '  . "$ORCA_AGENT_HOOK_ENDPOINT" 2>/dev/null || :',
     'fi',
     'if [ -z "$ORCA_AGENT_HOOK_PORT" ] || [ -z "$ORCA_AGENT_HOOK_TOKEN" ] || [ -z "$ORCA_PANE_KEY" ]; then',
-    '  exit 0',
-    'fi',
-    'payload=$(cat)',
-    'if [ -z "$payload" ]; then',
+    '  spool_hook_event',
     '  exit 0',
     'fi',
     // Timeout caps best-effort hook posts if the local listener stalls.
@@ -112,7 +117,7 @@ function getManagedScript(target: 'local' | 'posix' = 'local'): string {
     '  --data-urlencode "worktreeId=${ORCA_WORKTREE_ID}" \\',
     '  --data-urlencode "env=${ORCA_AGENT_HOOK_ENV}" \\',
     '  --data-urlencode "version=${ORCA_AGENT_HOOK_VERSION}" \\',
-    '  --data-urlencode "payload@-" >/dev/null 2>&1 || true',
+    '  --data-urlencode "payload@-" >/dev/null 2>&1 || spool_hook_event',
     'exit 0',
     ''
   ].join('\n')
@@ -158,6 +163,10 @@ function buildInstalledDroidConfig(
 }
 
 export class DroidHookService {
+  async refreshManagedScripts(): Promise<void> {
+    await refreshManagedScriptIfPresent(getManagedScriptPath(), getManagedScript())
+  }
+
   getStatus(): AgentHookInstallStatus {
     const configPath = getConfigPath()
     const scriptPath = getManagedScriptPath()

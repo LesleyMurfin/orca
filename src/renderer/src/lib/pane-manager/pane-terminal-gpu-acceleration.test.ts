@@ -24,6 +24,7 @@ function createPane(): ManagedPaneInternal {
       dispose: vi.fn()
     } as never,
     ligaturesAddon: null,
+    imageAddon: null,
     fitResizeObserver: null,
     pendingObservedFitRafId: null,
     fitAddon: {
@@ -54,7 +55,10 @@ describe('applyTerminalGpuAcceleration', () => {
 
   it('refits after disabling WebGL so DOM renderer dimensions settle', () => {
     const pane = createPane()
-    const options: PaneManagerOptions = { terminalGpuAcceleration: 'auto' }
+    const options: PaneManagerOptions = {
+      linkOpenHint: () => '',
+      terminalGpuAcceleration: 'auto'
+    }
 
     applyTerminalGpuAcceleration([pane], options, 'off')
 
@@ -69,7 +73,10 @@ describe('applyTerminalGpuAcceleration', () => {
     })
     const pane = createPane()
     pane.hasComplexScriptOutput = true
-    const options: PaneManagerOptions = { terminalGpuAcceleration: 'on' }
+    const options: PaneManagerOptions = {
+      linkOpenHint: () => '',
+      terminalGpuAcceleration: 'on'
+    }
 
     applyTerminalGpuAcceleration([pane], options, 'auto')
 
@@ -84,7 +91,10 @@ describe('applyTerminalGpuAcceleration', () => {
     })
     const pane = createPane()
     pane.webglDisabledAfterContextLoss = true
-    const options: PaneManagerOptions = { terminalGpuAcceleration: 'auto' }
+    const options: PaneManagerOptions = {
+      linkOpenHint: () => '',
+      terminalGpuAcceleration: 'auto'
+    }
 
     applyTerminalGpuAcceleration([pane], options, 'on')
 
@@ -94,7 +104,10 @@ describe('applyTerminalGpuAcceleration', () => {
   it('keeps context-loss latches when the acceleration mode is unchanged', () => {
     const pane = createPane()
     pane.webglDisabledAfterContextLoss = true
-    const options: PaneManagerOptions = { terminalGpuAcceleration: 'on' }
+    const options: PaneManagerOptions = {
+      linkOpenHint: () => '',
+      terminalGpuAcceleration: 'on'
+    }
 
     applyTerminalGpuAcceleration([pane], options, 'on')
 
@@ -107,7 +120,10 @@ describe('applyTerminalGpuAcceleration', () => {
       userAgent: 'Mozilla/5.0 (X11; Linux x86_64)'
     })
     const pane = createPane()
-    const options: PaneManagerOptions = { terminalGpuAcceleration: 'on' }
+    const options: PaneManagerOptions = {
+      linkOpenHint: () => '',
+      terminalGpuAcceleration: 'on'
+    }
 
     applyTerminalGpuAcceleration([pane], options, 'auto')
 

@@ -5,7 +5,7 @@ export type PtySizeReassertionOptions = {
   getPtyId: () => string | null
   isRemotePtyId: (ptyId: string) => boolean
   shouldSuppressDesktopResize: () => boolean
-  fit: () => void
+  fitAndRun: (continuation: () => void) => void
   getTerminalDimensions: () => PtySizeReassertionDimensions
   getAppliedSize: (ptyId: string) => Promise<PtySizeReassertionDimensions | null>
   forwardResize: (cols: number, rows: number) => void
@@ -37,7 +37,7 @@ export function createPtySizeReassertion(options: PtySizeReassertionOptions): Pt
     if (disposed || options.isDisposed() || !ptyId) {
       return false
     }
-    return !options.isRemotePtyId(ptyId) && !options.shouldSuppressDesktopResize()
+    return !options.shouldSuppressDesktopResize()
   }
 
   const run = (shouldFit: boolean): void => {
@@ -46,10 +46,17 @@ export function createPtySizeReassertion(options: PtySizeReassertionOptions): Pt
       return
     }
     if (shouldFit) {
-      options.fit()
+      options.fitAndRun(() => run(false))
+      return
     }
     const target = options.getTerminalDimensions()
     if (!dimensionsAreUsable(target)) {
+      return
+    }
+    if (options.isRemotePtyId(ptyId)) {
+      // Remote hosts have no applied-size readback, but a visibility resume still
+      // needs one forced resize when the local grid did not change.
+      options.forwardResize(target.cols, target.rows)
       return
     }
     inFlight = true
@@ -61,6 +68,14 @@ export function createPtySizeReassertion(options: PtySizeReassertionOptions): Pt
       // Why: a queued request means a newer layout observation should re-measure
       // before we send this older target back to the PTY.
       if (pending) {
+        return
+      }
+      // Why: a reveal fit or snapshot-restore resize can change xterm while the
+      // applied-size read is in flight without queuing a request; forwarding the
+      // captured target would resize the PTY back to the pre-reveal grid, so
+      // re-run against the fresh grid instead.
+      if (!dimensionsMatch(options.getTerminalDimensions(), target)) {
+        pending = true
         return
       }
       if (dimensionsMatch(actual, target)) {

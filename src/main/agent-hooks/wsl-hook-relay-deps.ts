@@ -1,11 +1,20 @@
 // DI seam for WslHookRelayManager: the full dependency contract plus the
 // production wiring. Tests construct the manager with fakes for everything
 // that spawns wsl.exe or touches the live agentHookServer.
+import { bindRemoteClaudeInterruptReconciliation } from '../ssh/ssh-agent-hook-interrupt-reconciliation'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 
+import { isAgentStatusHooksEnabled } from './managed-agent-hook-controls'
+import { AGENT_STATUS_LEGACY_UNADVERTISED_PEER_CAPABILITIES } from '../../shared/agent-status-legacy-adapter'
 import { agentHookServer } from './server'
+import type { ManagedHookDetectionSettings } from './managed-hook-detection-commands'
 import { installRemoteManagedAgentHooks } from './remote-managed-hook-installers'
+import { getOpenCode2PluginSource, getOpenCodePluginSource } from '../opencode/hook-service'
+import { getPiAgentStatusExtensionSource } from '../pi/agent-status-extension-source'
+import { codexHookService } from '../codex/hook-service'
+import type { AgentHookInstallStatus } from '../../shared/agent-hook-types'
+import type { PluginSources } from '../../relay/plugin-overlay'
 import {
   isWslDistroRunning,
   resolveWslHookRelayBundle,
@@ -56,9 +65,28 @@ export type WslHookRelayManagerDeps = {
   runInstall: typeof runWslInstallProcess
   waitForSentinel: typeof waitForWslRelaySentinel
   ingest: (envelope: Record<string, unknown>, connectionId: string) => void
+  bindInterruptReconciliation?: (
+    mux: Parameters<typeof bindRemoteClaudeInterruptReconciliation>[1],
+    connectionId: string,
+    isCurrent: () => boolean
+  ) => () => void
   installHooks: typeof installRemoteManagedAgentHooks
+  installCodex: (runtimeHomePath: string, distro: string) => Promise<AgentHookInstallStatus | null>
+  managedHookSettings: () => ManagedHookDetectionSettings
+  /** Plugin source strings shipped to the guest relay so an Orca update needn't redeploy the relay bundle. */
+  pluginSources: () => PluginSources
   warn: (message: string) => void
   transientRetryDelayMs: number
+}
+
+/** Every relay start — spawn, PTY reattach, crash recovery — funnels through this gate,
+ *  so the user's agent-status-hooks switch is read live instead of at each call site. */
+export function isWslHookRelayAllowed(deps: WslHookRelayManagerDeps): boolean {
+  return (
+    deps.platform() === 'win32' &&
+    deps.remoteHooksEnabled() &&
+    isAgentStatusHooksEnabled(deps.managedHookSettings())
+  )
 }
 
 export const defaultWslHookRelayDeps: WslHookRelayManagerDeps = {
@@ -79,12 +107,33 @@ export const defaultWslHookRelayDeps: WslHookRelayManagerDeps = {
   spawnRelay: spawnWslRelayProcess,
   runInstall: runWslInstallProcess,
   waitForSentinel: waitForWslRelaySentinel,
-  ingest: (envelope, connectionId) =>
-    agentHookServer.ingestRemote(
-      envelope as Parameters<typeof agentHookServer.ingestRemote>[0],
-      connectionId
-    ),
+  // Why: the WSL relay protocol advertises no run-serving capability; stamped onto a copy so the
+  // wire-deserialized notification object itself is never mutated.
+  ingest: (envelope, connectionId) => {
+    const capped = {
+      ...envelope,
+      advertisedAgentStatusCapabilities: AGENT_STATUS_LEGACY_UNADVERTISED_PEER_CAPABILITIES
+    }
+    type IngestEnvelope = Parameters<typeof agentHookServer.ingestRemote>[0]
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: envelope is the wire-deserialized notification; ingestRemote independently re-validates paneKey's type before trusting anything here.
+    return agentHookServer.ingestRemote(capped as IngestEnvelope, connectionId)
+  },
+  bindInterruptReconciliation: (mux, connectionId, isCurrent) =>
+    bindRemoteClaudeInterruptReconciliation(agentHookServer, mux, connectionId, isCurrent),
   installHooks: installRemoteManagedAgentHooks,
+  installCodex: (runtimeHomePath, distro) =>
+    codexHookService.installForRuntimeHomeSerialized(runtimeHomePath, {
+      runtime: 'wsl',
+      wslDistro: distro
+    }),
+  managedHookSettings: () => null,
+  // Why: only OpenCode is in scope for WSL now; the payload shape stays identical to SSH so Pi/OMP are additive later.
+  pluginSources: () => ({
+    opencodePluginSource: getOpenCodePluginSource(),
+    opencode2PluginSource: getOpenCode2PluginSource(),
+    piExtensionSource: getPiAgentStatusExtensionSource('pi'),
+    ompExtensionSource: getPiAgentStatusExtensionSource('omp')
+  }),
   warn: (message) => console.warn(message),
   transientRetryDelayMs: WSL_RELAY_TRANSIENT_RETRY_DELAY_MS
 }

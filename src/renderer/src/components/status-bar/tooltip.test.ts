@@ -1,10 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { createElement } from 'react'
+import type * as ReactModule from 'react'
 import type { ProviderRateLimits } from '../../../../shared/rate-limit-types'
 
-vi.mock('@/lib/agent-catalog', () => ({
-  AgentIcon: () => null
-}))
+vi.mock('@/lib/agent-catalog', async () => {
+  const ReactActual = await vi.importActual<typeof ReactModule>('react')
+  return {
+    AgentIcon: ({ agent }: { agent: string }) =>
+      ReactActual.createElement('span', { 'data-agent-icon': agent })
+  }
+})
 
 vi.mock('@/i18n/i18n', () => ({
   translate: (_key: string, fallback: string, values?: Record<string, string>) => {
@@ -17,9 +23,12 @@ vi.mock('@/i18n/i18n', () => ({
 }))
 
 import {
+  barColor,
+  clampUsedPercent,
   formatResetCreditExpiry,
   formatResetCountdown,
   getProviderUsageErrorMessage,
+  getExtraUsageLabel,
   getProviderUsageStatusLabel,
   getWindowSections,
   ProviderIcon,
@@ -37,6 +46,18 @@ function provider(overrides: Partial<ProviderRateLimits> = {}): ProviderRateLimi
     ...overrides
   }
 }
+
+const PROVIDER_IDS: ProviderRateLimits['provider'][] = [
+  'claude',
+  'codex',
+  'gemini',
+  'antigravity',
+  'opencode-go',
+  'kimi',
+  'minimax',
+  'grok',
+  'zcode'
+]
 
 afterEach(() => {
   vi.useRealTimers()
@@ -117,6 +138,39 @@ describe('provider usage error copy', () => {
     )
   })
 
+  it('shows the exact Grok CLI recovery flow for an expired refreshable session (#8497)', () => {
+    const grok = provider({
+      provider: 'grok',
+      error:
+        'Grok sign-in expired — run grok on the computer running Orca; sign in if prompted. No chat message is needed.',
+      usageMetadata: {
+        failureKind: 'delegated-refresh-required',
+        source: 'oauth'
+      }
+    })
+
+    expect(getProviderUsageStatusLabel(grok)).toBe('Run Grok to refresh')
+    expect(getProviderUsageErrorMessage(grok)).toBe(
+      'Run grok in a terminal on the computer running Orca and wait for it to start. If prompted, complete sign-in, then retry usage. You do not need to send a chat message.'
+    )
+  })
+
+  it('shows the exact Kimi CLI recovery flow for an expired read-only session', () => {
+    const kimi = provider({
+      provider: 'kimi',
+      error: 'Kimi session expired — run kimi on the computer running Orca, then retry usage.',
+      usageMetadata: {
+        failureKind: 'delegated-refresh-required',
+        source: 'oauth'
+      }
+    })
+
+    expect(getProviderUsageStatusLabel(kimi)).toBe('Run Kimi to refresh')
+    expect(getProviderUsageErrorMessage(kimi)).toBe(
+      'Run kimi in a terminal on the computer running Orca and wait for it to start, then retry usage.'
+    )
+  })
+
   it('frames known Codex auth refresh failures as auth-shaped usage failures', () => {
     const cases = [
       'Please reauthenticate before checking usage.',
@@ -149,6 +203,20 @@ describe('provider usage error copy', () => {
     expect(getProviderUsageStatusLabel(p)).toBe('Limited')
     expect(getProviderUsageErrorMessage(p)).toBe(
       'Rate limit reached while refreshing OAuth access token.'
+    )
+  })
+
+  it('classifies the Codex chatgpt-auth-required rate-limits read error as auth, not Limited', () => {
+    // Why: the message mentions "rate limits" only as the object it failed to
+    // read; labeling it "Limited" would wrongly imply the user hit a limit.
+    const p = provider({
+      provider: 'codex',
+      error: 'chatgpt authentication required to read rate limits'
+    })
+
+    expect(getProviderUsageStatusLabel(p)).toBe('Refresh failed')
+    expect(getProviderUsageErrorMessage(p)).toBe(
+      'Codex usage could not be refreshed. Agent sessions may still be signed in.'
     )
   })
 
@@ -228,6 +296,18 @@ describe('provider usage error copy', () => {
 })
 
 describe('getWindowSections', () => {
+  it('keeps ZCode Coding Plan windows separate from MCP quota', () => {
+    const session = { usedPercent: 25, windowMinutes: 300, resetsAt: null, resetDescription: null }
+    const weekly = { usedPercent: 40, windowMinutes: 10080, resetsAt: null, resetDescription: null }
+    const mcp = { usedPercent: 10, windowMinutes: 43200, resetsAt: null, resetDescription: null }
+    const sections = getWindowSections(
+      provider({ provider: 'zcode', session, weekly, monthly: mcp })
+    )
+
+    expect(sections.map((section) => section.label)).toEqual(['Session', 'Weekly', 'MCP'])
+    expect(sections[2].window).toBe(mcp)
+  })
+
   it('returns buckets as sections when present', () => {
     const p: ProviderRateLimits = {
       provider: 'gemini',
@@ -382,6 +462,277 @@ describe('getWindowSections', () => {
   })
 })
 
+describe('getExtraUsageLabel', () => {
+  it('names the balance per provider', () => {
+    expect(getExtraUsageLabel('claude')).toBe('Usage credits')
+    expect(getExtraUsageLabel('opencode-go')).toBe('Zen balance')
+    expect(getExtraUsageLabel('codex')).toBe('Credits')
+    expect(getExtraUsageLabel('gemini')).toBe('Balance')
+  })
+})
+
+describe('ProviderPanel extra-usage rendering', () => {
+  it('renders the Claude usage-credits cap as a spent/limit meter plus balance', () => {
+    const p = provider({
+      status: 'ok',
+      session: { usedPercent: 100, windowMinutes: 300, resetsAt: null, resetDescription: null },
+      extraUsage: {
+        balance: 10,
+        unit: 'currency',
+        currencyCode: 'EUR',
+        enabled: true,
+        disabledReason: null,
+        spent: 50,
+        spendLimit: 2000,
+        spentPercent: 2.5,
+        resetsAt: null
+      }
+    })
+
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
+
+    expect(markup).toContain('Usage credits')
+    expect(markup).toContain('€2,000.00')
+    expect(markup).toContain('€50.00')
+    expect(markup).toContain('% used')
+    expect(markup).toContain('Balance €10.00')
+  })
+
+  it('renders a legacy spend cap without presenting an unavailable balance as zero', () => {
+    const p = provider({
+      status: 'ok',
+      session: { usedPercent: 100, windowMinutes: 300, resetsAt: null, resetDescription: null },
+      extraUsage: {
+        balance: null,
+        unit: 'currency',
+        currencyCode: 'EUR',
+        enabled: true,
+        disabledReason: null,
+        spent: 50,
+        spendLimit: 2000,
+        spentPercent: 2.5,
+        resetsAt: null
+      }
+    })
+
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
+
+    expect(markup).toContain('Usage credits')
+    expect(markup).toContain('€50.00 / €2,000.00')
+    expect(markup).not.toContain('Balance €0.00')
+  })
+
+  it('renders a known legacy cap without inventing spend, percent, balance, or a meter', () => {
+    const p = provider({
+      status: 'ok',
+      extraUsage: {
+        balance: null,
+        unit: 'currency',
+        currencyCode: 'EUR',
+        enabled: true,
+        disabledReason: null,
+        spent: null,
+        spendLimit: 2000,
+        spentPercent: null,
+        resetsAt: null
+      }
+    })
+
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
+
+    expect(markup).toContain('Usage credits')
+    expect(markup).toContain('Limit €2,000.00')
+    expect(markup).not.toContain('€0.00')
+    expect(markup).not.toContain('% used')
+    expect(markup).not.toContain('h-[6px]')
+  })
+
+  it('keeps a known cap as a caption when spend is unknown even if a percentage is present', () => {
+    const p = provider({
+      status: 'ok',
+      extraUsage: {
+        balance: null,
+        unit: 'currency',
+        currencyCode: 'EUR',
+        enabled: true,
+        disabledReason: null,
+        spent: null,
+        spendLimit: 2000,
+        spentPercent: 10,
+        resetsAt: null
+      }
+    })
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
+    expect(markup).toContain('Limit €2,000.00')
+    expect(markup).not.toContain('€0.00')
+    expect(markup).not.toContain('% used')
+    expect(markup).not.toContain('h-[6px]')
+  })
+
+  it('renders a disabled, out-of-credits cap with a zero balance', () => {
+    const p = provider({
+      status: 'ok',
+      session: { usedPercent: 100, windowMinutes: 300, resetsAt: null, resetDescription: null },
+      extraUsage: {
+        balance: 0,
+        unit: 'currency',
+        currencyCode: 'EUR',
+        enabled: false,
+        disabledReason: 'out_of_credits',
+        spent: 0,
+        spendLimit: 2000,
+        spentPercent: 0,
+        resetsAt: null
+      }
+    })
+
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
+
+    expect(markup).toContain('Usage credits')
+    expect(markup).toContain('€0.00 / €2,000.00')
+    expect(markup).toContain('Balance €0.00')
+  })
+
+  it('renders an uncapped OpenCode Go balance as a plain available amount', () => {
+    const p = provider({
+      provider: 'opencode-go',
+      status: 'ok',
+      session: { usedPercent: 20, windowMinutes: 300, resetsAt: null, resetDescription: null },
+      extraUsage: {
+        balance: 12.4,
+        unit: 'currency',
+        currencyCode: 'USD',
+        enabled: true,
+        disabledReason: null,
+        spent: null,
+        spendLimit: null,
+        spentPercent: null,
+        resetsAt: null
+      }
+    })
+
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
+
+    expect(markup).toContain('Zen balance')
+    expect(markup).toContain('$12.40')
+    expect(markup).toContain('available')
+  })
+
+  it.each([
+    [0, '$0.00'],
+    [-1.25, '-$1.25']
+  ])('keeps a depleted Zen balance of %s visible in the popover', (balance, formatted) => {
+    const p = provider({
+      provider: 'opencode-go',
+      status: 'ok',
+      session: { usedPercent: 100, windowMinutes: 300, resetsAt: null, resetDescription: null },
+      extraUsage: {
+        balance,
+        unit: 'currency',
+        currencyCode: 'USD',
+        enabled: true,
+        disabledReason: null,
+        spent: null,
+        spendLimit: null,
+        spentPercent: null,
+        resetsAt: null
+      }
+    })
+
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
+
+    expect(markup).toContain('Zen balance')
+    expect(markup).toContain(formatted)
+    expect(markup).toContain('available')
+  })
+
+  it.each([
+    ['refresh-failed', 'Refresh failed'],
+    ['billing-unavailable', 'Unavailable'],
+    ['api-key-source', 'Balance is not included in this usage response.']
+  ])('shows an unknown Zen balance honestly for %s', (disabledReason, message) => {
+    const p = provider({
+      provider: 'opencode-go',
+      status: 'ok',
+      session: { usedPercent: 20, windowMinutes: 300, resetsAt: null, resetDescription: null },
+      extraUsage: {
+        balance: null,
+        unit: 'currency',
+        currencyCode: 'USD',
+        enabled: false,
+        disabledReason,
+        spent: null,
+        spendLimit: null,
+        spentPercent: null,
+        resetsAt: null
+      }
+    })
+
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
+
+    expect(markup).toContain('Zen balance')
+    expect(markup).toContain(message)
+    expect(markup).toContain('Session')
+    expect(markup).not.toContain('$0.00')
+    expect(markup).not.toMatch(/\$[\d,.]+ available/)
+  })
+
+  it('renders a Codex credit count as a plain "N credits available" line', () => {
+    const p = provider({
+      provider: 'codex',
+      status: 'ok',
+      session: { usedPercent: 20, windowMinutes: 300, resetsAt: null, resetDescription: null },
+      extraUsage: {
+        balance: 500,
+        unit: 'credits',
+        unlimited: false,
+        enabled: true,
+        disabledReason: null,
+        resetsAt: null
+      }
+    })
+
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
+
+    expect(markup).toContain('Credits')
+    expect(markup).toContain('500 credits available')
+    // A credit count is not a currency amount.
+    expect(markup).not.toContain('$500')
+  })
+
+  it('renders unlimited Codex credits as "Unlimited"', () => {
+    const p = provider({
+      provider: 'codex',
+      status: 'ok',
+      session: { usedPercent: 20, windowMinutes: 300, resetsAt: null, resetDescription: null },
+      extraUsage: {
+        balance: 0,
+        unit: 'credits',
+        unlimited: true,
+        enabled: true,
+        disabledReason: null,
+        resetsAt: null
+      }
+    })
+
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
+
+    expect(markup).toContain('Unlimited')
+  })
+
+  it('omits the balance row when no extra usage is reported', () => {
+    const p = provider({
+      status: 'ok',
+      session: { usedPercent: 40, windowMinutes: 300, resetsAt: null, resetDescription: null }
+    })
+
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
+
+    expect(markup).not.toContain('Usage credits')
+    expect(markup).not.toContain('Zen balance')
+  })
+})
+
 describe('ProviderPanel reset rendering', () => {
   it('renders the Fable reset countdown when Claude reports a reset timestamp', () => {
     vi.useFakeTimers()
@@ -398,13 +749,13 @@ describe('ProviderPanel reset rendering', () => {
       }
     })
 
-    const markup = renderToStaticMarkup(ProviderPanel({ p }))
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
 
     expect(markup).toContain('Fable')
     expect(markup).toContain('Resets in 6d 17h')
   })
 
-  it('renders MiniMax session as `100 - usedPercent` left so the value matches the bar', () => {
+  it('renders MiniMax session as usedPercent so the value matches the bar', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date(2026, 6, 4, 15, 0))
     const p = provider({
@@ -418,16 +769,15 @@ describe('ProviderPanel reset rendering', () => {
       }
     })
 
-    const markup = renderToStaticMarkup(ProviderPanel({ p }))
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
 
-    // Why: the bar reads "65% 5h"; the tooltip must read "65% left" from the
-    // same source field so the two views stay consistent.
-    expect(markup).toContain('65%')
-    expect(markup).toContain('% left')
-    expect(markup).not.toContain('100% left')
+    // Why: bars show consumption (% used), matching harness meters (#7551).
+    expect(markup).toContain('35%')
+    expect(markup).toContain('% used')
+    expect(markup).not.toContain('% left')
   })
 
-  it('clamps MiniMax session to 0% left when usedPercent reports 100', () => {
+  it('clamps MiniMax session to 100% used when usedPercent reports 100', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date(2026, 6, 4, 15, 0))
     const p = provider({
@@ -441,18 +791,90 @@ describe('ProviderPanel reset rendering', () => {
       }
     })
 
-    const markup = renderToStaticMarkup(ProviderPanel({ p }))
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
 
-    expect(markup).toContain('0% left')
+    expect(markup).toContain('100%')
+    expect(markup).toContain('% used')
+  })
+
+  it('clamps over-100 usedPercent to 100% used in the panel', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 6, 4, 15, 0))
+    const p = provider({
+      provider: 'minimax',
+      status: 'ok',
+      session: {
+        usedPercent: 140,
+        windowMinutes: 300,
+        resetsAt: Date.now() + 2 * 60 * 60_000,
+        resetDescription: null
+      }
+    })
+
+    const markup = renderToStaticMarkup(createElement(ProviderPanel, { p }))
+
+    expect(markup).toContain('100%')
+    expect(markup).toContain('width:100%')
+    expect(markup).not.toContain('140%')
+  })
+
+  it.each(PROVIDER_IDS)('applies remaining copy and meter fill to %s', (providerId) => {
+    const p = provider({
+      provider: providerId,
+      status: 'ok',
+      session: {
+        usedPercent: 25,
+        windowMinutes: 300,
+        resetsAt: null,
+        resetDescription: null
+      }
+    })
+
+    const markup = renderToStaticMarkup(
+      createElement(ProviderPanel, { p, usagePercentageDisplay: 'remaining' })
+    )
+
+    expect(markup).toContain('75% left')
+    expect(markup).toContain('width:75%')
+    expect(markup).not.toContain('width:25%')
+  })
+})
+
+describe('clampUsedPercent', () => {
+  it('rounds and clamps into 0–100', () => {
+    expect(clampUsedPercent(-3)).toBe(0)
+    expect(clampUsedPercent(32.4)).toBe(32)
+    expect(clampUsedPercent(32.6)).toBe(33)
+    expect(clampUsedPercent(100)).toBe(100)
+    expect(clampUsedPercent(140)).toBe(100)
+  })
+})
+
+describe('barColor', () => {
+  // Why: thresholds are on % used (consumption). The <60 band is neutral (not
+  // green) so the always-visible meter stays quiet until a limit nears; guard
+  // against flipping back to green or to remaining-based colors without noticing.
+  it('maps used percent to neutral / yellow / red bands', () => {
+    expect(barColor(0)).toBe('bg-muted-foreground/40')
+    expect(barColor(59)).toBe('bg-muted-foreground/40')
+    expect(barColor(60)).toBe('bg-yellow-500')
+    expect(barColor(79)).toBe('bg-yellow-500')
+    expect(barColor(80)).toBe('bg-red-500')
+    expect(barColor(100)).toBe('bg-red-500')
   })
 })
 
 describe('ProviderIcon', () => {
+  it('renders the Antigravity agent icon for the antigravity provider', () => {
+    const markup = renderToStaticMarkup(createElement(ProviderIcon, { provider: 'antigravity' }))
+    expect(markup).toContain('data-agent-icon="antigravity"')
+  })
+
   it('renders the official MiniMax icon asset for the minimax provider', () => {
     // Why: the icon must travel to the status bar / tooltip unchanged so the
     // user recognises the brand. We pin it to an <img> with a non-empty
     // resource URL and aria-hidden so the icon stays purely decorative.
-    const markup = renderToStaticMarkup(ProviderIcon({ provider: 'minimax' }))
+    const markup = renderToStaticMarkup(createElement(ProviderIcon, { provider: 'minimax' }))
     expect(markup.startsWith('<img')).toBe(true)
     expect(markup).toContain('aria-hidden="true"')
     expect(markup).toMatch(/src="[^"]+"/)

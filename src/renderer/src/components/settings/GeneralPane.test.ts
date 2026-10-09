@@ -4,7 +4,6 @@ import {
   getDesktopPlatformFromUserAgent,
   getGeneralPaneSearchEntries,
   getTabOrderControlSearchKeywords,
-  shouldCommitOpenInApplicationsDraft,
   shouldShowProjectRuntimeSection,
   updateAutoSaveDelayDraftState
 } from './GeneralPane'
@@ -27,36 +26,6 @@ describe('GeneralPane auto-save delay drafts', () => {
       sourceDelayMs: 1250,
       draft: '1750'
     })
-  })
-})
-
-describe('GeneralPane open-in application drafts', () => {
-  it('does not commit rows until both label and command are present', () => {
-    expect(
-      shouldCommitOpenInApplicationsDraft([{ id: 'draft', label: 'Cursor', command: '' }])
-    ).toBe(false)
-    expect(
-      shouldCommitOpenInApplicationsDraft([{ id: 'draft', label: '', command: 'cursor' }])
-    ).toBe(false)
-    expect(
-      shouldCommitOpenInApplicationsDraft([{ id: 'draft', label: '   ', command: 'cursor' }])
-    ).toBe(false)
-    expect(
-      shouldCommitOpenInApplicationsDraft([{ id: 'draft', label: 'Cursor', command: '   ' }])
-    ).toBe(false)
-  })
-
-  it('allows commit when every draft row has a label and command', () => {
-    expect(shouldCommitOpenInApplicationsDraft([])).toBe(true)
-    expect(
-      shouldCommitOpenInApplicationsDraft([{ id: 'cursor', label: 'Cursor', command: 'cursor' }])
-    ).toBe(true)
-    expect(
-      shouldCommitOpenInApplicationsDraft([
-        { id: 'cursor', label: 'Cursor', command: 'cursor' },
-        { id: 'zed', label: 'Zed', command: 'zed' }
-      ])
-    ).toBe(true)
   })
 })
 
@@ -95,11 +64,24 @@ describe('GeneralPane search entries', () => {
     expect(matchesSettingsSearch('wsl', entries)).toBe(true)
   })
 
+  it('includes file-editor word-wrap and horizontal-scroll keywords', () => {
+    const entries = getGeneralPaneSearchEntries()
+
+    expect(matchesSettingsSearch('editor word wrap', entries)).toBe(true)
+    expect(matchesSettingsSearch('horizontal scroll', entries)).toBe(true)
+  })
+
   it('includes rich Markdown spellcheck keywords', () => {
     const entries = getGeneralPaneSearchEntries()
 
     expect(matchesSettingsSearch('spellcheck', entries)).toBe(true)
     expect(matchesSettingsSearch('red underline', entries)).toBe(true)
+  })
+
+  it('makes the running-terminal confirmation setting searchable', () => {
+    const entries = getGeneralPaneSearchEntries()
+
+    expect(matchesSettingsSearch('running', entries)).toBe(true)
   })
 
   it('omits the default project runtime setting when Windows runtimes are unsupported', () => {

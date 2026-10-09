@@ -1,137 +1,155 @@
-import { toast } from 'sonner'
 import { useAppStore } from '@/store'
+import type { AgentStartupPlan } from '@/lib/tui-agent-startup'
+import { planLaunchAgentStartupPrompt } from '@/lib/launch-agent-startup-prompt-plan'
+import { persistAgentLaunchTabOrder } from '@/lib/launch-agent-tab-order'
+import { tuiAgentToAgentKind } from '@/lib/telemetry'
+import { seedNativeChatLaunchDraftForAgentTab } from '@/lib/agent-launch-prompt-delivery'
+import { pasteAgentLaunchPromptOnceReady } from '@/lib/launch-agent-tab-prompt-paste'
 import {
-  buildAgentDraftLaunchPlan,
-  buildAgentStartupPlan,
-  type AgentStartupPlan
-} from '@/lib/tui-agent-startup'
-import { CLIENT_PLATFORM } from '@/lib/new-workspace'
-import { getAgentLaunchPlatformForRepo } from '@/lib/agent-launch-platform'
-import { reconcileTabOrder } from '@/components/tab-bar/reconcile-order'
-import { track, tuiAgentToAgentKind } from '@/lib/telemetry'
-import { deliverLaunchPromptToAgentTab } from '@/lib/agent-launch-prompt-delivery'
-import { initialAgentTabViewModeProps } from '@/lib/native-chat-initial-view-mode'
+  launchNewTabPromptThroughHost,
+  newTabPromptLaunchesThroughHost
+} from '@/lib/launch-agent-new-tab-host-route'
 import { getRuntimeEnvironmentIdForWorktree } from '@/lib/worktree-runtime-owner'
-import { getLocalProjectExecutionRuntimeContext } from '@/lib/local-preflight-context'
-import {
-  createWebRuntimeSessionTerminal,
-  isWebRuntimeSessionActive,
-  isWebTerminalSurfaceTabId
-} from '@/runtime/web-runtime-session'
+import { isWebRuntimeSessionActive } from '@/runtime/web-runtime-session'
+import { launchAgentInWebHostTab } from '@/lib/launch-agent-web-host-tab'
 import {
   resolveTuiAgentLaunchArgs,
   resolveTuiAgentLaunchEnv
 } from '../../../shared/tui-agent-launch-defaults'
-import { resolveLocalWindowsAgentStartupShell } from '../../../shared/windows-terminal-shell'
 import { TUI_AGENT_CONFIG } from '../../../shared/tui-agent-config'
-import { repoIsRemote } from '../../../shared/agent-launch-remote'
-import { seedCommandCodeSubmittedPromptStatus } from '@/lib/command-code-prompt-status-seed'
-import type { TuiAgent } from '../../../shared/types'
+import type { TuiAgent } from '../../../shared/tui-agent'
 import type { LaunchSource } from '../../../shared/telemetry-events'
-import { translate } from '@/i18n/i18n'
+import { resolveAgentLaunchExecutionContext } from '@/lib/launch-agent-execution-context'
+import { launchStructuredAgentFromNewTab } from '@/lib/launch-agent-in-new-tab-structured-route'
+import type { StructuredAgentLaunchSettlement } from '@/lib/structured-agent-launch-settlement'
+import type { StructuredLaunchTerminal } from '@/lib/structured-agent-session-launch-admission'
+import { workspaceKindForWorktreeId } from '@/lib/agent-launch-route-input'
+import type { AgentSessionLaunchPlan } from '@/lib/agent-session-launch-plan'
+import {
+  launchOnceHostAnswered,
+  routeNewTabLaunch
+} from '@/lib/launch-agent-in-new-tab-host-agents'
+import type { AgentLaunchRequestId } from '@/lib/agent-launch-request-id'
 
-export type LaunchAgentInNewTabArgs = {
+/** The user action this launch serves: minted where that action is handled, or carried by the
+ *  route the caller already planned for it. */
+type LaunchAgentInNewTabRequest =
+  | { requestId: AgentLaunchRequestId; agentSessionLaunchPlan?: undefined }
+  | {
+      /** Keeps a preflighted route authoritative across workspace creation. */
+      agentSessionLaunchPlan: AgentSessionLaunchPlan
+      requestId?: undefined
+    }
+
+export type LaunchAgentInNewTabArgs = LaunchAgentInNewTabRequest & {
   agent: TuiAgent
   worktreeId: string
-  /** The tab group the user clicked from. Keeps split-group launches in the
-   *  pane the user initiated from instead of falling through to the active group. */
+  /** Tab group the user launched from; keeps split-group launches in that pane instead of the active group. */
   groupId?: string
-  /** Optional initial prompt. Delivery depends on `promptDelivery` and the
-   *  agent's prompt mode. */
+  /** Optional initial prompt; delivery depends on `promptDelivery` and the agent's prompt mode. */
   prompt?: string
   /** Optional CLI arguments appended to the selected agent command. */
   agentArgs?: string | null
-  /** Force generated prompt text out of the shell launch command. `draft`
-   *  leaves it editable; `submit-after-ready` sends it once the TUI is ready. */
+  initialCwd?: string | null
+  /** How to deliver the prompt: `draft` leaves it editable, `submit-after-ready` sends it once the TUI is ready. */
   promptDelivery?: 'auto-submit' | 'draft' | 'submit-after-ready'
-  /** Telemetry surface that initiated this launch. Defaults to the tab-bar
-   *  quick-launch entry point so existing callers stay unchanged. */
+  /** Telemetry surface that initiated this launch. Defaults to the tab-bar quick-launch entry point. */
   launchSource?: LaunchSource
   /** User-authored Quick Command label for local tabs created from the tab bar. */
   quickCommandLabel?: string | null
-  /** Shell platform that will execute the startup command. Defaults to the
-   * renderer OS; SSH and WSL worktrees run a Linux shell even from Windows. */
+  /** Shell platform for the startup command; defaults to renderer OS. SSH/WSL worktrees run Linux even from Windows. */
   launchPlatform?: NodeJS.Platform
   /** Called after the prompt is actually delivered to the agent input path. */
   onPromptDelivered?: () => void
+  /** The caller keeps the prompt's text if it does not go out (notes), so no composer gets it. */
+  promptKeptByCaller?: true
+  /**
+   * Called before `onPromptDelivered` when the paste was written without ever observing the
+   * agent's composer, so the launch cannot claim the prompt arrived. Fires only on the
+   * terminal route, whose readiness signal the client watches itself.
+   */
+  onPromptDeliveryUnconfirmed?: () => void
+  /** Keep terminal launches in a floating workspace from taking global selection. */
+  activate?: boolean
+  /** The launch seeds a workspace being opened, so its PTY spawn must not reshuffle Recent. */
+  pendingActivationSpawn?: boolean
+  /** Lets a workspace reveal itself before the selected surface opens. */
+  beforeSurfaceOpen?: (
+    surface: { kind: 'local-terminal' } | { kind: 'host-published' }
+  ) => boolean | void
+  /** Opens instead of this agent's terminal when the host declines its structured chat. */
+  onStructuredHostDeclined?: () => StructuredLaunchTerminal
 }
 
-function removeStaleLocalAgentTabsForWebHostLaunch(worktreeId: string): void {
-  const state = useAppStore.getState()
-  for (const tab of state.tabsByWorktree[worktreeId] ?? []) {
-    if (tab.launchAgent && !isWebTerminalSurfaceTabId(tab.id)) {
-      state.closeTab(tab.id)
-    }
-  }
-}
+/** `host-published`: the surface opens once its host answers, a structured chat's included. */
+export type AgentLaunchSurface =
+  | { kind: 'local-terminal'; tabId: string }
+  | { kind: 'host-published' }
 
 export type LaunchAgentInNewTabResult = {
-  tabId: string | null
+  surface: AgentLaunchSurface
   startupPlan: AgentStartupPlan
   pasteDraftAfterLaunch: boolean
   promptDeliveryResult?: Promise<{ delivered: boolean; failureNotified: boolean }>
+  /** Structured route only: what the launch did once it settled. The call stays synchronous. */
+  structuredSettlement?: Promise<StructuredAgentLaunchSettlement>
 } | null
+
+export function shouldQueueTerminalFocusAfterMenuClose(
+  result: NonNullable<LaunchAgentInNewTabResult>
+): boolean {
+  return result.surface.kind === 'host-published'
+}
 
 /**
  * Create a new terminal tab and queue the agent's launch command, optionally
  * with an initial prompt.
  *
- * Why: this is the single entry point for "launch agent X in a new tab" from
- * the tab-bar quick-launch menu and the Source Control "send notes to agent"
- * action. It mirrors the `+` button's path (`createNewTerminalTab`) — createTab,
- * flip `activeTabType` to terminal, and persist the appended tab-bar order —
- * then queues the agent startup through the same `pendingStartupByTabId`
- * channel the new-workspace ("cmd+N") flow uses. TerminalPane consumes the
- * queued command on first mount and the local PTY provider writes it once the
- * shell is ready (see `pty-connection.ts`: startup-command path).
+ * Submission mode follows `promptInjectionMode`: argv/flag agents fold the
+ * prompt into the launch command; followup-path agents launch empty and get a
+ * post-ready draft paste. Callers can override via `promptDelivery`.
  *
- * Default submission mode follows `promptInjectionMode`: argv/flag agents
- * include the prompt directly in the launch command, while followup-path
- * agents launch empty and receive a post-ready draft paste. Generated contexts
- * can override this with draft or submit-after-ready delivery.
- *
- * Returns `null` when no startup plan can be built — for example, a whitespace-
- * only prompt on the trim-empty branch of `buildAgentStartupPlan`. Callers
- * surface that as a launch failure (see `QuickLaunchButton.runLaunch`).
+ * Returns `null` when no startup plan can be built (e.g. a whitespace-only prompt).
  */
-export function launchAgentInNewTab(args: LaunchAgentInNewTabArgs): LaunchAgentInNewTabResult {
+function launchAgentInNewTabInternal(args: LaunchAgentInNewTabArgs): LaunchAgentInNewTabResult {
   const {
     agent,
     worktreeId,
     groupId,
     prompt,
     agentArgs,
+    initialCwd,
     promptDelivery = 'auto-submit',
     launchSource,
     quickCommandLabel,
     launchPlatform,
-    onPromptDelivered
+    onPromptDelivered,
+    onPromptDeliveryUnconfirmed,
+    pendingActivationSpawn,
+    beforeSurfaceOpen,
+    activate
   } = args
   const store = useAppStore.getState()
-  const worktree = store.allWorktrees?.().find((entry: { id: string }) => entry.id === worktreeId)
-  const repo = worktree ? store.repos?.find((entry) => entry.id === worktree.repoId) : null
-  const resolvedLaunchPlatform =
-    launchPlatform ??
-    (repo
-      ? getAgentLaunchPlatformForRepo(
-          repo,
-          repo.connectionId ? undefined : getLocalProjectExecutionRuntimeContext(store, worktreeId)
-        )
-      : CLIENT_PLATFORM)
-  // Why: SSH remotes deploy the CLI shim as plain `orca`, so the Linux-only
-  // `orca-ide` rename must not be applied for remote launches.
-  const isRemote = repo ? repoIsRemote(repo) : false
-  const queuedShell = resolveLocalWindowsAgentStartupShell({
-    platform: resolvedLaunchPlatform,
-    isRemote,
-    terminalWindowsShell: store.settings?.terminalWindowsShell
-  })
+  const { resolvedLaunchPlatform, isRemote, queuedShell } = resolveAgentLaunchExecutionContext(
+    store,
+    {
+      worktreeId,
+      ...(launchPlatform ? { launchPlatform } : {})
+    }
+  )
   const cmdOverrides = store.settings?.agentCmdOverrides ?? {}
   const effectiveAgentArgs =
     agentArgs !== undefined
       ? agentArgs
       : resolveTuiAgentLaunchArgs(agent, store.settings?.agentDefaultArgs)
   const agentEnv = resolveTuiAgentLaunchEnv(agent, store.settings?.agentDefaultEnv)
+  const trimmedPrompt = prompt?.trim() ?? ''
+  const hasPrompt = trimmedPrompt.length > 0
+  const isFollowupPath = TUI_AGENT_CONFIG[agent].promptInjectionMode === 'stdin-after-start'
+  const workspaceKind = workspaceKindForWorktreeId(worktreeId)
+  // Why: a followup-path agent gets its prompt pasted unsubmitted after start, so route it as a draft.
+  const routePromptDelivery =
+    hasPrompt && isFollowupPath && promptDelivery === 'auto-submit' ? 'draft' : promptDelivery
   const startupPlanBase = {
     agent,
     cmdOverrides,
@@ -141,144 +159,131 @@ export function launchAgentInNewTab(args: LaunchAgentInNewTabArgs): LaunchAgentI
     agentArgs: effectiveAgentArgs,
     agentEnv
   }
-  const trimmedPrompt = prompt?.trim() ?? ''
-  const hasPrompt = trimmedPrompt.length > 0
-  const isFollowupPath = TUI_AGENT_CONFIG[agent].promptInjectionMode === 'stdin-after-start'
-  // Why: argv/flag agents fold the prompt into the launch command and
-  // auto-submit — keeping behavior consistent with the composer/tab-bar `+`
-  // mental model, where the prompt is "the first turn the user sent".
-  // Followup-path and generated-context launches can deliver a prompt via
-  // post-launch bracketed paste; callers decide whether that paste remains a
-  // draft or submits after readiness.
-  let startupPlan: AgentStartupPlan | null = null
-  let pasteDraftAfterLaunch: string | null = null
-  let submitPastedPrompt = false
-  let forcePasteAfterLaunch = false
+  const { startupPlan, pasteDraftAfterLaunch, submitPastedPrompt } = planLaunchAgentStartupPrompt({
+    base: startupPlanBase,
+    prompt: trimmedPrompt,
+    promptDelivery,
+    isFollowupPath
+  })
   let promptDeliveryResult: Promise<{ delivered: boolean; failureNotified: boolean }> | undefined
-
-  if (hasPrompt && promptDelivery === 'submit-after-ready') {
-    // Why: generated multi-line prompts are too large to echo through a shell
-    // argv/prefill command. Launch cleanly, then paste+submit inside the TUI.
-    startupPlan = buildAgentStartupPlan({
-      ...startupPlanBase,
-      prompt: '',
-      allowEmptyPromptLaunch: true
-    })
-    pasteDraftAfterLaunch = trimmedPrompt
-    submitPastedPrompt = true
-    forcePasteAfterLaunch = true
-  } else if (hasPrompt && promptDelivery === 'draft') {
-    const draftLaunchPlan = buildAgentDraftLaunchPlan({
-      ...startupPlanBase,
-      draft: trimmedPrompt
-    })
-    if (draftLaunchPlan) {
-      startupPlan = {
-        agent: draftLaunchPlan.agent,
-        launchCommand: draftLaunchPlan.launchCommand,
-        expectedProcess: draftLaunchPlan.expectedProcess,
-        followupPrompt: null,
-        launchConfig: draftLaunchPlan.launchConfig,
-        ...(draftLaunchPlan.startupCommandDelivery
-          ? { startupCommandDelivery: draftLaunchPlan.startupCommandDelivery }
-          : {}),
-        ...(draftLaunchPlan.env ? { env: draftLaunchPlan.env } : {})
-      }
-    } else {
-      startupPlan = buildAgentStartupPlan({
-        ...startupPlanBase,
-        prompt: '',
-        allowEmptyPromptLaunch: true
-      })
-      pasteDraftAfterLaunch = trimmedPrompt
-    }
-  } else if (hasPrompt && isFollowupPath) {
-    startupPlan = buildAgentStartupPlan({
-      ...startupPlanBase,
-      prompt: '',
-      allowEmptyPromptLaunch: true
-    })
-    pasteDraftAfterLaunch = trimmedPrompt
-  } else {
-    startupPlan = buildAgentStartupPlan({
-      ...startupPlanBase,
-      prompt: hasPrompt ? trimmedPrompt : '',
-      allowEmptyPromptLaunch: !hasPrompt
-    })
-  }
 
   if (!startupPlan) {
     return null
   }
 
-  const runtimeEnvironmentId = getRuntimeEnvironmentIdForWorktree(store, worktreeId)
-  if (isWebRuntimeSessionActive(runtimeEnvironmentId) && pasteDraftAfterLaunch === null) {
-    // Why: paired web tabs are host-owned and return tabId: null on success.
-    // Local-only agent tabs cannot be closed because close routes through
-    // session.tabs.close on the host, so prune them before the host snapshot.
-    removeStaleLocalAgentTabsForWebHostLaunch(worktreeId)
-    void createWebRuntimeSessionTerminal({
+  // Why first: a structured chat is created on whichever runtime owns the workspace, a paired
+  // server included, so only a non-structured route falls through to the host-published terminal.
+  const route = routeNewTabLaunch(store, args, {
+    agent,
+    workspace: { kind: workspaceKind, worktreeId },
+    prompt: trimmedPrompt,
+    promptDelivery: routePromptDelivery,
+    tuiCustomization: { cwd: initialCwd },
+    onPromptDelivered,
+    ...(args.promptKeptByCaller ? { promptKeptByCaller: true as const } : {})
+  })
+  if ('awaited' in route) {
+    return launchOnceHostAnswered(route, args, startupPlan, launchAgentInNewTabInternal)
+  }
+  const { plan } = route
+  if (plan?.route === 'structured-native-chat') {
+    const structured = launchStructuredAgentFromNewTab({
+      plan,
       worktreeId,
-      environmentId: runtimeEnvironmentId,
-      targetGroupId: groupId,
-      activate: true,
-      ...(hasPrompt
-        ? {
-            command: startupPlan.launchCommand,
-            ...(startupPlan.env ? { env: startupPlan.env } : {}),
-            launchConfig: startupPlan.launchConfig,
-            launchAgent: agent,
-            ...(startupPlan.startupCommandDelivery
-              ? { startupCommandDelivery: startupPlan.startupCommandDelivery }
-              : {})
-          }
-        : { agent })
-    }).then((created) => {
-      // Why: created means the host accepted the launch, not that a local tab
-      // exists; keep pruning stale local rows until the snapshot mirrors.
-      removeStaleLocalAgentTabsForWebHostLaunch(worktreeId)
-      if (!created) {
-        toast.error(
-          translate(
-            'auto.lib.launch.agent.in.new.tab.11cce5cc77',
-            'Could not launch {{value0}} in a new terminal.',
-            { value0: agent }
-          )
-        )
-        return
-      }
-      store.setActiveTabType('terminal')
-      if (hasPrompt) {
-        onPromptDelivered?.()
-      }
+      ...(groupId ? { groupId } : {}),
+      ...(beforeSurfaceOpen ? { beforeSurfaceOpen } : {}),
+      ...(args.onStructuredHostDeclined ? { onHostDeclined: args.onStructuredHostDeclined } : {}),
+      // The host's "no" opens this same launch as a terminal, with the caller's arguments.
+      openTerminal: (terminalPlan) =>
+        launchAgentInNewTabInternal({
+          ...args,
+          beforeSurfaceOpen: undefined,
+          requestId: undefined,
+          agentSessionLaunchPlan: terminalPlan
+        })
     })
-    return { tabId: null, startupPlan, pasteDraftAfterLaunch: false }
+    return structured && { ...structured, startupPlan }
   }
 
-  // Why: queue the startup command BEFORE TerminalPane mounts — it captures
-  // `pendingStartupByTabId[tabId]` in useState on first render. If the queue
-  // lands after mount the agent binary never starts; the user sees a bare shell.
-  // Since both calls happen synchronously in the same React batch, the queue
-  // is in place by the time the pane commits.
-  // Why: the followup path pastes the prompt as an unsubmitted draft (submit
-  // stays false), so gate the initial chat view like a `draft` launch —
-  // otherwise a default `auto-submit` followup would open native chat with no
-  // submitted turn to render.
-  const viewModePromptDelivery =
-    hasPrompt && isFollowupPath && promptDelivery === 'auto-submit' ? 'draft' : promptDelivery
+  const runtimeEnvironmentId = getRuntimeEnvironmentIdForWorktree(store, worktreeId)
+  if (isWebRuntimeSessionActive(runtimeEnvironmentId)) {
+    if (beforeSurfaceOpen?.({ kind: 'host-published' }) === false) {
+      return null
+    }
+    const webHostDelivery = launchAgentInWebHostTab({
+      agent,
+      worktreeId,
+      environmentId: runtimeEnvironmentId,
+      groupId,
+      cwd: initialCwd,
+      startupPlan,
+      prompt: trimmedPrompt,
+      promptDelivery,
+      pastePromptAfterReady: pasteDraftAfterLaunch,
+      submitPastedPrompt,
+      agentArgs,
+      // Why: omission means terminal locally, but would let a paired host apply
+      // its own default; send the client's resolved terminal choice explicitly.
+      viewMode: 'terminal',
+      onPromptDelivered
+    })
+    return {
+      surface: { kind: 'host-published' },
+      startupPlan,
+      pasteDraftAfterLaunch: pasteDraftAfterLaunch !== null,
+      ...(pasteDraftAfterLaunch !== null && promptDelivery === 'submit-after-ready'
+        ? { promptDeliveryResult: webHostDelivery }
+        : {})
+    }
+  }
+
+  if (beforeSurfaceOpen?.({ kind: 'local-terminal' }) === false) {
+    return null
+  }
+  if (
+    pasteDraftAfterLaunch !== null &&
+    newTabPromptLaunchesThroughHost({ promptDelivery, pastesPrompt: true })
+  ) {
+    const launched = launchNewTabPromptThroughHost({
+      agent,
+      worktreeId,
+      ...(groupId ? { groupId } : {}),
+      prompt: trimmedPrompt,
+      ...(agentArgs !== undefined ? { agentArgs } : {}),
+      ...(initialCwd?.trim() ? { cwd: initialCwd } : {}),
+      // The same source main's window stamps on its own launches.
+      launchSource: launchSource ?? 'tab_bar_quick_launch',
+      quickCommandLabel,
+      ...(pendingActivationSpawn ? { pendingActivationSpawn: true } : {}),
+      pasteContent: pasteDraftAfterLaunch,
+      submit: submitPastedPrompt,
+      ...(onPromptDelivered ? { onPromptDelivered } : {}),
+      ...(onPromptDeliveryUnconfirmed ? { onPromptDeliveryUnconfirmed } : {})
+    })
+    return {
+      surface: { kind: 'local-terminal', tabId: launched.tabId },
+      startupPlan,
+      pasteDraftAfterLaunch: true,
+      promptDeliveryResult: launched.promptDeliveryResult
+    }
+  }
+  // Why: queue startup BEFORE TerminalPane mounts — it snapshots pendingStartupByTabId in useState on first render.
   const tab = store.createTab(worktreeId, groupId, undefined, {
     launchAgent: agent,
     quickCommandLabel,
-    ...initialAgentTabViewModeProps(store.settings, {
-      agent,
-      promptDelivery: viewModePromptDelivery
-    })
+    ...(pendingActivationSpawn ? { pendingActivationSpawn: true } : {}),
+    ...(activate === false ? { activate: false } : {})
   })
+  if (initialCwd?.trim()) {
+    // Why: queue before mount so local, WSL, and SSH continuations preserve their subdirectory.
+    store.queueTabInitialCwd(tab.id, initialCwd)
+  }
   store.queueTabStartupCommand(tab.id, {
     command: startupPlan.launchCommand,
     ...(startupPlan.env ? { env: startupPlan.env } : {}),
     launchConfig: startupPlan.launchConfig,
     launchAgent: agent,
+    ...(agentArgs !== undefined ? { agentArgsOverride: agentArgs } : {}),
     ...(startupPlan.startupCommandDelivery
       ? { startupCommandDelivery: startupPlan.startupCommandDelivery }
       : {}),
@@ -291,64 +296,23 @@ export function launchAgentInNewTab(args: LaunchAgentInNewTabArgs): LaunchAgentI
       request_kind: 'new'
     }
   })
-  // Why: schedule the bracketed-paste-after-ready follow-up immediately after
-  // the startup command is queued. Fire-and-forget so callers keep their
-  // synchronous `{ tabId, startupPlan }` signature. The helper short-circuits
-  // for agents with a `draftPromptFlag`, so calling it on the followup path
-  // is safe even when the draft was already injected via the native flag.
+  // Why: fire-and-forget the paste-after-ready delivery so callers keep the synchronous { tabId, startupPlan } signature.
+  // Why: safe to call unconditionally — the helper short-circuits (no paste) for native-prefill agents already holding the draft.
+  if (hasPrompt && promptDelivery === 'draft' && pasteDraftAfterLaunch === null) {
+    // Why: the draft rode in on argv (Claude --prefill etc.), so no paste runs
+    // and deliverLaunchPromptToAgentTab never seeds. Mirror it into chat here.
+    seedNativeChatLaunchDraftForAgentTab({ tabId: tab.id, agent, text: trimmedPrompt })
+  }
   if (pasteDraftAfterLaunch !== null) {
-    // Why: surface silent paste failures — without onTimeout, a stalled agent
-    // readiness wait drops the user's notes with no feedback. Suppress when
-    // the user closed the tab or switched worktrees so the toast/telemetry
-    // don't fire for user-initiated cancellation (mirrors the 5s launch
-    // watchdog in QuickLaunchButton).
-    let failureNotified = false
-    const deliveryPromise = deliverLaunchPromptToAgentTab({
+    const deliveryPromise = pasteAgentLaunchPromptOnceReady({
+      worktreeId,
       tabId: tab.id,
-      content: pasteDraftAfterLaunch,
       agent,
+      content: pasteDraftAfterLaunch,
       submit: submitPastedPrompt,
-      forcePaste: forcePasteAfterLaunch,
-      onTimeout: () => {
-        const state = useAppStore.getState()
-        const tabsForWorktree = state.tabsByWorktree[worktreeId] ?? []
-        const currentTab = tabsForWorktree.find((t) => t.id === tab.id)
-        if (currentTab?.ptyId === null) {
-          // Why: PTY never spawned — a genuine launch failure. Stay silent so
-          // the single notice comes from the caller (source-control dialog
-          // toast, or QuickLaunch's watchdog); leaving failureNotified false lets it fire.
-          return
-        }
-        if (!currentTab || state.activeWorktreeId !== worktreeId) {
-          // Why: user-initiated cancellation (closed the tab or switched
-          // worktrees) — mark notified so the deferred source-control caller
-          // suppresses its generic "couldn't start" toast too, not just this nudge.
-          failureNotified = true
-          return
-        }
-        toast.message(
-          translate(
-            'auto.lib.launch.agent.in.new.tab.a5a1f7033f',
-            "Your {{value0}} wasn't sent — paste it once the agent is ready.",
-            { value0: submitPastedPrompt ? 'prompt' : 'notes' }
-          )
-        )
-        failureNotified = true
-        track('agent_error', {
-          error_class: 'paste_readiness_timeout',
-          agent_kind: tuiAgentToAgentKind(agent)
-        })
-      }
-    }).then((delivered) => {
-      if (delivered) {
-        if (agent === 'command-code' && submitPastedPrompt) {
-          // Why: Command Code has no prompt-submit hook; when Orca submits a
-          // generated prompt after readiness, seed working at delivery time.
-          seedCommandCodeSubmittedPromptStatus(tab.id, trimmedPrompt)
-        }
-        onPromptDelivered?.()
-      }
-      return { delivered, failureNotified: !delivered && failureNotified }
+      prompt: trimmedPrompt,
+      ...(onPromptDelivered ? { onPromptDelivered } : {}),
+      ...(onPromptDeliveryUnconfirmed ? { onPromptDeliveryUnconfirmed } : {})
     })
     if (promptDelivery === 'submit-after-ready') {
       promptDeliveryResult = deliveryPromise
@@ -361,32 +325,21 @@ export function launchAgentInNewTab(args: LaunchAgentInNewTabArgs): LaunchAgentI
     onPromptDelivered?.()
   }
 
-  // Why: match the `+` button's `createNewTerminalTab` sequence — without
-  // `setActiveTabType('terminal')`, a worktree currently showing an editor
-  // file keeps rendering the editor and the new terminal tab stays invisible.
-  store.setActiveTabType('terminal')
+  // Why: without setActiveTabType('terminal') an activated launch can stay hidden behind an editor.
+  // Scoped to the launch's worktree so a floating or background launch leaves the main window's tab alone.
+  store.setActiveTabType('terminal', worktreeId)
 
-  // Why: persist the tab-bar order with the new terminal appended. Without
-  // this, `reconcileTabOrder` falls back to terminals-first when the stored
-  // order is unset, which can jump the new tab to index 0 instead of the end.
-  const fresh = useAppStore.getState()
-  const termIds = (fresh.tabsByWorktree[worktreeId] ?? []).map((t) => t.id)
-  const editorIds = fresh.openFiles.filter((f) => f.worktreeId === worktreeId).map((f) => f.id)
-  const browserIds = (fresh.browserTabsByWorktree?.[worktreeId] ?? []).map((t) => t.id)
-  const base = reconcileTabOrder(
-    fresh.tabBarOrderByWorktree[worktreeId],
-    termIds,
-    editorIds,
-    browserIds
-  )
-  const order = base.filter((id) => id !== tab.id)
-  order.push(tab.id)
-  fresh.setTabBarOrder(worktreeId, order)
+  // Why: persist tab-bar order so reconcileTabOrder doesn't fall back to terminals-first and jump the new tab to index 0.
+  persistAgentLaunchTabOrder(worktreeId, tab.id)
 
   return {
-    tabId: tab.id,
+    surface: { kind: 'local-terminal', tabId: tab.id },
     startupPlan,
     pasteDraftAfterLaunch: pasteDraftAfterLaunch !== null,
     ...(promptDeliveryResult ? { promptDeliveryResult } : {})
   }
+}
+
+export function launchAgentInNewTab(args: LaunchAgentInNewTabArgs): LaunchAgentInNewTabResult {
+  return launchAgentInNewTabInternal(args)
 }

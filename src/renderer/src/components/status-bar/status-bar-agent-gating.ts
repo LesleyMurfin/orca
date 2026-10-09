@@ -1,6 +1,7 @@
-import type { StatusBarItem, TuiAgent } from '../../../../shared/types'
+import type { TuiAgent } from '../../../../shared/tui-agent'
+import type { StatusBarItem } from '../../../../shared/ui-chrome-types'
 
-// Why: Claude/Codex/Gemini usage bars are surface noise when the underlying
+// Why: CLI-backed usage bars are surface noise when the underlying
 // CLI isn't installed (e.g. a fresh Ubuntu install showing "Gemini Usage"
 // when no Gemini CLI is on PATH). We hide both the bar and its toggle when
 // PATH detection reports the agent as missing. Pre-detection (null) keeps
@@ -11,7 +12,9 @@ const CLI_GATED_ITEMS: ReadonlySet<StatusBarItem> = new Set([
   'codex',
   'gemini',
   'kimi',
-  'grok'
+  'antigravity',
+  'grok',
+  'zcode'
 ])
 
 export function isStatusBarItemAvailable(

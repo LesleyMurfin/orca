@@ -1,4 +1,5 @@
 import { get } from 'node:http'
+import type { IncomingHttpHeaders } from 'node:http'
 import { describe, expect, it, beforeEach, vi } from 'vitest'
 import type { OrcaCloudAuthConfig } from './profile-cloud-auth-config'
 
@@ -16,6 +17,7 @@ import { beginOrcaCloudPkceFlow } from './profile-cloud-pkce'
 
 type HttpResponse = {
   body: string
+  headers: IncomingHttpHeaders
   statusCode: number | undefined
 }
 
@@ -28,6 +30,8 @@ const config: OrcaCloudAuthConfig = {
   profileEndpoint: 'https://orca-cloud.example/v1/desktop/auth/profile',
   orgEndpoint: 'https://orca-cloud.example/v1/desktop/auth/org',
   logoutEndpoint: 'https://orca-cloud.example/v1/desktop/auth/logout',
+  relayTokenEndpoint: 'https://orca-cloud.example/v1/desktop/auth/relay-token',
+  relayDirectorUrl: 'https://relay.example',
   clientId: 'desktop-client',
   scope: 'openid profile email offline_access'
 }
@@ -41,7 +45,7 @@ function readHttp(url: string): Promise<HttpResponse> {
         body += chunk
       })
       response.on('end', () => {
-        resolve({ body, statusCode: response.statusCode })
+        resolve({ body, headers: response.headers, statusCode: response.statusCode })
       })
     })
     request.on('error', reject)
@@ -91,6 +95,11 @@ describe('Orca cloud PKCE flow', () => {
 
     const validResponse = await readHttp(callbackUrl(redirectUri, { code: 'real-code', state }))
     expect(validResponse.statusCode).toBe(200)
+    expect(validResponse.headers['cache-control']).toBe('no-store')
+    expect(validResponse.headers['content-security-policy']).toContain("default-src 'none'")
+    expect(validResponse.body).toContain('<h1>Signed in to Orca</h1>')
+    expect(validResponse.body).toContain('You can close this tab and return to the app.')
+    expect(validResponse.body).not.toContain('class="brand"')
     await expect(flow).resolves.toMatchObject({
       code: 'real-code',
       redirectUri,
@@ -105,8 +114,23 @@ describe('Orca cloud PKCE flow', () => {
     const response = await readHttp(callbackUrl(redirectUri, { error: 'access_denied', state }))
 
     expect(response.statusCode).toBe(400)
+    expect(response.body).toBe('Orca sign-in was cancelled.')
     await expect(observedFlow).resolves.toMatchObject({ message: 'orca_cloud_auth_denied' })
   })
+
+  it.each(['server_error', 'temporarily_unavailable', 'unknown-error', ''])(
+    'reports %s as a failed sign-in rather than user cancellation',
+    async (error) => {
+      const { flow, redirectUri, state } = await startedFlow()
+      const observedFlow = flow.catch((failure: unknown) => failure)
+      const response = await readHttp(callbackUrl(redirectUri, { error, state }))
+      expect(response.statusCode).toBe(400)
+      expect(response.body).toBe('Orca sign-in failed. Return to Orca and try again.')
+      await expect(observedFlow).resolves.toMatchObject({
+        message: 'orca_cloud_auth_callback_failed'
+      })
+    }
+  )
 
   it('adds desktop PKCE parameters to the authorize URL', async () => {
     const { authUrl, flow, nonce, redirectUri, state } = await startedFlow()
@@ -123,5 +147,38 @@ describe('Orca cloud PKCE flow', () => {
 
     await readHttp(callbackUrl(redirectUri, { code: 'real-code', state }))
     await expect(flow).resolves.toMatchObject({ code: 'real-code', nonce })
+  })
+
+  it('keeps the first loopback alive when a second sign-in starts', async () => {
+    const first = beginOrcaCloudPkceFlow(config, 'local-default')
+    await vi.waitFor(() => expect(openExternalMock).toHaveBeenCalledTimes(1))
+    const firstUrl = new URL(String(openExternalMock.mock.calls[0]?.[0]))
+    const firstRedirectUri = firstUrl.searchParams.get('redirect_uri')
+    const firstState = firstUrl.searchParams.get('state')
+    if (!firstRedirectUri || !firstState) {
+      throw new Error('Expected the first PKCE flow to create redirect_uri and state')
+    }
+
+    const second = beginOrcaCloudPkceFlow(config, 'local-default')
+    await vi.waitFor(() => expect(openExternalMock).toHaveBeenCalledTimes(2))
+    const secondUrl = new URL(String(openExternalMock.mock.calls[1]?.[0]))
+    const secondRedirectUri = secondUrl.searchParams.get('redirect_uri')
+    const secondState = secondUrl.searchParams.get('state')
+    if (!secondRedirectUri || !secondState) {
+      throw new Error('Expected the second PKCE flow to create redirect_uri and state')
+    }
+    expect(secondRedirectUri).not.toBe(firstRedirectUri)
+
+    const firstResponse = await readHttp(
+      callbackUrl(firstRedirectUri, { code: 'first-code', state: firstState })
+    )
+    expect(firstResponse.statusCode).toBe(200)
+    await expect(first).resolves.toMatchObject({ code: 'first-code', state: firstState })
+
+    const secondResponse = await readHttp(
+      callbackUrl(secondRedirectUri, { code: 'second-code', state: secondState })
+    )
+    expect(secondResponse.statusCode).toBe(200)
+    await expect(second).resolves.toMatchObject({ code: 'second-code', state: secondState })
   })
 })

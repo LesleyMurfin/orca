@@ -1,3 +1,5 @@
+import { killSpawnedRipgrepProcess } from '../shared/ripgrep-process-availability'
+import { FileInventoryBudget, FileInventoryCapacityError } from '../shared/file-inventory-budget'
 /**
  * Git-based fallbacks for file listing and text search.
  *
@@ -8,17 +10,15 @@
  */
 import { spawn } from 'node:child_process'
 import { fileListingCancellationError } from '../shared/file-listing-cancellation'
-import type { SearchOptions, SearchResult } from './fs-handler-utils'
-import { buildGitLsFilesArgsForQuickOpen } from '../shared/quick-open-filter'
-import { expandQuickOpenGitFilesWithNestedRepos } from '../shared/quick-open-readdir-walk'
 import {
-  buildGitGrepArgs,
-  buildSubmatchRegex,
-  createAccumulator,
-  finalize,
-  ingestGitGrepLine,
-  SEARCH_TIMEOUT_MS
-} from '../shared/text-search'
+  buildGitLsFilesArgsForQuickOpen,
+  shouldExcludeQuickOpenRelPath,
+  shouldIncludeQuickOpenPath
+} from '../shared/quick-open-filter'
+import {
+  expandQuickOpenGitFileListing,
+  parseQuickOpenGitLsFilesEntry
+} from '../shared/quick-open-readdir-walk'
 import { buildRelayGitEnv } from './relay-command-env'
 
 /**
@@ -33,18 +33,22 @@ import { buildRelayGitEnv } from './relay-command-env'
 export function listFilesWithGit(
   rootPath: string,
   excludePathPrefixes: readonly string[] = [],
-  options: { signal?: AbortSignal } = {}
+  options: { signal?: AbortSignal; maxResults?: number } = {}
 ): Promise<string[]> {
-  const { signal } = options
+  const { signal, maxResults } = options
   if (signal?.aborted) {
     return Promise.reject(fileListingCancellationError(signal))
   }
+  const inventoryBudget = new FileInventoryBudget()
   const gitPaths = new Set<string>()
+  const directoryPaths = new Set<string>()
+  const directFileCandidates = new Set<string>()
   const { primary, ignoredPass } = buildGitLsFilesArgsForQuickOpen(excludePathPrefixes)
   const children: {
     child: ReturnType<typeof spawn>
     isDone: () => boolean
     reject: (error: Error) => void
+    resolve: () => void
   }[] = []
 
   const runGitLsFiles = (args: string[]): Promise<void> => {
@@ -52,11 +56,35 @@ export function listFilesWithGit(
       let buf = ''
       let done = false
 
-      const processPath = (path: string): void => {
+      const processPath = (path: string): boolean => {
         if (!path) {
-          return
+          return false
         }
-        gitPaths.add(path)
+        if (!gitPaths.has(path) && !directoryPaths.has(path)) {
+          inventoryBudget.record(path)
+        }
+        if (path.endsWith('/')) {
+          directoryPaths.add(path)
+        } else {
+          gitPaths.add(path)
+          if (maxResults !== undefined) {
+            // Why: this duplicate classification exists only to stop bounded
+            // scans; unbounded SSH scans must not retain another full listing.
+            const parsed = parseQuickOpenGitLsFilesEntry(path)
+            const relPath = parsed.path.replace(/\/+$/, '')
+            if (
+              !parsed.isGitlink &&
+              !parsed.isUntrackedDir &&
+              shouldIncludeQuickOpenPath(relPath) &&
+              !shouldExcludeQuickOpenRelPath(relPath, excludePathPrefixes)
+            ) {
+              directFileCandidates.add(relPath)
+            }
+          }
+        }
+        // Why: placeholders need IO classification and can disappear; only
+        // guaranteed final files are allowed to stop the remote Git processes.
+        return maxResults !== undefined && directFileCandidates.size >= maxResults
       }
 
       const child = spawn('git', ['ls-files', ...args], {
@@ -95,7 +123,8 @@ export function listFilesWithGit(
       children.push({
         child,
         isDone: () => done,
-        reject: rejectPass
+        reject: rejectPass,
+        resolve: resolvePass
       })
 
       function handleStdoutData(chunk: string): void {
@@ -103,7 +132,22 @@ export function listFilesWithGit(
         let start = 0
         let idx = buf.indexOf('\0', start)
         while (idx !== -1) {
-          processPath(buf.substring(start, idx))
+          let atLimit: boolean
+          try {
+            atLimit = processPath(buf.substring(start, idx))
+          } catch (error) {
+            killSpawnedRipgrepProcess(child)
+            rejectPass(error instanceof Error ? error : new FileInventoryCapacityError())
+            killSurvivors('git file inventory capacity exceeded')
+            gitPaths.clear()
+            directoryPaths.clear()
+            return
+          }
+          if (atLimit) {
+            buf = ''
+            finishAtLimit()
+            return
+          }
           start = idx + 1
           idx = buf.indexOf('\0', start)
         }
@@ -126,8 +170,10 @@ export function listFilesWithGit(
           rejectPass(new Error(`git ls-files killed by ${signal}`))
           return
         }
-        if (buf) {
-          processPath(buf)
+        if (buf && processPath(buf)) {
+          buf = ''
+          finishAtLimit()
+          return
         }
         if (code === 0) {
           resolvePass()
@@ -165,21 +211,65 @@ export function listFilesWithGit(
     }
   }
 
+  function finishAtLimit(): void {
+    for (const entry of children) {
+      if (entry.isDone()) {
+        continue
+      }
+      entry.resolve()
+      if (entry.child.exitCode === null && entry.child.signalCode === null) {
+        entry.child.kill()
+      }
+    }
+  }
+
   // Why: a cancelled scan (workspace switch, superseded request) must stop
   // its git children right away instead of streaming a huge tree the caller
   // has already abandoned over the shared SSH channel.
   const onAbort = (): void => killSurvivors('git ls-files cancelled')
   signal?.addEventListener('abort', onAbort, { once: true })
 
-  return Promise.all([runGitLsFiles(primary), runGitLsFiles(ignoredPass)])
-    .then(() =>
-      expandQuickOpenGitFilesWithNestedRepos({
+  const runIgnoredPass = () =>
+    // Why: ignored files are supplementary — a failed or timed-out ignored
+    // pass must not discard the primary listing the user actually needs.
+    runGitLsFiles(ignoredPass).catch((err: Error) => {
+      if (err instanceof FileInventoryCapacityError) {
+        throw err
+      }
+      if (!signal?.aborted) {
+        console.warn(
+          '[relay quick-open] git ignored-file pass failed; keeping primary results:',
+          err
+        )
+      }
+    })
+  const passes =
+    maxResults === undefined
+      ? Promise.all([runGitLsFiles(primary), runIgnoredPass()])
+      : runGitLsFiles(primary).then(() =>
+          directFileCandidates.size < maxResults ? runIgnoredPass() : Promise.resolve()
+        )
+
+  return passes
+    .then(async () => {
+      const files = await expandQuickOpenGitFileListing({
         rootPath,
         gitPaths,
+        directoryPaths,
         excludePathPrefixes,
-        signal
+        signal,
+        maxResults
       })
-    )
+      // Why: directory placeholders are expanded after Git exits; restore
+      // Git's path order for empty queries and fuzzy-score ties over SSH.
+      if (maxResults === undefined) {
+        const outputBudget = new FileInventoryBudget()
+        for (const path of files) {
+          outputBudget.record(path)
+        }
+      }
+      return files.sort().slice(0, maxResults)
+    })
     .catch((err) => {
       killSurvivors('git ls-files canceled after sibling failure')
       if (signal?.aborted) {
@@ -192,84 +282,4 @@ export function listFilesWithGit(
     })
 }
 
-/**
- * Text search using `git grep`. Fallback when rg is not installed.
- */
-export function searchWithGitGrep(
-  rootPath: string,
-  query: string,
-  opts: SearchOptions
-): Promise<SearchResult> {
-  return new Promise((resolve) => {
-    const gitArgs = buildGitGrepArgs(query, opts)
-    const matchRegex = buildSubmatchRegex(query, opts)
-    const acc = createAccumulator()
-    let stdoutBuffer = ''
-    let done = false
-
-    const child = spawn('git', gitArgs, {
-      cwd: rootPath,
-      env: buildRelayGitEnv(),
-      stdio: ['ignore', 'pipe', 'pipe']
-    })
-    let killTimeout: ReturnType<typeof setTimeout>
-
-    function resolveOnce(): void {
-      if (done) {
-        return
-      }
-      done = true
-      clearTimeout(killTimeout)
-      // Why: child.kill() is advisory. If git ignores it, detach our
-      // closures so repeated relay searches do not retain old scans.
-      child.stdout!.off('data', handleStdoutData)
-      child.stderr!.off('data', handleStderrData)
-      child.off('error', handleError)
-      child.off('close', handleClose)
-      resolve(finalize(acc))
-    }
-
-    function processLine(line: string): void {
-      const verdict = ingestGitGrepLine(line, rootPath, matchRegex, acc, opts.maxResults)
-      if (verdict === 'stop') {
-        child.kill()
-      }
-    }
-
-    function handleStdoutData(chunk: string): void {
-      stdoutBuffer += chunk
-      const lines = stdoutBuffer.split('\n')
-      stdoutBuffer = lines.pop() ?? ''
-      for (const l of lines) {
-        processLine(l)
-      }
-    }
-
-    function handleStderrData(): void {
-      /* drain */
-    }
-
-    function handleError(): void {
-      resolveOnce()
-    }
-
-    function handleClose(): void {
-      if (stdoutBuffer) {
-        processLine(stdoutBuffer)
-      }
-      resolveOnce()
-    }
-
-    child.stdout!.setEncoding('utf-8')
-    child.stdout!.on('data', handleStdoutData)
-    child.stderr!.on('data', handleStderrData)
-    child.once('error', handleError)
-    child.once('close', handleClose)
-
-    killTimeout = setTimeout(() => {
-      acc.truncated = true
-      child.kill()
-      resolveOnce()
-    }, SEARCH_TIMEOUT_MS)
-  })
-}
+export { searchWithGitGrep } from './fs-handler-git-search'

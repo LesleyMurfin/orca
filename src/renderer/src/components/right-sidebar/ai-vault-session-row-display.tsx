@@ -1,3 +1,7 @@
+import {
+  antigravitySessionOrigin,
+  isAntigravityReferenceSession
+} from '../../../../shared/antigravity-session-origin'
 import type React from 'react'
 import { Badge } from '@/components/ui/badge'
 import RepoBadgeLabel from '@/components/repo/RepoBadgeLabel'
@@ -6,14 +10,14 @@ import { AgentIcon } from '@/lib/agent-catalog'
 import type { AgentStatusState } from '../../../../shared/agent-status-types'
 import { useRepoById } from '@/store/selectors'
 import { resolveRepoBadgeColor } from '../../../../shared/repo-badge-color'
-import { splitWorktreeIdForFilesystem } from '../../../../shared/worktree-id'
+import { splitWorktreeIdForFilesystem } from '../../../../shared/worktree/id'
 import {
   isAiVaultSessionRecoverableEmpty,
   type AiVaultScope,
   type AiVaultSession
 } from '../../../../shared/ai-vault-types'
 import { translate } from '@/i18n/i18n'
-import { SessionTime } from './AiVaultSessionDetails'
+import { SessionTime } from './ai-vault-session-time'
 import { sessionModelLabel } from './ai-vault-session-display'
 import { agentLabel } from './ai-vault-session-filters'
 import {
@@ -41,8 +45,12 @@ export function SessionMetadata({
   vaultScope: AiVaultScope
 }) {
   const modelLabel = sessionModelLabel(session)
+  const origin = antigravitySessionOrigin(session.filePath)
   return (
-    <div className="mt-1 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-1.5 gap-y-0.5 text-[11px] leading-4 text-muted-foreground">
+    <div
+      data-testid="ai-vault-session-metadata"
+      className="mt-1 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-1.5 gap-y-0.5 text-[11px] leading-4 text-muted-foreground"
+    >
       <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground">
         <AgentIcon agent={session.agent} size={14} />
       </span>
@@ -51,6 +59,19 @@ export function SessionMetadata({
             would mark most rows; only live attention states earn a dot. */}
         {liveState && liveState !== 'done' ? <AgentStateDot state={liveState} /> : null}
         <span className="min-w-0 shrink-[2] truncate">{agentLabel(session.agent)}</span>
+        {isAntigravityReferenceSession(session) ? (
+          <Badge
+            variant="outline"
+            title={translate(
+              'aiVault.antigravityReferenceDescription',
+              'Continues in a new Antigravity CLI conversation using this transcript as a reference.'
+            )}
+          >
+            {origin === 'antigravity-ide'
+              ? translate('aiVault.antigravityIdeToCli', 'IDE → CLI')
+              : translate('aiVault.antigravity2ToCli', '2.0 → CLI')}
+          </Badge>
+        ) : null}
         <span className="shrink-0 tabular-nums">
           {translate(
             'auto.components.right.sidebar.AiVaultSessionRow.messageCount',
@@ -106,7 +127,7 @@ export function SessionMetadata({
   )
 }
 
-export function SessionWorktreeLine({
+function SessionWorktreeLine({
   worktreeInfo,
   vaultScope
 }: {
@@ -119,7 +140,7 @@ export function SessionWorktreeLine({
   const repo = useRepoById(repoId)
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1.5 pl-5">
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
       {shouldShowAiVaultWorktreeStatusBadge(worktreeInfo.status, { vaultScope }) ? (
         <span className="shrink-0 rounded-sm border border-sidebar-border bg-sidebar-accent/45 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">
           {worktreeStatusLabel(worktreeInfo.status)}

@@ -2,9 +2,27 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { scanAiVaultSessions } from './session-scanner'
 import Database from '../sqlite/sync-database'
+
+// Why: this source-level integration suite has no built worker entry. Keep its
+// SQLite fixtures inline explicitly; production fails closed if the bundle is absent.
+vi.mock('./session-scanner-opencode-sqlite-worker-spawn', async () => {
+  const [{ listOpenCodeSqliteSessions }, { parseOpenCodeSqliteSession }] = await Promise.all([
+    import('./session-scanner-opencode-sqlite-list'),
+    import('./session-scanner-opencode-sqlite')
+  ])
+  const { listOpenCode2SqliteSessions } = await import('./session-scanner-opencode2-sqlite-list')
+  return {
+    listOpenCode2SqliteSessionsViaWorker: listOpenCode2SqliteSessions,
+    listOpenCodeSqliteSessionsViaWorker: listOpenCodeSqliteSessions,
+    // ZCode reuses the OpenCode SQLite lister; the worker only varies the agent it stamps.
+    listZcodeSqliteSessionsViaWorker: (args: Parameters<typeof listOpenCodeSqliteSessions>[0]) =>
+      listOpenCodeSqliteSessions({ ...args, agent: 'zcode' }),
+    parseOpenCodeSqliteSessionViaWorker: parseOpenCodeSqliteSession
+  }
+})
 
 let tempRoots: string[] = []
 let tempDbDirs: string[] = []
@@ -23,6 +41,7 @@ function isolatedScanRoots(root: string) {
     claudeProjectsDir: join(root, 'claude-projects'),
     codexSessionsDir: join(root, 'codex-sessions'),
     geminiSessionsDir: join(root, 'gemini-sessions'),
+    antigravityBrainDir: join(root, 'antigravity-brain'),
     copilotSessionsDir: join(root, 'copilot-sessions'),
     cursorProjectsDir: join(root, 'cursor-projects'),
     opencodeStorageDir: join(root, 'opencode-storage'),
@@ -37,7 +56,11 @@ function isolatedScanRoots(root: string) {
     droidSessionsDir: join(root, 'droid-sessions'),
     droidProjectsDir: join(root, 'droid-projects'),
     kimiSessionsDir: join(root, 'kimi-sessions'),
-    ompSessionsDir: join(root, 'omp-sessions')
+    museSessionsDir: join(root, 'muse-sessions'),
+    zcodeDbPath: join(root, 'zcode-db.sqlite'),
+    ompSessionsDir: join(root, 'omp-sessions'),
+    jcodeSessionsDir: join(root, 'jcode-sessions'),
+    primeAgentSessionsDir: join(root, 'prime-agent-sessions')
   }
 }
 

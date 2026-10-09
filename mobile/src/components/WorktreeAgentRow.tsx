@@ -1,7 +1,14 @@
+import { memo } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 import type { RuntimeWorktreeAgentRow } from '../../../src/shared/runtime-types'
+import { withoutNativeChatVisualDirectiveLines } from '../../../src/shared/native-chat-visual-directive'
 import { colors, spacing } from '../theme/mobile-theme'
-import { agentDisplayLabel, agentDotState, formatTimeAgo } from '../worktree/agent-row-display'
+import {
+  agentDisplayLabel,
+  agentDotState,
+  agentRowTimeAt,
+  formatTimeAgo
+} from '../worktree/agent-row-display'
 import { AgentStateDot } from './AgentStateDot'
 import { MobileAgentIcon } from './MobileAgentIcon'
 
@@ -18,10 +25,18 @@ type Props = {
 
 // One inline agent row: state dot → identity → last message/prompt → time ago.
 // Mirrors desktop DashboardAgentRow's compact in-card layout.
-export function WorktreeAgentRow({ agent, depth, now, unvisited }: Props) {
+function WorktreeAgentRowComponent({ agent, depth, now, unvisited }: Props) {
   const dotState = agentDotState(agent, now)
-  const label = agentDisplayLabel(agent, now)
-  const ts = formatTimeAgo(agent.stateStartedAt, now)
+  // A visual line renders only in the transcript; the row shows the words around it, and a reply
+  // that is only a visual falls back like an empty one.
+  const reply = agent.lastAssistantMessage
+  const label = agentDisplayLabel(
+    reply
+      ? { ...agent, lastAssistantMessage: withoutNativeChatVisualDirectiveLines(reply) }
+      : agent,
+    now
+  )
+  const ts = formatTimeAgo(agentRowTimeAt(agent), now)
 
   return (
     <View style={[styles.row, { paddingLeft: depth * INDENT_PER_DEPTH }]}>
@@ -36,6 +51,8 @@ export function WorktreeAgentRow({ agent, depth, now, unvisited }: Props) {
     </View>
   )
 }
+
+export const WorktreeAgentRow = memo(WorktreeAgentRowComponent)
 
 const styles = StyleSheet.create({
   row: {

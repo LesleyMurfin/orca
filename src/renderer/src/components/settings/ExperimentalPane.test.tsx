@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 
+import { resetLocalStructuredChatsForTests } from '@/runtime/local-structured-chats'
 import { act } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { GlobalSettings } from '../../../../shared/types'
+import type { GlobalSettings } from '../../../../shared/global-settings-types'
 import { getDefaultSettings } from '../../../../shared/constants'
 import { ExperimentalPane } from './ExperimentalPane'
 import { getExperimentalPaneSearchEntries } from './experimental-search'
@@ -15,9 +16,7 @@ vi.mock('../../store', () => ({
 }))
 
 vi.mock('./EphemeralVmsPane', () => ({
-  EphemeralVmsPane: () => (
-    <div data-testid="ephemeral-vms-pane">Per-Workspace Environments pane</div>
-  )
+  EphemeralVmsPane: () => <div data-testid="ephemeral-vms-pane">Cloud VM pane</div>
 }))
 
 vi.mock('../ui/select', async () => {
@@ -134,23 +133,66 @@ describe('ExperimentalPane', () => {
     )
   })
 
-  it('renders per-workspace environments as an off-by-default experimental subsection', () => {
+  it('renders the agent dashboard as an off-by-default searchable experiment', () => {
+    const settings = getDefaultSettings('/tmp')
+    const markup = renderToStaticMarkup(
+      <ExperimentalPane settings={settings} updateSettings={vi.fn()} />
+    )
+
+    expect(settings.experimentalAgentDashboardPopout).toBeUndefined()
+    expect(markup).toContain('Agent Dashboard')
+    expect(markup).toContain('Monitor agents that need you, are working, or are done')
+    expect(getExperimentalPaneSearchEntries().map((entry) => entry.title)).toContain(
+      'Agent Dashboard'
+    )
+  })
+
+  it('enables the agent dashboard through its experimental switch', async () => {
+    const updateSettings = vi.fn()
+    const { root, container } = await renderExperimentalPane({ updateSettings })
+    const switchButton = container.querySelector<HTMLButtonElement>(
+      '#experimental-agent-dashboard button[role="switch"]'
+    )
+    if (!switchButton) {
+      throw new Error('Agent Dashboard switch was not rendered')
+    }
+
+    await act(async () => {
+      switchButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(updateSettings).toHaveBeenCalledWith({ experimentalAgentDashboardPopout: true })
+    root.unmount()
+  })
+
+  it('keeps idle-agent visibility out of global settings', () => {
+    const markup = renderToStaticMarkup(
+      <ExperimentalPane
+        settings={{ ...getDefaultSettings('/tmp'), experimentalAgentDashboardPopout: true }}
+        updateSettings={vi.fn()}
+      />
+    )
+
+    expect(markup).not.toContain('Show idle agents')
+  })
+
+  it('renders Cloud VM as an off-by-default experimental subsection', () => {
     const settings = getDefaultSettings('/tmp')
     const markup = renderToStaticMarkup(
       <ExperimentalPane settings={settings} updateSettings={vi.fn()} />
     )
     const entry = getExperimentalPaneSearchEntries().find(
-      (searchEntry) => searchEntry.title === 'Per-Workspace Environments'
+      (searchEntry) => searchEntry.title === 'Cloud VM'
     )
 
     expect(settings.experimentalEphemeralVms).toBe(false)
-    expect(markup).toContain('Per-Workspace Environments')
+    expect(markup).toContain('Cloud VM')
     expect(markup).toContain('aria-checked="false"')
-    expect(markup).not.toContain('Per-Workspace Environments pane')
+    expect(markup).not.toContain('Cloud VM pane')
     expect(entry?.targetSectionId).toBe('ephemeral-vms')
   })
 
-  it('enables per-workspace environments through the experimental switch', async () => {
+  it('enables Cloud VM through the experimental switch', async () => {
     const updateSettings = vi.fn()
     const { root, container } = await renderExperimentalPane({ updateSettings })
 
@@ -158,7 +200,7 @@ describe('ExperimentalPane', () => {
       '#ephemeral-vms button[role="switch"]'
     )
     if (!switchButton) {
-      throw new Error('Per-workspace environments switch was not rendered')
+      throw new Error('Cloud VM switch was not rendered')
     }
 
     await act(async () => {
@@ -169,7 +211,7 @@ describe('ExperimentalPane', () => {
     root.unmount()
   })
 
-  it('shows per-workspace environment setup controls when enabled', () => {
+  it('shows Cloud VM setup controls when enabled', () => {
     const markup = renderToStaticMarkup(
       <ExperimentalPane
         settings={{ ...getDefaultSettings('/tmp'), experimentalEphemeralVms: true }}
@@ -177,79 +219,54 @@ describe('ExperimentalPane', () => {
       />
     )
 
-    expect(markup).toContain('Per-Workspace Environments pane')
+    expect(markup).toContain('Cloud VM pane')
     expect(markup).toContain('aria-checked="true"')
   })
 
-  it('shows native chat default-mode as a child setting only when native chat is enabled', async () => {
+  it('offers one Chat UI switch and no default-view selector', async () => {
     const updateSettings = vi.fn()
-    const disabledSettings = getDefaultSettings('/tmp')
-    const disabledMarkup = renderToStaticMarkup(
-      <ExperimentalPane settings={disabledSettings} updateSettings={vi.fn()} />
-    )
-    expect(disabledMarkup).toContain('Native chat')
-    expect(disabledMarkup).not.toContain('Default view')
-
-    const settings = {
-      ...getDefaultSettings('/tmp'),
-      experimentalNativeChat: true,
-      openAgentTabsInChatByDefault: false
-    }
-    const { root, container } = await renderExperimentalPane({ updateSettings, settings })
-
-    expect(container.textContent).toContain('Default view')
-    expect(container.textContent).toContain('Terminal chat')
-    expect(container.textContent).toContain('Native chat')
-    expect(
-      container
-        .querySelector('[data-slot="native-chat-default-view-select"]')
-        ?.getAttribute('data-value')
-    ).toBe('terminal-chat')
-
-    const nativeChatOption = Array.from(
-      container.querySelectorAll<HTMLButtonElement>('[data-slot="select-item"]')
-    ).find((button) => button.getAttribute('data-value') === 'native-chat')
-    if (!nativeChatOption) {
-      throw new Error('Native chat default-view option was not rendered')
-    }
-
-    await act(async () => {
-      nativeChatOption.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    expect(updateSettings).toHaveBeenCalledWith({ openAgentTabsInChatByDefault: true })
-
-    root.unmount()
-
-    const nativeSettings = {
-      ...settings,
-      openAgentTabsInChatByDefault: true
-    }
-    const secondRender = await renderExperimentalPane({
+    const { root, container } = await renderExperimentalPane({
       updateSettings,
-      settings: nativeSettings
+      settings: getDefaultSettings('/tmp')
     })
-
-    expect(
-      secondRender.container
-        .querySelector('[data-slot="native-chat-default-view-select"]')
-        ?.getAttribute('data-value')
-    ).toBe('native-chat')
-
-    const terminalChatOption = Array.from(
-      secondRender.container.querySelectorAll<HTMLButtonElement>('[data-slot="select-item"]')
-    ).find((button) => button.getAttribute('data-value') === 'terminal-chat')
-    if (!terminalChatOption) {
-      throw new Error('Terminal chat default-view option was not rendered')
-    }
-
+    expect(container.textContent).toContain('Chat UI')
+    expect(container.textContent).not.toContain('Default view')
+    expect(container.textContent).not.toContain('Use updated structured native chat')
+    const switchControl = container.querySelector<HTMLButtonElement>(
+      '#experimental-native-chat button[aria-label="Toggle Chat UI"]'
+    )
+    expect(switchControl).not.toBeNull()
     await act(async () => {
-      terminalChatOption.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      switchControl?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
+    expect(updateSettings).toHaveBeenCalledWith({ experimentalNativeChat: true })
+    root.unmount()
+  })
 
-    expect(updateSettings).toHaveBeenCalledWith({ openAgentTabsInChatByDefault: false })
-
-    secondRender.root.unmount()
+  it('shows structured chat controls for chats this machine still holds while Chat UI is off', async () => {
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        app: {
+          holdsStructuredAgentSessions: async () => true,
+          onStructuredAgentSessionsHeldChanged: () => () => undefined
+        }
+      }
+    })
+    try {
+      const { root, container } = await renderExperimentalPane({
+        updateSettings: vi.fn(),
+        settings: getDefaultSettings('/tmp')
+      })
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(container.textContent).toContain('Resume working chats automatically after a restart')
+      root.unmount()
+    } finally {
+      resetLocalStructuredChatsForTests()
+      Reflect.deleteProperty(window, 'api')
+    }
   })
 
   it('renders the agent sleep idle duration as configurable minutes', async () => {

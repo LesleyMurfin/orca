@@ -17,6 +17,15 @@ export function getDecorativeAgentTitleSignature(title: string): string | null {
   return `${status}:${normalizeDecorativeAgentTitleText(title)}`
 }
 
+/** Equal keys mean the title changed only by spinner decoration. */
+export function getDecorativeTitleGateKey(rawTitle: string, normalizedTitle: string): string {
+  // Stable Pi/Gemini/Grok display normalization also defines their semantic gate.
+  const normalizedSignature =
+    rawTitle === normalizedTitle ? null : getDecorativeAgentTitleSignature(normalizedTitle)
+  const signature = normalizedSignature ?? getDecorativeAgentTitleSignature(rawTitle)
+  return signature === null ? `literal\u0000${normalizedTitle}` : `agent\u0000${signature}`
+}
+
 export function isDecorativeAgentTitleFrameChange(prevTitle: string, nextTitle: string): boolean {
   const prevSignature = getDecorativeAgentTitleSignature(prevTitle)
   return prevSignature !== null && prevSignature === getDecorativeAgentTitleSignature(nextTitle)
@@ -27,7 +36,10 @@ function normalizeDecorativeAgentTitleText(title: string): string {
   let pendingWhitespace = false
   for (let index = 0; index < title.length; index += 1) {
     const code = title.charCodeAt(index)
-    if (normalized.length === 0 && (isDecorativeTitleWhitespace(code) || isBrailleSpinner(code))) {
+    if (
+      normalized.length === 0 &&
+      (isDecorativeTitleWhitespace(code) || isSpinnerFrameGlyph(code))
+    ) {
       continue
     }
     if (isDecorativeTitleWhitespace(code)) {
@@ -43,8 +55,9 @@ function normalizeDecorativeAgentTitleText(title: string): string {
   return normalized
 }
 
-function isBrailleSpinner(code: number): boolean {
-  return code >= 0x2800 && code <= 0x28ff
+// Why: braille (most agents) plus quarter circles (Claude Code 2.1.228+, #13889).
+function isSpinnerFrameGlyph(code: number): boolean {
+  return (code >= 0x2800 && code <= 0x28ff) || (code >= 0x25d0 && code <= 0x25d3)
 }
 
 function isDecorativeTitleWhitespace(code: number): boolean {

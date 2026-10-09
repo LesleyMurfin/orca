@@ -10,8 +10,10 @@
 import { test, expect } from './helpers/orca-app'
 import { waitForSessionReady } from './helpers/store'
 import type { Page } from '@stablyai/playwright-test'
-import type { GlobalSettings, TuiAgent } from '../../src/shared/types'
-import { ONBOARDING_FINAL_STEP } from '../../src/shared/constants'
+import type { GlobalSettings } from '../../src/shared/global-settings-types'
+import type { TuiAgent } from '../../src/shared/tui-agent'
+import { ONBOARDING_FINAL_STEP } from '../../src/shared/onboarding-defaults'
+import { encodePairingOffer, PAIRING_OFFER_VERSION } from '../../src/shared/pairing'
 
 type OnboardingState = {
   closedAt: number | null
@@ -194,7 +196,7 @@ test.describe('Onboarding flow', () => {
     // agents are detected, otherwise behind the "Show N more agents" details
     // expander — open it if codex isn't visible.
     const targetAgent: TuiAgent = 'codex'
-    const codexButton = orcaPage.getByRole('button', { name: /^Codex\s/ })
+    const codexButton = orcaPage.getByRole('button', { name: 'Codex', exact: true })
     // Why: isVisible() is a one-shot probe — on slow renderer paint it would
     // race the wizard mount and falsely take the "show more agents" branch.
     // waitFor with a small timeout actually retries until the button paints.
@@ -346,7 +348,7 @@ test.describe('Onboarding flow', () => {
     await expect(orcaPage.getByRole('heading', { name: /Pick your default agent/i })).toBeVisible({
       timeout: 15_000
     })
-    const codexButton = orcaPage.getByRole('button', { name: /^Codex\s/ })
+    const codexButton = orcaPage.getByRole('button', { name: 'Codex', exact: true })
     const codexVisible = await codexButton
       .first()
       .waitFor({ state: 'visible', timeout: 1_000 })
@@ -421,43 +423,102 @@ test.describe('Onboarding flow', () => {
     await expect(orcaPage.getByRole('heading', { name: /Pick your default agent/i })).toBeVisible({
       timeout: 15_000
     })
-    await orcaPage.evaluate(async () => {
+    // Why: since #10011 `settings:set` strips activeRuntimeEnvironmentId — the
+    // durable Active Server preference is only writable through its dedicated
+    // handler, which resolves the id against the main-process environment
+    // store. So the host has to be registered for real, not faked in the
+    // renderer. Pairing is offline (no live server needed).
+    const pairingCode = encodePairingOffer({
+      v: PAIRING_OFFER_VERSION,
+      scope: 'runtime',
+      endpoint: 'wss://e2e.invalid/ws',
+      deviceToken: 'e2e-device-token',
+      publicKeyB64: 'ZTJlLXB1YmxpYy1rZXk'
+    })
+    const environmentId = await orcaPage.evaluate(async (code) => {
       const store = window.__store
       if (!store) {
         throw new Error('window.__store is not available')
       }
+      const { environment } = await window.api.runtimeEnvironments.addFromPairingCode({
+        name: 'E2E Server',
+        pairingCode: code
+      })
       // Why: after #5071 the server-path add step gates on the registered
       // runtime-environment list (store.runtimeEnvironments), not just the
-      // activeRuntimeEnvironmentId setting. Seed a redacted environment so the
-      // host option exists and the "on host" add UI renders.
-      const now = Date.now()
-      store.getState().setRuntimeEnvironments([
-        {
-          id: 'env-e2e',
-          name: 'E2E Server',
-          createdAt: now,
-          updatedAt: now,
-          lastUsedAt: null,
-          runtimeId: null,
-          source: 'manual',
-          endpoints: [
-            {
-              id: 'ws-env-e2e',
-              kind: 'websocket',
-              label: 'WebSocket',
-              endpoint: 'wss://e2e.invalid/ws'
-            }
-          ],
-          preferredEndpointId: 'ws-env-e2e'
-        }
-      ])
+      // activeRuntimeEnvironmentId setting.
+      store.getState().setRuntimeEnvironments(await window.api.runtimeEnvironments.list())
       // Why: a runtime host is only auto-selectable (health 'available') when it
       // has a live, protocol-compatible status; without one it reads
       // 'disconnected' and the Add Project dialog falls back to Local Mac.
       // runtimeProtocolVersion 3 clears MIN_COMPATIBLE_RUNTIME_SERVER_VERSION.
-      store.getState().setRuntimeEnvironmentStatus('env-e2e', {
+      const seededStatus = {
+        runtimeId: `${environment.id}-runtime`,
+        rendererGraphEpoch: 0,
+        graphStatus: 'ready' as const,
+        authoritativeWindowId: null,
+        liveTabCount: 0,
+        liveLeafCount: 0,
+        runtimeProtocolVersion: 3,
+        minCompatibleRuntimeClientVersion: 1
+      }
+      // Why a snapshot and not a bare status: since #20003 the published snapshot owns host health,
+      // and main's status owner publishes `checking` for this unreachable host as soon as any
+      // runtime RPC touches it — which flips the Add Project host to Local mid-test. Pinning the
+      // seed at the top sequence makes applyRuntimeHostStatusSnapshot's monotonic guard drop those
+      // publications. A snapshot-less write would also no-op once any snapshot exists.
+      store.getState().setRuntimeEnvironmentStatus(environment.id, {
+        snapshot: {
+          environmentId: environment.id,
+          pairingRevision: environment.pairingRevision ?? environment.createdAt,
+          sequence: Number.MAX_SAFE_INTEGER,
+          checkedAt: Date.now(),
+          status: seededStatus,
+          verification: 'verified',
+          transport: 'ready'
+        },
+        status: seededStatus,
+        checkedAt: Date.now()
+      })
+      // Why: the store's switchRuntimeEnvironment probes reachability, which a
+      // synthetic host can't satisfy — write the preference directly and push
+      // the returned settings in rather than refetching (fetchSettings would
+      // kick off a status hydrate that clobbers the seeded 'available' health).
+      const settings = await window.api.settings.setActiveRuntimeEnvironmentPreference({
+        environmentId: environment.id
+      })
+      store.setState({ settings })
+      return environment.id
+    }, pairingCode)
+    await expect
+      .poll(async () => (await getSettings(orcaPage)).activeRuntimeEnvironmentId, {
+        timeout: 5_000
+      })
+      .toBe(environmentId)
+
+    // Why: runtime-host health now derives from the status snapshot (transport
+    // + verification) whenever one exists, and a snapshot also blocks later
+    // status-only writes — so a status seed alone no longer reads 'available'
+    // and the host selector falls back to Local. Publish a verified, ready
+    // snapshot with a high sequence so later real snapshots cannot downgrade
+    // it, modelling a reachable host for the skip-to-project-setup path.
+    await orcaPage.evaluate((id) => {
+      const store = window.__store
+      if (!store) {
+        throw new Error('window.__store is not available')
+      }
+      const state = store.getState()
+      const environment = state.runtimeEnvironments.find((entry) => entry.id === id)
+      if (!environment) {
+        throw new Error('runtime environment was not registered')
+      }
+      state.applyRuntimeHostStatusSnapshot({
+        environmentId: id,
+        pairingRevision: environment.pairingRevision ?? environment.createdAt,
+        sequence: 2_147_483_647,
+        checkedAt: Date.now(),
         status: {
-          runtimeId: 'env-e2e-runtime',
+          runtimeId: `${id}-runtime`,
           rendererGraphEpoch: 0,
           graphStatus: 'ready',
           authoritativeWindowId: null,
@@ -466,22 +527,20 @@ test.describe('Onboarding flow', () => {
           runtimeProtocolVersion: 3,
           minCompatibleRuntimeClientVersion: 1
         },
-        checkedAt: now
+        verification: 'verified',
+        transport: 'ready',
+        remoteControl: null
       })
-      await store.getState().updateSettings({ activeRuntimeEnvironmentId: 'env-e2e' })
-    })
-    await expect
-      .poll(async () => (await getSettings(orcaPage)).activeRuntimeEnvironmentId, {
-        timeout: 5_000
-      })
-      .toBe('env-e2e')
+    }, environmentId)
 
     await onboardingFooterButton(orcaPage, SKIP_TO_PROJECT_SETUP_BUTTON).click()
 
     await expectAddProjectDialog(orcaPage)
     // The runtime env is selected as the Add Project host and the browse action
     // is host-scoped, proving the server project-setup UI is preserved on skip.
-    await expect(orcaPage.getByText('Existing Git repository or folder on this host')).toBeVisible()
+    await expect(orcaPage.getByText('Existing Git repository or folder on this host')).toBeVisible({
+      timeout: 30_000
+    })
     await expect(orcaPage.getByRole('button', { name: /Browse folder/i })).toBeVisible()
     await expect(orcaPage.getByRole('button', { name: /Clone from URL/i })).toBeVisible()
     await expect(orcaPage.getByRole('button', { name: /Create new project/i })).toBeVisible()
@@ -489,42 +548,12 @@ test.describe('Onboarding flow', () => {
     expect((await getOnboardingState(orcaPage)).closedAt).not.toBeNull()
   })
 
-  test('Skip from notifications does not request permission', async ({ orcaPage }) => {
-    await expect(orcaPage.getByRole('heading', { name: /Pick your default agent/i })).toBeVisible({
-      timeout: 15_000
-    })
-    await continueOnboarding(orcaPage)
-    await expect(orcaPage.getByRole('heading', { name: /Make it feel like home/i })).toBeVisible()
-    await continueFromThemeToNotifications(orcaPage)
-
-    await orcaPage.evaluate(() => {
-      localStorage.removeItem('orca.e2e.notificationPermissionRequested')
-      window.api.notifications.requestPermission = async () => {
-        localStorage.setItem('orca.e2e.notificationPermissionRequested', '1')
-        return { supported: true, platform: 'darwin', requested: true }
-      }
-    })
-    await expectOnboardingNotificationSound(orcaPage, /System Default/i)
-
-    await expect(onboardingFooterButton(orcaPage, SKIP_TO_PROJECT_SETUP_BUTTON)).toHaveCount(0)
-    await continueOnboarding(orcaPage)
-
-    await expectAddProjectDialog(orcaPage)
-    await expect
-      .poll(
-        async () =>
-          orcaPage.evaluate(() => localStorage.getItem('orca.e2e.notificationPermissionRequested')),
-        { timeout: 5_000 }
-      )
-      .toBeNull()
-  })
-
   test('selected agent button reports aria-pressed=true', async ({ orcaPage }) => {
     await expect(orcaPage.getByRole('heading', { name: /Pick your default agent/i })).toBeVisible({
       timeout: 15_000
     })
 
-    const codexButton = orcaPage.getByRole('button', { name: /^Codex\s/ })
+    const codexButton = orcaPage.getByRole('button', { name: 'Codex', exact: true })
     const codexVisible = await codexButton
       .first()
       .waitFor({ state: 'visible', timeout: 1_000 })

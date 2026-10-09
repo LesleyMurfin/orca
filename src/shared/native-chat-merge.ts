@@ -1,13 +1,11 @@
-// Pure id-dedup merge for native-chat message windows, shared by the desktop
-// renderer live path. Mobile keeps a parity-locked twin of this algorithm
-// (mobile/src/session/mobile-native-chat-merge.ts) because Metro can't resolve
-// runtime values outside the mobile package — the cross-surface parity test
-// (native-chat-merge-parity.test.ts) pins the two implementations together.
-//
-// The algorithm is parameterized on a source-priority map so the single body
-// works for any caller that supplies NATIVE_CHAT_SOURCE_PRIORITY.
+// Pure id-dedup and windowing for both desktop and mobile native-chat streams.
 
-import type { NativeChatMessage, NativeChatSource } from './native-chat-types'
+import {
+  nativeChatMessagesShareTranscriptRow,
+  NATIVE_CHAT_SOURCE_PRIORITY,
+  type NativeChatMessage,
+  type NativeChatSource
+} from './native-chat-types'
 
 export type NativeChatSourcePriority = Record<NativeChatSource, number>
 
@@ -31,10 +29,14 @@ export function mergeNativeChatMessagesWith(
   return merged
 }
 
-/** Cap a message list to its most-recent `limit` entries. The base read is
- *  already windowed; this keeps the live-append tail bounded to the same window
- *  so a long run can't grow the list without limit. A non-positive limit means
- *  "no cap". Returns the input reference when no trim is needed. */
+export function mergeNativeChatMessages(
+  existing: readonly NativeChatMessage[],
+  incoming: readonly NativeChatMessage[]
+): NativeChatMessage[] {
+  return mergeNativeChatMessagesWith(existing, incoming, NATIVE_CHAT_SOURCE_PRIORITY)
+}
+
+/** Keep the recent tail without splitting a provider row. A non-positive limit means no cap. */
 export function boundNativeChatWindow(
   messages: readonly NativeChatMessage[],
   limit: number
@@ -42,7 +44,11 @@ export function boundNativeChatWindow(
   if (limit <= 0 || messages.length <= limit) {
     return messages as NativeChatMessage[]
   }
-  return messages.slice(messages.length - limit)
+  let start = messages.length - limit
+  while (start > 0 && nativeChatMessagesShareTranscriptRow(messages[start - 1], messages[start])) {
+    start -= 1
+  }
+  return messages.slice(start)
 }
 
 /** Stateful id-dedup merger that caches the id→index map across appends so a
@@ -56,7 +62,9 @@ export type NativeChatMerger = {
   readonly priority: NativeChatSourcePriority
 }
 
-export function createNativeChatMerger(priority: NativeChatSourcePriority): NativeChatMerger {
+export function createNativeChatMerger(
+  priority: NativeChatSourcePriority = NATIVE_CHAT_SOURCE_PRIORITY
+): NativeChatMerger {
   return { list: [], indexById: new Map(), priority }
 }
 
@@ -73,13 +81,20 @@ export function replaceList(merger: NativeChatMerger, list: readonly NativeChatM
  *  index incrementally — O(incoming), never re-scanning the existing list. */
 export function applyAppend(
   merger: NativeChatMerger,
-  incoming: readonly NativeChatMessage[]
+  incoming: readonly NativeChatMessage[],
+  limit?: number
 ): NativeChatMessage[] {
   if (incoming.length === 0) {
     return merger.list
   }
   const next = [...merger.list]
   applyIncoming(next, merger.indexById, incoming, merger.priority)
+  const bounded = limit === undefined ? next : boundNativeChatWindow(next, limit)
+  if (bounded !== next) {
+    // Why: trimming shifts every cached index, so rebuild at the window boundary.
+    replaceList(merger, bounded)
+    return merger.list
+  }
   merger.list = next
   return next
 }

@@ -3,15 +3,15 @@
 //     resolve host" partially overlaps "could not resolve to a"),
 // (b) repo slug validation must accept names with leading underscore
 //     (GitHub allows them, e.g. `_internal`),
-// (c) owner slug validation must reject `.`/`_` (GitHub disallows them in
-//     usernames/orgs),
+// (c) owner slug validation must reject `.` and a leading `_`/`-`, but accept
+//     the `_<shortcode>` suffix GitHub appends to Enterprise Managed User logins,
 // (d) parseProjectPaste shorthand owner-only alphabet matches the renderer,
 // (e) project owner/capability caches stay bounded in long sessions.
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   GITHUB_PROJECT_REF_INPUT_MAX_BYTES,
   GITHUB_PROJECT_REF_INPUT_TOO_LARGE_ERROR
-} from '../../shared/github-project-ref-input'
+} from '../../shared/github/project-ref-input'
 import {
   PROJECT_VIEW_OWNER_CACHE_MAX_ENTRIES,
   _getProjectViewCacheSizesForTests,
@@ -68,6 +68,19 @@ describe('classifyProjectError', () => {
   it('classifies auth-required when gh is not signed in', () => {
     expect(classifyProjectError('gh auth login required', '').type).toBe('auth_required')
   })
+
+  it('pins Enterprise auth and scope remediation to the selected host', () => {
+    expect(
+      classifyProjectError('gh auth login required', '', 'github.acme.test').message
+    ).toContain('gh auth login --hostname github.acme.test')
+    expect(
+      classifyProjectError(
+        'your token has not been granted the required scopes',
+        '',
+        'github.acme.test'
+      ).message
+    ).toContain('gh auth refresh --hostname github.acme.test')
+  })
 })
 
 describe('isValidOwnerSlug', () => {
@@ -77,12 +90,13 @@ describe('isValidOwnerSlug', () => {
     expect(isValidOwnerSlug('user1')).toBe(true)
   })
 
-  it('rejects underscore (GitHub disallows it in usernames/orgs)', () => {
-    expect(isValidOwnerSlug('_acme')).toBe(false)
-    expect(isValidOwnerSlug('acme_co')).toBe(false)
+  it('accepts Enterprise Managed User logins (GitHub appends `_<shortcode>`)', () => {
+    expect(isValidOwnerSlug('octocat_acme')).toBe(true)
+    expect(isValidOwnerSlug('acme_co')).toBe(true)
   })
 
-  it('rejects leading hyphen and dot', () => {
+  it('rejects leading underscore, hyphen and dot', () => {
+    expect(isValidOwnerSlug('_acme')).toBe(false)
     expect(isValidOwnerSlug('-acme')).toBe(false)
     expect(isValidOwnerSlug('.acme')).toBe(false)
   })
@@ -125,10 +139,25 @@ describe('parseProjectPaste', () => {
     expect(parseProjectPaste('acme/42')).toEqual({ kind: 'bare', owner: 'acme', number: 42 })
   })
 
-  it('rejects shorthand with underscore in owner (renderer parity)', () => {
-    // Why: the renderer's parser uses `[A-Za-z0-9][A-Za-z0-9-]*` for owner
-    // (matches OWNER_SLUG_RE). Both sides must reject the same inputs.
-    expect(parseProjectPaste('co_op/45')).toBeNull()
+  it('accepts shorthand with an Enterprise Managed User owner (renderer parity)', () => {
+    // Why: the renderer's parser uses `[A-Za-z0-9][A-Za-z0-9_-]*` for owner
+    // (matches OWNER_SLUG_RE). Both sides must accept and reject the same inputs.
+    expect(parseProjectPaste('octocat_acme/1')).toEqual({
+      kind: 'bare',
+      owner: 'octocat_acme',
+      number: 1
+    })
+    expect(parseProjectPaste('_acme/45')).toBeNull()
+  })
+
+  it('parses a user URL with an Enterprise Managed User owner', () => {
+    expect(parseProjectPaste('https://github.com/users/octocat_acme/projects/1/views/1')).toEqual({
+      kind: 'user',
+      owner: 'octocat_acme',
+      number: 1,
+      host: 'github.com',
+      viewNumber: 1
+    })
   })
 
   it('parses org URL with view number', () => {
@@ -136,6 +165,7 @@ describe('parseProjectPaste', () => {
       kind: 'org',
       owner: 'acme',
       number: 42,
+      host: 'github.com',
       viewNumber: 3
     })
   })
@@ -144,12 +174,51 @@ describe('parseProjectPaste', () => {
     expect(parseProjectPaste('https://github.com/users/octocat/projects/1')).toEqual({
       kind: 'user',
       owner: 'octocat',
-      number: 1
+      number: 1,
+      host: 'github.com'
     })
   })
 
   it('rejects URLs whose owner has invalid characters', () => {
-    expect(parseProjectPaste('https://github.com/orgs/co_op/projects/1')).toBeNull()
+    expect(parseProjectPaste('https://github.com/orgs/_acme/projects/1')).toBeNull()
+    expect(parseProjectPaste('https://github.com/orgs/.acme/projects/1')).toBeNull()
+  })
+
+  it('accepts enterprise-host URLs only when that host is provided (GHES)', () => {
+    const url = 'https://github.corp.example/orgs/acme/projects/7/views/2'
+    expect(parseProjectPaste(url, 'github.corp.example')).toEqual({
+      kind: 'org',
+      owner: 'acme',
+      number: 7,
+      host: 'github.corp.example',
+      viewNumber: 2
+    })
+    expect(parseProjectPaste(url)).toBeNull()
+    // github.com URLs still parse when a GHES host is supplied.
+    expect(
+      parseProjectPaste('https://github.com/orgs/acme/projects/7', 'github.corp.example')
+    ).toEqual({ kind: 'org', owner: 'acme', number: 7, host: 'github.com' })
+  })
+
+  it('preserves a GHES custom port while parsing project URLs', () => {
+    expect(
+      parseProjectPaste(
+        'https://github.corp.example:8443/orgs/acme/projects/7',
+        'github.corp.example:8443'
+      )
+    ).toEqual({
+      kind: 'org',
+      owner: 'acme',
+      number: 7,
+      host: 'github.corp.example:8443'
+    })
+  })
+
+  it('rejects credentials and paths that only begin like a Project URL', () => {
+    expect(parseProjectPaste('https://user:token@github.com/orgs/acme/projects/1')).toBeNull()
+    expect(parseProjectPaste('https://github.com/orgs/acme/projects/1evil')).toBeNull()
+    expect(parseProjectPaste('https://github.com/orgs/acme/projects/1/views/2evil')).toBeNull()
+    expect(parseProjectPaste('https://github.com/orgs/acme/projects/1/files')).toBeNull()
   })
 
   it('returns null for empty input', () => {
@@ -206,6 +275,13 @@ describe('project view owner caches', () => {
     )
     expect(_getProjectViewOwnerTypeForTests('owner-0')).toBeUndefined()
     expect(_getProjectViewOwnerTypeForTests('owner-1')).toBe('user')
+  })
+
+  it('shares owner type probes between implicit and explicit github.com hosts', () => {
+    _rememberProjectViewOwnerTypeForTests('acme', 'organization')
+
+    expect(_getProjectViewOwnerTypeForTests('acme', 'github.com')).toBe('organization')
+    expect(_getProjectViewCacheSizesForTests().ownerTypes).toBe(1)
   })
 
   it('LRU-evicts old parent-field retry and warning probes', () => {

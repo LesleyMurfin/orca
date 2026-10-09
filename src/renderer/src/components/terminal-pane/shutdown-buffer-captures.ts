@@ -1,5 +1,9 @@
 export type ShutdownBufferCaptureOptions = {
   includeLocalBuffers?: boolean
+  /** Route the captured bytes to `localOnlyScrollbackByTabId` instead of the shared layout.
+   *  Set by the ordinary cold park, which fires on every workspace hide; the rare captures
+   *  (force-park, hibernate, sleep, shutdown) stay shared so a second desktop can still cold-restore. */
+  localOnly?: boolean
 }
 
 /** Map of tabId → buffer-capture callback, one per mounted TerminalPane.
@@ -20,3 +24,25 @@ export const shutdownBufferCaptures = new Map<
   string,
   (options?: ShutdownBufferCaptureOptions) => void
 >()
+
+/** Capture every mounted tab without letting one layout failure abort retention.
+ *  Reports coverage so a caller can decide whether the episode is retryable. */
+export function captureTerminalShutdownBuffersBestEffort(
+  tabIds: readonly string[],
+  options?: ShutdownBufferCaptureOptions
+): { requested: number; captured: number } {
+  let captured = 0
+  for (const tabId of tabIds) {
+    const capture = shutdownBufferCaptures.get(tabId)
+    if (!capture) {
+      continue
+    }
+    try {
+      capture(options)
+      captured += 1
+    } catch {
+      // Buffer capture is optional recovery evidence; parking must still commit.
+    }
+  }
+  return { requested: tabIds.length, captured }
+}

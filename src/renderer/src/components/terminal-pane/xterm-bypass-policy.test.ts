@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isAppOwnedCopyChord,
   shouldBypassXtermKeyboardEvent,
   shouldPreventDefaultTerminalImeCandidateKey,
   shouldSuppressTerminalImeKeyboardEvent
@@ -19,10 +20,30 @@ describe('shouldBypassXtermKeyboardEvent — macOS', () => {
     ).toBe(true)
   })
 
-  it('bubbles Cmd+C even with no selection (no-op copy is harmless on macOS)', () => {
+  it('bubbles Cmd+C in a plain shell with no selection', () => {
     expect(
       shouldBypassXtermKeyboardEvent(event({ key: 'c', code: 'KeyC', metaKey: true }), noSel)
     ).toBe(true)
+  })
+
+  it.each([1, 2, 3, 8, 31])('lets unselected Cmd+C reach Kitty flags %i', (flags) => {
+    for (const type of ['keydown', 'keyup']) {
+      for (const repeat of [false, true]) {
+        const chord = event({ type, key: 'c', code: 'KeyC', metaKey: true, repeat })
+        expect(shouldBypassXtermKeyboardEvent(chord, { ...noSel, kittyKeyboardFlags: flags })).toBe(
+          false
+        )
+        expect(shouldBypassXtermKeyboardEvent(chord, { ...opts, kittyKeyboardFlags: flags })).toBe(
+          true
+        )
+        expect(
+          shouldBypassXtermKeyboardEvent(
+            { ...chord, defaultPrevented: true },
+            { ...noSel, kittyKeyboardFlags: flags }
+          )
+        ).toBe(true)
+      }
+    }
   })
 
   it('bubbles Cmd+V so web clients receive the native paste event', () => {
@@ -44,8 +65,8 @@ describe('shouldBypassXtermKeyboardEvent — macOS', () => {
     // Why: this policy is narrowly scoped to clipboard chords. Cmd+F, Cmd+D,
     // Cmd+K, Cmd+W, Cmd+Arrow, Cmd+Backspace are handled in keyboard-handlers.ts
     // with stopImmediatePropagation before xterm's textarea listener fires.
-    // Cmd+A flows through xterm's legacy evaluator which correctly produces
-    // type=1 (selectAll), so we must not swallow it here.
+    // Cmd+A is claimed by keyboard-handlers.ts before xterm, including when
+    // Kitty keyboard reporting replaces xterm's legacy select-all evaluator.
     const cases = [
       event({ key: 'a', code: 'KeyA', metaKey: true }),
       event({ key: 't', code: 'KeyT', metaKey: true })
@@ -119,6 +140,23 @@ describe('shouldBypassXtermKeyboardEvent — macOS', () => {
     expect(shouldBypassXtermKeyboardEvent(event({ key: 'c', code: 'KeyC' }), opts)).toBe(false)
   })
 
+  it('no longer special-cases Backslash — the native-text forwarder owns it', () => {
+    // Why: this policy carried a `code === 'Backslash'` bypass because the old
+    // forwarder only claimed keys for input sources on a hardcoded allowlist.
+    // The structural claim covers every printable key, so the exception is gone
+    // and the physical key is no longer named anywhere in this file.
+    for (const type of ['keydown', 'keyup', 'keypress']) {
+      for (const kittyKeyboardFlags of [0, 1]) {
+        expect(
+          shouldBypassXtermKeyboardEvent(event({ type, key: '\\', code: 'Backslash' }), {
+            ...noSel,
+            kittyKeyboardFlags
+          })
+        ).toBe(false)
+      }
+    }
+  })
+
   it('bubbles Shift+non-ASCII printable text so the active keyboard layout wins', () => {
     expect(
       shouldBypassXtermKeyboardEvent(event({ key: 'Ф', code: 'KeyA', shiftKey: true }), opts)
@@ -147,6 +185,30 @@ describe('shouldBypassXtermKeyboardEvent — macOS', () => {
     expect(
       shouldBypassXtermKeyboardEvent(event({ key: 'A', code: 'KeyA', shiftKey: true }), opts)
     ).toBe(false)
+  })
+
+  it('leaves ordinary Shift+Space available to the terminal', () => {
+    expect(
+      shouldBypassXtermKeyboardEvent(event({ key: ' ', code: 'Space', shiftKey: true }), opts)
+    ).toBe(false)
+  })
+})
+
+describe('isAppOwnedCopyChord', () => {
+  const cmdC = event({ key: 'c', code: 'KeyC', metaKey: true })
+  const kittyApp = { isMac: true, hasSelection: false, kittyKeyboardFlags: 1 }
+
+  it('gives unselected macOS Cmd+C to an app that negotiated Kitty reporting', () => {
+    expect(isAppOwnedCopyChord(cmdC, kittyApp)).toBe(true)
+  })
+
+  it('keeps Orca copy for a selection, a plain shell, other chords, and other platforms', () => {
+    expect(isAppOwnedCopyChord(cmdC, { ...kittyApp, hasSelection: true })).toBe(false)
+    expect(isAppOwnedCopyChord(cmdC, { ...kittyApp, kittyKeyboardFlags: 0 })).toBe(false)
+    expect(isAppOwnedCopyChord(cmdC, { ...kittyApp, kittyKeyboardFlags: undefined })).toBe(false)
+    expect(isAppOwnedCopyChord({ ...cmdC, shiftKey: true }, kittyApp)).toBe(false)
+    const ctrlShiftC = event({ key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true })
+    expect(isAppOwnedCopyChord(ctrlShiftC, { ...kittyApp, isMac: false })).toBe(false)
   })
 })
 
@@ -180,6 +242,15 @@ describe('shouldSuppressTerminalImeKeyboardEvent — macOS', () => {
       shouldSuppressTerminalImeKeyboardEvent(
         event({ key: 'Process', code: 'KeyN', keyCode: 229 }),
         idle
+      )
+    ).toBe(false)
+  })
+
+  it('lets an idle Linux Process keydown reach xterm when Chromium marks it composing', () => {
+    expect(
+      shouldSuppressTerminalImeKeyboardEvent(
+        event({ key: 'Process', code: 'Comma', keyCode: 229, isComposing: true }),
+        { ...idle, isMac: false, isLinux: true }
       )
     ).toBe(false)
   })

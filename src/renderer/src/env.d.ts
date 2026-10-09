@@ -3,8 +3,16 @@
 import type { PaneManager } from '@/lib/pane-manager/pane-manager'
 import type { OnboardingFeatureSetupDeps } from '@/components/onboarding/onboarding-feature-setup'
 import type { languages } from 'monaco-editor'
+import type { MonacoE2EProbe } from './components/editor/monaco-e2e-probe'
+import type { TerminalWorktreeParkingDebugVerdict } from './components/terminal-pane/terminal-parking-e2e-overrides'
+import type { TerminalPtyPreSpawnE2EBarrier } from './components/terminal-pane/terminal-pty-pre-spawn-e2e-barrier'
 
 declare module 'monaco-editor/esm/vs/basic-languages/python/python.js' {
+  export const conf: languages.LanguageConfiguration
+  export const language: languages.IMonarchLanguage
+}
+
+declare module 'monaco-editor/esm/vs/basic-languages/markdown/markdown.js' {
   export const conf: languages.LanguageConfiguration
   export const language: languages.IMonarchLanguage
 }
@@ -33,6 +41,17 @@ declare module 'monaco-editor/esm/vs/editor/browser/controller/editContext/clipb
         mode?: string | null
       } | null
     }
+  }
+}
+
+// The same class the public `monaco.Uri` re-exports, reachable without loading the editor bundle.
+declare module 'monaco-editor/esm/vs/base/common/uri.js' {
+  export class URI {
+    static file(path: string): URI
+    static parse(value: string): URI
+    readonly scheme: string
+    readonly fsPath: string
+    toString(skipEncoding?: boolean): string
   }
 }
 
@@ -67,12 +86,25 @@ declare global {
   interface Window {
     __paneManagers?: Map<string, PaneManager>
     __onboardingFeatureSetupDeps?: OnboardingFeatureSetupDeps
+    __terminalParkingDebug?: {
+      parkDelayMs: number
+      parkedTabIds: () => string[]
+      /** A tab's scrollback across both store homes, via the one resolver production reads through. */
+      resolveLeafScrollback: (tabId: string) => Record<string, string> | undefined
+      retentionLimit: number | null
+      worktreeVerdicts: () => TerminalWorktreeParkingDebugVerdict[]
+    }
+    __monacoEditorE2E?: MonacoE2EProbe
+    __e2ePtyAppliedSizeReadDelayMs?: number
+    __terminalPtyPreSpawnE2EBarrier?: TerminalPtyPreSpawnE2EBarrier
   }
 }
 
 // oxlint-disable-next-line typescript-eslint/consistent-type-definitions -- declaration merging requires interface
 interface ImportMetaEnv {
+  readonly VITE_DIRECT_SSH_RECONNECT_COORDINATOR?: string
   readonly VITE_EXPOSE_STORE?: boolean
+  readonly VITE_SKILL_WARNING_PREVIEW?: string
 }
 
 export {}

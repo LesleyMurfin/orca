@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   ClaudeRateLimitAccountsState,
   CodexRateLimitAccountsState
-} from '../../../shared/types'
+} from '../../../shared/managed-account-types'
 import {
   fetchProviderAccountsSnapshot,
   removeClaudeProviderAccount,
@@ -155,6 +155,78 @@ describe('watchProviderAccounts', () => {
     expect(snapshots).toHaveLength(0)
   })
 
+  it('keeps a healthy local provider snapshot when the other provider fails', async () => {
+    const codexState = { ...emptyCodexState(), activeAccountId: 'codex-local' }
+    claudeListLocal.mockRejectedValue(new Error('Claude keychain unavailable'))
+    codexListLocal.mockResolvedValue(codexState)
+    const snapshots: ProviderAccountsSnapshot[] = []
+    const errors: unknown[] = []
+
+    watchProviderAccounts(LOCAL, {
+      onSnapshot: (snapshot) => snapshots.push(snapshot),
+      onError: (error) => errors.push(error)
+    })
+    await flushMicrotasks()
+
+    expect(snapshots).toEqual([
+      {
+        claude: emptyClaudeState(),
+        codex: codexState,
+        rateLimits: null,
+        failedProviders: ['claude']
+      }
+    ])
+    expect(errors).toHaveLength(1)
+    expect((errors[0] as Error).message).toBe(
+      'Could not load Claude accounts: Claude keychain unavailable'
+    )
+  })
+
+  it('keeps a healthy Claude snapshot when only Codex fails', async () => {
+    const claudeState = { ...emptyClaudeState(), activeAccountId: 'claude-local' }
+    claudeListLocal.mockResolvedValue(claudeState)
+    codexListLocal.mockRejectedValue(new Error('Codex home missing'))
+    const snapshots: ProviderAccountsSnapshot[] = []
+    const errors: unknown[] = []
+
+    watchProviderAccounts(LOCAL, {
+      onSnapshot: (snapshot) => snapshots.push(snapshot),
+      onError: (error) => errors.push(error)
+    })
+    await flushMicrotasks()
+
+    expect(snapshots).toEqual([
+      {
+        claude: claudeState,
+        codex: emptyCodexState(),
+        rateLimits: null,
+        failedProviders: ['codex']
+      }
+    ])
+    expect(errors).toHaveLength(1)
+    expect((errors[0] as Error).message).toBe('Could not load Codex accounts: Codex home missing')
+  })
+
+  it('aggregates errors without a snapshot when both local providers fail', async () => {
+    claudeListLocal.mockRejectedValue(new Error('Claude keychain unavailable'))
+    codexListLocal.mockRejectedValue(new Error('Codex home missing'))
+    const snapshots: ProviderAccountsSnapshot[] = []
+    const errors: unknown[] = []
+
+    watchProviderAccounts(LOCAL, {
+      onSnapshot: (snapshot) => snapshots.push(snapshot),
+      onError: (error) => errors.push(error)
+    })
+    await flushMicrotasks()
+
+    expect(snapshots).toHaveLength(0)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBeInstanceOf(AggregateError)
+    expect((errors[0] as AggregateError).message).toContain('Could not load Claude accounts')
+    expect((errors[0] as AggregateError).message).toContain('Could not load Codex accounts')
+    expect((errors[0] as AggregateError).errors).toHaveLength(2)
+  })
+
   it('streams remote snapshots from accounts.subscribe and unsubscribes on close', async () => {
     const snapshots: ProviderAccountsSnapshot[] = []
     const watcher = watchProviderAccounts(REMOTE, {
@@ -211,6 +283,84 @@ describe('watchProviderAccounts', () => {
 })
 
 describe('fetchProviderAccountsSnapshot', () => {
+  it('deduplicates concurrent local reads but does not cache completed snapshots', async () => {
+    let resolveClaude!: (state: ClaudeRateLimitAccountsState) => void
+    let resolveCodex!: (state: CodexRateLimitAccountsState) => void
+    claudeListLocal.mockImplementation(
+      () => new Promise<ClaudeRateLimitAccountsState>((resolve) => (resolveClaude = resolve))
+    )
+    codexListLocal.mockImplementation(
+      () => new Promise<CodexRateLimitAccountsState>((resolve) => (resolveCodex = resolve))
+    )
+
+    const first = fetchProviderAccountsSnapshot(LOCAL)
+    const second = fetchProviderAccountsSnapshot(LOCAL)
+
+    expect(second).toBe(first)
+    expect(claudeListLocal).toHaveBeenCalledTimes(1)
+    expect(codexListLocal).toHaveBeenCalledTimes(1)
+
+    resolveClaude(emptyClaudeState())
+    resolveCodex(emptyCodexState())
+    await Promise.all([first, second])
+
+    claudeListLocal.mockResolvedValue(emptyClaudeState())
+    codexListLocal.mockResolvedValue(emptyCodexState())
+    await fetchProviderAccountsSnapshot(LOCAL)
+    expect(claudeListLocal).toHaveBeenCalledTimes(2)
+    expect(codexListLocal).toHaveBeenCalledTimes(2)
+  })
+
+  it('isolates in-flight snapshots by remote account owner', async () => {
+    const first = fetchProviderAccountsSnapshot({ activeRuntimeEnvironmentId: 'env-1' })
+    const second = fetchProviderAccountsSnapshot({ activeRuntimeEnvironmentId: 'env-2' })
+    await flushMicrotasks()
+
+    expect(runtimeEnvironmentSubscribe).toHaveBeenCalledTimes(2)
+    const firstCallbacks = runtimeEnvironmentSubscribe.mock.calls[0]?.[1] as SubscriptionCallbacks
+    const secondCallbacks = runtimeEnvironmentSubscribe.mock.calls[1]?.[1] as SubscriptionCallbacks
+    firstCallbacks.onResponse({
+      ok: true,
+      result: { type: 'ready', snapshot: snapshotFixture('one') }
+    })
+    secondCallbacks.onResponse({
+      ok: true,
+      result: { type: 'ready', snapshot: snapshotFixture('two') }
+    })
+
+    await expect(first).resolves.toMatchObject({ codex: { activeAccountId: 'codex-one' } })
+    await expect(second).resolves.toMatchObject({ codex: { activeAccountId: 'codex-two' } })
+  })
+
+  it('does not share a local read with a remote environment named local', async () => {
+    let resolveClaude!: (state: ClaudeRateLimitAccountsState) => void
+    let resolveCodex!: (state: CodexRateLimitAccountsState) => void
+    claudeListLocal.mockImplementation(
+      () => new Promise<ClaudeRateLimitAccountsState>((resolve) => (resolveClaude = resolve))
+    )
+    codexListLocal.mockImplementation(
+      () => new Promise<CodexRateLimitAccountsState>((resolve) => (resolveCodex = resolve))
+    )
+
+    const local = fetchProviderAccountsSnapshot(LOCAL)
+    const remote = fetchProviderAccountsSnapshot({ activeRuntimeEnvironmentId: 'local' })
+    await flushMicrotasks()
+
+    expect(remote).not.toBe(local)
+    expect(runtimeEnvironmentSubscribe).toHaveBeenCalledTimes(1)
+    subscriptionCallbacks?.onResponse({
+      ok: true,
+      result: { type: 'ready', snapshot: snapshotFixture('remote-local') }
+    })
+    resolveClaude(emptyClaudeState())
+    resolveCodex(emptyCodexState())
+
+    await expect(remote).resolves.toMatchObject({
+      codex: { activeAccountId: 'codex-remote-local' }
+    })
+    await expect(local).resolves.toMatchObject({ codex: { activeAccountId: null } })
+  })
+
   it('resolves with the first remote snapshot and closes the subscription', async () => {
     const pending = fetchProviderAccountsSnapshot(REMOTE)
     await flushMicrotasks()
@@ -231,6 +381,21 @@ describe('fetchProviderAccountsSnapshot', () => {
     subscriptionCallbacks?.onClose?.()
 
     await expect(pending).rejects.toThrow('subscription closed')
+  })
+
+  it('resolves partial local snapshots so one healthy provider is still usable', async () => {
+    const codexState = { ...emptyCodexState(), activeAccountId: 'codex-local' }
+    claudeListLocal.mockRejectedValue(new Error('Claude keychain unavailable'))
+    codexListLocal.mockResolvedValue(codexState)
+
+    // Why: one-shot consumers (status bar menus) must keep the healthy provider
+    // even when the sibling list rejects instead of seeing a rejected promise.
+    await expect(fetchProviderAccountsSnapshot(LOCAL)).resolves.toEqual({
+      claude: emptyClaudeState(),
+      codex: codexState,
+      rateLimits: null,
+      failedProviders: ['claude']
+    })
   })
 })
 

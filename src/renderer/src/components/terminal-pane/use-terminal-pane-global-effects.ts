@@ -8,7 +8,7 @@ import {
 } from '@/constants/terminal'
 import type { PaneManager } from '@/lib/pane-manager/pane-manager'
 import type { PtyTransport } from './pty-transport'
-import { handleTerminalFileDrop } from './terminal-drop-handler'
+import type { IDisposable } from '@xterm/xterm'
 import { handleFocusTerminalPaneDetail } from './focus-terminal-pane-event'
 import { surfaceStaleAgentRow } from './stale-agent-row'
 import { useAppStore } from '@/store'
@@ -21,6 +21,11 @@ import {
   type TerminalHiddenReason
 } from './terminal-visibility-resume'
 import { useTerminalWindowWakeRecovery } from './use-terminal-window-wake-recovery'
+import {
+  releaseRendererPtyVisibilityClaim,
+  setRendererPtyVisibilityClaim
+} from './pty-renderer-delivery-claims'
+import { activePaneIsCoveredByNativeChat } from './native-chat-covered-pane'
 
 type UseTerminalPaneGlobalEffectsArgs = {
   tabId: string
@@ -28,12 +33,14 @@ type UseTerminalPaneGlobalEffectsArgs = {
   cwd?: string
   isActive: boolean
   isVisible: boolean
+  isChatViewMode?: boolean
   isWorktreeActive?: boolean
   isSyncFitEnabled: boolean
   paneCount: number
   managerRef: React.RefObject<PaneManager | null>
   containerRef: React.RefObject<HTMLDivElement | null>
   paneTransportsRef: React.RefObject<Map<number, PtyTransport>>
+  panePtyBindingsRef?: React.RefObject<Map<number, IDisposable>>
   isActiveRef: React.RefObject<boolean>
   isVisibleRef: React.RefObject<boolean>
   toggleExpandPane: (paneId: number) => void
@@ -50,30 +57,29 @@ function reportRendererPtyVisibility(
       // renderer-visibility registry, so reporting them here is misleading.
       continue
     }
-    window.api.pty.setRendererPtyVisible?.(ptyId, visible)
+    setRendererPtyVisibilityClaim(transport, ptyId, visible)
   }
 }
 
 export function useTerminalPaneGlobalEffects({
   tabId,
   worktreeId,
-  cwd,
   isActive,
   isVisible,
+  isChatViewMode = false,
   isWorktreeActive = isVisible,
   isSyncFitEnabled,
   paneCount,
   managerRef,
   containerRef,
   paneTransportsRef,
+  panePtyBindingsRef,
   isActiveRef,
   isVisibleRef,
   toggleExpandPane
 }: UseTerminalPaneGlobalEffectsArgs): void {
   const worktreeIdRef = useRef(worktreeId)
   worktreeIdRef.current = worktreeId
-  const cwdRef = useRef(cwd)
-  cwdRef.current = cwd
   // Starts true so the first render with isVisible=false triggers a
   // suspendRendering(). Background worktrees that mount hidden would
   // otherwise leak WebGL contexts — openTerminal() unconditionally creates
@@ -84,6 +90,17 @@ export function useTerminalPaneGlobalEffects({
   const renderingSuspendedByVisibilityRef = useRef(false)
   const hiddenReasonRef = useRef<TerminalHiddenReason | null>(null)
   const rendererVisible = isVisible && isWorktreeActive
+  // Why: the active pane can rebind to a new PTY (deferred reattach / eager
+  // adopt) or switch active leaf without isActive/isVisible/isWorktreeActive
+  // flipping. Derive the active leaf's live PTY reactively from the same
+  // leaf→PTY binding the reattach path writes, so the active-renderer-pty report
+  // below re-fires on rebind — otherwise main keeps the stale id and the live
+  // PTY loses its interactive reserve.
+  const activeLeafPtyId = useAppStore((state) => {
+    const layout = state.terminalLayoutsByTabId[tabId]
+    const activeLeafId = layout?.activeLeafId
+    return activeLeafId ? (layout.ptyIdsByLeafId?.[activeLeafId] ?? null) : null
+  })
   const {
     captureViewportPositions,
     withSuppressedScrollTracking,
@@ -103,15 +120,21 @@ export function useTerminalPaneGlobalEffects({
   })
   useTerminalWindowWakeRecovery({
     isVisible: rendererVisible,
+    isChatViewMode,
     managerRef,
     isActiveRef,
-    isVisibleRef
+    isVisibleRef,
+    panePtyBindingsRef
   })
 
   useEffect(() => {
     const paneTransports = paneTransportsRef.current
     reportRendererPtyVisibility(paneTransports, rendererVisible)
-    return () => reportRendererPtyVisibility(paneTransports, false)
+    return () => {
+      for (const transport of paneTransports.values()) {
+        releaseRendererPtyVisibilityClaim(transport)
+      }
+    }
   }, [rendererVisible, paneTransportsRef])
 
   useEffect(() => {
@@ -119,6 +142,7 @@ export function useTerminalPaneGlobalEffects({
     if (!manager) {
       return
     }
+    manager.setAtlasRecoveryVisible?.(rendererVisible)
     const wasVisible = wasVisibleRef.current
     const wasWorktreeActive = wasWorktreeActiveRef.current
     isActiveRef.current = isActive
@@ -132,6 +156,9 @@ export function useTerminalPaneGlobalEffects({
       resumeTerminalVisibility({
         manager,
         isActive,
+        // Why: chat mode is tab-wide, but only the chat leaf's xterm is covered;
+        // a split terminal leaf that is active must still regain focus on reveal.
+        isChatViewMode: isChatViewMode && activePaneIsCoveredByNativeChat(manager),
         wasVisible,
         shouldUseLightTabResume,
         captureViewportPositions,
@@ -144,37 +171,34 @@ export function useTerminalPaneGlobalEffects({
       hiddenReasonRef.current = null
       applyPendingFollowOutputRequests()
       return
-    } else {
-      const hiddenState = hideTerminalVisibility({
-        manager,
-        wasVisible,
-        wasWorktreeActive,
-        isWorktreeActive,
-        hasCompletedVisibleResume: hasCompletedVisibleResumeRef.current,
-        captureViewportPositions
-      })
-      renderingSuspendedByVisibilityRef.current = hiddenState.renderingSuspended
-      hiddenReasonRef.current = hiddenState.hiddenReason
     }
+    const hiddenState = hideTerminalVisibility({
+      manager,
+      wasVisible,
+      wasWorktreeActive,
+      isWorktreeActive,
+      hasCompletedVisibleResume: hasCompletedVisibleResumeRef.current,
+      captureViewportPositions
+    })
+    renderingSuspendedByVisibilityRef.current = hiddenState.renderingSuspended
+    hiddenReasonRef.current = hiddenState.hiddenReason
+
     wasVisibleRef.current = false
     wasWorktreeActiveRef.current = isWorktreeActive
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive, isWorktreeActive, rendererVisible])
+  }, [isActive, isChatViewMode, isWorktreeActive, rendererVisible])
 
   useEffect(() => {
-    const manager = managerRef.current
-    const activePane = isActive && isVisible && isWorktreeActive ? manager?.getActivePane() : null
-    const ptyId = activePane
-      ? (paneTransportsRef.current.get(activePane.id)?.getPtyId() ?? null)
-      : null
+    const ptyId = isActive && isVisible && isWorktreeActive ? activeLeafPtyId : null
     if (!ptyId || ptyId.startsWith('remote:')) {
       return
     }
     // Why: main uses this as a scheduler hint only, so the foreground pane's
-    // renderer output gets first chance at the bounded ACK reserve.
+    // renderer output gets first chance at the bounded ACK reserve. The cleanup
+    // reports the old PTY inactive before the effect re-runs for a rebind.
     window.api.pty.setActiveRendererPty?.(ptyId, true)
     return () => window.api.pty.setActiveRendererPty?.(ptyId, false)
-  }, [isActive, isVisible, isWorktreeActive, managerRef, paneTransportsRef])
+  }, [isActive, isVisible, isWorktreeActive, activeLeafPtyId])
 
   useEffect(() => {
     const onToggleExpand = (event: Event): void => {
@@ -268,41 +292,4 @@ export function useTerminalPaneGlobalEffects({
     document.addEventListener('dictation:insertText', onDictationInsert)
     return () => document.removeEventListener('dictation:insertText', onDictationInsert)
   }, [isActiveRef, managerRef, paneTransportsRef, tabId])
-
-  // Why: visible but unfocused split-group terminals can still receive native
-  // OS drops. Route tab-id-aware payloads to the dropped pane, while legacy
-  // payloads without a tab id keep the old active-terminal-only behavior.
-  useEffect(() => {
-    if (!isActive && !isVisible) {
-      return
-    }
-    return window.api.ui.onFileDrop((data) => {
-      if (data.target !== 'terminal') {
-        return
-      }
-      if (data.tabId) {
-        if (data.tabId !== tabId) {
-          return
-        }
-      } else if (!isActive) {
-        return
-      }
-      const manager = managerRef.current
-      if (!manager) {
-        return
-      }
-      const wtId = worktreeIdRef.current
-      if (!wtId) {
-        return
-      }
-      void handleTerminalFileDrop({
-        manager,
-        paneTransports: paneTransportsRef.current,
-        worktreeId: wtId,
-        tabId,
-        cwd: cwdRef.current,
-        data
-      })
-    })
-  }, [isActive, isVisible, managerRef, paneTransportsRef, tabId])
 }

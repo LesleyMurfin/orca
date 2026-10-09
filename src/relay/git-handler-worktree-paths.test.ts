@@ -1,7 +1,21 @@
+import type * as WorktreeAdmin from '../shared/git-worktree-admin'
 import { describe, expect, it, vi } from 'vitest'
 import * as path from 'node:path'
+import { GitCapabilityCache } from '../shared/git-capability-cache'
 import type { GitExec } from './git-handler-ops'
 import { removeWorktreeOp } from './git-handler-worktree-ops'
+
+vi.mock('../shared/git-worktree-admin', async (importActual) => ({
+  ...(await importActual<typeof WorktreeAdmin>()),
+  annotateWorktreeLocksFromAdmin: async (_repoPath: string, rows: unknown[]) => rows
+}))
+
+function removeWorktreeWithCapabilityCache(
+  git: GitExec,
+  params: Parameters<typeof removeWorktreeOp>[1]
+) {
+  return removeWorktreeOp(git, params, new GitCapabilityCache())
+}
 
 function lineWorktreeList(...entries: { path: string; branch?: string }[]): string {
   return entries
@@ -56,7 +70,7 @@ describe('relay worktree path parsing', () => {
       return { stdout: '', stderr: '' }
     })
 
-    await removeWorktreeOp(git, { worktreePath })
+    await removeWorktreeWithCapabilityCache(git, { worktreePath })
 
     expect(git).toHaveBeenCalledWith(['branch', '-d', '--', 'feature/newline'], resolvedRepoPath())
   })
@@ -90,7 +104,7 @@ describe('relay worktree path parsing', () => {
       return { stdout: '', stderr: '' }
     })
 
-    await removeWorktreeOp(git, { worktreePath: '/repo-feature' })
+    await removeWorktreeWithCapabilityCache(git, { worktreePath: '/repo-feature' })
 
     expect(calls).toEqual([
       '/repo-feature$ rev-parse --git-common-dir',

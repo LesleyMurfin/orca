@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type * as childProcessModule from 'node:child_process'
 import type * as fsModule from 'node:fs'
 
 const { sessionFromPartitionMock, dialogShowOpenDialogMock } = vi.hoisted(() => ({
@@ -223,64 +222,63 @@ describe('detectInstalledBrowsers — Comet', () => {
   })
 })
 
-describe('getUserAgentForBrowser — Comet', () => {
+describe('detectInstalledBrowsers — Comet on Windows', () => {
   const originalPlatform = process.platform
+  const originalLocalAppData = process.env.LOCALAPPDATA
+
+  const localAppData = 'C:\\Users\\test\\AppData\\Local'
+  const cometRoot = `${slashPath(localAppData)}/Perplexity/Comet/User Data`
 
   beforeEach(() => {
     vi.resetModules()
-    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    process.env.LOCALAPPDATA = localAppData
   })
 
   afterEach(() => {
     Object.defineProperty(process, 'platform', { value: originalPlatform })
+    if (originalLocalAppData === undefined) {
+      delete process.env.LOCALAPPDATA
+    } else {
+      process.env.LOCALAPPDATA = originalLocalAppData
+    }
     vi.restoreAllMocks()
   })
 
-  it('returns a Chrome-shaped UA string when Comet plist version reads successfully', async () => {
-    vi.doMock('node:child_process', async () => {
-      const actual = await vi.importActual<typeof childProcessModule>('node:child_process')
+  function mockCometInstallAt(rootPath: string): void {
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual<typeof fsModule>('node:fs')
       return {
         ...actual,
-        execFileSync: (cmd: string, args: readonly string[]) => {
-          if (cmd === 'defaults' && args[1]?.includes('/Applications/Comet.app/Contents/Info')) {
-            return '120.0.6099.71\n'
+        existsSync: (p: string) =>
+          slashPath(p) === `${rootPath}/Local State` ||
+          slashPath(p) === `${rootPath}/Default/Network/Cookies`,
+        readFileSync: (p: string) => {
+          if (typeof p === 'string' && slashPath(p) === `${rootPath}/Local State`) {
+            return JSON.stringify({ profile: { info_cache: { Default: { name: 'Default' } } } })
           }
-          return actual.execFileSync(cmd, args as never)
+          throw new Error(`Unexpected fixture read: ${p}`)
         }
       }
     })
+  }
 
-    const { getUserAgentForBrowser } = await import('./browser-cookie-import')
-    const ua = getUserAgentForBrowser('comet')
+  it('detects Comet under the Perplexity vendor directory', async () => {
+    mockCometInstallAt(cometRoot)
 
-    expect(ua).not.toBeNull()
-    expect(ua).toContain('Macintosh; Intel Mac OS X 10_15_7')
-    expect(ua).toContain('AppleWebKit/537.36')
-    expect(ua).toContain('Chrome/120.0.6099.71')
-    expect(ua).toContain('Safari/537.36')
+    const { detectInstalledBrowsers } = await import('./browser-cookie-import')
+    const comet = detectInstalledBrowsers().find((b) => b.family === 'comet')
+
+    expect(comet).toBeDefined()
+    expect(slashPath(comet?.cookiesPath ?? '')).toBe(`${cometRoot}/Default/Network/Cookies`)
   })
 
-  it('returns null when reading the Comet plist version throws', async () => {
-    vi.doMock('node:child_process', async () => {
-      const actual = await vi.importActual<typeof childProcessModule>('node:child_process')
-      return {
-        ...actual,
-        execFileSync: () => {
-          throw new Error('defaults: domain not found')
-        }
-      }
-    })
+  it('does not detect a Comet data directory sitting directly under LOCALAPPDATA', async () => {
+    mockCometInstallAt(`${slashPath(localAppData)}/Comet/User Data`)
 
-    const { getUserAgentForBrowser } = await import('./browser-cookie-import')
-    const ua = getUserAgentForBrowser('comet')
-    expect(ua).toBeNull()
-  })
+    const { detectInstalledBrowsers } = await import('./browser-cookie-import')
 
-  it('returns null on non-darwin platforms regardless of family', async () => {
-    Object.defineProperty(process, 'platform', { value: 'linux' })
-    const { getUserAgentForBrowser } = await import('./browser-cookie-import')
-    const ua = getUserAgentForBrowser('comet')
-    expect(ua).toBeNull()
+    expect(detectInstalledBrowsers().find((b) => b.family === 'comet')).toBeUndefined()
   })
 })
 

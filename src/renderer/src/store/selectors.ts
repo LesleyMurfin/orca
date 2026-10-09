@@ -1,77 +1,33 @@
 import { useAppStore } from './index'
 import { useShallow } from 'zustand/react/shallow'
-import type { Repo, Worktree, TerminalTab } from '../../../shared/types'
+import type { Repo } from '../../../shared/repo-types'
+import type { TerminalTab } from '../../../shared/terminal-tab-types'
+import type { Worktree } from '../../../shared/worktree/types'
 import type { AppState } from './types'
 import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../shared/constants'
+import {
+  getRepoExecutionHostId,
+  parseExecutionHostId,
+  type ExecutionHostId
+} from '../../../shared/execution-host'
 import { getProjectHostSetupProjectionFromState } from './project-host-setup-selector'
+import {
+  getIndexedAllWorktrees as getCachedAllWorktrees,
+  getIndexedRepoMap as getCachedRepoMap,
+  getIndexedWorktreeMap as getCachedWorktreeMap,
+  getIndexedWorktreesById as getCachedWorktreesById
+} from './worktree-repo-index'
 
 export { getProjectHostSetupProjectionFromState } from './project-host-setup-selector'
+export {
+  resetFloatingVisibleTabCountSelectorCacheForTest,
+  selectFloatingVisibleTabCount
+} from './floating-workspace-panel-selector'
 
 const EMPTY_WORKTREES: Worktree[] = []
 const EMPTY_TABS: TerminalTab[] = []
-const EMPTY_BROWSER_TABS: NonNullable<AppState['browserTabsByWorktree'][string]> = []
-const EMPTY_UNIFIED_TABS: NonNullable<AppState['unifiedTabsByWorktree'][string]> = []
 
-type WorktreeSnapshot = {
-  allWorktrees: Worktree[]
-  worktreeMap: Map<string, Worktree>
-}
-type FloatingVisibleTabCountState = Pick<
-  AppState,
-  'browserTabsByWorktree' | 'openFiles' | 'tabsByWorktree' | 'unifiedTabsByWorktree'
->
-type FloatingVisibleTabCountCache = {
-  terminalTabs: NonNullable<AppState['tabsByWorktree'][string]>
-  browserTabs: NonNullable<AppState['browserTabsByWorktree'][string]>
-  openFiles: AppState['openFiles']
-  unifiedTabs: NonNullable<AppState['unifiedTabsByWorktree'][string]>
-  count: number
-}
-
-// Why: Zustand reruns selectors on every write, so hot-path flatten/map work
-// needs cross-render caching. WeakMap ties each snapshot to the store slice ref
-// without pinning old test/dev instances in memory once that slice is replaced.
-const worktreeSnapshotCache = new WeakMap<AppState['worktreesByRepo'], WorktreeSnapshot>()
 const hasAnyWorktreesCache = new WeakMap<AppState['worktreesByRepo'], boolean>()
-const repoMapCache = new WeakMap<AppState['repos'], Map<string, Repo>>()
-let floatingVisibleTabCountCache: FloatingVisibleTabCountCache | null = null
-
-function getWorktreeSnapshot(worktreesByRepo: AppState['worktreesByRepo']): WorktreeSnapshot {
-  const cachedSnapshot = worktreeSnapshotCache.get(worktreesByRepo)
-  if (cachedSnapshot) {
-    return cachedSnapshot
-  }
-
-  // Why: a race between createWorktree (which appends) and fetchWorktrees
-  // (which replaces) can produce duplicate entries for the same worktree ID
-  // within a single repo's array. Deduplicating here prevents React from
-  // seeing duplicate keys, which can corrupt terminal DOM containers.
-  const worktreeMap = new Map<string, Worktree>()
-  // Why: this selector sits on hot Zustand subscription paths; avoid building
-  // a transient flattened array just to populate the snapshot cache.
-  for (const worktrees of Object.values(worktreesByRepo)) {
-    for (const worktree of worktrees) {
-      worktreeMap.set(worktree.id, worktree)
-    }
-  }
-  const allWorktrees = Array.from(worktreeMap.values())
-
-  const snapshot = { allWorktrees, worktreeMap }
-  worktreeSnapshotCache.set(worktreesByRepo, snapshot)
-  return snapshot
-}
-
-function getCachedAllWorktrees(worktreesByRepo: AppState['worktreesByRepo']): Worktree[] {
-  return getWorktreeSnapshot(worktreesByRepo).allWorktrees
-}
-
-function getCachedWorktreeMap(worktreesByRepo: AppState['worktreesByRepo']): Map<string, Worktree> {
-  const snapshot = worktreeSnapshotCache.get(worktreesByRepo)
-  if (snapshot) {
-    return snapshot.worktreeMap
-  }
-  return getWorktreeSnapshot(worktreesByRepo).worktreeMap
-}
 
 function getCachedHasAnyWorktrees(worktreesByRepo: AppState['worktreesByRepo']): boolean {
   const cached = hasAnyWorktreesCache.get(worktreesByRepo)
@@ -86,82 +42,18 @@ function getCachedHasAnyWorktrees(worktreesByRepo: AppState['worktreesByRepo']):
   return hasWorktrees
 }
 
-function getCachedRepoMap(repos: AppState['repos']): Map<string, Repo> {
-  const cachedMap = repoMapCache.get(repos)
-  if (cachedMap) {
-    return cachedMap
-  }
-
-  const repoMap = new Map(repos.map((repo) => [repo.id, repo]))
-  repoMapCache.set(repos, repoMap)
-  return repoMap
-}
-
-export function selectFloatingVisibleTabCount(state: FloatingVisibleTabCountState): number {
-  const terminalTabs = state.tabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? EMPTY_TABS
-  const browserTabs =
-    state.browserTabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? EMPTY_BROWSER_TABS
-  const unifiedTabs =
-    state.unifiedTabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? EMPTY_UNIFIED_TABS
-  const cached = floatingVisibleTabCountCache
-  if (
-    cached &&
-    cached.terminalTabs === terminalTabs &&
-    cached.browserTabs === browserTabs &&
-    cached.openFiles === state.openFiles &&
-    cached.unifiedTabs === unifiedTabs
-  ) {
-    return cached.count
-  }
-
-  const terminalIds = new Set<string>()
-  for (const tab of terminalTabs) {
-    terminalIds.add(tab.id)
-  }
-  const browserIds = new Set<string>()
-  for (const tab of browserTabs) {
-    browserIds.add(tab.id)
-  }
-  const editorIds = new Set<string>()
-  for (const file of state.openFiles) {
-    if (file.worktreeId === FLOATING_TERMINAL_WORKTREE_ID) {
-      editorIds.add(file.id)
-    }
-  }
-
-  let count = 0
-  for (const tab of unifiedTabs) {
-    if (tab.contentType === 'terminal') {
-      count += terminalIds.has(tab.entityId) ? 1 : 0
-    } else if (tab.contentType === 'browser') {
-      count += browserIds.has(tab.entityId) ? 1 : 0
-    } else if (tab.contentType === 'simulator') {
-      // Why: simulator unified tabs have no separate backing record; the tab
-      // itself is the visible floating workspace item.
-      count += 1
-    } else {
-      count += editorIds.has(tab.entityId) ? 1 : 0
-    }
-  }
-
-  floatingVisibleTabCountCache = {
-    terminalTabs,
-    browserTabs,
-    openFiles: state.openFiles,
-    unifiedTabs,
-    count
-  }
-  return count
-}
-
-export function resetFloatingVisibleTabCountSelectorCacheForTest(): void {
-  floatingVisibleTabCountCache = null
-}
-
 type FloatingWorkspaceUnreadState = Pick<
   AppState,
   'tabsByWorktree' | 'unreadTerminalTabs' | 'unreadAgentCompletionPanes'
 >
+type FloatingWorkspaceUnreadCache = {
+  tabs: NonNullable<AppState['tabsByWorktree'][string]>
+  unreadTerminalTabs: AppState['unreadTerminalTabs']
+  unreadAgentCompletionPanes: AppState['unreadAgentCompletionPanes']
+  hasUnread: boolean
+}
+
+let floatingWorkspaceUnreadCache: FloatingWorkspaceUnreadCache | null = null
 
 /**
  * True when any terminal tab in the floating workspace has an unacknowledged
@@ -173,32 +65,57 @@ type FloatingWorkspaceUnreadState = Pick<
  * removed tabs cannot light it). Bells mark `unreadTerminalTabs[tabId]`;
  * completions mark `unreadAgentCompletionPanes[paneKey]` — both ungated.
  *
- * Returns a primitive boolean, so subscribers re-render only when it flips, and
- * the empty-workspace early return keeps the common case O(1) despite Zustand
- * rerunning selectors on every write.
+ * The launcher and floating overlay both stay mounted. Cache their shared
+ * reference projection so the second consumer and unrelated Zustand writes
+ * return in O(1) without repeating either unread-map scan.
  */
 export function selectFloatingWorkspaceHasUnread(state: FloatingWorkspaceUnreadState): boolean {
-  const tabs = state.tabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID]
-  if (!tabs || tabs.length === 0) {
-    return false
+  const tabs = state.tabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? EMPTY_TABS
+  const cached = floatingWorkspaceUnreadCache
+  if (
+    cached &&
+    cached.tabs === tabs &&
+    cached.unreadTerminalTabs === state.unreadTerminalTabs &&
+    cached.unreadAgentCompletionPanes === state.unreadAgentCompletionPanes
+  ) {
+    return cached.hasUnread
   }
-  const floatingTabIds = new Set<string>()
-  for (const tab of tabs) {
-    if (state.unreadTerminalTabs[tab.id]) {
-      return true
+
+  let hasUnread = false
+  if (tabs.length > 0) {
+    const floatingTabIds = new Set<string>()
+    for (const tab of tabs) {
+      if (state.unreadTerminalTabs[tab.id]) {
+        hasUnread = true
+        break
+      }
+      floatingTabIds.add(tab.id)
     }
-    floatingTabIds.add(tab.id)
-  }
-  // paneKey is `${tabId}:${leafId}` and tabIds never contain ":", so the prefix
-  // up to the first ":" is the owning tab id.
-  for (const paneKey of Object.keys(state.unreadAgentCompletionPanes)) {
-    const separatorIndex = paneKey.indexOf(':')
-    const tabId = separatorIndex === -1 ? paneKey : paneKey.slice(0, separatorIndex)
-    if (floatingTabIds.has(tabId)) {
-      return true
+    if (!hasUnread) {
+      // paneKey is `${tabId}:${leafId}` and tabIds never contain ":", so the
+      // prefix up to the first ":" is the owning tab id.
+      for (const paneKey of Object.keys(state.unreadAgentCompletionPanes)) {
+        const separatorIndex = paneKey.indexOf(':')
+        const tabId = separatorIndex === -1 ? paneKey : paneKey.slice(0, separatorIndex)
+        if (floatingTabIds.has(tabId)) {
+          hasUnread = true
+          break
+        }
+      }
     }
   }
-  return false
+
+  floatingWorkspaceUnreadCache = {
+    tabs,
+    unreadTerminalTabs: state.unreadTerminalTabs,
+    unreadAgentCompletionPanes: state.unreadAgentCompletionPanes,
+    hasUnread
+  }
+  return hasUnread
+}
+
+export function resetFloatingWorkspaceUnreadSelectorCacheForTest(): void {
+  floatingWorkspaceUnreadCache = null
 }
 
 export function getAllWorktreesFromState(state: Pick<AppState, 'worktreesByRepo'>): Worktree[] {
@@ -209,6 +126,20 @@ export function getWorktreeMapFromState(
   state: Pick<AppState, 'worktreesByRepo'>
 ): Map<string, Worktree> {
   return getCachedWorktreeMap(state.worktreesByRepo)
+}
+
+/**
+ * The row for one id on one host (STA-4343). Prefer this over the id-keyed map
+ * anywhere the caller already knows which host's row it is acting on — the map
+ * keeps a single row per id and cannot represent a two-host collision.
+ */
+export function getWorktreeOnHostFromState(
+  state: Pick<AppState, 'worktreesByRepo'>,
+  worktreeId: string,
+  hostId: ExecutionHostId | undefined
+): Worktree | undefined {
+  const rows = getCachedWorktreesById(state.worktreesByRepo, worktreeId)
+  return hostId ? rows.find((row) => row.hostId === hostId) : rows[0]
 }
 
 export function getHasAnyWorktreesFromState(state: Pick<AppState, 'worktreesByRepo'>): boolean {
@@ -222,10 +153,72 @@ export function getRepoMapFromState(state: Pick<AppState, 'repos'>): Map<string,
 // ─── Repos ──────────────────────────────────────────────────────────
 export const useRepos = () => useAppStore((s) => s.repos)
 export const useActiveRepo = () =>
-  useAppStore(useShallow((s) => s.repos.find((r) => r.id === s.activeRepoId) ?? null))
+  useAppStore(useShallow((s) => selectRepoByIdForActiveWorkspace(s, s.activeRepoId)))
 export const useRepoMap = () => useAppStore((s) => getCachedRepoMap(s.repos))
+
+type ActiveWorkspaceRepoState = Pick<
+  AppState,
+  'repos' | 'activeRepoId' | 'activeWorkspaceExecutionHostId'
+>
+
+// Why: mirrors getIndexedRepoMap above — the host-scoped branch re-filtered every
+// repo on each store write even though its answer only moves when `repos` or the
+// active workspace host does.
+const activeWorkspaceRepoCache = new WeakMap<AppState['repos'], Map<string, Repo | null>>()
+
+function resolveRepoOnActiveWorkspaceHost(
+  state: ActiveWorkspaceRepoState,
+  repoId: string,
+  activeWorkspaceExecutionHostId: ExecutionHostId
+): Repo | null {
+  const repoCandidates = state.repos.filter((candidate) => candidate.id === repoId)
+  const hostMatch = repoCandidates.find(
+    (candidate) => getRepoExecutionHostId(candidate) === activeWorkspaceExecutionHostId
+  )
+  if (hostMatch) {
+    return hostMatch
+  }
+  // Why: withRepoHostOwnership keeps a paired-hub worktree on its own SSH host while the repo
+  // stays hub-owned, so that one mismatch still names the right repo; every other stays closed.
+  if (parseExecutionHostId(activeWorkspaceExecutionHostId)?.kind !== 'ssh') {
+    return null
+  }
+  const pairedHubRepos = repoCandidates.filter(
+    (candidate) => parseExecutionHostId(getRepoExecutionHostId(candidate))?.kind === 'runtime'
+  )
+  return pairedHubRepos.length === 1 ? pairedHubRepos[0] : null
+}
+
+export function selectRepoByIdForActiveWorkspace(
+  state: ActiveWorkspaceRepoState,
+  repoId: string | null
+): Repo | null {
+  if (!repoId) {
+    return null
+  }
+  const repo = getCachedRepoMap(state.repos).get(repoId) ?? null
+  const activeWorkspaceExecutionHostId = state.activeWorkspaceExecutionHostId
+  if (repoId !== state.activeRepoId || !activeWorkspaceExecutionHostId) {
+    return repo
+  }
+  // The branch below only fires for the active repo, so the host id fully keys it.
+  let byHost = activeWorkspaceRepoCache.get(state.repos)
+  if (!byHost) {
+    byHost = new Map()
+    activeWorkspaceRepoCache.set(state.repos, byHost)
+  }
+  const cacheKey = `${activeWorkspaceExecutionHostId}\u0000${repoId}`
+  const cached = byHost.get(cacheKey)
+  if (cached !== undefined) {
+    return cached
+  }
+  const resolved = resolveRepoOnActiveWorkspaceHost(state, repoId, activeWorkspaceExecutionHostId)
+  byHost.set(cacheKey, resolved)
+  return resolved
+}
+
 export const useRepoById = (repoId: string | null) =>
-  useAppStore((s) => (repoId ? (getCachedRepoMap(s.repos).get(repoId) ?? null) : null))
+  useAppStore((s) => selectRepoByIdForActiveWorkspace(s, repoId))
 export const useProjectHostSetupProjection = () =>
   useAppStore((s) => getProjectHostSetupProjectionFromState(s))
 
@@ -235,13 +228,24 @@ export const useWorktreesForRepo = (repoId: string | null) =>
   useAppStore((s) => (repoId ? (s.worktreesByRepo[repoId] ?? EMPTY_WORKTREES) : EMPTY_WORKTREES))
 export const useAllWorktrees = () => useAppStore((s) => getCachedAllWorktrees(s.worktreesByRepo))
 export const useWorktreeMap = () => useAppStore((s) => getCachedWorktreeMap(s.worktreesByRepo))
-export const useWorktreeById = (worktreeId: string | null) =>
+export const useWorktreeById = (worktreeId: string | null, executionHostId?: ExecutionHostId) =>
   useAppStore((s) =>
-    worktreeId ? (getCachedWorktreeMap(s.worktreesByRepo).get(worktreeId) ?? null) : null
+    worktreeId
+      ? (s.getKnownWorktreeById(
+          worktreeId,
+          executionHostId ??
+            (worktreeId === s.activeWorktreeId
+              ? (s.activeWorkspaceExecutionHostId ?? undefined)
+              : undefined)
+        ) ?? null)
+      : null
   )
 export const useActiveWorktree = () => {
   const activeWorktreeId = useActiveWorktreeId()
   return useAppStore((s) =>
-    activeWorktreeId ? (s.getKnownWorktreeById(activeWorktreeId) ?? null) : null
+    activeWorktreeId
+      ? (s.getKnownWorktreeById(activeWorktreeId, s.activeWorkspaceExecutionHostId ?? undefined) ??
+        null)
+      : null
   )
 }

@@ -2,8 +2,8 @@ import {
   computeWorktreeSidebarHeaderDropPreview,
   type WorktreeSidebarHeaderDropPreview
 } from './worktree-sidebar-header-drop-preview'
-import type { Row } from './worktree-list-groups'
-import type { ProjectGroup } from '../../../../shared/types'
+import type { Row } from './worktree-list/grouping/row-types'
+import type { ProjectGroup } from '../../../../shared/project-group-types'
 
 export type ProjectGroupHeaderDragBucketKey = string
 
@@ -184,6 +184,7 @@ export function computeProjectGroupHeaderDropPreview(args: {
   scrollTop: number
   rects: readonly ProjectGroupHeaderDragRect[]
   sidebarProjectGroupHeaderIds: readonly string[]
+  contentBottom?: number
 }): ProjectGroupHeaderDropPreview | null {
   const { rects, sidebarProjectGroupHeaderIds } = args
   return computeWorktreeSidebarHeaderDropPreview({
@@ -192,6 +193,7 @@ export function computeProjectGroupHeaderDropPreview(args: {
     scrollTop: args.scrollTop,
     rects,
     headerCount: sidebarProjectGroupHeaderIds.length,
-    getId: (rect) => rect.groupId
+    getId: (rect) => rect.groupId,
+    contentBottom: args.contentBottom
   })
 }

@@ -1,111 +1,250 @@
-import { useMemo, useState } from 'react'
-import { Check } from 'lucide-react'
+import { ImeInput } from '@/lib/ime-text-field'
+import { Textarea } from '@/components/ui/textarea'
+import { useRef, useState, type RefObject } from 'react'
+import { Check, Pencil, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { translate } from '@/i18n/i18n'
-import { formatAskAnswer, type AskPrompt } from './native-chat-interactive-prompt'
+import type { AskAnswerSelection, AskPrompt } from './native-chat-interactive-prompt'
+import { NativeChatPromptCollapseToggle } from './NativeChatPromptCollapse'
+import { useNativeChatPromptCardFocus } from './use-native-chat-prompt-card-focus'
+import { useNativeChatQuestionAutoAdvance } from './use-native-chat-question-auto-advance'
+import { useNativeChatQuestionNumberKeys } from './use-native-chat-question-number-keys'
+import { isEditableTarget } from '@/lib/editable-target'
+import type { AgentJournalFreeTextInput } from '../../../../shared/agent-session-journal-types'
 
 export type NativeChatQuestionCardProps = {
   prompt: AskPrompt
-  /** Send the formatted answer text to the agent. */
-  onAnswer: (text: string) => void
+  /** Whether the snapshotted answer is still being delivered to the agent. */
+  isSubmitting?: boolean
+  isCancelling?: boolean
+  /** Deliver the chosen answer (per-question option indices + free text). */
+  onAnswer: (selections: AskAnswerSelection[]) => void
+  allowOther?: boolean | readonly boolean[]
+  freeTextInputs?: readonly (AgentJournalFreeTextInput | undefined)[]
   /** Dismiss the prompt (sends Escape to the agent). */
   onCancel: () => void
+  /** Fold the card to a strip and give the input back, writing nothing; Escape does too. */
+  onCollapse?: () => void
+  /** Take focus when the card takes the input region; number keys pick while it holds. */
+  shouldFocus?: boolean
+  /** Exposes the free-text row so pane-level Paste can target it while the
+   *  card replaces the composer. */
+  answerInputRef?: RefObject<HTMLInputElement | null>
 }
 
-// Synthetic option value for the "Other…" free-text row, kept out of the
-// answer text and replaced by the typed value when selected.
-const OTHER = '__other__'
+// Selection entry for the typed answer (never a real option index), so a single-select
+// question holds exactly one choice: an option or the typed answer.
+const TYPED_ANSWER = -1
 
 /**
- * Native renderer for an agent's AskUserQuestion prompt as a wizard: one
- * question per step with tabs across the top (tap to jump, a check once
- * answered), single- or multi-select option rows, an "Other…" row that reveals a
- * free-text input, and a Next button that advances and becomes "Send answer" on
- * the last step. Matches the desktop chat's neutral shadcn styling.
+ * Native renderer for an agent's AskUserQuestion prompt: a numbered pick-list
+ * (mobile/Claude-Code parity) with a header + close, a hover-highlighted row per
+ * option, and an optional free-text row for a custom answer. Single-select
+ * holds one answer (an option or the typed text, whichever was chosen last) and
+ * picking an option moves on by itself; multi-select toggles options, adds any typed
+ * text, and confirms via the trailing action. Number keys pick the numbered row.
+ * Multi-question prompts step through tabs across the top. Neutral shadcn tokens.
  */
 export function NativeChatQuestionCard({
   prompt,
+  isSubmitting = false,
+  isCancelling = false,
   onAnswer,
-  onCancel
+  allowOther = true,
+  freeTextInputs,
+  onCancel,
+  onCollapse,
+  shouldFocus = false,
+  answerInputRef
 }: NativeChatQuestionCardProps): React.JSX.Element {
+  const cardRef = useRef<HTMLDivElement>(null)
+  const autoAdvance = useNativeChatQuestionAutoAdvance()
   const [index, setIndex] = useState(0)
-  const [selections, setSelections] = useState<string[][]>(() => prompt.questions.map(() => []))
-  const [otherText, setOtherText] = useState<string[]>(() => prompt.questions.map(() => ''))
+  useNativeChatPromptCardFocus(cardRef, shouldFocus, index)
+  // Keep option identity by index: labels are display text and are not guaranteed
+  // unique, while Claude's selector commits the numbered row (STA-1860).
+  const [selections, setSelections] = useState<number[][]>(() => prompt.questions.map(() => []))
+  const [otherText, setOtherText] = useState<string[]>(() =>
+    prompt.questions.map((_, qi) => freeTextInputs?.[qi]?.initialValue ?? '')
+  )
 
-  const toggle = (qi: number, label: string, multi: boolean): void => {
+  const total = prompt.questions.length
+  const isLast = index === total - 1
+  const q = prompt.questions[index]!
+  const questionAllowsOther = Array.isArray(allowOther) ? (allowOther[index] ?? false) : allowOther
+  const freeTextInput = freeTextInputs?.[index]
+  const acceptsEmpty = (qi: number): boolean =>
+    freeTextInputs?.[qi]?.allowEmpty === true && prompt.questions[qi]?.options.length === 0
+  const typedText = (qi: number, oth = otherText): string =>
+    freeTextInputs?.[qi]?.allowEmpty ? (oth[qi] ?? '') : (oth[qi] ?? '').trim()
+
+  // Picking an option replaces a chosen typed answer on single-select; the text stays in
+  // the field, unsent, until the user types or clicks there again.
+  const typedAnswerChosen = (qi: number, sel = selections, oth = otherText): boolean =>
+    acceptsEmpty(qi) || ((sel[qi] ?? []).includes(TYPED_ANSWER) && typedText(qi, oth).length > 0)
+
+  const chooseTypedAnswer = (qi: number): void => {
     setSelections((prev) => {
-      const next = prev.map((s) => [...s])
-      const cur = next[qi] ?? []
-      if (multi) {
-        next[qi] = cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label]
-      } else {
-        next[qi] = cur.includes(label) ? [] : [label]
+      const cur = prev[qi] ?? []
+      if (cur.includes(TYPED_ANSWER)) {
+        return prev
       }
-      return next
+      const chosen = prompt.questions[qi]?.multiSelect ? [...cur, TYPED_ANSWER] : [TYPED_ANSWER]
+      return prev.map((s, i) => (i === qi ? chosen : s))
     })
   }
 
+  const pickedOptions = (qi: number, sel = selections): number[] =>
+    (sel[qi] ?? []).filter((choice) => choice !== TYPED_ANSWER)
+
   const setOther = (qi: number, value: string): void => {
+    autoAdvance.cancel()
     setOtherText((prev) => {
       const next = [...prev]
       next[qi] = value
       return next
     })
-  }
-
-  // The resolved answer for a question: picked labels plus the typed "Other"
-  // value (which replaces the synthetic OTHER marker).
-  const answerFor = (qi: number): string => {
-    const picked = (selections[qi] ?? []).filter((l) => l !== OTHER)
-    const other = (selections[qi] ?? []).includes(OTHER) ? (otherText[qi] ?? '').trim() : ''
-    return [...picked, other].filter((p) => p.length > 0).join(', ')
-  }
-
-  const total = prompt.questions.length
-  const isLast = index === total - 1
-  const currentAnswered = useMemo(
-    () => answerFor(index).length > 0,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selections, otherText, index]
-  )
-
-  const submit = (): void => {
-    // Build per-question label lists, substituting the typed Other value, then
-    // format to one line per answered question.
-    const resolved = prompt.questions.map((_, i) => {
-      const picked = (selections[i] ?? []).filter((l) => l !== OTHER)
-      const other = (selections[i] ?? []).includes(OTHER) ? (otherText[i] ?? '').trim() : ''
-      return [...picked, ...(other ? [other] : [])]
-    })
-    const text = formatAskAnswer(prompt, resolved)
-    if (text.length > 0) {
-      onAnswer(text)
+    if (value.trim().length > 0) {
+      chooseTypedAnswer(qi)
     }
   }
 
-  const advance = (): void => {
+  // The resolved answer for a question: picked labels plus the typed answer when chosen.
+  const answerFor = (qi: number, sel = selections, oth = otherText): string => {
+    const question = prompt.questions[qi]
+    const picked = pickedOptions(qi, sel)
+      .map((optionIndex) => question?.options[optionIndex]?.label ?? '')
+      .filter((label) => label.length > 0)
+    const other = typedAnswerChosen(qi, sel, oth) ? typedText(qi, oth) : ''
+    return [...picked, ...(other ? [other] : [])].join(', ')
+  }
+
+  const currentAnswered = answerFor(index).length > 0 || acceptsEmpty(index)
+  const currentTypedAnswerChosen = typedAnswerChosen(index)
+
+  const submitAll = (sel: number[][], oth: string[]): void => {
+    const resolved: AskAnswerSelection[] = prompt.questions.map((_, i) => {
+      return {
+        indices: pickedOptions(i, sel),
+        other: typedAnswerChosen(i, sel, oth) ? typedText(i, oth) : ''
+      }
+    })
+    const anyAnswered = resolved.some(
+      (s, i) => s.indices.length > 0 || (s.other ?? '').length > 0 || acceptsEmpty(i)
+    )
+    if (anyAnswered) {
+      onAnswer(resolved)
+    }
+  }
+
+  // Advance to the next question, or submit on the last one — always from an
+  // explicit snapshot so a just-committed single-select pick isn't lost to the
+  // async setState.
+  const advanceOrSubmit = (sel: number[][], oth: string[]): void => {
     if (isLast) {
-      submit()
+      submitAll(sel, oth)
     } else {
       setIndex((i) => Math.min(i + 1, total - 1))
     }
   }
 
-  const q = prompt.questions[index]!
-  const otherSelected = (selections[index] ?? []).includes(OTHER)
+  // A single-select pick answers the question, so the card moves on after a beat that
+  // shows the row chosen; picking it again in that beat takes the answer back.
+  const pickOption = (optionIndex: number): void => {
+    const cur = selections[index] ?? []
+    const picked = !cur.includes(optionIndex)
+    const chosen = !picked
+      ? cur.filter((pickedIndex) => pickedIndex !== optionIndex)
+      : q.multiSelect
+        ? [...cur, optionIndex].sort((a, b) => a - b)
+        : [optionIndex]
+    const next = selections.map((s, i) => (i === index ? chosen : s))
+    setSelections(next)
+    autoAdvance.cancel()
+    if (picked && !q.multiSelect) {
+      autoAdvance.schedule(() => advanceOrSubmit(next, otherText))
+    }
+  }
+  useNativeChatQuestionNumberKeys(
+    cardRef,
+    shouldFocus && !isSubmitting,
+    q.options.length,
+    pickOption
+  )
+
+  // Trailing action (also fired by Enter). On any non-final question this just
+  // advances — "Next" when answered, "Skip" when not — so skipping one question
+  // never discards answers already given on the others. Only the final question
+  // submits; an explicit Skip click there with nothing answered anywhere
+  // dismisses, but a reflexive Enter in the empty field is a no-op so it can't
+  // throw away the whole prompt.
+  const confirm = (fromKeyboard = false): void => {
+    autoAdvance.cancel()
+    if (!isLast) {
+      advanceOrSubmit(selections, otherText)
+      return
+    }
+    const anyAnswered = prompt.questions.some((_, i) => answerFor(i).length > 0 || acceptsEmpty(i))
+    if (anyAnswered) {
+      submitAll(selections, otherText)
+    } else if (!fromKeyboard) {
+      onCancel()
+    }
+  }
+
+  // Leaving the question by any other route drops a pending auto-advance.
+  const goTo = (questionIndex: number): void => {
+    autoAdvance.cancel()
+    setIndex(questionIndex)
+  }
+  const cancel = (): void => {
+    autoAdvance.cancel()
+    onCancel()
+  }
+  const collapse = onCollapse
+    ? (): void => {
+        autoAdvance.cancel()
+        onCollapse()
+      }
+    : undefined
 
   return (
-    <div className="shrink-0 border-t border-border bg-muted/30">
-      <div className="mx-auto flex max-h-[22rem] w-full max-w-3xl flex-col px-3 py-2 sm:px-4">
+    // Part of the composer: docked in the bottom input region, matching the
+    // composer's width and padding, rendered as the "ask" dialog card directly
+    // above the text input. Its free-text row is the answer input.
+    <div
+      ref={cardRef}
+      role="group"
+      aria-label={q.question}
+      tabIndex={-1}
+      className="shrink-0 bg-chat-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      aria-busy={isSubmitting}
+      onKeyDown={(event) => {
+        // Why not from a text field: Escape there is editing, and collapsing would hide the draft.
+        if (
+          event.key === 'Escape' &&
+          !event.nativeEvent.isComposing &&
+          collapse &&
+          !isSubmitting &&
+          !isEditableTarget(event.target)
+        ) {
+          event.preventDefault()
+          event.stopPropagation()
+          collapse()
+        }
+      }}
+    >
+      <div className="mx-auto w-full max-w-(--chat-content-max-width) px-3 pt-2 pb-4 sm:px-4">
         {total > 1 ? (
-          <div className="flex gap-1 overflow-x-auto border-b border-border pb-2 scrollbar-sleek">
+          <div className="mb-2 flex gap-1 overflow-x-auto pb-1 scrollbar-sleek">
             {prompt.questions.map((qq, i) => (
               <button
                 key={i}
                 type="button"
-                onClick={() => setIndex(i)}
+                disabled={isSubmitting}
+                onClick={() => goTo(i)}
                 className={cn(
-                  'flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium',
+                  'flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium disabled:pointer-events-none',
                   i === index
                     ? 'bg-accent text-accent-foreground'
                     : 'text-muted-foreground hover:text-foreground'
@@ -125,103 +264,188 @@ export function NativeChatQuestionCard({
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-y-auto py-2 scrollbar-sleek">
-          <p className="mb-2 text-sm font-semibold text-foreground">{q.question}</p>
-          <div className="flex flex-col gap-1.5">
-            {q.options.map((opt) => (
-              <OptionRow
-                key={opt.label}
-                label={opt.label}
-                description={opt.description}
-                selected={(selections[index] ?? []).includes(opt.label)}
-                onSelect={() => toggle(index, opt.label, q.multiSelect)}
-              />
-            ))}
-            <OptionRow
-              label={translate('components.native-chat.question.other', 'Other…')}
-              selected={otherSelected}
-              onSelect={() => toggle(index, OTHER, q.multiSelect)}
-            />
-            {otherSelected ? (
-              <textarea
-                autoFocus
-                value={otherText[index]}
-                onChange={(e) => setOther(index, e.target.value)}
-                placeholder={translate(
-                  'components.native-chat.question.otherPlaceholder',
-                  'Type your answer'
-                )}
-                rows={2}
-                className="w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:bg-input/30"
+        <div className="overflow-hidden rounded-lg border border-input bg-card shadow-xs">
+          <div className="flex items-start gap-2 px-3.5 py-2.5">
+            <p
+              data-testid="native-chat-question-card-title"
+              className="min-w-0 flex-1 break-words text-sm font-semibold text-foreground"
+            >
+              {q.question}
+            </p>
+            {collapse ? (
+              <NativeChatPromptCollapseToggle
+                expanded
+                disabled={isSubmitting}
+                onToggle={collapse}
               />
             ) : null}
+            <button
+              type="button"
+              onClick={cancel}
+              disabled={isCancelling}
+              aria-label={translate('components.native-chat.question.cancel', 'Cancel')}
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+
+          {/* Scroll only kicks in on long option lists; the sleek scrollbar rides
+              the card's right edge instead of crowding the choices. */}
+          <div className="max-h-[50vh] divide-y divide-border/60 overflow-y-auto border-t border-border scrollbar-sleek">
+            {q.options.map((opt, i) => (
+              <OptionRow
+                key={`${i}:${opt.label}`}
+                badge={String(i + 1)}
+                label={opt.label}
+                description={opt.description}
+                selected={(selections[index] ?? []).includes(i)}
+                disabled={isSubmitting}
+                onSelect={() => pickOption(i)}
+              />
+            ))}
+            <div className="flex items-center gap-3 px-3.5 py-2.5">
+              {questionAllowsOther ? (
+                <>
+                  <span
+                    className={cn(
+                      'flex size-6 shrink-0 items-center justify-center rounded-md',
+                      currentTypedAnswerChosen
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-muted text-muted-foreground'
+                    )}
+                  >
+                    {currentTypedAnswerChosen ? (
+                      <Check className="size-3.5" strokeWidth={3} />
+                    ) : (
+                      <Pencil className="size-3.5" />
+                    )}
+                  </span>
+                  {/* No `/` or `@` picker here — that autocomplete belongs to the composer,
+                      which this card replaces. What you type is delivered verbatim as the
+                      AskUserQuestion tool result: it reaches the model but never the command
+                      parser, so `/compact` and friends are inert, while a skill name can
+                      still be acted on. */}
+                  {freeTextInput?.multiline ? (
+                    <Textarea
+                      disabled={isSubmitting}
+                      value={otherText[index]}
+                      onChange={(e) => setOther(index, e.target.value)}
+                      onClick={autoAdvance.cancel}
+                      placeholder={freeTextInput.placeholder}
+                    />
+                  ) : (
+                    <ImeInput
+                      ref={answerInputRef}
+                      disabled={isSubmitting}
+                      value={otherText[index]}
+                      onChange={(e) => setOther(index, e.target.value)}
+                      // Click, not focus: tabbing through the field toward Submit must not
+                      // replace the option the user just picked.
+                      onClick={() => {
+                        autoAdvance.cancel()
+                        if ((otherText[index] ?? '').trim().length > 0) {
+                          chooseTypedAnswer(index)
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          confirm(true)
+                        }
+                      }}
+                      placeholder={
+                        freeTextInput?.placeholder ??
+                        translate(
+                          'components.native-chat.question.otherPlaceholder',
+                          'Type your answer'
+                        )
+                      }
+                      className={cn(
+                        'min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 disabled:cursor-default disabled:opacity-50',
+                        currentTypedAnswerChosen || !otherText[index]
+                          ? 'text-foreground'
+                          : 'text-muted-foreground'
+                      )}
+                    />
+                  )}
+                </>
+              ) : (
+                <span className="flex-1" />
+              )}
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={() => confirm()}
+                className={cn(
+                  'shrink-0 whitespace-nowrap rounded-md px-3 py-1 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-50',
+                  currentAnswered
+                    ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                )}
+              >
+                {isSubmitting
+                  ? translate('components.native-chat.question.sending', 'Sending…')
+                  : currentAnswered
+                    ? isLast
+                      ? translate('components.native-chat.question.send', 'Submit')
+                      : translate('components.native-chat.question.next', 'Next')
+                    : translate('components.native-chat.question.skip', 'Skip')}
+              </button>
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-2 border-t border-border pt-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="rounded-md px-2 py-1 text-sm font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {translate('components.native-chat.question.cancel', 'Cancel')}
-          </button>
-          {total > 1 ? (
-            <span className="text-xs text-muted-foreground">
-              {index + 1}/{total}
-            </span>
-          ) : null}
-          <button
-            type="button"
-            onClick={advance}
-            disabled={!currentAnswered}
-            className={cn(
-              'rounded-md bg-primary px-4 py-1.5 text-sm font-semibold text-primary-foreground transition-colors',
-              'hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50'
-            )}
-          >
-            {isLast
-              ? translate('components.native-chat.question.send', 'Send answer')
-              : translate('components.native-chat.question.next', 'Next')}
-          </button>
-        </div>
+        {total > 1 ? (
+          <p className="mt-2 text-right text-xs text-muted-foreground">
+            {index + 1}/{total}
+          </p>
+        ) : null}
       </div>
     </div>
   )
 }
 
 function OptionRow({
+  badge,
   label,
   description,
   selected,
+  disabled,
   onSelect
 }: {
+  badge: string
   label: string
   description?: string
   selected: boolean
+  disabled: boolean
   onSelect: () => void
 }): React.JSX.Element {
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={onSelect}
+      // Selection is otherwise only the visual check/badge swap; expose it to
+      // assistive tech.
+      aria-pressed={selected}
       className={cn(
-        'flex w-full items-start gap-2.5 rounded-md border bg-background px-3 py-2 text-left transition-colors',
-        selected ? 'border-primary' : 'border-border hover:bg-accent/50'
+        'flex w-full items-start gap-3 px-3.5 py-2.5 text-left transition-colors disabled:pointer-events-none',
+        selected ? 'bg-accent' : 'hover:bg-accent'
       )}
     >
       <span
         className={cn(
-          'mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border',
-          selected ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground'
+          'flex size-6 shrink-0 items-center justify-center rounded-md text-xs font-medium',
+          selected ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
         )}
       >
-        {selected ? <Check className="size-3" strokeWidth={3} /> : null}
+        {selected ? <Check className="size-3.5" strokeWidth={3} /> : badge}
       </span>
       <span className="min-w-0">
-        <span className="block text-sm font-medium text-foreground">{label}</span>
+        <span className="block break-words text-sm text-foreground">{label}</span>
         {description ? (
-          <span className="block text-xs text-muted-foreground">{description}</span>
+          <span className="block break-words text-xs text-muted-foreground">{description}</span>
         ) : null}
       </span>
     </button>

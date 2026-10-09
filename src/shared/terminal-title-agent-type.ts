@@ -1,3 +1,4 @@
+import { isQoderTerminalTitle } from './qoder-terminal-title'
 import {
   AGY_AGENT_NAME_RE,
   DROID_AGENT_NAME_RE,
@@ -5,10 +6,21 @@ import {
   titleHasAgentName
 } from './agent-name-token-match'
 import {
+  containsAgentSpinnerGlyph,
+  isCursorAgentTitle,
+  isDshTerminalTitle
+} from './agent-title-core'
+import { isDeepSeekBuildTerminalTitle } from './dsb-terminal-title'
+
+export { DSH_WHALE, isDshTerminalTitle } from './agent-title-core'
+import { isOpenCodeNativeTitle } from './opencode-terminal-title'
+import {
   getPiCompatibleSyntheticAgentLabel,
   isLegacyPiCompatibleTitle
 } from './pi-compatible-synthetic-title'
-import type { TuiAgent } from './types'
+import { resolveCanonicalPaneAgentIdentity } from './pane-agent-identity-adapter'
+import { memoizeTitleClassification } from './terminal-title-classification-memo'
+import type { TerminalAgent } from './terminal-agent'
 
 export const CLAUDE_IDLE = '\u2733' // ✳ (eight-spoked asterisk — Claude Code idle prefix)
 const CLAUDE_MANAGEMENT_TITLE_RE =
@@ -30,6 +42,14 @@ export function containsBrailleSpinner(title: string): boolean {
 }
 
 export function isGeminiTerminalTitle(title: string): boolean {
+  // Why: DSH-TUI's idle prefix is `✦`, Gemini's working glyph. The whale is decisive
+  // and is checked first so a resting DSH pane never reads as a working Gemini.
+  if (isQoderTerminalTitle(title)) {
+    return false
+  }
+  if (isDshTerminalTitle(title) || isDeepSeekBuildTerminalTitle(title)) {
+    return false
+  }
   // Why: Gemini OSC glyphs are stronger evidence than any cwd/session text.
   if (
     title.includes(GEMINI_PERMISSION) ||
@@ -44,11 +64,15 @@ export function isGeminiTerminalTitle(title: string): boolean {
   if (isPiAgentTitle(title)) {
     return false
   }
+  // Why: Antigravity's models are named "Gemini <n.n> <Name>", so an agy pane's own
+  // title carries a whole `gemini` token. Gemini CLI is checked before Antigravity in
+  // getAgentLabel, so without this the model name wins and an agy pane reads as Gemini
+  // CLI. Only the token path defers — the four Gemini OSC glyphs stay decisive, and agy
+  // emits none of them.
+  if (titleHasAgentName(title, 'antigravity') || AGY_AGENT_NAME_RE.test(title)) {
+    return false
+  }
   return titleHasAgentName(title, 'gemini')
-}
-
-export function isPiTerminalTitle(title: string): boolean {
-  return isLegacyPiCompatibleTitle(title) && !containsBrailleSpinner(title)
 }
 
 // Why: Grok Build's working OSC titles use a fixed frame shape —
@@ -78,8 +102,13 @@ export function isPiAgentTitle(title: string): boolean {
  * Used to scope prompt-cache-timer behavior to Claude sessions only — other
  * agents have different (or no) caching semantics.
  */
-export function isClaudeAgent(title: string): boolean {
-  if (!title || isClaudeManagementTitle(title)) {
+function computeIsClaudeAgent(title: string): boolean {
+  if (!title || isClaudeManagementTitle(title) || isOpenCodeNativeTitle(title)) {
+    return false
+  }
+  // Why: DSH's working title is `⠂ 🐋 …`/`⠐ 🐋 …`, and the braille branch below would
+  // otherwise claim every frame of it for Claude.
+  if (isDshTerminalTitle(title)) {
     return false
   }
   const lower = title.toLowerCase()
@@ -96,10 +125,14 @@ export function isClaudeAgent(title: string): boolean {
   if (title.startsWith('. ') || title.startsWith('* ')) {
     return true
   }
-  if (containsBrailleSpinner(title)) {
-    // Why: named non-Claude agents can carry braille spinners too; Claude-only
-    // prompt-cache paths must not fire for those explicit agent titles.
-    return !lower.includes('cursor') && !lower.includes('openclaude')
+  // Why: a working DeepSeek Build title uses Claude's braille frame.
+  if (isDeepSeekBuildTerminalTitle(title)) {
+    return false
+  }
+  if (containsAgentSpinnerGlyph(title)) {
+    // Why: named non-Claude agents carry braille spinners too. Gate Cursor by its
+    // identity title, not the token, so a Claude title mentioning a cursor stays Claude.
+    return !isCursorAgentTitle(title) && !lower.includes('openclaude')
   }
   // Why: permission/action-required Claude titles can omit the usual prefixes.
   // Token-match so cwd/worktree titles like "claude-scratch" do not become
@@ -115,13 +148,22 @@ export function isClaudeAgent(title: string): boolean {
   return false
 }
 
+/** Pure in `title` — memoized so repeated selector reads skip the regex ladder. */
+export const isClaudeAgent: (title: string) => boolean =
+  memoizeTitleClassification(computeIsClaudeAgent)
+
 export function isClaudeManagementTitle(title: string): boolean {
   return CLAUDE_MANAGEMENT_TITLE_RE.test(title)
 }
 
-export function getAgentLabel(title: string): string | null {
+function computeAgentLabel(title: string): string | null {
   if (isClaudeManagementTitle(title)) {
     return null
+  }
+  // Why: the native marker owns the whole title; its session text may name or
+  // include status glyphs from other agents without changing OpenCode identity.
+  if (isOpenCodeNativeTitle(title)) {
+    return 'OpenCode'
   }
   // Why: Claude Code title text is often the task title. If that task mentions
   // another CLI, the Claude-specific prefix is the identity signal, not the words.
@@ -132,6 +174,17 @@ export function getAgentLabel(title: string): string | null {
     title.startsWith('* ')
   ) {
     return 'Claude Code'
+  }
+  // Why before Gemini: see isDshTerminalTitle — the two share the `✦` glyph.
+  if (isDshTerminalTitle(title)) {
+    return 'DeepSeek Harness'
+  }
+  if (isQoderTerminalTitle(title)) {
+    return title.includes('Qoder CLI CN') ? 'Qoder CLI CN' : 'Qoder CLI'
+  }
+  // Why: the DSB matcher distinguishes native prefixes from glyphs inside task text.
+  if (isDeepSeekBuildTerminalTitle(title)) {
+    return 'DeepSeek Build'
   }
   if (isGeminiTerminalTitle(title)) {
     return 'Gemini CLI'
@@ -167,8 +220,14 @@ export function getAgentLabel(title: string): string | null {
   if (titleHasAgentName(title, 'devin')) {
     return 'Devin'
   }
+  if (titleHasAgentName(title, 'jcode')) {
+    return 'Jcode'
+  }
   if (titleHasAgentName(title, 'antigravity') || AGY_AGENT_NAME_RE.test(title)) {
     return 'Antigravity'
+  }
+  if (titleHasAgentName(title, 'opencode2')) {
+    return 'OpenCode 2'
   }
   if (titleHasAgentName(title, 'opencode')) {
     return 'OpenCode'
@@ -179,14 +238,9 @@ export function getAgentLabel(title: string): string | null {
   if (titleHasAgentName(title, 'aider')) {
     return 'Aider'
   }
-  // Why: the cursor-agent native title is the literal string "Cursor Agent"
-  // (verified against the 2026.04.17 release) — Orca synthesizes the same
-  // label from hook events so the braille-spinner + agent-name path lights
-  // up working/permission/idle transitions in the renderer. Match before
-  // `isClaudeAgent` because Claude's generic braille heuristic would
-  // otherwise claim every "⠋ Cursor Agent" frame as Claude. Token-match so a
-  // cwd like "~/cursor-rules" can't masquerade as a Cursor agent.
-  if (titleHasAgentName(title, 'cursor')) {
+  // Why: `cursor` is ordinary editor vocabulary, not identity. Match Cursor's closed
+  // title set (mirrors @cursor routing), before `isClaudeAgent` claims the braille frame.
+  if (isCursorAgentTitle(title)) {
     return 'Cursor'
   }
   // Why: synthesized "⠋ Droid" working title needs to be matched before Claude's braille heuristic.
@@ -206,32 +260,39 @@ export function getAgentLabel(title: string): string | null {
   return null
 }
 
-// Maps getAgentLabel()'s product labels to TuiAgent ids — the fallback for
-// agents whose foreground PROCESS name isn't self-identifying (Claude Code runs
-// as `node`, but its "✳ Claude Code" title resolves here). Agents whose process
-// name already matches (codex, etc.) never reach this path.
-const TITLE_LABEL_TO_AGENT: Partial<Record<string, TuiAgent>> = {
+/** Pure in `title` — memoized so repeated selector reads skip the regex ladder. */
+export const getAgentLabel: (title: string) => string | null =
+  memoizeTitleClassification(computeAgentLabel)
+
+const TITLE_LABEL_TO_AGENT: Partial<Record<string, TerminalAgent>> = {
+  'DeepSeek Harness': 'dsh',
   'Claude Code': 'claude',
   OpenClaude: 'openclaude',
   Codex: 'codex',
+  'Qoder CLI': 'qoder',
+  'Qoder CLI CN': 'qoder-cn',
+  'Qoder CLI China': 'qoder-cn',
   'Gemini CLI': 'gemini',
   'GitHub Copilot': 'copilot',
   Grok: 'grok',
   Devin: 'devin',
+  Jcode: 'jcode',
   Antigravity: 'antigravity',
   OpenCode: 'opencode',
+  'OpenCode 2': 'opencode2',
   'MiMo Code': 'mimo-code',
   Aider: 'aider',
   Cursor: 'cursor',
   Droid: 'droid',
   Hermes: 'hermes',
+  'DeepSeek Build': 'dsb',
   Pi: 'pi',
   OMP: 'omp'
 }
 
 function hasGenericClaudeStatusPrefix(title: string): boolean {
   return (
-    containsBrailleSpinner(title) ||
+    containsAgentSpinnerGlyph(title) ||
     title.startsWith('✳ ') ||
     title === '✳' ||
     title.startsWith('. ') ||
@@ -239,7 +300,9 @@ function hasGenericClaudeStatusPrefix(title: string): boolean {
   )
 }
 
-function isGenericClaudeStatusClaim(title: string, titleAgent: TuiAgent | null): boolean {
+export { isClaudeIdentityFrameTitle } from './agent-title-core'
+
+function isGenericClaudeStatusClaim(title: string, titleAgent: TerminalAgent | null): boolean {
   return (
     titleAgent === 'claude' &&
     hasGenericClaudeStatusPrefix(title) &&
@@ -247,9 +310,15 @@ function isGenericClaudeStatusClaim(title: string, titleAgent: TuiAgent | null):
   )
 }
 
-export function resolveTerminalTitleAgentType(title: string): TuiAgent | null {
+export function resolveTerminalTitleAgentType(title: string): TerminalAgent | null {
   const label = getAgentLabel(title)
-  return label ? (TITLE_LABEL_TO_AGENT[label] ?? null) : null
+  const parsed = label ? (TITLE_LABEL_TO_AGENT[label] ?? null) : null
+  return resolveCanonicalPaneAgentIdentity({
+    title,
+    // Preserve this public title-parser adapter's historical answer; pane identity
+    // consumers pass raw titles to the canonical resolver and enforce its fence.
+    uncoveredFallback: { agent: parsed, titleOnly: false }
+  }).agent
 }
 
 /**
@@ -258,10 +327,14 @@ export function resolveTerminalTitleAgentType(title: string): TuiAgent | null {
  * that something is running, not proof the agent is Claude — so a task or
  * worktree title cannot become Claude without an explicit "Claude Code" name.
  */
-export function resolveExplicitTerminalTitleAgentType(title: string): TuiAgent | null {
+function computeExplicitTerminalTitleAgentType(title: string): TerminalAgent | null {
   const titleAgent = resolveTerminalTitleAgentType(title)
   if (isGenericClaudeStatusClaim(title, titleAgent)) {
     return null
   }
   return titleAgent
 }
+
+/** Pure in `title` — memoized so repeated selector reads skip the canonical/title parse. */
+export const resolveExplicitTerminalTitleAgentType: (title: string) => TerminalAgent | null =
+  memoizeTitleClassification(computeExplicitTerminalTitleAgentType)

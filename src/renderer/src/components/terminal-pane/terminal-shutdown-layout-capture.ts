@@ -1,4 +1,4 @@
-import type { TerminalLayoutSnapshot } from '../../../../shared/types'
+import type { TerminalLayoutSnapshot } from '../../../../shared/terminal-tab-types'
 import type { ManagedPane } from '@/lib/pane-manager/pane-manager'
 import type { PtyTransport } from './pty-transport'
 import { flushTerminalOutput } from '@/lib/pane-manager/pane-terminal-output-scheduler'
@@ -6,7 +6,8 @@ import { serializeTerminalLayout } from './layout-serialization'
 import { mergeCapturedLeafState } from './merge-captured-leaf-state'
 import { resolveTerminalLayoutActiveLeafId } from './terminal-layout-leaf-ids'
 import { TERMINAL_SCROLLBACK_SESSION_BUFFER_BYTE_LIMIT } from '../../../../shared/terminal-scrollback-limits'
-import { measureUtf8ByteLength } from '../../../../shared/utf8-byte-limits'
+import { serializeWithAbsoluteCursor } from '../../../../shared/terminal-serialize-absolute-cursor'
+import { getUtf8ByteLength, isUtf8ByteLengthWithinLimit } from '../../../../shared/utf8-byte-limits'
 
 const MAX_BUFFER_BYTES = TERMINAL_SCROLLBACK_SESSION_BUFFER_BYTE_LIMIT
 
@@ -24,6 +25,9 @@ type CaptureTerminalShutdownLayoutArgs = {
   paneTransports: ReadonlyMap<number, Pick<PtyTransport, 'getPtyId'>>
   paneTitlesByPaneId: Record<number, string>
   existingLayout: TerminalLayoutSnapshot | undefined
+  chatLeafId?: string | null
+  /** Merge prior for buffers, resolved across both scrollback homes; defaults to the shared layout's. */
+  priorBuffersByLeafId?: Record<string, string>
   captureBuffers?: boolean
   clearedScrollbackLeafIds?: ReadonlySet<string>
 }
@@ -42,7 +46,50 @@ function omitClearedLeafState(
 }
 
 function fitsSessionScrollbackByteLimit(serialized: string): boolean {
-  return !measureUtf8ByteLength(serialized, { stopAfterBytes: MAX_BUFFER_BYTES }).exceededLimit
+  return isUtf8ByteLengthWithinLimit(serialized, MAX_BUFFER_BYTES)
+}
+
+// Why bounded: a plain row bisection costs ~13 full serializes per over-limit pane (~250ms at the
+// 5k scrollback default, ~700ms at 50k), and force-park pays it synchronously per evicted pane.
+const MAX_SCROLLBACK_FIT_PROBES = 4
+
+/** Largest tail of `pane` that fits the session byte cap, found in a few interpolation probes. */
+function serializeWithinSessionScrollbackByteLimit(
+  pane: ShutdownPane,
+  oversized: string,
+  scrollback: number
+): string {
+  let overRows = scrollback
+  let overBytes = getUtf8ByteLength(oversized)
+  let fitRows = 0
+  let fitBytes = 0
+  let best: string | null = null
+  // Why the extra probes before the first fit: returning '' would drop the whole pane, and those
+  // probes shrink geometrically, so they cost less in total than a bisection's upper-half passes.
+  for (let probe = 0; probe < MAX_SCROLLBACK_FIT_PROBES || best === null; probe += 1) {
+    const anchorRows = best === null ? overRows : fitRows
+    const anchorBytes = best === null ? overBytes : fitBytes
+    // Bytes grow ~linearly with rows, so a secant step lands on the exact fit for uniform
+    // scrollback; the midpoint floor stops it creeping when dense recent rows sit above sparse old ones.
+    const estimate = Math.floor((anchorRows * MAX_BUFFER_BYTES) / Math.max(anchorBytes, 1))
+    const midpoint = Math.floor((fitRows + overRows) / 2)
+    const rows = Math.min(Math.max(Math.min(estimate, midpoint), fitRows + 1), overRows - 1)
+    if (rows <= fitRows || rows >= overRows) {
+      break
+    }
+    const attempt = serializeWithAbsoluteCursor(pane.serializeAddon, pane.terminal, {
+      scrollback: rows
+    })
+    if (fitsSessionScrollbackByteLimit(attempt)) {
+      best = attempt
+      fitRows = rows
+      fitBytes = getUtf8ByteLength(attempt)
+    } else {
+      overRows = rows
+      overBytes = getUtf8ByteLength(attempt)
+    }
+  }
+  return best ?? ''
 }
 
 export function captureTerminalShutdownLayout({
@@ -52,6 +99,8 @@ export function captureTerminalShutdownLayout({
   paneTransports,
   paneTitlesByPaneId,
   existingLayout,
+  chatLeafId,
+  priorBuffersByLeafId = existingLayout?.buffersByLeafId,
   captureBuffers = true,
   clearedScrollbackLeafIds
 }: CaptureTerminalShutdownLayoutArgs): TerminalLayoutSnapshot {
@@ -66,24 +115,16 @@ export function captureTerminalShutdownLayout({
         flushTerminalOutput(pane.terminal)
         const leafId = pane.leafId
         let scrollback = pane.terminal.options.scrollback ?? 10_000
-        let serialized = pane.serializeAddon.serialize({ scrollback })
+        // Why serializeWithAbsoluteCursor: these buffers replay into fresh
+        // xterms on session restore, and SerializeAddon's relative cursor
+        // restore lands one column short after a wrap-pending final row.
+        let serialized = serializeWithAbsoluteCursor(pane.serializeAddon, pane.terminal, {
+          scrollback
+        })
         // Why: SSH sleep keeps this string in session JSON; cap by UTF-8
         // bytes so non-ASCII scrollback cannot bypass the intended bound.
         if (!fitsSessionScrollbackByteLimit(serialized) && scrollback > 1) {
-          let lo = 1
-          let hi = scrollback
-          let best = ''
-          while (lo <= hi) {
-            const mid = Math.floor((lo + hi) / 2)
-            const attempt = pane.serializeAddon.serialize({ scrollback: mid })
-            if (fitsSessionScrollbackByteLimit(attempt)) {
-              best = attempt
-              lo = mid + 1
-            } else {
-              hi = mid - 1
-            }
-          }
-          serialized = best
+          serialized = serializeWithinSessionScrollbackByteLimit(pane, serialized, scrollback)
         }
         if (serialized.length > 0) {
           buffers[leafId] = serialized
@@ -102,6 +143,9 @@ export function captureTerminalShutdownLayout({
     new Map(panes.map((pane) => [pane.id, pane.leafId]))
   )
   const currentLeafIds = new Set(panes.map((p) => p.leafId))
+  if (chatLeafId && panes.some((pane) => pane.leafId === chatLeafId)) {
+    layout.chatLeafId = chatLeafId
+  }
   const livePtyIdsByLeafId: Record<string, string> = {}
   const preservedPtyIdsByLeafId: Record<string, string> = {}
   for (const pane of panes) {
@@ -121,7 +165,7 @@ export function captureTerminalShutdownLayout({
 
   const mergedBuffers = captureBuffers
     ? mergeCapturedLeafState({
-        prior: omitClearedLeafState(existingLayout?.buffersByLeafId, clearedScrollbackLeafIds),
+        prior: omitClearedLeafState(priorBuffersByLeafId, clearedScrollbackLeafIds),
         fresh: buffers,
         currentLeafIds
       })

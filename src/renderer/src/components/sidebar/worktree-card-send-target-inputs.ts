@@ -6,10 +6,21 @@ export type SendTargetInputsState = Pick<
   | 'agentSendPopoverTargetMode'
   | 'agentStatusByPaneKey'
   | 'tabsByWorktree'
+  | 'unifiedTabsByWorktree'
   | 'terminalLayoutsByTabId'
   | 'ptyIdsByTabId'
   | 'runtimePaneTitlesByTabId'
 >
+
+export type SendTargetControlInputsState = Pick<
+  AppState,
+  'agentSendPopoverTargetMode' | 'agentStatusEpoch'
+>
+
+export type SendTargetControlInputs = {
+  targetMode: AppState['agentSendPopoverTargetMode']
+  agentStatusEpoch: number
+}
 
 // Why: shared stable reference returned whenever the send-target popover isn't
 // targeting this card. useShallow keeps the same result across unrelated
@@ -18,13 +29,21 @@ export type SendTargetInputsState = Pick<
 export const EMPTY_SEND_TARGET_INPUTS: RunningAgentTargetState = Object.freeze({
   agentStatusByPaneKey: {},
   tabsByWorktree: {},
+  unifiedTabsByWorktree: {},
   terminalLayoutsByTabId: {},
   ptyIdsByTabId: {},
   runtimePaneTitlesByTabId: {}
 })
 
+// Why: the picker mode and freshness epoch are irrelevant to every card except
+// its current target. Keep inactive bodies stable across both global writes.
+export const EMPTY_SEND_TARGET_CONTROL_INPUTS: SendTargetControlInputs = Object.freeze({
+  targetMode: null,
+  agentStatusEpoch: 0
+})
+
 /**
- * Select the five maps `deriveRunningAgentSendTargets` needs — but only while
+ * Select the maps `deriveRunningAgentSendTargets` needs — but only while
  * the send-target popover targets this worktree. When it doesn't, return a
  * stable empty constant so a useShallow-wrapped subscription stays referentially
  * equal across the (very hot) pane-title / agent-status writes and skips the
@@ -40,8 +59,20 @@ export function selectSendTargetInputs(
   return {
     agentStatusByPaneKey: s.agentStatusByPaneKey,
     tabsByWorktree: s.tabsByWorktree,
+    unifiedTabsByWorktree: s.unifiedTabsByWorktree,
     terminalLayoutsByTabId: s.terminalLayoutsByTabId,
     ptyIdsByTabId: s.ptyIdsByTabId,
     runtimePaneTitlesByTabId: s.runtimePaneTitlesByTabId
   }
+}
+
+export function selectSendTargetControlInputs(
+  s: SendTargetControlInputsState,
+  worktreeId: string
+): SendTargetControlInputs {
+  const targetMode = s.agentSendPopoverTargetMode
+  if (targetMode?.worktreeId !== worktreeId) {
+    return EMPTY_SEND_TARGET_CONTROL_INPUTS
+  }
+  return { targetMode, agentStatusEpoch: s.agentStatusEpoch }
 }

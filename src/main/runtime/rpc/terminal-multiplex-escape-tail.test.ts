@@ -1,3 +1,4 @@
+import './unused-default-rpc-methods.test-fixture'
 import { describe, expect, it, vi } from 'vitest'
 import { RpcDispatcher } from './dispatcher'
 import type { RpcRequest } from './core'
@@ -47,12 +48,16 @@ describe('terminal.multiplex pending-escape-tail threading (#7329)', () => {
           data: 'user@host:~$ ',
           cols: 80,
           rows: 24,
+          seq: 7,
           // The dangling partial the emulator could not serialize.
-          pendingEscapeTailAnsi: '\x1b[3'
+          pendingEscapeTailAnsi: '\x1b[3',
+          alternateScreen: false,
+          terminalOwner: 'shell'
         }),
         getTerminalSize: vi.fn().mockReturnValue({ cols: 80, rows: 24 }),
         getMobileDisplayMode: vi.fn().mockReturnValue('auto'),
         getLayout: vi.fn().mockReturnValue({ seq: 1 }),
+        registerRemoteTerminalViewSubscriber: vi.fn(() => () => {}),
         subscribeToTerminalData: vi.fn().mockReturnValue(vi.fn()),
         subscribeToTerminalResize: vi.fn().mockReturnValue(vi.fn()),
         subscribeToFitOverrideChanges: vi.fn().mockReturnValue(vi.fn()),
@@ -70,14 +75,19 @@ describe('terminal.multiplex pending-escape-tail threading (#7329)', () => {
         waitForTerminal: vi.fn(() => new Promise<RuntimeTerminalWait>(() => {})),
         updateDesktopViewport: vi.fn().mockResolvedValue(true)
       })
-      const dispatcher = new RpcDispatcher({ runtime, methods: TERMINAL_METHODS })
+      const dispatcher = new RpcDispatcher({
+        runtime,
+        methods: TERMINAL_METHODS
+      })
 
       const dispatchPromise = dispatcher.dispatchStreaming(
         makeRequest('terminal.multiplex', {}),
         (msg) => messages.push(msg),
         {
           connectionId: 'conn-1',
-          sendBinary: (bytes) => binaryFrames.push(bytes),
+          sendBinary: (bytes) => {
+            binaryFrames.push(bytes)
+          },
           registerBinaryStreamHandler: (streamId, handler) => {
             handlers.set(streamId, handler)
             return () => handlers.delete(streamId)
@@ -113,7 +123,9 @@ describe('terminal.multiplex pending-escape-tail threading (#7329)', () => {
         .map((frame) => decodeTerminalStreamFrame(frame))
         .find((frame) => frame?.opcode === TerminalStreamOpcode.SnapshotStart)!
       expect(decodeTerminalStreamJson(snapshotStart.payload)).toMatchObject({
-        pendingEscapeTailAnsi: '\x1b[3'
+        pendingEscapeTailAnsi: '\x1b[3',
+        alternateScreen: false,
+        terminalOwner: 'shell'
       })
 
       runtime.cleanupSubscription('terminal-multiplex:conn-1')

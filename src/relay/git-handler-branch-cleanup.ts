@@ -1,25 +1,34 @@
 import {
-  branchHasNoUnmergedChangesOnAnyTarget,
-  getBranchCleanupTargetRefs,
-  refreshBranchCleanupTargetRefs
+  branchHasNoUnmergedChangesWithLazyTargetRefresh,
+  getBranchCleanupTargetRefs
 } from '../shared/git-branch-cleanup'
+import type { GitCapabilityCache } from '../shared/git-capability-cache'
 import type { GitExec } from './git-handler-ops'
-import { parseWorktreeList } from './git-handler-utils'
+import { expandTilde } from './context'
+import { isBranchReservedByWorktreeOperation } from '../shared/git-worktree-admin'
+import { parseWorktreeList } from '../shared/git-worktree-porcelain-parser'
 
 export async function deleteAlreadyMergedRelayBranchAfterSafeDeleteFailure(
   git: GitExec,
   repoPath: string,
   branchName: string,
-  branchHead: string
+  branchHead: string,
+  capabilities: GitCapabilityCache
 ): Promise<boolean> {
   const runGit = (args: string[], options?: { stdin?: string }) =>
     options ? git(args, repoPath, options) : git(args, repoPath)
   const targetRefs = await getBranchCleanupTargetRefs(runGit, branchName)
-  await refreshBranchCleanupTargetRefs(runGit, targetRefs)
   // Why: SSH worktrees hit the same squash-merge shape as local worktrees.
   // Git's no-op merge proof lets us clean up only branches whose changes
   // already exist on the saved base ref.
-  if (!(await branchHasNoUnmergedChangesOnAnyTarget(runGit, branchName, targetRefs))) {
+  if (
+    !(await branchHasNoUnmergedChangesWithLazyTargetRefresh(
+      runGit,
+      branchName,
+      targetRefs,
+      capabilities
+    ))
+  ) {
     return false
   }
   await deleteRelayBranchAtExpectedHead(git, repoPath, branchName, branchHead)
@@ -62,7 +71,11 @@ async function deleteRelayBranchAtExpectedHead(
     // and removeWorktree cleanup still rely on their distinct/raw failures.
     throw mapUpdateRefError?.(error) ?? error
   }
-  if (await isRelayBranchCheckedOut(git, repoPath, branchName)) {
+  try {
+    if (await isRelayBranchCheckedOut(git, repoPath, branchName)) {
+      throw new Error(`Local branch "${branchName}" is checked out in another worktree.`)
+    }
+  } catch (error) {
     try {
       await git(['update-ref', `refs/heads/${branchName}`, expectedHead, ''], repoPath)
     } catch (restoreError) {
@@ -71,7 +84,7 @@ async function deleteRelayBranchAtExpectedHead(
         restoreError
       )
     }
-    throw new Error(`Local branch "${branchName}" is checked out in another worktree.`)
+    throw error
   }
   try {
     await git(['config', '--remove-section', `branch.${branchName}`], repoPath)
@@ -87,9 +100,12 @@ async function isRelayBranchCheckedOut(
   branchName: string
 ): Promise<boolean> {
   const { stdout } = await git(['worktree', 'list', '--porcelain'], repoPath)
-  return parseWorktreeList(stdout).some(
-    (worktree) =>
-      typeof worktree.branch === 'string' &&
-      worktree.branch.replace(/^refs\/heads\//, '') === branchName
+  const worktrees = parseWorktreeList(stdout)
+  return (
+    worktrees.some(
+      (worktree) =>
+        typeof worktree.branch === 'string' &&
+        worktree.branch.replace(/^refs\/heads\//, '') === branchName
+    ) || isBranchReservedByWorktreeOperation(expandTilde(repoPath), branchName, worktrees)
   )
 }

@@ -1,12 +1,25 @@
 import { getDefaultWorkspaceSession } from '../../shared/constants'
 import type { ExecutionHostId } from '../../shared/execution-host'
-import type { WorkspaceSessionState } from '../../shared/types'
+import type { WorkspaceSessionState } from '../../shared/workspace-session-state-types'
 import { parseWorkspaceKey } from '../../shared/workspace-scope'
+import { SESSION_FIELDS_PRUNED_BY_OWNER_KEY } from './profile-project-session-field-disposition'
+import { markdownFileIdCandidates } from './profile-session-markdown-transfer'
 import {
   isRepoWorktreeId,
   ownerKeyBelongsToRepo,
   removeRepoWorktreeRecord
 } from './profile-project-worktree-identity'
+
+function mergeTerminalTopologyRevisions(
+  base: Record<string, number> | undefined,
+  incoming: Record<string, number> | undefined
+): Record<string, number> {
+  const merged = { ...base }
+  for (const [worktreeId, revision] of Object.entries(incoming ?? {})) {
+    merged[worktreeId] = Math.max(merged[worktreeId] ?? 0, revision)
+  }
+  return merged
+}
 
 export function mergeHostWorkspaceSessions(
   existing: Partial<Record<ExecutionHostId, WorkspaceSessionState>> | undefined,
@@ -32,12 +45,28 @@ export function mergeWorkspaceSessions(
   const base = existing ?? getDefaultWorkspaceSession()
   return {
     ...base,
+    // Why: the focus scalars below fall back to incoming together, so a borrowed worktree keeps its repo and host.
+    activeRepoId: base.activeRepoId ?? incoming.activeRepoId,
+    activeWorkspaceExecutionHostId:
+      base.activeWorkspaceExecutionHostId ?? incoming.activeWorkspaceExecutionHostId,
     tabsByWorktree: { ...base.tabsByWorktree, ...incoming.tabsByWorktree },
     terminalLayoutsByTabId: {
       ...base.terminalLayoutsByTabId,
       ...incoming.terminalLayoutsByTabId
     },
+    ...(base.localOnlyScrollbackByTabId || incoming.localOnlyScrollbackByTabId
+      ? {
+          localOnlyScrollbackByTabId: {
+            ...base.localOnlyScrollbackByTabId,
+            ...incoming.localOnlyScrollbackByTabId
+          }
+        }
+      : {}),
     openFilesByWorktree: { ...base.openFilesByWorktree, ...incoming.openFilesByWorktree },
+    markdownFrontmatterVisible: {
+      ...base.markdownFrontmatterVisible,
+      ...incoming.markdownFrontmatterVisible
+    },
     browserTabsByWorktree: {
       ...base.browserTabsByWorktree,
       ...incoming.browserTabsByWorktree
@@ -74,6 +103,26 @@ export function mergeWorkspaceSessions(
       ...base.defaultTerminalTabsAppliedByWorktreeId,
       ...incoming.defaultTerminalTabsAppliedByWorktreeId
     },
+    terminalPtyIncarnationsByPaneKey: {
+      ...base.terminalPtyIncarnationsByPaneKey,
+      ...incoming.terminalPtyIncarnationsByPaneKey
+    },
+    terminalTopologyRevisionByRepoId: mergeTerminalTopologyRevisions(
+      base.terminalTopologyRevisionByRepoId,
+      incoming.terminalTopologyRevisionByRepoId
+    ),
+    terminalSurfaceTombstonesByPaneKey: {
+      ...base.terminalSurfaceTombstonesByPaneKey,
+      ...incoming.terminalSurfaceTombstonesByPaneKey
+    },
+    ...(base.sleepingAgentSessionsByPaneKey || incoming.sleepingAgentSessionsByPaneKey
+      ? {
+          sleepingAgentSessionsByPaneKey: {
+            ...base.sleepingAgentSessionsByPaneKey,
+            ...incoming.sleepingAgentSessionsByPaneKey
+          }
+        }
+      : {}),
     activeWorktreeIdsOnShutdown: [
       ...(base.activeWorktreeIdsOnShutdown ?? []),
       ...(incoming.activeWorktreeIdsOnShutdown ?? [])
@@ -101,6 +150,17 @@ export function removeRepoFromWorkspaceSession(
 ): WorkspaceSessionState {
   const next = structuredClone(session ?? getDefaultWorkspaceSession())
   const removedTerminalTabIds = new Set<string>()
+  const removedMarkdownFileIds = new Set<string>()
+  for (const [ownerKey, files] of Object.entries(next.openFilesByWorktree ?? {})) {
+    if (!ownerKeyBelongsToRepo(ownerKey, repoId)) {
+      continue
+    }
+    for (const file of files) {
+      markdownFileIdCandidates(file.filePath, ownerKey, file.runtimeEnvironmentId).forEach((id) =>
+        removedMarkdownFileIds.add(id)
+      )
+    }
+  }
   for (const [ownerKey, tabs] of Object.entries(next.tabsByWorktree)) {
     if (!ownerKeyBelongsToRepo(ownerKey, repoId)) {
       continue
@@ -110,9 +170,8 @@ export function removeRepoFromWorkspaceSession(
   }
   for (const tabId of removedTerminalTabIds) {
     delete next.terminalLayoutsByTabId[tabId]
+    delete next.localOnlyScrollbackByTabId?.[tabId]
   }
-  next.openFilesByWorktree = removeRepoWorktreeRecord(next.openFilesByWorktree, repoId)
-  next.activeFileIdByWorktree = removeRepoWorktreeRecord(next.activeFileIdByWorktree, repoId)
   const removedBrowserWorkspaceIds = new Set<string>()
   for (const [ownerKey, workspaces] of Object.entries(next.browserTabsByWorktree ?? {})) {
     if (!ownerKeyBelongsToRepo(ownerKey, repoId)) {
@@ -126,21 +185,33 @@ export function removeRepoFromWorkspaceSession(
       delete next.browserPagesByWorkspace[workspaceId]
     }
   }
-  next.activeBrowserTabIdByWorktree = removeRepoWorktreeRecord(
-    next.activeBrowserTabIdByWorktree,
-    repoId
-  )
-  next.activeTabTypeByWorktree = removeRepoWorktreeRecord(next.activeTabTypeByWorktree, repoId)
-  next.activeTabIdByWorktree = removeRepoWorktreeRecord(next.activeTabIdByWorktree, repoId)
-  next.unifiedTabs = removeRepoWorktreeRecord(next.unifiedTabs, repoId)
-  next.tabGroups = removeRepoWorktreeRecord(next.tabGroups, repoId)
-  next.tabGroupLayouts = removeRepoWorktreeRecord(next.tabGroupLayouts, repoId)
-  next.activeGroupIdByWorktree = removeRepoWorktreeRecord(next.activeGroupIdByWorktree, repoId)
-  next.lastVisitedAtByWorktreeId = removeRepoWorktreeRecord(next.lastVisitedAtByWorktreeId, repoId)
-  next.defaultTerminalTabsAppliedByWorktreeId = removeRepoWorktreeRecord(
-    next.defaultTerminalTabsAppliedByWorktreeId,
-    repoId
-  )
+  // Driven by the census so a field cannot be added to the session type and forgotten here.
+  for (const field of SESSION_FIELDS_PRUNED_BY_OWNER_KEY) {
+    const record = next[field] as Record<string, unknown> | undefined
+    ;(next as Record<string, unknown>)[field] = removeRepoWorktreeRecord(record, repoId)
+  }
+  if (next.markdownFrontmatterVisible) {
+    next.markdownFrontmatterVisible = Object.fromEntries(
+      Object.entries(next.markdownFrontmatterVisible).filter(
+        ([fileId]) => !removedMarkdownFileIds.has(fileId)
+      )
+    )
+  }
+  if (next.terminalSurfaceTombstonesByPaneKey) {
+    next.terminalSurfaceTombstonesByPaneKey = Object.fromEntries(
+      Object.entries(next.terminalSurfaceTombstonesByPaneKey).filter(
+        ([, tombstone]) => !ownerKeyBelongsToRepo(tombstone.worktreeId, repoId)
+      )
+    )
+  }
+  if (next.terminalPtyIncarnationsByPaneKey) {
+    next.terminalPtyIncarnationsByPaneKey = Object.fromEntries(
+      Object.entries(next.terminalPtyIncarnationsByPaneKey).filter(([paneKey]) => {
+        const separator = paneKey.lastIndexOf(':')
+        return separator < 1 || !removedTerminalTabIds.has(paneKey.slice(0, separator))
+      })
+    )
+  }
   if (next.activeWorktreeId && isRepoWorktreeId(repoId, next.activeWorktreeId)) {
     next.activeWorktreeId = null
   }

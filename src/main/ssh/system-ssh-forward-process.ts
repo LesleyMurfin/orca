@@ -6,9 +6,14 @@ import type { SshTarget } from '../../shared/ssh-types'
 export const SYSTEM_SSH_FORWARD_STARTUP_GRACE_MS = 750
 export const SYSTEM_SSH_FORWARD_LISTENER_PROBE_INTERVAL_MS = 50
 export const SYSTEM_SSH_FORWARD_STOP_TIMEOUT_MS = 2_000
+// Why short: SIGKILL is uncatchable, so a child that has not reported exit this long after it is
+// either already reaped or beyond anything teardown can do about it.
+export const SYSTEM_SSH_FORWARD_POST_KILL_TIMEOUT_MS = 500
 
 export type SystemSshPortForwardProcess = {
   process: ChildProcess
+  /** The local port the forward listens on, chosen here when the caller asked for any (0). */
+  localPort: number
   waitForStartup: () => Promise<void>
   close: () => Promise<void>
   dispose: () => void
@@ -60,11 +65,12 @@ export function startSystemSshPortForwardProcess(
   remotePort: number,
   options?: SystemSshBuildArgsOptions
 ): Promise<SystemSshPortForwardProcess> {
-  return assertLocalForwardPortAvailable(localPort).then(() => {
-    const process = spawnSystemSshPortForward(target, localPort, remoteHost, remotePort, options)
+  return reserveLocalForwardPort(localPort).then((boundPort) => {
+    const process = spawnSystemSshPortForward(target, boundPort, remoteHost, remotePort, options)
     return {
       process,
-      waitForStartup: () => waitForSystemSshForwardStartup(process, localPort),
+      localPort: boundPort,
+      waitForStartup: () => waitForSystemSshForwardStartup(process, boundPort),
       close: () => waitForSystemSshForwardStop(process),
       dispose: () => {
         try {
@@ -77,23 +83,21 @@ export function startSystemSshPortForwardProcess(
   })
 }
 
-export function assertLocalForwardPortAvailable(localPort: number): Promise<void> {
+/**
+ * The port a system SSH forward will listen on. OpenSSH binds `-L 0` to a port it never
+ * reports, so port 0 is resolved to a free one here first.
+ */
+export function reserveLocalForwardPort(localPort: number): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer()
-    const cleanup = (): void => {
-      server.removeListener('error', onError)
-      server.removeListener('listening', onListening)
-    }
-    const onError = (err: Error): void => {
-      cleanup()
+    server.once('error', (err: Error) => {
       reject(new Error(`Local port 127.0.0.1:${localPort} is not available: ${err.message}`))
-    }
-    const onListening = (): void => {
-      cleanup()
-      server.close(() => resolve())
-    }
-    server.once('error', onError)
-    server.once('listening', onListening)
+    })
+    server.once('listening', () => {
+      const address = server.address()
+      const port = typeof address === 'object' && address ? address.port : localPort
+      server.close(() => resolve(port))
+    })
     server.listen(localPort, '127.0.0.1')
   })
 }
@@ -161,8 +165,10 @@ export function waitForSystemSshForwardStartup(
 export function waitForSystemSshForwardStop(process: ChildProcess): Promise<void> {
   return new Promise((resolve) => {
     let settled = false
+    let postKillTimer: ReturnType<typeof setTimeout> | undefined
     const cleanup = (): void => {
       clearTimeout(escalationTimer)
+      clearTimeout(postKillTimer)
       process.off('exit', onExit)
     }
     const finish = (): void => {
@@ -193,8 +199,18 @@ export function waitForSystemSshForwardStop(process: ChildProcess): Promise<void
       // Why: update/reconnect callers must not rebind while a stubborn ssh -L
       // process still owns the local port.
       kill('SIGKILL')
+      // Why a second timer: SIGKILL is never acknowledged, so if the runtime never reports the exit —
+      // a reparented child, a lost handle — nothing else can settle this promise and quit waits on it
+      // forever. Resolving here bounds teardown; it does not claim the child is gone.
+      postKillTimer = setTimeout(finish, SYSTEM_SSH_FORWARD_POST_KILL_TIMEOUT_MS)
     }, SYSTEM_SSH_FORWARD_STOP_TIMEOUT_MS)
 
+    // Why before any signal: a child that already exited needs no SIGTERM, and signalling a reaped pid
+    // can land on whatever the OS reassigned it to.
+    if (hasExited()) {
+      finish()
+      return
+    }
     process.once('exit', onExit)
     kill('SIGTERM')
   })

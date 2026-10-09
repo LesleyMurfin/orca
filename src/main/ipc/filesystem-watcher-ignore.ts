@@ -18,24 +18,45 @@ export const WATCHER_IGNORE_DIRS: string[] = [
 // closed — one entry over the cap and @parcel/watcher silently loses ALL
 // daemon-side exclusions, so fseventsd delivers every node_modules/.git event
 // to this process (measured ~29x client CPU plus daemon-side delivery load).
-// Keep the 8 highest-churn dirs as plain paths (daemon-excluded) and demote
-// the rest to globs (userspace-filtered). Ordering of WATCHER_IGNORE_DIRS is
-// therefore meaningful: the first 8 get true daemon-side exclusion on macOS.
+// The first 8 names get root-level daemon exclusions; the regex covers all names at every depth.
 export const MACOS_FSEVENTS_EXCLUSION_PATH_LIMIT = 8
 
-export function buildParcelWatcherIgnoreOption(ignoreDirs: readonly string[]): string[] {
-  if (process.platform !== 'darwin') {
-    // Linux/Windows: @parcel/watcher resolves plain names to top-level-only
-    // absolute paths, so nested node_modules/.git/build/etc. (monorepos) get
-    // fully watched — on Linux that means one inotify watch per nested dir,
-    // exhausting fs.inotify.max_user_watches. Nested globs match at any depth
-    // (and **/dir still matches the top-level dir), pruning those subtrees.
-    return ignoreDirs.flatMap((dir) => [`**/${dir}`, `**/${dir}/**`])
+export type ParcelWatcherIgnoreOptions = {
+  ignore?: string[]
+  // @parcel/watcher's wrapper preserves this native option even though its
+  // public TypeScript declaration omits it. See parcel-bundler/watcher#244.
+  ignoreGlobs?: string[]
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
+}
+
+function buildNestedDirectoryRegex(ignoreDirs: readonly string[]): string {
+  const alternatives = ignoreDirs.map(escapeRegex).join('|')
+  if (process.platform === 'win32') {
+    return `^(?:[^\\\\/]+[\\\\/])*(?:${alternatives})(?:[\\\\/][\\s\\S]*)?$`
   }
-  return [
-    ...ignoreDirs.slice(0, MACOS_FSEVENTS_EXCLUSION_PATH_LIMIT),
-    ...ignoreDirs
-      .slice(MACOS_FSEVENTS_EXCLUSION_PATH_LIMIT)
-      .flatMap((dir) => [`**/${dir}`, `**/${dir}/**`])
-  ]
+  // Why: backslash is a legal POSIX filename character, not a path separator.
+  return `^(?:[^/]+/)*(?:${alternatives})(?:/[\\s\\S]*)?$`
+}
+
+export function buildParcelWatcherIgnoreOptions(
+  ignoreDirs: readonly string[]
+): ParcelWatcherIgnoreOptions {
+  if (ignoreDirs.length === 0) {
+    return {}
+  }
+  if (process.platform !== 'darwin') {
+    // Why: Parcel 2.5.6 turns leading-** globs into nested-lookahead regexes
+    // that are pathological in native std::regex (10-17x slower upstream).
+    // One component-aware regex preserves nested pruning without that CPU cost.
+    return { ignoreGlobs: [buildNestedDirectoryRegex(ignoreDirs)] }
+  }
+  const daemonExcludedDirs = ignoreDirs.slice(0, MACOS_FSEVENTS_EXCLUSION_PATH_LIMIT)
+  return {
+    ignore: [...daemonExcludedDirs],
+    // Why: plain exclusions resolve under the root, leaving nested generated directories unfiltered.
+    ignoreGlobs: [buildNestedDirectoryRegex(ignoreDirs)]
+  }
 }

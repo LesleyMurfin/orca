@@ -1,13 +1,17 @@
 import {
   AGENT_STATUS_STALE_AFTER_MS,
+  isFreshNonDoneAgentStatus,
   type AgentStatusState,
   type AgentType
 } from './agent-status-types'
+import { resolveCanonicalPaneAgentIdentity } from './pane-agent-identity-adapter'
+import type { TuiAgent } from './tui-agent'
 
 type ExistingAgentIdentity = {
   agentType?: AgentType
   state: AgentStatusState
   updatedAt: number
+  restoredUnconfirmed?: boolean
 }
 
 type AgentIdentityResolution = {
@@ -36,7 +40,7 @@ function isActiveExistingIdentity(
   now: number,
   staleAfterMs: number
 ): boolean {
-  return existing.state !== 'done' && now - existing.updatedAt <= staleAfterMs
+  return isFreshNonDoneAgentStatus(existing, now, staleAfterMs)
 }
 
 export function resolveAgentStatusIdentity(args: {
@@ -61,6 +65,11 @@ export function resolveAgentStatusIdentity(args: {
       inheritedFromActivePane: false
     }
   }
+  const canonical = resolveCanonicalPaneAgentIdentity({
+    hookAgent: incomingAgentType as TuiAgent,
+    hookIsLive: true,
+    completedHookAgent: args.existing.state === 'done' ? (existingAgentType as TuiAgent) : undefined
+  })
   if (isActiveExistingIdentity(args.existing, args.now, staleAfterMs)) {
     return {
       // Why: child agent CLIs inherit ORCA_PANE_KEY from their parent terminal.
@@ -72,7 +81,7 @@ export function resolveAgentStatusIdentity(args: {
   }
 
   return {
-    agentType: incomingAgentType,
+    agentType: canonical.agent ?? incomingAgentType,
     inheritedFromActivePane: false
   }
 }

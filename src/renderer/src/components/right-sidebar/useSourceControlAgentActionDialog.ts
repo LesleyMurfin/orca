@@ -3,17 +3,21 @@ import { getAgentCatalog } from '@/lib/agent-catalog'
 import {
   pickSourceControlLaunchAgent,
   resolveSourceControlLaunchAgentScope
-} from '@/lib/source-control-launch-agent-selection'
+} from '../../../../shared/source-control-launch-agent-selection'
 import { useAppStore } from '@/store'
 import { useRepoById } from '@/store/selectors'
 import { renderSourceControlActionCommandTemplate } from '../../../../shared/source-control-ai-actions'
+import { getRepoExecutionHostId } from '../../../../shared/execution-host'
 import { isTuiAgentEnabled } from '../../../../shared/tui-agent-selection'
-import type { TuiAgent } from '../../../../shared/types'
+import type { TuiAgent } from '../../../../shared/tui-agent'
 import type { SourceControlAgentActionDialogProps } from './SourceControlAgentActionDialog'
 import type { UseSourceControlAgentActionDialogResult } from './source-control-agent-action-dialog-result'
+import { ensureLocalRuntimeCapabilities } from '@/runtime/local-runtime-capabilities'
+import { sourceControlLaunchAppliesAgentArgs } from './source-control-launch-agent-args-applicability'
 import { useSavedSourceControlAgentActionAutoStart } from './useSavedSourceControlAgentActionAutoStart'
 import {
   buildSourceControlAgentSaveTargets,
+  buildSourceControlAgentScopeNote,
   buildSourceControlAgentStatusCopy,
   isSourceControlAgentDetectedAndEnabled
 } from './source-control-agent-action-dialog-support'
@@ -37,6 +41,8 @@ export function useSourceControlAgentActionDialog({
   launchSource,
   savedAgentId,
   onSaveAgentDefault,
+  onLaunchAccepted,
+  onLaunchAborted,
   onLaunched,
   onStart
 }: SourceControlAgentActionDialogProps): UseSourceControlAgentActionDialogResult {
@@ -108,22 +114,27 @@ export function useSourceControlAgentActionDialog({
     setSaveLaunchRecipe(true)
     setSaveTargetValue(defaultSaveTargetValue)
     let stale = false
-    void refreshDetectedAgents().then((nextAgents) => {
-      if (stale || openCycleRef.current !== cycle) {
-        return
+    // Why: whether CLI arguments apply is read synchronously from the local runtime's
+    // capabilities; settling them alongside detection keeps the field from appearing for a
+    // frame on a launch that turns out to be structured.
+    void Promise.all([refreshDetectedAgents(), ensureLocalRuntimeCapabilities()]).then(
+      ([nextAgents]) => {
+        if (stale || openCycleRef.current !== cycle) {
+          return
+        }
+        setSelectedAgent(
+          (current) =>
+            current ??
+            pickSourceControlLaunchAgent({
+              savedAgent: savedAgentId,
+              defaultAgent: settings?.defaultTuiAgent,
+              detectedAgents: nextAgents,
+              disabledAgents
+            })
+        )
+        setDetectedOpenCycle(cycle)
       }
-      setSelectedAgent(
-        (current) =>
-          current ??
-          pickSourceControlLaunchAgent({
-            savedAgent: savedAgentId,
-            defaultAgent: settings?.defaultTuiAgent,
-            detectedAgents: nextAgents,
-            disabledAgents
-          })
-      )
-      setDetectedOpenCycle(cycle)
-    })
+    )
     return () => {
       stale = true
     }
@@ -161,6 +172,16 @@ export function useSourceControlAgentActionDialog({
     basePrompt: baseCommandInput
   })
   const trimmedCommandInput = commandInput.trim()
+  // Why: a structured native chat session reads no CLI arguments, so the field is absent on
+  // launches that would take that route and present on the terminal launches that apply them.
+  // Resolved on every render rather than memoised: it reads the live store and the local
+  // runtime's capabilities, neither of which is in a dependency list.
+  const agentArgsApply = sourceControlLaunchAppliesAgentArgs({
+    agent: selectedAgent,
+    worktreeId,
+    repoId,
+    ...(repo ? { executionHostId: getRepoExecutionHostId(repo) } : {})
+  })
 
   const { deliveryPlan, resetDeliveryPlan, isStarting, handleStart, startWithDetectedAgents } =
     useSourceControlAgentActionStart({
@@ -168,6 +189,7 @@ export function useSourceControlAgentActionDialog({
       commandInput,
       trimmedCommandInput,
       agentArgs,
+      agentArgsApply,
       commandTemplate,
       saveLaunchRecipe,
       saveTargetValue,
@@ -187,6 +209,8 @@ export function useSourceControlAgentActionDialog({
       refreshDetectedAgents,
       onStart,
       onSaveAgentDefault,
+      onLaunchAccepted,
+      onLaunchAborted,
       onLaunched,
       onClose: closeDialog
     })
@@ -247,47 +271,30 @@ export function useSourceControlAgentActionDialog({
     detecting
   })
 
-  const onSelectedAgentChange = useCallback(
-    (agent: TuiAgent | null) => {
-      setSelectedAgent(agent)
-      resetDeliveryPlan()
-    },
+  // Why: editing any launch field invalidates the previewed delivery plan.
+  const resetPlanAfter = useCallback(
+    <T>(apply: (value: T) => void) =>
+      (value: T): void => {
+        apply(value)
+        resetDeliveryPlan()
+      },
     [resetDeliveryPlan]
   )
-  const onAgentArgsChange = useCallback(
-    (value: string) => {
-      setAgentArgs(value)
-      resetDeliveryPlan()
-    },
-    [resetDeliveryPlan]
+  const onSelectedAgentChange = useMemo(() => resetPlanAfter(setSelectedAgent), [resetPlanAfter])
+  const onAgentArgsChange = useMemo(() => resetPlanAfter(setAgentArgs), [resetPlanAfter])
+  const onCommandTemplateChange = useMemo(
+    () => resetPlanAfter(setCommandTemplate),
+    [resetPlanAfter]
   )
-  const onCommandTemplateChange = useCallback(
-    (value: string) => {
-      setCommandTemplate(value)
-      resetDeliveryPlan()
-    },
-    [resetDeliveryPlan]
-  )
-  const onSaveLaunchRecipeChange = useCallback(
-    (value: boolean) => {
-      setSaveLaunchRecipe(value)
-      resetDeliveryPlan()
-    },
-    [resetDeliveryPlan]
+  const onSaveLaunchRecipeChange = useMemo(
+    () => resetPlanAfter(setSaveLaunchRecipe),
+    [resetPlanAfter]
   )
 
-  const agentScopeNote = useMemo(() => {
-    if (!launchAgentScope.overridesGlobalAgent) {
-      return null
-    }
-    const catalog = getAgentCatalog()
-    const labelFor = (agentId: TuiAgent | null): string =>
-      catalog.find((entry) => entry.id === agentId)?.label ?? agentId ?? ''
-    return {
-      effectiveAgentLabel: labelFor(launchAgentScope.effectiveAgentId),
-      globalAgentLabel: labelFor(launchAgentScope.globalAgentId)
-    }
-  }, [launchAgentScope])
+  const agentScopeNote = useMemo(
+    () => buildSourceControlAgentScopeNote(launchAgentScope),
+    [launchAgentScope]
+  )
 
   return {
     handleOpenChange,
@@ -299,6 +306,7 @@ export function useSourceControlAgentActionDialog({
     detecting,
     statusCopy,
     agentArgs,
+    agentArgsApply,
     commandTemplate,
     saveLaunchRecipe,
     saveTargetValue,

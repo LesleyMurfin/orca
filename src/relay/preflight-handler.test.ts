@@ -1,17 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildPosixCommandPathLookupScript } from '../shared/posix-command-path-lookup'
 
-const { execFileAsyncMock } = vi.hoisted(() => ({
-  execFileAsyncMock: vi.fn()
+const { execFileAsyncMock, runProcessMock } = vi.hoisted(() => ({
+  execFileAsyncMock: vi.fn(),
+  runProcessMock: vi.fn()
 }))
 
-const { isPwshAvailableMock, isWslAvailableMock, listWslDistrosMock, isGitBashAvailableMock } =
-  vi.hoisted(() => ({
-    isPwshAvailableMock: vi.fn(),
-    isWslAvailableMock: vi.fn(),
-    listWslDistrosMock: vi.fn(),
-    isGitBashAvailableMock: vi.fn()
-  }))
+const {
+  isPwshAvailableAsyncMock,
+  isWslAvailableAsyncMock,
+  listWslDistrosAsyncMock,
+  isGitBashAvailableMock
+} = vi.hoisted(() => ({
+  isPwshAvailableAsyncMock: vi.fn(),
+  isWslAvailableAsyncMock: vi.fn(),
+  listWslDistrosAsyncMock: vi.fn(),
+  isGitBashAvailableMock: vi.fn()
+}))
 
 vi.mock('child_process', () => {
   const execFileWithPromisify = Object.assign(vi.fn(), {
@@ -20,15 +25,15 @@ vi.mock('child_process', () => {
   return { execFile: execFileWithPromisify }
 })
 
-vi.mock('../main/pwsh', () => ({ isPwshAvailable: isPwshAvailableMock }))
+vi.mock('../main/pwsh', () => ({ isPwshAvailableAsync: isPwshAvailableAsyncMock }))
 vi.mock('../main/wsl', () => ({
-  isWslAvailable: isWslAvailableMock,
-  listWslDistros: listWslDistrosMock
+  isWslAvailableAsync: isWslAvailableAsyncMock,
+  listWslDistrosAsync: listWslDistrosAsyncMock
 }))
 vi.mock('../main/git-bash', () => ({ isGitBashAvailable: isGitBashAvailableMock }))
+vi.mock('../shared/child-process/run-process', () => ({ runProcess: runProcessMock }))
 
 import {
-  buildCommandLookupSpec,
   buildCommandLookupSpecs,
   hasAbsoluteCommandPath,
   isCommandOnPathForRelay,
@@ -61,43 +66,11 @@ function fishLookupArgs(command: string): string[] {
 
 beforeEach(() => {
   execFileAsyncMock.mockReset()
-  isPwshAvailableMock.mockReset()
-  isWslAvailableMock.mockReset()
-  listWslDistrosMock.mockReset()
+  runProcessMock.mockReset()
+  isPwshAvailableAsyncMock.mockReset()
+  isWslAvailableAsyncMock.mockReset()
+  listWslDistrosAsyncMock.mockReset()
   isGitBashAvailableMock.mockReset()
-})
-
-describe('buildCommandLookupSpec', () => {
-  it('uses where.exe on native Windows SSH hosts', () => {
-    expect(buildCommandLookupSpec('codex', 'win32')).toEqual({
-      file: 'where.exe',
-      args: ['codex'],
-      windowsHide: true
-    })
-  })
-
-  it('falls back to sh for POSIX probes without a configured shell', () => {
-    expect(buildCommandLookupSpec('codex', 'linux', {}, null)).toEqual({
-      file: '/bin/sh',
-      args: lookupArgs('codex')
-    })
-  })
-
-  it('uses the configured remote shell for POSIX probes', () => {
-    expect(buildCommandLookupSpec('codex', 'linux', { SHELL: '/bin/zsh' }, '/bin/zsh')).toEqual({
-      file: '/bin/zsh',
-      args: lookupArgs('codex', '-ilc')
-    })
-  })
-
-  it('quotes command names in shell probes', () => {
-    expect(
-      buildCommandLookupSpec("agent'cli", 'linux', { SHELL: '/bin/bash' }, '/bin/bash')
-    ).toEqual({
-      file: '/bin/bash',
-      args: lookupArgs("agent'cli", '-ilc')
-    })
-  })
 })
 
 describe('buildCommandLookupSpecs', () => {
@@ -209,30 +182,49 @@ describe('isCommandOnPathForRelay', () => {
 })
 
 describe('hasAbsoluteCommandPath', () => {
-  it('ignores banners and shell function output', () => {
-    expect(hasAbsoluteCommandPath('/tmp/not-the-agent\ncodex is a shell function\n', 'linux')).toBe(
-      false
-    )
-  })
-
   it('ignores unmarked POSIX absolute paths from shell startup output', () => {
     expect(hasAbsoluteCommandPath('/tmp/not-the-agent\n', 'linux')).toBe(false)
-  })
-
-  it('recognizes a sentinel-marked command path amid shell startup and exit output', () => {
-    expect(
-      hasAbsoluteCommandPath('welcome\n__ORCA_AGENT_PATH__/opt/bin/codex\nlogout-banner\n', 'linux')
-    ).toBe(true)
-  })
-
-  it('recognizes Windows absolute command paths', () => {
-    expect(
-      hasAbsoluteCommandPath('C:\\Users\\alice\\AppData\\Roaming\\npm\\codex.cmd\r\n', 'win32')
-    ).toBe(true)
   })
 })
 
 describe('PreflightHandler', () => {
+  it('reports a requested version from the resolved execution-host binary', async () => {
+    execFileAsyncMock.mockResolvedValue({
+      stdout: '__ORCA_AGENT_PATH__/home/dev/.local/bin/claude\n'
+    })
+    runProcessMock.mockResolvedValue({
+      code: 0,
+      signal: null,
+      stdout: '2.1.261 (Claude Code)\n',
+      stderr: '',
+      timedOut: false
+    })
+    const requestHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>()
+    const dispatcher = {
+      onRequest: vi.fn(
+        (method: string, handler: (params: Record<string, unknown>) => Promise<unknown>) => {
+          requestHandlers.set(method, handler)
+        }
+      )
+    }
+    new PreflightHandler(dispatcher as never)
+
+    await expect(
+      requestHandlers.get('preflight.detectAgents')!({
+        commands: [{ id: 'claude', cmd: 'claude', reportVersion: true }]
+      })
+    ).resolves.toEqual({
+      agents: ['claude'],
+      versions: { claude: '2.1.261 (Claude Code)' }
+    })
+    expect(runProcessMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        program: '/home/dev/.local/bin/claude',
+        args: ['--version']
+      })
+    )
+  })
+
   it('honors required commands when reporting detected agents', async () => {
     execFileAsyncMock.mockImplementation(async (_file, args) => {
       const script = String(args[1])
@@ -319,9 +311,9 @@ describe('PreflightHandler', () => {
       configurable: true,
       value: 'win32'
     })
-    isWslAvailableMock.mockReturnValue(true)
-    listWslDistrosMock.mockReturnValue(['Ubuntu'])
-    isPwshAvailableMock.mockReturnValue(true)
+    isWslAvailableAsyncMock.mockResolvedValue(true)
+    listWslDistrosAsyncMock.mockResolvedValue(['Ubuntu'])
+    isPwshAvailableAsyncMock.mockResolvedValue(true)
     isGitBashAvailableMock.mockReturnValue(true)
 
     const requestHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>()

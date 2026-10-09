@@ -24,176 +24,37 @@
  *   - Crash/SIGKILL recovery — that is covered by daemon history checkpoints.
  */
 
-import { readFileSync, existsSync } from 'node:fs'
-import type { ElectronApplication, Page } from '@stablyai/playwright-test'
+import type { ElectronApplication } from '@stablyai/playwright-test'
 import { test, expect } from './helpers/orca-app'
-import { TEST_REPO_PATH_FILE } from './global-setup'
 import {
-  discoverActivePtyId,
   execInTerminal,
-  waitForActiveTerminalManager,
   waitForTerminalOutput,
   waitForPaneCount,
   getTerminalContent,
   splitActiveTerminalPane
 } from './helpers/terminal'
-import {
-  waitForSessionReady,
-  waitForActiveWorktree,
-  getActiveWorktreeId,
-  getActiveTabId,
-  getWorktreeTabs,
-  ensureTerminalVisible
-} from './helpers/store'
-import { attachRepoAndOpenTerminal, createRestartSession } from './helpers/orca-restart'
+import { getActiveTabId, getWorktreeTabs } from './helpers/store'
+import { createRestartSession } from './helpers/orca-restart'
 import { PTY_SESSION_ID_SEPARATOR } from '../../src/shared/pty-session-id-format'
+import {
+  seededRepoPathOrSkip,
+  bootstrapFirstLaunch,
+  bootstrapRestoredLaunch,
+  waitForTerminalActiveLine,
+  readTerminalActiveLine,
+  setPaneTitleFromTerminalMenu,
+  getTabCustomTitle,
+  expectSavedLayoutToContainTitle
+} from './helpers/terminal-restart-persistence'
 
-// Why: each test in this file does a full quit→relaunch cycle, which spawns
-// two Electron instances back-to-back. Running in serial keeps the isolated
-// userDataDirs from competing for the same Electron cache lock on cold start
-// and keeps the failure mode interpretable when something goes wrong.
+// Each test performs a full quit/relaunch cycle; serialize them to avoid
+// competing Electron cache locks and to keep failures interpretable.
 test.describe.configure({ mode: 'serial' })
-
-/**
- * Shared bootstrap for a *first* launch: attach the seeded test repo,
- * activate its worktree, ensure a terminal is mounted, and return the
- * PTY id we can drive with `execInTerminal`.
- *
- * Why: every test in this file needs the exact same starting state on the
- * first launch. Inlining it would obscure the thing each test is actually
- * asserting about the *second* launch.
- */
-async function bootstrapFirstLaunch(
-  page: Page,
-  repoPath: string
-): Promise<{ worktreeId: string; ptyId: string }> {
-  const worktreeId = await attachRepoAndOpenTerminal(page, repoPath)
-  await waitForSessionReady(page)
-  await waitForActiveWorktree(page)
-  await ensureTerminalVisible(page)
-
-  const hasPaneManager = await waitForActiveTerminalManager(page, 30_000)
-    .then(() => true)
-    .catch(() => false)
-  test.skip(
-    !hasPaneManager,
-    'Electron automation in this environment never mounts the TerminalPane manager, so restart-persistence assertions would only fail on harness setup.'
-  )
-  await waitForPaneCount(page, 1, 30_000)
-
-  const ptyId = await discoverActivePtyId(page)
-  return { worktreeId, ptyId }
-}
-
-/**
- * Shared bootstrap for a *second* launch: just wait for the session to
- * restore, and confirm the previously-active worktree is the active one
- * again so downstream assertions operate against the right worktree.
- */
-async function bootstrapRestoredLaunch(page: Page, expectedWorktreeId: string): Promise<void> {
-  await waitForSessionReady(page)
-  await expect
-    .poll(async () => getActiveWorktreeId(page), { timeout: 10_000 })
-    .toBe(expectedWorktreeId)
-  await ensureTerminalVisible(page)
-  // Why: the PaneManager remounts asynchronously after session hydration. The
-  // restored terminal surface is what we're about to assert against, so make
-  // sure it exists before any content/layout assertion races.
-  await waitForActiveTerminalManager(page, 30_000)
-  await waitForPaneCount(page, 1, 30_000)
-}
-
-async function setPaneTitleFromTerminalMenu(page: Page, title: string): Promise<void> {
-  const modifiers: ('Alt' | 'Control' | 'Meta' | 'Shift')[] =
-    process.platform === 'win32' ? ['Control'] : []
-  await page
-    .locator('.xterm:visible')
-    .first()
-    .click({ button: 'right', position: { x: 40, y: 40 }, modifiers })
-  await page.getByText('Set Title…', { exact: true }).click()
-  const titleInput = page.locator('.pane-title-input').first()
-  await expect(titleInput).toBeVisible()
-  await titleInput.fill(title)
-  await titleInput.press('Enter')
-}
-
-async function getTabCustomTitle(
-  page: Page,
-  worktreeId: string,
-  tabId: string
-): Promise<string | null> {
-  return page.evaluate(
-    ({ targetWorktreeId, targetTabId }) => {
-      const state = window.__store!.getState()
-      const tab = (state.tabsByWorktree[targetWorktreeId] ?? []).find(
-        (entry) => entry.id === targetTabId
-      )
-      return tab?.customTitle ?? null
-    },
-    { targetWorktreeId: worktreeId, targetTabId: tabId }
-  )
-}
-
-async function readTerminalActiveLine(page: Page): Promise<string | null> {
-  const tabId = await getActiveTabId(page)
-  if (!tabId) {
-    return null
-  }
-  return page.evaluate((tabId) => {
-    const manager = window.__paneManagers?.get(tabId)
-    const pane = manager?.getActivePane?.() ?? manager?.getPanes?.()[0] ?? null
-    const buffer = pane?.terminal?.buffer.active
-    if (!buffer) {
-      return null
-    }
-    const cursorLine = buffer.baseY + buffer.cursorY
-    return buffer.getLine(cursorLine)?.translateToString(true) ?? null
-  }, tabId)
-}
-
-async function waitForTerminalActiveLine(page: Page, expectedText: string): Promise<string> {
-  await expect
-    .poll(async () => (await readTerminalActiveLine(page))?.includes(expectedText), {
-      timeout: 15_000,
-      message: `Terminal cursor line did not contain "${expectedText}"`
-    })
-    .toBe(true)
-
-  const activeLine = await readTerminalActiveLine(page)
-  if (activeLine === null) {
-    throw new Error('Terminal cursor line disappeared after settling')
-  }
-  return activeLine
-}
-
-async function expectSavedLayoutToContainTitle(
-  page: Page,
-  tabId: string,
-  title: string
-): Promise<void> {
-  await expect
-    .poll(
-      () =>
-        page.evaluate(
-          ({ targetTabId, title }) => {
-            const layout = window.__store!.getState().terminalLayoutsByTabId[targetTabId]
-            return Object.values(layout?.titlesByLeafId ?? {}).includes(title)
-          },
-          { targetTabId: tabId, title }
-        ),
-      { timeout: 3_000 }
-    )
-    .toBe(true)
-}
 
 test.describe('Terminal restart persistence', () => {
   test('scrollback survives clean quit and relaunch', async (// oxlint-disable-next-line no-empty-pattern -- Playwright's second fixture arg is testInfo; the first must be an object destructure to opt out of the default fixture set.
   {}, testInfo) => {
-    const repoPath = readFileSync(TEST_REPO_PATH_FILE, 'utf-8').trim()
-    if (!repoPath || !existsSync(repoPath)) {
-      test.skip(true, 'Global setup did not produce a seeded test repo')
-      return
-    }
+    const repoPath = seededRepoPathOrSkip()
 
     const session = createRestartSession(testInfo)
     let firstApp: ElectronApplication | null = null
@@ -249,11 +110,7 @@ test.describe('Terminal restart persistence', () => {
 
   test('daemon snapshot relaunch preserves the cursor on the shell prompt', async (// oxlint-disable-next-line no-empty-pattern -- Playwright's second fixture arg is testInfo; the first must be an object destructure to opt out of the default fixture set.
   {}, testInfo) => {
-    const repoPath = readFileSync(TEST_REPO_PATH_FILE, 'utf-8').trim()
-    if (!repoPath || !existsSync(repoPath)) {
-      test.skip(true, 'Global setup did not produce a seeded test repo')
-      return
-    }
+    const repoPath = seededRepoPathOrSkip()
 
     const session = createRestartSession(testInfo)
     let firstApp: ElectronApplication | null = null
@@ -267,7 +124,13 @@ test.describe('Terminal restart persistence', () => {
 
       const prompt = `ORCA_RESTART_PROMPT_${Date.now()}_GT `
       const marker = `ORCA_CURSOR_RESTART_${Date.now()}`
-      await execInTerminal(firstLaunch.page, ptyId, `export PS1='${prompt}'; PROMPT='${prompt}'`)
+      const promptCommand =
+        process.platform === 'win32'
+          ? `function global:prompt { '${prompt}' }`
+          : `export PS1='${prompt}'; PROMPT='${prompt}'`
+      // Why: the Windows default shell is PowerShell, whose prompt is a
+      // function; PS1/PROMPT assignments remain the Bash/Zsh path.
+      await execInTerminal(firstLaunch.page, ptyId, promptCommand)
       await waitForTerminalActiveLine(firstLaunch.page, prompt.trim())
       await execInTerminal(firstLaunch.page, ptyId, `echo ${marker}`)
       await waitForTerminalOutput(firstLaunch.page, marker)
@@ -313,11 +176,7 @@ test.describe('Terminal restart persistence', () => {
 
   test('active worktree and terminal tab count survive restart', async (// oxlint-disable-next-line no-empty-pattern -- Playwright's second fixture arg is testInfo; the first must be an object destructure to opt out of the default fixture set.
   {}, testInfo) => {
-    const repoPath = readFileSync(TEST_REPO_PATH_FILE, 'utf-8').trim()
-    if (!repoPath || !existsSync(repoPath)) {
-      test.skip(true, 'Global setup did not produce a seeded test repo')
-      return
-    }
+    const repoPath = seededRepoPathOrSkip()
 
     const session = createRestartSession(testInfo)
     let firstApp: ElectronApplication | null = null
@@ -378,11 +237,7 @@ test.describe('Terminal restart persistence', () => {
 
   test('restored Set Title pane label survives agent title churn', async (// oxlint-disable-next-line no-empty-pattern -- Playwright's second fixture arg is testInfo; the first must be an object destructure to opt out of the default fixture set.
   {}, testInfo) => {
-    const repoPath = readFileSync(TEST_REPO_PATH_FILE, 'utf-8').trim()
-    if (!repoPath || !existsSync(repoPath)) {
-      test.skip(true, 'Global setup did not produce a seeded test repo')
-      return
-    }
+    const repoPath = seededRepoPathOrSkip()
 
     const session = createRestartSession(testInfo)
     let firstApp: ElectronApplication | null = null
@@ -451,11 +306,7 @@ test.describe('Terminal restart persistence', () => {
 
   test('idle session does not spam session.set writes', async (// oxlint-disable-next-line no-empty-pattern -- Playwright's second fixture arg is testInfo; the first must be an object destructure to opt out of the default fixture set.
   {}, testInfo) => {
-    const repoPath = readFileSync(TEST_REPO_PATH_FILE, 'utf-8').trim()
-    if (!repoPath || !existsSync(repoPath)) {
-      test.skip(true, 'Global setup did not produce a seeded test repo')
-      return
-    }
+    const repoPath = seededRepoPathOrSkip()
 
     const session = createRestartSession(testInfo)
     let app: ElectronApplication | null = null

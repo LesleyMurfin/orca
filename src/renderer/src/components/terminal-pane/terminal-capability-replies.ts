@@ -1,3 +1,4 @@
+import { registerTerminalDa1Owner } from '../../lib/pane-manager/terminal-da1-ownership'
 import type { IDisposable, IParser, Terminal } from '@xterm/xterm'
 import {
   sendTerminalOscColorQueryReplies as sendTerminalOscColorQueryRepliesForColors,
@@ -5,9 +6,13 @@ import {
   terminalOscColorQuerySlotsForBody,
   type TerminalOscColorQuerySlot
 } from '../../../../shared/terminal-osc-color-reply'
+import { guardParserHandler } from './terminal-parser-handler-guard'
 
 export const DEFAULT_DA1_RESPONSE = '\x1b[?1;2c'
 export const CONPTY_DA1_RESPONSE = '\x1b[?61;4c'
+
+// DEC DA1 "Sixel graphics" capability code; image tools feature-detect on it.
+const SIXEL_DA1_ATTRIBUTE = '4'
 
 type TerminalCapabilityRepliesDeps = {
   terminal: Pick<Terminal, 'cols' | 'rows' | 'element' | 'options'>
@@ -15,6 +20,29 @@ type TerminalCapabilityRepliesDeps = {
   sendInput: (data: string) => boolean | void
   isReplaying: () => boolean
   da1Response?: string
+  // Resolved per query so a live inline-images toggle changes what the next DA1 advertises.
+  sixelSupported?: () => boolean
+  /** Why a thunk, like sixelSupported: the pane's launch agent may not be registered
+   *  in the store yet when the handlers are installed, so a boolean captured here
+   *  answers jcode's burst anyway. Why skip at all: jcode themes itself, and the reply
+   *  can land before its composer is ready and render as pre-typed text. */
+  skipOscColorQueryReplies?: () => boolean
+}
+
+// Adds Sixel to a DA1 response so DA1-detecting image tools emit Sixel; idempotent.
+export function withSixelDa1Attribute(response: string): string {
+  const prefix = '\x1b[?'
+  if (!response.startsWith(prefix) || !response.endsWith('c')) {
+    return response
+  }
+  const params = response.slice(prefix.length, -1).split(';').filter(Boolean)
+  if (params.length === 0 || !params.every((param) => /^\d+$/.test(param))) {
+    return response
+  }
+  if (params.includes(SIXEL_DA1_ATTRIBUTE)) {
+    return response
+  }
+  return `${prefix}${[...params, SIXEL_DA1_ATTRIBUTE].join(';')}c`
 }
 
 function isPrimaryDeviceAttributesQuery(params: (number | number[])[]): boolean {
@@ -118,37 +146,49 @@ export function installTerminalCapabilityReplyHandlers(
   deps: TerminalCapabilityRepliesDeps
 ): IDisposable {
   const disposables = [
-    deps.parser.registerCsiHandler({ final: 'c' }, (params) => {
-      if (!isPrimaryDeviceAttributesQuery(params)) {
-        return false
-      }
-      // Why: restored scrollback may contain old DA1 queries; answering those
-      // into the fresh shell recreates the stray-input leak this handler fixes.
-      if (!deps.isReplaying()) {
-        deps.sendInput(deps.da1Response ?? DEFAULT_DA1_RESPONSE)
-      }
-      return true
-    }),
-    deps.parser.registerOscHandler(10, (data) => {
-      const slots = terminalOscColorQuerySlotsForBody(10, data.trim())
-      if (!slots) {
-        return false
-      }
-      if (deps.isReplaying()) {
-        return true
-      }
-      return sendTerminalOscColorQueryRepliesForSlots(slots, deps.terminal, deps.sendInput)
-    }),
-    deps.parser.registerOscHandler(11, (data) => {
-      const slots = terminalOscColorQuerySlotsForBody(11, data.trim())
-      if (!slots) {
-        return false
-      }
-      if (deps.isReplaying()) {
-        return true
-      }
-      return sendTerminalOscColorQueryRepliesForSlots(slots, deps.terminal, deps.sendInput)
-    })
+    registerTerminalDa1Owner(deps.terminal, () =>
+      deps.parser.registerCsiHandler(
+        { final: 'c' },
+        guardParserHandler('csi-da1', (params) => {
+          if (!isPrimaryDeviceAttributesQuery(params)) {
+            return false
+          }
+          // Why: restored scrollback may contain old DA1 queries; answering those
+          // into the fresh shell recreates the stray-input leak this handler fixes.
+          if (!deps.isReplaying()) {
+            const base = deps.da1Response ?? DEFAULT_DA1_RESPONSE
+            deps.sendInput(deps.sixelSupported?.() ? withSixelDa1Attribute(base) : base)
+          }
+          return true
+        })
+      )
+    ),
+    deps.parser.registerOscHandler(
+      10,
+      guardParserHandler('osc-10-color-query', (data) => {
+        const slots = terminalOscColorQuerySlotsForBody(10, data.trim())
+        if (!slots) {
+          return false
+        }
+        if (deps.isReplaying() || deps.skipOscColorQueryReplies?.() === true) {
+          return true
+        }
+        return sendTerminalOscColorQueryRepliesForSlots(slots, deps.terminal, deps.sendInput)
+      })
+    ),
+    deps.parser.registerOscHandler(
+      11,
+      guardParserHandler('osc-11-color-query', (data) => {
+        const slots = terminalOscColorQuerySlotsForBody(11, data.trim())
+        if (!slots) {
+          return false
+        }
+        if (deps.isReplaying() || deps.skipOscColorQueryReplies?.() === true) {
+          return true
+        }
+        return sendTerminalOscColorQueryRepliesForSlots(slots, deps.terminal, deps.sendInput)
+      })
+    )
   ]
 
   return {

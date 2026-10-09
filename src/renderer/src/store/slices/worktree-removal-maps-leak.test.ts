@@ -21,7 +21,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type * as AgentStatusModule from '@/lib/agent-status'
-import type { BrowserPage, BrowserWorkspace } from '../../../../shared/types'
+import type { BrowserPage, BrowserWorkspace } from '../../../../shared/browser-workspace-types'
 import {
   getAgentHibernationPaneOutputEpoch,
   recordAgentHibernationPaneOutput,
@@ -121,6 +121,11 @@ describe('worktree removal evicts the per-worktree + per-page maps it previously
         [WT1]: [makeOpenFile({ id: '/path/wt1/closed.ts', worktreeId: WT1 })],
         [WT2]: [makeOpenFile({ id: '/path/wt2/closed.ts', worktreeId: WT2 })]
       },
+      recentlyClosedTerminalTabsByWorktree: {
+        [WT1]: [{ startupCwd: '/path/wt1' }],
+        [WT2]: [{ startupCwd: '/path/wt2' }]
+      },
+      recentlyClosedTabKindsByWorktree: { [WT1]: ['terminal'], [WT2]: ['terminal'] },
       defaultTerminalTabsAppliedByWorktreeId: { [WT1]: true, [WT2]: true }
     })
   }
@@ -135,10 +140,14 @@ describe('worktree removal evicts the per-worktree + per-page maps it previously
     // Evicted for the removed worktree.
     expect(s.remoteStatusesByWorktree[WT1]).toBeUndefined()
     expect(s.recentlyClosedEditorTabsByWorktree[WT1]).toBeUndefined()
+    expect(s.recentlyClosedTerminalTabsByWorktree[WT1]).toBeUndefined()
+    expect(s.recentlyClosedTabKindsByWorktree[WT1]).toBeUndefined()
     expect(s.defaultTerminalTabsAppliedByWorktreeId[WT1]).toBeUndefined()
     // Retained for the surviving worktree (guard over-eviction).
     expect(s.remoteStatusesByWorktree[WT2]).toBeDefined()
     expect(s.recentlyClosedEditorTabsByWorktree[WT2]).toBeDefined()
+    expect(s.recentlyClosedTerminalTabsByWorktree[WT2]).toBeDefined()
+    expect(s.recentlyClosedTabKindsByWorktree[WT2]).toBeDefined()
     expect(s.defaultTerminalTabsAppliedByWorktreeId[WT2]).toBe(true)
   })
 
@@ -146,15 +155,19 @@ describe('worktree removal evicts the per-worktree + per-page maps it previously
     const store = createTestStore()
     seedWorktreeKeyedMaps(store)
 
-    const result = await store.getState().removeWorktree(WT1)
+    const result = await store.getState().removeWorktree({ id: WT1, executionHostId: null })
     expect(result).toEqual({ ok: true })
 
     const s = store.getState()
     expect(s.remoteStatusesByWorktree[WT1]).toBeUndefined()
     expect(s.recentlyClosedEditorTabsByWorktree[WT1]).toBeUndefined()
+    expect(s.recentlyClosedTerminalTabsByWorktree[WT1]).toBeUndefined()
+    expect(s.recentlyClosedTabKindsByWorktree[WT1]).toBeUndefined()
     expect(s.defaultTerminalTabsAppliedByWorktreeId[WT1]).toBeUndefined()
     expect(s.remoteStatusesByWorktree[WT2]).toBeDefined()
     expect(s.recentlyClosedEditorTabsByWorktree[WT2]).toBeDefined()
+    expect(s.recentlyClosedTerminalTabsByWorktree[WT2]).toBeDefined()
+    expect(s.recentlyClosedTabKindsByWorktree[WT2]).toBeDefined()
     expect(s.defaultTerminalTabsAppliedByWorktreeId[WT2]).toBe(true)
   })
 
@@ -242,7 +255,7 @@ describe('worktree removal evicts the per-worktree + per-page maps it previously
       }
     })
 
-    const result = await store.getState().removeWorktree(WT1)
+    const result = await store.getState().removeWorktree({ id: WT1, executionHostId: null })
 
     expect(result).toEqual({ ok: true })
     const s = store.getState()
@@ -277,6 +290,7 @@ describe('worktree removal evicts the per-worktree + per-page maps it previously
         [WS2]: [makePage(P2, WS2, WT2)]
       },
       browserAnnotationsByPageId: { [P1]: [], [P2]: [] },
+      browserAnnotationMarkerIdsByPageId: { [P1]: ['note-1'], [P2]: ['note-2'] },
       remoteBrowserPageHandlesByPageId: {
         [P1]: { environmentId: 'env-1', remotePageId: 'r-1' },
         [P2]: { environmentId: 'env-2', remotePageId: 'r-2' }
@@ -295,6 +309,7 @@ describe('worktree removal evicts the per-worktree + per-page maps it previously
     const s = store.getState()
     // Removed worktree's workspace + page entries are gone.
     expect(s.browserAnnotationsByPageId[P1]).toBeUndefined()
+    expect(s.browserAnnotationMarkerIdsByPageId[P1]).toBeUndefined()
     expect(s.remoteBrowserPageHandlesByPageId[P1]).toBeUndefined()
     expect(s.pendingAddressBarFocusByPageId[P1]).toBeUndefined()
     expect(s.pendingAddressBarFocusByTabId[WS1]).toBeUndefined()
@@ -302,6 +317,7 @@ describe('worktree removal evicts the per-worktree + per-page maps it previously
     expect(s.recentlyClosedBrowserPagesByWorkspace[WS1]).toBeUndefined()
     // Surviving worktree's entries remain (guard over-eviction).
     expect(s.browserAnnotationsByPageId[P2]).toBeDefined()
+    expect(s.browserAnnotationMarkerIdsByPageId[P2]).toEqual(['note-2'])
     expect(s.remoteBrowserPageHandlesByPageId[P2]).toBeDefined()
     expect(s.pendingAddressBarFocusByPageId[P2]).toBe(true)
     expect(s.pendingAddressBarFocusByTabId[WS2]).toBe(true)

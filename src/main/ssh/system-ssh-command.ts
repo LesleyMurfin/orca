@@ -17,6 +17,7 @@ export type SystemSshProcess = {
 
 export type SystemSshCommandChannel = ClientChannel & {
   _process?: ChildProcess
+  _closeRequested?: boolean
 }
 
 type SystemSshCommandOptions = SshExecOptions & SystemSshBuildArgsOptions
@@ -90,9 +91,15 @@ function wrapChildProcess(proc: ChildProcess): SystemSshProcess {
 
 function wrapCommandProcess(proc: ChildProcess): SystemSshCommandChannel {
   const duplex = new Duplex({
-    read() {},
+    read() {
+      proc.stdout?.resume()
+    },
     write(chunk, encoding, cb) {
       proc.stdin!.write(chunk, encoding, cb)
+    },
+    final(cb) {
+      // EOF must reach the remote reader, not just this local facade.
+      proc.stdin!.end(cb)
     }
   })
   const channel = duplex as unknown as SystemSshCommandChannel
@@ -101,12 +108,14 @@ function wrapCommandProcess(proc: ChildProcess): SystemSshCommandChannel {
     stdin: NodeJS.WritableStream
     stderr: NodeJS.ReadableStream
     _process?: ChildProcess
+    _closeRequested?: boolean
     close: () => void
   }
   mutableChannel.stdin = proc.stdin!
   mutableChannel.stderr = proc.stderr!
   mutableChannel._process = proc
   mutableChannel.close = () => {
+    mutableChannel._closeRequested = true
     try {
       proc.kill('SIGTERM')
     } catch {
@@ -128,7 +137,11 @@ function wrapCommandProcess(proc: ChildProcess): SystemSshCommandChannel {
     duplex.destroy(err)
   }
   const onStdoutData = (data: Buffer): void => {
-    duplex.push(data)
+    // Why: file downloads can outpace the local destination; pause OpenSSH
+    // instead of buffering the producer-consumer lag in the main process.
+    if (!duplex.push(data)) {
+      proc.stdout!.pause()
+    }
   }
   const onStdoutEnd = (): void => {
     duplex.push(null)

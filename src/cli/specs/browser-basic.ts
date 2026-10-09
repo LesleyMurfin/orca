@@ -3,6 +3,25 @@ import { GLOBAL_FLAGS } from '../args'
 
 export const BROWSER_BASIC_COMMAND_SPECS: CommandSpec[] = [
   {
+    path: ['browser', 'identity', 'get'],
+    summary: 'Show the browser identity configured on this Orca host',
+    usage: 'orca browser identity get [--json]',
+    aliases: [['browser', 'identity', 'show']],
+    allowedFlags: [...GLOBAL_FLAGS]
+  },
+  {
+    path: ['browser', 'identity', 'set'],
+    summary: 'Choose the browser identity for every page on this Orca host',
+    usage: 'orca browser identity set --mode <clean|native> [--reset] [--json]',
+    allowedFlags: [...GLOBAL_FLAGS, 'mode', 'reset']
+  },
+  {
+    path: ['open-url'],
+    summary: 'Open a URL on the paired client that hosts this terminal',
+    usage: 'orca open-url --url <url> [--worktree <selector>] [--json]',
+    allowedFlags: [...GLOBAL_FLAGS, 'url', 'worktree']
+  },
+  {
     path: ['snapshot'],
     summary: 'Capture an accessibility snapshot of the active browser tab',
     usage: 'orca snapshot [--worktree <selector>] [--json]',
@@ -195,6 +214,7 @@ export const BROWSER_BASIC_COMMAND_SPECS: CommandSpec[] = [
   },
   {
     path: ['tab', 'profile', 'delete'],
+    destructive: true,
     summary: 'Delete a browser session profile used by browser tabs',
     usage: 'orca tab profile delete --profile <id> [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'profile']

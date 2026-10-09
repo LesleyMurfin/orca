@@ -2,20 +2,19 @@ import {
   getRuntimeEnvironmentIdForWorktree,
   type WorktreeRuntimeOwnerState
 } from '@/lib/worktree-runtime-owner'
+import { recordWebSessionCloseIntent } from './web-session-close-intent'
+import { toHostSessionTabId } from '../../../shared/terminal-surface-id'
 import type { OpenFile } from '@/store/slices/editor'
-import type { Tab } from '../../../shared/types'
+import type { Tab } from '../../../shared/tab-types'
 
 export type MirroredEditorCloseState = WorktreeRuntimeOwnerState & {
   openFiles: readonly OpenFile[]
   unifiedTabsByWorktree: Record<string, Tab[]>
 }
 
-// Why: an editor file mirrored from a runtime session is owned by the host. The
-// host republishes its open files to companions, so removing the tab only locally
-// is undone by the next snapshot. Tell the host to close its own tab; the close
-// intent recorded by the RPC suppresses re-mirroring until the snapshot catches up.
-// Side-effecting only — callers still run their normal local close. No-op (returns
-// false) for non-mirrored files, so the host's own closes are untouched.
+// A mirrored editor file is owned by the host, which republishes its open files, so a local-only close is undone by the next
+// snapshot. Tell the host to close its own tab; the RPC's close intent suppresses re-mirroring until the snapshot catches up.
+// Side-effecting only (callers still run their local close); no-op for non-mirrored files, so the host's own closes are untouched.
 export function notifyHostOfMirroredEditorClose(
   state: MirroredEditorCloseState,
   worktreeId: string | null | undefined,
@@ -28,27 +27,44 @@ export function notifyHostOfMirroredEditorClose(
   if (!file?.mirroredFromRuntimeSession) {
     return false
   }
-  const runtimeEnvironmentId = getRuntimeEnvironmentIdForWorktree(state, worktreeId)
+  // Only legacy records need catalog inference; snapshots capture their authoritative runtime owner.
+  const runtimeEnvironmentId =
+    file.runtimeEnvironmentId === undefined
+      ? getRuntimeEnvironmentIdForWorktree(state, worktreeId)
+      : file.runtimeEnvironmentId
   if (!runtimeEnvironmentId?.trim()) {
     return false
   }
-  // Why: a mirrored editor unified tab carries the host's tab id as `id` and the
-  // local file id as `entityId`, and the host close RPC resolves editor tabs by id.
-  const unifiedTab = (state.unifiedTabsByWorktree[worktreeId] ?? []).find(
+  // A mirrored unified tab carries the host's tab id as `id` and the local file id as `entityId`; the host close RPC resolves by id.
+  const unifiedTabs = (state.unifiedTabsByWorktree[worktreeId] ?? []).filter(
     (tab) => tab.contentType === 'editor' && tab.entityId === fileId
   )
-  if (!unifiedTab) {
+  if (unifiedTabs.length === 0) {
     return false
   }
-  // Why: this helper is imported by the editor slice during store creation.
-  // Importing web-runtime-session eagerly would import the store back and can
-  // trip cyclic initialization in full-suite test/import order.
-  void import('./web-runtime-session').then(({ closeWebRuntimeSessionTab }) =>
-    closeWebRuntimeSessionTab({
+  // Record the close intent SYNCHRONOUSLY so a host snapshot landing before the dynamic import below resolves can't
+  // flash the old-path tab back. closeWebRuntimeSessionTab re-records it idempotently.
+  for (const tab of unifiedTabs) {
+    recordWebSessionCloseIntent(
+      { environmentId: runtimeEnvironmentId },
       worktreeId,
-      tabId: unifiedTab.id,
-      environmentId: runtimeEnvironmentId
-    })
+      toHostSessionTabId(tab.id),
+      Date.now()
+    )
+  }
+  // Dynamic import: this helper is imported by the editor slice during store creation, so importing
+  // web-runtime-session eagerly imports the store back and trips cyclic init in full-suite import order.
+  void import('./web-runtime-session').then(({ closeWebRuntimeSessionTab }) =>
+    Promise.all(
+      unifiedTabs.map((tab) =>
+        closeWebRuntimeSessionTab({
+          worktreeId,
+          tabId: tab.id,
+          environmentId: runtimeEnvironmentId,
+          reason: 'user'
+        })
+      )
+    )
   )
   return true
 }

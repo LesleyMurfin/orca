@@ -1,4 +1,8 @@
 import type { ProviderRateLimits, RateLimitWindow } from '../../../../shared/rate-limit-types'
+import {
+  formatResetCountdown,
+  formatResetDuration
+} from '../../../../shared/rate-limit-reset-format'
 import { AgentIcon } from '@/lib/agent-catalog'
 import { ClaudeIcon, GeminiIcon, MiniMaxIcon, OpenAIIcon, OpenCodeGoIcon } from './icons'
 import { translate } from '@/i18n/i18n'
@@ -7,6 +11,24 @@ import {
   getProviderUsageErrorMessage,
   getProviderUsageStatusLabel
 } from './usage-error-copy'
+import {
+  clampUsedPercent,
+  getDisplayedUsagePercentage,
+  type UsagePercentageDisplay
+} from '../../../../shared/usage-percentage-display'
+import { formatUsagePercentageLabel } from './usage-percentage-label'
+import { useResetCountdownClock } from '@/hooks/useResetCountdownClock'
+import { barColor, ProviderExtraUsageSection } from './provider-extra-usage-section'
+
+export {
+  barColor,
+  getExtraUsageLabel,
+  USAGE_URGENT_PERCENT,
+  USAGE_WARNING_PERCENT
+} from './provider-extra-usage-section'
+
+// Re-exported from its shared home so status-bar callers keep a single import.
+export { clampUsedPercent }
 
 export {
   getProviderDisplayName,
@@ -31,28 +53,9 @@ export function formatTimeAgo(ts: number): string {
   return `${hours}h ago`
 }
 
-function formatDuration(ms: number): string {
-  if (ms <= 0) {
-    return 'now'
-  }
-  const totalMins = Math.floor(ms / 60_000)
-  if (totalMins < 60) {
-    return `${totalMins}m`
-  }
-  const hours = Math.floor(totalMins / 60)
-  const mins = totalMins % 60
-  if (hours >= 24) {
-    const days = Math.floor(hours / 24)
-    const remHours = hours % 24
-    return remHours > 0 ? `${days}d ${remHours}h` : `${days}d`
-  }
-  return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`
-}
-
-export function formatResetCountdown(ms: number): string {
-  const duration = formatDuration(ms)
-  return duration === 'now' ? 'Resets now' : `Resets in ${duration}`
-}
+// Re-export so existing tooltip consumers/tests keep their import path; the
+// implementation is shared with mobile in src/shared/rate-limit-reset-format.
+export { formatResetCountdown }
 
 export function formatResetCreditExpiry(
   expiresAt: number | null | undefined,
@@ -61,7 +64,7 @@ export function formatResetCreditExpiry(
   if (!expiresAt) {
     return null
   }
-  const duration = formatDuration(expiresAt - Date.now())
+  const duration = formatResetDuration(expiresAt - Date.now())
   if (duration === 'now') {
     return count > 1
       ? translate('auto.components.status.bar.tooltip.7ec6e030a0', 'Next expires now')
@@ -93,11 +96,20 @@ export function ProviderIcon({ provider }: { provider: string }): React.JSX.Elem
   if (provider === 'kimi') {
     return <AgentIcon agent="kimi" size={13} />
   }
+  if (provider === 'antigravity') {
+    return <AgentIcon agent="antigravity" size={13} />
+  }
   if (provider === 'minimax') {
     return <MiniMaxIcon size={13} />
   }
   if (provider === 'grok') {
     return <AgentIcon agent="grok" size={13} />
+  }
+  if (provider === 'zcode') {
+    return <AgentIcon agent="zcode" size={13} />
+  }
+  if (provider === 'cursor') {
+    return <AgentIcon agent="cursor" size={13} />
   }
   return <ClaudeIcon size={13} />
 }
@@ -148,6 +160,19 @@ export function getWindowSections(
     const bucketSections = p.buckets.map((b) => ({ label: b.name, window: b as RateLimitWindow }))
     return [
       ...bucketSections,
+      // Why: Cursor reports the plan total in `monthly` and its pools as buckets,
+      // so dropping it here would hide the number closest to the user's cap.
+      ...(p.monthly
+        ? [
+            {
+              label:
+                p.provider === 'cursor'
+                  ? translate('auto.components.status.bar.tooltip.cursor.plan', 'Plan')
+                  : translate('auto.components.status.bar.tooltip.7f7f208060', 'Monthly'),
+              window: p.monthly
+            }
+          ]
+        : []),
       {
         label: translate('auto.components.status.bar.tooltip.252c096536', 'Weekly'),
         window: p.weekly
@@ -172,7 +197,10 @@ export function getWindowSections(
   }
   if (p.monthly !== undefined && p.monthly !== null) {
     sections.push({
-      label: translate('auto.components.status.bar.tooltip.7f7f208060', 'Monthly'),
+      label:
+        p.provider === 'zcode'
+          ? translate('auto.components.status.bar.tooltip.zcode.mcp', 'MCP')
+          : translate('auto.components.status.bar.tooltip.7f7f208060', 'Monthly'),
       window: p.monthly
     })
   }
@@ -188,29 +216,63 @@ export function getWindowSections(
 // `text-background` for primary text and `text-background/50` for secondary
 // to stay readable inside the inverted tooltip container.
 
-// Why: color-coded by remaining capacity so users can quickly gauge urgency.
-// Green = comfortable (>40% left), yellow = caution (20-40%), red = critical (<20%).
-export function barColor(leftPct: number): string {
-  if (leftPct > 40) {
-    return 'bg-green-500'
+function ProviderRateLimitWindowSection({
+  window,
+  label,
+  textClass,
+  mutedClass,
+  emptyBarClass,
+  usagePercentageDisplay,
+  now
+}: {
+  window: RateLimitWindow | null
+  label: string
+  textClass: string
+  mutedClass: string
+  emptyBarClass: string
+  usagePercentageDisplay: UsagePercentageDisplay
+  now: number
+}): React.JSX.Element | null {
+  if (!window) {
+    return null
   }
-  if (leftPct > 20) {
-    return 'bg-yellow-500'
-  }
-  return 'bg-red-500'
+  const usedPct = clampUsedPercent(window.usedPercent)
+  const displayedPct = getDisplayedUsagePercentage(usedPct, usagePercentageDisplay)
+  const resetLabel = window.resetsAt ? formatResetCountdown(window.resetsAt - now) : null
+
+  return (
+    <div className="space-y-1">
+      <div className={`font-medium ${textClass}`}>{label}</div>
+      <div className={`h-[6px] w-full overflow-hidden rounded-full ${emptyBarClass}`}>
+        {/* Why: fill follows the selected percentage; color still signals consumption urgency. */}
+        <div
+          className={`h-full rounded-full ${barColor(usedPct)} transition-all duration-300`}
+          style={{ width: `${displayedPct}%` }}
+        />
+      </div>
+      <div className={`flex justify-between ${mutedClass}`}>
+        <span>{formatUsagePercentageLabel(usedPct, usagePercentageDisplay)}</span>
+        {resetLabel && <span>{resetLabel}</span>}
+      </div>
+    </div>
+  )
 }
 
 export function ProviderPanel({
   p,
   inverted = false,
   className,
-  showResetCredits = true
+  showResetCredits = true,
+  usagePercentageDisplay = 'used'
 }: {
   p: ProviderRateLimits | null
   inverted?: boolean
   className?: string
   showResetCredits?: boolean
+  usagePercentageDisplay?: UsagePercentageDisplay
 }): React.JSX.Element {
+  const windowSections = p ? getWindowSections(p) : []
+  const now = useResetCountdownClock(windowSections.map((section) => section.window?.resetsAt))
   const textClass = inverted ? 'text-background' : 'text-foreground'
   const mutedClass = inverted ? 'text-background/60' : 'text-muted-foreground'
   const faintClass = inverted ? 'text-background/50' : 'text-muted-foreground/80'
@@ -269,39 +331,6 @@ export function ProviderPanel({
       ? formatResetCreditExpiry(p.rateLimitResetCredits?.nextExpiresAt, resetCreditCount)
       : null
 
-  const PanelWindowSection = ({
-    w,
-    label
-  }: {
-    w: RateLimitWindow | null
-    label: string
-  }): React.JSX.Element | null => {
-    if (!w) {
-      return null
-    }
-    const leftPct = Math.max(0, Math.round(100 - w.usedPercent))
-    const resetLabel = w.resetsAt ? formatResetCountdown(w.resetsAt - Date.now()) : null
-
-    return (
-      <div className="space-y-1">
-        <div className={`font-medium ${textClass}`}>{label}</div>
-        <div className={`h-[6px] w-full overflow-hidden rounded-full ${emptyBarClass}`}>
-          <div
-            className={`h-full rounded-full ${barColor(leftPct)} transition-all duration-300`}
-            style={{ width: `${Math.min(100, Math.max(0, leftPct))}%` }}
-          />
-        </div>
-        <div className={`flex justify-between ${mutedClass}`}>
-          <span>
-            {leftPct}
-            {translate('auto.components.status.bar.tooltip.cedb7b99e3', '% left')}
-          </span>
-          {resetLabel && <span>{resetLabel}</span>}
-        </div>
-      </div>
-    )
-  }
-
   return (
     <div className={`${className ?? 'w-full'} space-y-3 text-xs`}>
       <div>
@@ -329,9 +358,30 @@ export function ProviderPanel({
 
       <div className={`border-t ${dividerClass}`} />
 
-      {getWindowSections(p).map((s) => (
-        <PanelWindowSection key={s.label} w={s.window} label={s.label} />
+      {windowSections.map((s) => (
+        <ProviderRateLimitWindowSection
+          key={s.label}
+          window={s.window}
+          label={s.label}
+          textClass={textClass}
+          mutedClass={mutedClass}
+          emptyBarClass={emptyBarClass}
+          usagePercentageDisplay={usagePercentageDisplay}
+          now={now}
+        />
       ))}
+
+      {p.extraUsage ? (
+        <ProviderExtraUsageSection
+          balance={p.extraUsage}
+          provider={p.provider}
+          textClass={textClass}
+          mutedClass={mutedClass}
+          faintClass={faintClass}
+          emptyBarClass={emptyBarClass}
+          usagePercentageDisplay={usagePercentageDisplay}
+        />
+      ) : null}
 
       {p.error ? (
         <ErrorMessage

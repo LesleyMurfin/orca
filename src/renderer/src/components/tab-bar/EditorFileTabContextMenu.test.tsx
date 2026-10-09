@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const shortcutLabelMock = vi.hoisted(() => vi.fn())
+const revealInFileManager = vi.hoisted(() => vi.fn())
+const storeSettings = vi.hoisted((): { activeRuntimeEnvironmentId?: string } => ({}))
 
 vi.mock('@/components/ui/dropdown-menu', () => ({
   DropdownMenu: function DropdownMenu(props: { children?: unknown }) {
@@ -51,6 +53,9 @@ vi.mock('lucide-react', () => ({
   Copy: function Copy(props: Record<string, unknown>) {
     return { type: 'Copy', props }
   },
+  CopyX: function CopyX(props: Record<string, unknown>) {
+    return { type: 'CopyX', props }
+  },
   ExternalLink: function ExternalLink(props: Record<string, unknown>) {
     return { type: 'ExternalLink', props }
   },
@@ -59,6 +64,9 @@ vi.mock('lucide-react', () => ({
   },
   ListX: function ListX(props: Record<string, unknown>) {
     return { type: 'ListX', props }
+  },
+  PanelLeftClose: function PanelLeftClose(props: Record<string, unknown>) {
+    return { type: 'PanelLeftClose', props }
   },
   PanelRightClose: function PanelRightClose(props: Record<string, unknown>) {
     return { type: 'PanelRightClose', props }
@@ -102,7 +110,7 @@ const useAppStoreMock = Object.assign(
     }) => unknown
   ) =>
     selector({
-      settings: {},
+      settings: storeSettings,
       unifiedTabsByWorktree: {
         'wt-1': [{ id: 'tab-1', groupId: 'group-1' }]
       },
@@ -112,7 +120,7 @@ const useAppStoreMock = Object.assign(
     }),
   {
     getState: () => ({
-      settings: {},
+      settings: storeSettings,
       unifiedTabsByWorktree: {
         'wt-1': [{ id: 'tab-1', groupId: 'group-1' }]
       },
@@ -127,12 +135,9 @@ vi.mock('@/store', () => ({
   useAppStore: useAppStoreMock
 }))
 
-vi.mock('@/lib/local-path-open-guard', () => ({
-  showLocalPathOpenBlockedToast: vi.fn()
-}))
-
-vi.mock('./editor-tab-local-open-guard', () => ({
-  shouldBlockEditorTabLocalOpen: () => false
+vi.mock(import('@/lib/reveal-in-file-manager'), async (importOriginal) => ({
+  ...(await importOriginal()),
+  revealInFileManager
 }))
 
 type ReactElementLike = {
@@ -196,7 +201,17 @@ function extractText(node: unknown): string {
   return el.props && 'children' in el.props ? extractText(el.props.children) : ''
 }
 
-async function renderMenu(): Promise<unknown> {
+async function renderMenu(
+  overrides: {
+    onActivate?: () => void
+    onOpenRenameInput?: () => void
+    repoConnectionId?: string | null
+    runtimeEnvironmentId?: string | null
+    externalSshTargetId?: string
+    mode?: 'edit' | 'check-details'
+  } = {}
+): Promise<unknown> {
+  const { runtimeEnvironmentId, externalSshTargetId, mode = 'edit', ...props } = overrides
   const module = await import('./EditorFileTabContextMenu')
   return module.EditorFileTabContextMenu({
     open: true,
@@ -209,13 +224,17 @@ async function renderMenu(): Promise<unknown> {
       worktreeId: 'wt-1',
       language: 'typescript',
       isDirty: false,
-      mode: 'edit'
+      mode,
+      runtimeEnvironmentId,
+      externalSshTargetId
     },
     unifiedTabId: 'tab-1',
     groupId: 'group-1',
     isPinned: false,
     isRenaming: false,
     hasTabsToRight: false,
+    hasTabsToLeft: false,
+    tabCount: 1,
     canRename: true,
     canShowMarkdownPreview: false,
     resolvedLanguage: 'typescript',
@@ -226,10 +245,22 @@ async function renderMenu(): Promise<unknown> {
     onOpenRenameInput: vi.fn(),
     onTogglePin: vi.fn(),
     onClose: vi.fn(),
+    onCloseOthers: vi.fn(),
     onCloseAll: vi.fn(),
     onCloseToRight: vi.fn(),
-    onOpenMarkdownPreview: vi.fn()
+    onCloseToLeft: vi.fn(),
+    onOpenMarkdownPreview: vi.fn(),
+    ...props
   })
+}
+
+async function renderRevealItem(
+  overrides?: Parameters<typeof renderMenu>[0]
+): Promise<ReactElementLike> {
+  const tree = expandNode(await renderMenu(overrides))
+  return findElementsByType(tree, 'DropdownMenuItem').find((item) =>
+    extractText(item.props.children).includes('Reveal in Finder')
+  )!
 }
 
 function assignedShortcutLabel(actionId: string): string | null {
@@ -254,6 +285,27 @@ describe('EditorFileTabContextMenu close-all shortcut', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('opens rename only after menu close releases focus and consumes the request once', async () => {
+    const onActivate = vi.fn()
+    const onOpenRenameInput = vi.fn()
+    const tree = expandNode(await renderMenu({ onActivate, onOpenRenameInput }))
+    const rename = findElementsByType(tree, 'DropdownMenuItem').find((item) =>
+      extractText(item.props.children).includes('Rename')
+    )!
+    const content = findElementsByType(tree, 'DropdownMenuContent')[0]!
+    ;(rename.props.onSelect as () => void)()
+    expect(onActivate).not.toHaveBeenCalled()
+    expect(onOpenRenameInput).not.toHaveBeenCalled()
+    const preventDefault = vi.fn()
+    const close = content.props.onCloseAutoFocus as (event: { preventDefault: () => void }) => void
+    close({ preventDefault })
+    expect(preventDefault).toHaveBeenCalledTimes(1)
+    expect(onActivate).toHaveBeenCalledTimes(1)
+    expect(onOpenRenameInput).toHaveBeenCalledTimes(1)
+    close({ preventDefault })
+    expect(onOpenRenameInput).toHaveBeenCalledTimes(1)
   })
 
   it('renders assigned shortcuts next to Rename, Close, and Close All Editor Tabs', async () => {
@@ -285,6 +337,17 @@ describe('EditorFileTabContextMenu close-all shortcut', () => {
     expect(findElementsByType(tree, 'DropdownMenuShortcut')).toHaveLength(3)
   })
 
+  it('renders Close Others and both directional close items', async () => {
+    const tree = expandNode(await renderMenu())
+    const labels = findElementsByType(tree, 'DropdownMenuItem').map((item) =>
+      extractText(item.props.children)
+    )
+
+    expect(labels).toContain('Close Others')
+    expect(labels.some((label) => label.includes('Close Tabs To The Right'))).toBe(true)
+    expect(labels.some((label) => label.includes('Close Tabs To The Left'))).toBe(true)
+  })
+
   it('hides the shortcut chip when close-all is unassigned', async () => {
     shortcutLabelMock.mockReturnValue(null)
 
@@ -297,5 +360,47 @@ describe('EditorFileTabContextMenu close-all shortcut', () => {
     expect(closeAllItem).toBeTruthy()
     expect(findElementsByType(closeAllItem, 'DropdownMenuShortcut')).toHaveLength(0)
     expect(findElementsByType(tree, 'DropdownMenuShortcut')).toHaveLength(0)
+  })
+})
+
+describe('EditorFileTabContextMenu reveal in file manager', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    shortcutLabelMock.mockReturnValue(null)
+    revealInFileManager.mockReset()
+    delete storeSettings.activeRuntimeEnvironmentId
+    vi.stubGlobal('navigator', { userAgent: 'Mac' })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('reveals a local file through the shared reveal action', async () => {
+    const reveal = await renderRevealItem()
+
+    expect(reveal.props.disabled).toBe(false)
+    expect(extractText(reveal.props.children)).not.toContain('Local only')
+    const onSelect = reveal.props.onSelect
+    if (typeof onSelect !== 'function') {
+      throw new Error('Reveal item has no select handler')
+    }
+    onSelect()
+    expect(revealInFileManager).toHaveBeenCalledWith('/repo/foo.ts')
+  })
+
+  it.each([
+    ['on an SSH host', { repoConnectionId: 'ssh-1' }],
+    ['owned by a remote runtime', { runtimeEnvironmentId: 'env-1' }],
+    ['opened from an SSH host outside the workspace', { externalSshTargetId: 'ssh-1' }]
+  ])('disables reveal as local-only for a file %s', async (_owner, overrides) => {
+    const reveal = await renderRevealItem(overrides)
+
+    expect(reveal.props.disabled).toBe(true)
+    expect(extractText(reveal.props.children)).toContain('Local only')
+  })
+
+  it('offers no reveal for a check-details tab, which has no file on disk', async () => {
+    expect(await renderRevealItem({ mode: 'check-details' })).toBeUndefined()
   })
 })

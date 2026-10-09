@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { NativeChatMessage, NativeChatSession } from '../../../../shared/native-chat-types'
-import { selectNativeChatViewState } from './native-chat-view-state'
+import { selectNativeChatViewState, structuredChatHistoryPhase } from './native-chat-view-state'
 
 const message: NativeChatMessage = {
   id: 'a',
@@ -34,7 +34,30 @@ describe('selectNativeChatViewState', () => {
     })
   })
 
-  it('maps error with its message', () => {
+  it('maps error with its message when nothing has loaded (P2-21)', () => {
+    const state = selectNativeChatViewState(
+      session({ messages: [], status: 'error', error: 'boom' })
+    )
+    expect(state).toEqual({ kind: 'error', message: 'boom' })
+  })
+
+  // The pane's own translated line fills in, which for the structured chat says the read retries.
+  it('maps an error with no text to no message', () => {
+    expect(selectNativeChatViewState(session({ messages: [], status: 'error' }))).toEqual({
+      kind: 'error'
+    })
+  })
+
+  it('keeps a loaded transcript on screen when a later read fails (P2-21)', () => {
+    const state = selectNativeChatViewState(session({ status: 'error', error: 'boom' }), {
+      readRetries: true
+    })
+    expect(state).toEqual({ kind: 'ready', isWorking: false })
+  })
+
+  // The terminal-backed read does not retry; its only messages on error are local echoes (a launch
+  // prompt, a pending send), which must not hide the error and its way back to the terminal.
+  it('shows a terminal-backed read error over local echoes', () => {
     const state = selectNativeChatViewState(session({ status: 'error', error: 'boom' }))
     expect(state).toEqual({ kind: 'error', message: 'boom' })
   })
@@ -43,10 +66,27 @@ describe('selectNativeChatViewState', () => {
     expect(selectNativeChatViewState(session({ messages: [], status: 'ready' })).kind).toBe('empty')
   })
 
-  it('empty wins over a working hook on an empty conversation', () => {
+  it('empty wins over a working hook on a pre-session conversation', () => {
+    expect(
+      selectNativeChatViewState(session({ messages: [], status: 'working', sessionId: null })).kind
+    ).toBe('empty')
+  })
+
+  // A known session working with nothing to show is a transcript that has not
+  // flushed yet (#11032), so hold loading rather than flash the empty state.
+  it('holds loading for a known session working before its transcript flushes', () => {
     expect(selectNativeChatViewState(session({ messages: [], status: 'working' })).kind).toBe(
-      'empty'
+      'loading'
     )
+  })
+
+  // Why status, not view state: the composer reads session.status, so the pane
+  // must offer Stop the moment a bubble lands mid-turn.
+  it('keeps working status for a known session so the composer can offer Stop', () => {
+    expect(selectNativeChatViewState(session({ status: 'working' }))).toEqual({
+      kind: 'ready',
+      isWorking: true
+    })
   })
 
   it('maps ready (not working)', () => {
@@ -61,5 +101,32 @@ describe('selectNativeChatViewState', () => {
       kind: 'ready',
       isWorking: true
     })
+  })
+})
+
+describe('structuredChatHistoryPhase', () => {
+  const reopened = { lifecycle: null, transportEnabled: true }
+
+  it('reads a reopened chat until its first read settles', () => {
+    expect(structuredChatHistoryPhase(reopened, 'idle')).toBe('reading')
+    expect(structuredChatHistoryPhase(reopened, 'loading')).toBe('reading')
+    expect(structuredChatHistoryPhase(reopened, 'ready')).toBe('known')
+  })
+
+  it('reads a resume only while its launch is in flight', () => {
+    const resume = { launch: { kind: 'resume' as const }, transportEnabled: false }
+    expect(structuredChatHistoryPhase({ ...resume, lifecycle: 'pending' }, 'ready')).toBe('reading')
+    expect(structuredChatHistoryPhase({ ...resume, lifecycle: 'failed' }, 'ready')).toBe('unread')
+    expect(
+      structuredChatHistoryPhase({ ...resume, lifecycle: 'visibility-unknown' }, 'ready')
+    ).toBe('unread')
+  })
+
+  it('knows a chat this pane started new, and a cancelled launch', () => {
+    const fresh = { launch: { kind: 'new' as const }, lifecycle: null, transportEnabled: true }
+    expect(structuredChatHistoryPhase(fresh, 'idle')).toBe('known')
+    expect(
+      structuredChatHistoryPhase({ lifecycle: 'cancelled', transportEnabled: false }, 'ready')
+    ).toBe('known')
   })
 })

@@ -8,8 +8,9 @@ import {
   getSidebarOrderedProjectGroupHeaderIdsByBucket,
   mapSidebarProjectGroupDropIndexToSiblingInsertIndex
 } from './project-group-header-drop'
-import type { Row } from './worktree-list-groups'
-import type { ProjectGroup, Repo } from '../../../../shared/types'
+import type { Row } from './worktree-list/grouping/row-types'
+import type { ProjectGroup } from '../../../../shared/project-group-types'
+import type { Repo } from '../../../../shared/repo-types'
 
 function group(id: string, overrides: Partial<ProjectGroup> = {}): ProjectGroup {
   return {
@@ -137,9 +138,9 @@ describe('computeProjectGroupHeaderDropPreview', () => {
     expect(preview).toEqual({ dropIndex: 1, dropIndicatorY: 96 })
   })
 
-  it('does not create a drop slot inside an expanded Project Group section', () => {
+  it('rejects a drop below the measured content when the estimated section overshoots', () => {
     const preview = computeProjectGroupHeaderDropPreview({
-      pointerY: 350,
+      pointerY: 360,
       containerTop: 0,
       scrollTop: 0,
       sidebarProjectGroupHeaderIds: ['a', 'b', 'c'],
@@ -152,7 +153,9 @@ describe('computeProjectGroupHeaderDropPreview', () => {
           bottom: 328,
           sectionBottom: 380
         }
-      ]
+      ],
+      // Estimate ends at 380 but the list renders to 340; 360 is below content.
+      contentBottom: 340
     })
 
     expect(preview).toBeNull()

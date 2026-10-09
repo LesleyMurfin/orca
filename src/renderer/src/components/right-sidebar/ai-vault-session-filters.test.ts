@@ -443,37 +443,6 @@ describe('deriveAiVaultWorkspaceScopePaths', () => {
       '/Users/ada/workspaces/orca/unclaimed-old-path'
     ])
   })
-
-  it('ignores prior paths claimed by another live worktree in a different repo', () => {
-    expect(
-      deriveAiVaultWorkspaceScopePaths(
-        {
-          id: 'repo1::/Users/ada/workspaces/orca/fix-agent-history',
-          repoId: 'repo1',
-          path: '/Users/ada/workspaces/orca/fix-agent-history',
-          priorWorktreeIds: [
-            'repo1::/Users/ada/workspaces/orca/bream',
-            'repo1::/Users/ada/workspaces/orca/unclaimed-old-path'
-          ]
-        },
-        [
-          {
-            id: 'repo1::/Users/ada/workspaces/orca/fix-agent-history',
-            repoId: 'repo1',
-            path: '/Users/ada/workspaces/orca/fix-agent-history'
-          },
-          {
-            id: 'repo2::/Users/ada/workspaces/orca/bream',
-            repoId: 'repo2',
-            path: '/Users/ada/workspaces/orca/bream'
-          }
-        ]
-      )
-    ).toEqual([
-      '/Users/ada/workspaces/orca/fix-agent-history',
-      '/Users/ada/workspaces/orca/unclaimed-old-path'
-    ])
-  })
 })
 
 describe('deriveAiVaultScopeSessionPaths', () => {
@@ -664,7 +633,7 @@ describe('groupAiVaultSessions', () => {
     ]
 
     expect(groupAiVaultSessions(sessions, 'folder')).toEqual([
-      { key: '/users/ada/repo/app', label: 'repo/app', sessions }
+      { key: 'folder:/Users/ada/repo/app', label: 'repo/app', sessions }
     ])
     expect(groupAiVaultSessions(sessions, 'agent').map((group) => group.label)).toEqual([
       'Claude',
@@ -695,7 +664,7 @@ describe('groupAiVaultSessions', () => {
 
   it('falls back to folder grouping when project metadata is unavailable', () => {
     expect(groupAiVaultSessions([baseSession], 'project')).toEqual([
-      { key: '/users/ada/repo/app', label: 'repo/app', sessions: [baseSession] }
+      { key: 'folder:/Users/ada/repo/app', label: 'repo/app', sessions: [baseSession] }
     ])
   })
 })

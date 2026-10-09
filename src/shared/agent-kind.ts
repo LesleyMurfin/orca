@@ -9,20 +9,25 @@
 // not a sweep across renderer + main.
 
 import type { AgentKind } from './telemetry-events'
-import type { TuiAgent } from './types'
+import type { TuiAgent } from './tui-agent'
 
 type ConcreteAgentKind = Exclude<AgentKind, 'other'>
 
 const TUI_AGENT_KIND_BY_AGENT = {
   claude: 'claude-code',
   'claude-agent-teams': 'claude-agent-teams',
+  codebuddy: 'codebuddy',
   openclaude: 'openclaude',
   codex: 'codex',
   autohand: 'autohand',
   opencode: 'opencode',
+  opencode2: 'opencode2',
   'mimo-code': 'mimo-code',
   pi: 'pi',
   omp: 'omp',
+  'prime-agent': 'prime-agent',
+  qoder: 'qoder',
+  'qoder-cn': 'qoder-cn',
   gemini: 'gemini',
   antigravity: 'antigravity',
   aider: 'aider',
@@ -34,6 +39,7 @@ const TUI_AGENT_KIND_BY_AGENT = {
   aug: 'aug',
   cline: 'cline',
   codebuff: 'codebuff',
+  freebuff: 'freebuff',
   'command-code': 'command-code',
   continue: 'continue',
   cursor: 'cursor',
@@ -47,7 +53,12 @@ const TUI_AGENT_KIND_BY_AGENT = {
   copilot: 'copilot',
   grok: 'grok',
   devin: 'devin',
-  ante: 'ante'
+  ante: 'ante',
+  trae: 'trae',
+  muse: 'muse',
+  zcode: 'zcode',
+  dsh: 'dsh',
+  jcode: 'jcode'
 } satisfies Record<TuiAgent, ConcreteAgentKind>
 
 // Why: `satisfies Record<TuiAgent, …>` makes the lookup exhaustive at compile

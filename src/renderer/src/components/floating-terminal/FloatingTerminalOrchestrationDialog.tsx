@@ -8,11 +8,8 @@ import {
 } from '@/components/ui/dialog'
 import { AgentSkillSetupPanel } from '@/components/settings/AgentSkillSetupPanel'
 import { IntegrationStatusPill } from '@/components/integration-status-pill'
+import { SkillFreshnessStatusPill } from '@/components/skills/SkillFreshnessStatusPill'
 import { ORCHESTRATION_SKILL_NAME } from '@/lib/agent-feature-install-commands'
-import {
-  AGENT_SKILL_CLI_PREREQUISITE_NOTICE,
-  ensureOrcaCliAvailableForAgentSkillTerminal
-} from '@/lib/agent-skill-cli-prerequisite'
 import {
   ORCHESTRATION_SKILL_INSTALL_COMMAND,
   ORCHESTRATION_SKILL_UPDATE_COMMAND
@@ -22,12 +19,9 @@ import {
   useInstalledAgentSkill
 } from '@/hooks/useInstalledAgentSkills'
 import { useActiveProjectSkillRuntime } from '@/hooks/useActiveProjectSkillRuntime'
+import { refreshSkillFreshness } from '@/hooks/useSkillFreshness'
 import { useAppStore } from '@/store'
-import {
-  buildSkillCommandForRuntime,
-  ensureWslCliAvailableForAgentSkillTerminal,
-  getWslCliDistroRequest
-} from '@/components/settings/CliSkillRuntimeSetup'
+import { buildSkillCommandForRuntime } from '@/components/settings/CliSkillRuntimeSetup'
 import { translate } from '@/i18n/i18n'
 
 type FloatingTerminalOrchestrationDialogProps = {
@@ -73,6 +67,14 @@ export function FloatingTerminalOrchestrationDialog({
     }
   }, [orchestrationSkillDetected, onSetupStateChange])
 
+  const recheckOrchestrationSkill = async (): Promise<boolean> => {
+    const installed = await refreshOrchestrationSkill()
+    if (activeSkillRuntime.canUseLocalSkillFreshness) {
+      await refreshSkillFreshness()
+    }
+    return installed
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="gap-4 sm:max-w-[620px]">
@@ -94,12 +96,16 @@ export function FloatingTerminalOrchestrationDialog({
                 )}
               </IntegrationStatusPill>
             ) : orchestrationSkillDetected ? (
-              <IntegrationStatusPill tone="connected">
-                {translate(
-                  'auto.components.floating.terminal.FloatingTerminalOrchestrationDialog.630c0ac8c8',
-                  'Installed'
-                )}
-              </IntegrationStatusPill>
+              activeSkillRuntime.canUseLocalSkillFreshness ? (
+                <SkillFreshnessStatusPill skillName={ORCHESTRATION_SKILL_NAME} />
+              ) : (
+                <IntegrationStatusPill tone="connected">
+                  {translate(
+                    'auto.components.floating.terminal.FloatingTerminalOrchestrationDialog.630c0ac8c8',
+                    'Installed'
+                  )}
+                </IntegrationStatusPill>
+              )
             ) : (
               <IntegrationStatusPill tone="attention">
                 {translate(
@@ -132,28 +138,21 @@ export function FloatingTerminalOrchestrationDialog({
           terminalAriaLabel="Orchestration skill install terminal"
           terminalWorktreeId="floating-terminal-orchestration-skill-terminal"
           terminalShellOverride={activeSkillRuntime.terminalShellOverride}
+          terminalRuntime={activeSkillRuntime.agentRuntime}
           installed={orchestrationSkillDetected}
           loading={orchestrationSkillLoading}
           error={activeSkillRuntime.installDisabledReason ?? orchestrationSkillError}
           installDisabled={Boolean(activeSkillRuntime.installDisabledReason)}
           variant="inline"
           hideHeader
-          installLabel="Install CLI & skill"
-          preInstallNotice={AGENT_SKILL_CLI_PREREQUISITE_NOTICE}
-          getPrerequisiteStatus={() =>
-            activeSkillRuntime.agentRuntime?.runtime === 'wsl'
-              ? window.api.cli.getWslInstallStatus(
-                  getWslCliDistroRequest(activeSkillRuntime.agentRuntime)
-                )
-              : window.api.cli.getInstallStatus()
-          }
-          onBeforeOpenTerminal={async () => {
+          installLabel={translate(
+            'auto.components.skills.SkillInstallDialog.39acb9e8f4',
+            'Install skill'
+          )}
+          onBeforeOpenTerminal={() => {
             useAppStore.getState().recordFeatureInteraction('agent-orchestration-setup')
-            await (activeSkillRuntime.agentRuntime?.runtime === 'wsl'
-              ? ensureWslCliAvailableForAgentSkillTerminal(activeSkillRuntime.agentRuntime)
-              : ensureOrcaCliAvailableForAgentSkillTerminal())
           }}
-          onRecheck={refreshOrchestrationSkill}
+          onRecheck={recheckOrchestrationSkill}
         />
       </DialogContent>
     </Dialog>

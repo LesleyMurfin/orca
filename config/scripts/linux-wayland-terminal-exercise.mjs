@@ -176,7 +176,7 @@ export async function setupTerminal(page, repoPath, logPhase) {
         })
       state = store.getState()
       state.setActiveTab(tab.id)
-      state.setActiveTabType('terminal')
+      state.setActiveTabType('terminal', worktree.id)
       state = store.getState()
       if (
         state.activeWorktreeId !== worktree.id ||
@@ -200,7 +200,7 @@ export async function setupTerminal(page, repoPath, logPhase) {
       return pane?.container?.dataset?.ptyId ?? null
     })
   )
-  logPhase('setup.pty-bound', `ptyId=${ptyId}`)
+  logPhase('setup.pty-bound', `ptyId=${String(ptyId)}`)
   return ptyId
 }
 

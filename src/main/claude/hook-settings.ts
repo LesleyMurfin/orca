@@ -1,59 +1,68 @@
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, extname, join, win32 } from 'node:path'
 import {
   buildManagedCommandHook,
   createManagedCommandMatcher,
   getSharedManagedScriptPath,
+  isPlainObject,
+  isSafeUnicodeWindowsBatchHookPath,
+  MANAGED_HOOK_TIMEOUT_SECONDS,
   removeManagedCommands,
-  wrapPosixHookCommand,
-  wrapWindowsGitBashHookCommand,
+  wrapWindowsPowerShellEncodedCommand,
+  type HookCommandConfig,
   type HookDefinition,
   type HooksConfig
 } from '../agent-hooks/installer-utils'
+import { quotePowerShellLiteral } from '../../shared/powershell-native-argument'
+import { wrapRuntimeHomeHookCommand } from '../agent-hooks/runtime-home-hook-command'
+import { wrapWindowsDirectCmdHookCommand } from '../agent-hooks/windows-direct-cmd-hook-command'
+import type { ClaudeManagedHookPlan } from './claude-managed-hook-events'
 
 export type ClaudeCompatibleHookSettings = {
-  configDirName: '.claude' | '.openclaude'
-  scriptBaseName: 'claude-hook' | 'openclaude-hook'
+  configDirName: '.claude' | '.openclaude' | '.qoder' | '.qoder-cn' | '.qwen' | '.codebuddy'
+  scriptBaseName:
+    | 'claude-hook'
+    | 'openclaude-hook'
+    | 'qoder-hook'
+    | 'qoder-cn-hook'
+    | 'qwen-code-hook'
+    | 'codebuddy-hook'
+  usesWindowsCompatLauncher: boolean
+  windowsHookShell?: 'powershell'
 }
 
 export const CLAUDE_HOOK_SETTINGS: ClaudeCompatibleHookSettings = {
   configDirName: '.claude',
-  scriptBaseName: 'claude-hook'
+  scriptBaseName: 'claude-hook',
+  usesWindowsCompatLauncher: true
 }
 
 export const OPENCLAUDE_HOOK_SETTINGS: ClaudeCompatibleHookSettings = {
   configDirName: '.openclaude',
-  scriptBaseName: 'openclaude-hook'
+  scriptBaseName: 'openclaude-hook',
+  usesWindowsCompatLauncher: false
 }
 
-export const CLAUDE_EVENTS = [
-  { eventName: 'UserPromptSubmit', definition: { hooks: [{ type: 'command', command: '' }] } },
-  { eventName: 'Stop', definition: { hooks: [{ type: 'command', command: '' }] } },
-  // Why: OpenClaude skips normal Stop hooks after API/model errors and emits
-  // StopFailure instead; without this hook Orca leaves the turn spinning.
-  { eventName: 'StopFailure', definition: { hooks: [{ type: 'command', command: '' }] } },
-  // Why: PreToolUse gives the dashboard a live readout of the in-flight tool
-  // (name + input preview) before it completes.
-  {
-    eventName: 'PreToolUse',
-    definition: { matcher: '*', hooks: [{ type: 'command', command: '' }] }
-  },
-  {
-    eventName: 'PostToolUse',
-    definition: { matcher: '*', hooks: [{ type: 'command', command: '' }] }
-  },
-  {
-    eventName: 'PostToolUseFailure',
-    definition: { matcher: '*', hooks: [{ type: 'command', command: '' }] }
-  },
-  {
-    eventName: 'PermissionRequest',
-    definition: { matcher: '*', hooks: [{ type: 'command', command: '' }] }
-  }
-] as const
+export function getConfigPath(settings = CLAUDE_HOOK_SETTINGS, configDir?: string): string {
+  return join(configDir ?? join(homedir(), settings.configDirName), 'settings.json')
+}
 
-export function getConfigPath(settings = CLAUDE_HOOK_SETTINGS): string {
-  return join(homedir(), settings.configDirName, 'settings.json')
+export function getStatusLineScriptBaseName(settings = CLAUDE_HOOK_SETTINGS): string {
+  return settings.scriptBaseName.replace(/-hook$/, '-statusline')
+}
+
+export function getStatusLineScriptFileName(settings = CLAUDE_HOOK_SETTINGS): string {
+  return process.platform === 'win32'
+    ? `${getStatusLineScriptBaseName(settings)}.cmd`
+    : getPosixStatusLineScriptFileName(settings)
+}
+
+export function getPosixStatusLineScriptFileName(settings = CLAUDE_HOOK_SETTINGS): string {
+  return `${getStatusLineScriptBaseName(settings)}.sh`
+}
+
+export function getStatusLineScriptPath(settings = CLAUDE_HOOK_SETTINGS): string {
+  return getSharedManagedScriptPath(getStatusLineScriptFileName(settings))
 }
 
 export function getManagedScriptFileName(settings = CLAUDE_HOOK_SETTINGS): string {
@@ -74,35 +83,158 @@ export function getRemoteConfigPath(remoteHome: string, settings = CLAUDE_HOOK_S
   return `${remoteHome.replace(/\/$/, '')}/${settings.configDirName}/settings.json`
 }
 
-export function getManagedCommand(scriptPath: string): string {
-  return process.platform === 'win32'
-    ? wrapWindowsGitBashHookCommand(scriptPath)
-    : wrapPosixHookCommand(scriptPath)
+export function getManagedCommand(
+  scriptPath: string,
+  options: { neutralJsonWhenMissing?: boolean } = {}
+): string {
+  const scriptFileName = basename(scriptPath)
+  const extension = extname(scriptFileName)
+  return wrapRuntimeHomeHookCommand(
+    extension ? scriptFileName.slice(0, -extension.length) : scriptFileName,
+    options
+  )
+}
+
+export function getManagedLifecycleHook(
+  scriptPath: string,
+  settings = CLAUDE_HOOK_SETTINGS
+): HookCommandConfig {
+  if (process.platform !== 'win32' || !settings.usesWindowsCompatLauncher) {
+    return buildManagedCommandHook(getManagedCommand(scriptPath, { neutralJsonWhenMissing: true }))
+  }
+  if (settings.windowsHookShell === 'powershell') {
+    return {
+      type: 'command',
+      command: getWindowsPowerShellLifecycleCommand(scriptPath),
+      shell: 'powershell',
+      timeout: MANAGED_HOOK_TIMEOUT_SECONDS
+    }
+  }
+  return getWindowsManagedLifecycleHook(scriptPath)
+}
+
+// Some compatible consumers ignore args, so keep the invocation self-contained.
+export function getWindowsManagedLifecycleHook(scriptPath: string): HookCommandConfig {
+  const directCommand = wrapWindowsDirectCmdHookCommand(scriptPath)
+  if (directCommand) {
+    return { type: 'command', command: directCommand, timeout: MANAGED_HOOK_TIMEOUT_SECONDS }
+  }
+  return {
+    type: 'command',
+    command: wrapWindowsPowerShellEncodedCommand(getWindowsPowerShellLifecycleCommand(scriptPath), {
+      useProcessPolicyEnvironment: isSafeUnicodeWindowsBatchHookPath(scriptPath)
+    }),
+    timeout: MANAGED_HOOK_TIMEOUT_SECONDS
+  }
+}
+
+function getWindowsPowerShellLifecycleCommand(scriptPath: string): string {
+  const scriptFileName = win32.basename(scriptPath)
+  const quotedRelativePath = quotePowerShellLiteral(`.orca\\agent-hooks\\${scriptFileName}`)
+  return (
+    `$scriptPath = Join-Path $env:USERPROFILE ${quotedRelativePath}; ` +
+    'if (Test-Path -LiteralPath $scriptPath -PathType Leaf) { & $scriptPath; exit $LASTEXITCODE }; ' +
+    "[Console]::In.ReadToEnd() | Out-Null; Write-Output '{}'; exit 0"
+  )
+}
+
+export function hasSameManagedHookInvocation(
+  actual: HookCommandConfig,
+  expected: HookCommandConfig
+): boolean {
+  return (
+    actual.command === expected.command &&
+    actual.shell === expected.shell &&
+    JSON.stringify(actual.args ?? []) === JSON.stringify(expected.args ?? [])
+  )
 }
 
 export function getRemoteManagedCommand(scriptPath: string): string {
-  return wrapPosixHookCommand(scriptPath)
+  return getManagedCommand(scriptPath, { neutralJsonWhenMissing: true })
 }
 
 export function applyManagedHooks(
   config: HooksConfig,
-  command: string,
-  scriptFileName = getManagedScriptFileName()
+  hook: HookCommandConfig,
+  scriptFileName: string,
+  plan: ClaudeManagedHookPlan
 ): HooksConfig {
   const nextHooks = { ...config.hooks }
   const isManagedCommand = createManagedCommandMatcher(scriptFileName)
 
-  for (const event of CLAUDE_EVENTS) {
-    const current = Array.isArray(nextHooks[event.eventName]) ? nextHooks[event.eventName] : []
-    const cleaned = removeManagedCommands(current, isManagedCommand)
-    const definition: HookDefinition = {
-      ...event.definition,
-      hooks: [buildManagedCommandHook(command)]
-    }
+  for (const event of plan.install) {
+    const current = nextHooks[event.eventName]
+    const cleaned = Array.isArray(current) ? removeManagedCommands(current, isManagedCommand) : []
+    const definition: HookDefinition = { ...event.definition, hooks: [hook] }
     nextHooks[event.eventName] = [...cleaned, definition]
   }
 
+  for (const event of plan.retire) {
+    const current = nextHooks[event.eventName]
+    if (!Array.isArray(current) || current.length === 0) {
+      continue
+    }
+    const cleaned = removeManagedCommands(current, isManagedCommand)
+    if (cleaned.length === 0) {
+      delete nextHooks[event.eventName]
+    } else {
+      nextHooks[event.eventName] = cleaned
+    }
+  }
+
   return { ...config, hooks: nextHooks }
+}
+
+export type StatusLineSlotState = 'managed' | 'user' | 'empty'
+
+// Why: install policy needs "user owns the slot" vs "slot is empty" vs "ours" — an empty slot
+// after a prior install means the user deleted the managed entry, which install must respect.
+export function getStatusLineSlotState(
+  config: HooksConfig,
+  scriptFileName = getStatusLineScriptFileName()
+): StatusLineSlotState {
+  const isManagedCommand = createManagedCommandMatcher(scriptFileName)
+  const current = config.statusLine
+  const currentCommand =
+    isPlainObject(current) && typeof current.command === 'string' ? current.command : null
+  if (!currentCommand) {
+    return 'empty'
+  }
+  return isManagedCommand(currentCommand) ? 'managed' : 'user'
+}
+
+// Why: records that the managed statusline was installed once, so a later empty slot reads as user opt-out.
+export function getStatusLineInstallMarkerPath(settings = CLAUDE_HOOK_SETTINGS): string {
+  return getSharedManagedScriptPath(`${getStatusLineScriptBaseName(settings)}.installed`)
+}
+
+// Why: statusLine is a single settings slot, not a hooks array — never overwrite a
+// user-owned status line; the usage feed then simply falls back to the OAuth poll.
+export function applyManagedStatusLine(
+  config: HooksConfig,
+  command: string,
+  scriptFileName = getStatusLineScriptFileName()
+): HooksConfig {
+  if (getStatusLineSlotState(config, scriptFileName) === 'user') {
+    return config
+  }
+  return { ...config, statusLine: { type: 'command', command } }
+}
+
+export function removeManagedStatusLine(
+  config: HooksConfig,
+  scriptFileName = getStatusLineScriptFileName()
+): { config: HooksConfig; changed: boolean } {
+  const isManagedCommand = createManagedCommandMatcher(scriptFileName)
+  const current = config.statusLine
+  const currentCommand =
+    isPlainObject(current) && typeof current.command === 'string' ? current.command : null
+  if (!currentCommand || !isManagedCommand(currentCommand)) {
+    return { config, changed: false }
+  }
+  const next = { ...config }
+  delete next.statusLine
+  return { config: next, changed: true }
 }
 
 export function removeManagedHooks(

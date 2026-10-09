@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dialog'
 import { lazyWithRetry as lazy } from '@/lib/lazy-with-retry'
 import { getConnectionIdForFile } from '@/lib/connection-context'
+import { editorTabFileAccess } from '@/lib/local-file-access'
 import { detectLanguage } from '@/lib/language-detect'
 import { readRuntimeFileContent } from '@/runtime/runtime-file-client'
 import { settingsForRuntimeOwner } from '@/runtime/runtime-rpc-client'
@@ -46,6 +47,7 @@ export function ExternalFileChangeCompareDialog({
   onKeepEdits: () => void
 }): React.JSX.Element {
   const [diskState, setDiskState] = useState<DiskReadState>({ kind: 'loading' })
+  const access = editorTabFileAccess(useAppStore.getState(), file)
 
   useEffect(() => {
     if (!open) {
@@ -60,7 +62,9 @@ export function ExternalFileChangeCompareDialog({
       filePath: file.filePath,
       relativePath: file.relativePath,
       worktreeId: file.worktreeId,
-      connectionId: getConnectionIdForFile(file.worktreeId, file.filePath) ?? undefined
+      connectionId: getConnectionIdForFile(file.worktreeId, file.filePath) ?? undefined,
+      expectedExternalSshTargetId: file.externalSshTargetId,
+      access
     })
       .then((result) => {
         if (cancelled) {
@@ -82,7 +86,15 @@ export function ExternalFileChangeCompareDialog({
     return () => {
       cancelled = true
     }
-  }, [open, file.filePath, file.relativePath, file.worktreeId, file.runtimeEnvironmentId])
+  }, [
+    open,
+    file.filePath,
+    file.relativePath,
+    file.worktreeId,
+    file.runtimeEnvironmentId,
+    file.externalSshTargetId,
+    access
+  ])
 
   const language = detectLanguage(file.relativePath)
 

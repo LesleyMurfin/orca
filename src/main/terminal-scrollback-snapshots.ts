@@ -3,15 +3,17 @@ import {
   closeSync,
   mkdirSync,
   openSync,
+  readFileSync,
   readSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync
 } from 'node:fs'
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { app } from 'electron'
-import type { WorkspaceSessionState } from '../shared/types'
+import { getAppEnvironment } from '../shared/app-environment'
+import type { WorkspaceSessionState } from '../shared/workspace-session-state-types'
 import {
   TERMINAL_SCROLLBACK_REPLAY_BYTE_LIMIT,
   TERMINAL_SCROLLBACK_STORE_BYTE_LIMIT
@@ -26,14 +28,16 @@ export type TerminalScrollbackSnapshotStorage = {
 }
 
 function getLegacySnapshotRoot(): string {
-  return join(app.getPath('userData'), SNAPSHOT_DIR_NAME)
+  return join(getAppEnvironment().getPath('userData'), SNAPSHOT_DIR_NAME)
 }
 
 export function getProfileTerminalScrollbackSnapshotRoot(dataFile: string): string {
   return join(dirname(dataFile), SNAPSHOT_DIR_NAME)
 }
 
-function getSnapshotRoot(storage?: TerminalScrollbackSnapshotStorage): string {
+export function getTerminalScrollbackSnapshotRoot(
+  storage?: TerminalScrollbackSnapshotStorage
+): string {
   return storage?.snapshotRoot ?? getLegacySnapshotRoot()
 }
 
@@ -50,7 +54,7 @@ function snapshotPath(ref: string, snapshotRoot: string): string | null {
 }
 
 function snapshotReadPaths(ref: string, storage?: TerminalScrollbackSnapshotStorage): string[] {
-  const primaryRoot = getSnapshotRoot(storage)
+  const primaryRoot = getTerminalScrollbackSnapshotRoot(storage)
   const primaryPath = snapshotPath(ref, primaryRoot)
   if (!primaryPath) {
     return []
@@ -61,6 +65,32 @@ function snapshotReadPaths(ref: string, storage?: TerminalScrollbackSnapshotStor
   }
   const fallbackPath = snapshotPath(ref, fallbackRoot)
   return fallbackPath ? [primaryPath, fallbackPath] : [primaryPath]
+}
+
+export function getTerminalScrollbackSnapshotPath(
+  ref: string,
+  storage?: TerminalScrollbackSnapshotStorage
+): string | null {
+  return snapshotPath(ref, getTerminalScrollbackSnapshotRoot(storage))
+}
+
+/** The stored bytes for `ref`, bounded by the store limit; `null` when absent or out of bounds. */
+export function readTerminalScrollbackStoredBytesSync(
+  ref: string,
+  storage?: TerminalScrollbackSnapshotStorage
+): Buffer | null {
+  for (const path of snapshotReadPaths(ref, storage)) {
+    try {
+      const size = statSync(path).size
+      if (size <= 0 || size > TERMINAL_SCROLLBACK_STORE_BYTE_LIMIT) {
+        return null
+      }
+      return readFileSync(path)
+    } catch {
+      // Try the profile fallback when the primary snapshot is absent.
+    }
+  }
+  return null
 }
 
 function trailingUtf8Bytes(value: string, maxBytes: number): Buffer {
@@ -105,7 +135,7 @@ export function writeTerminalScrollbackSnapshotSync(args: {
     return null
   }
   const ref = makeTerminalScrollbackSnapshotRef(args.tabId, args.leafId)
-  const snapshotRoot = getSnapshotRoot(args.storage)
+  const snapshotRoot = getTerminalScrollbackSnapshotRoot(args.storage)
   const path = snapshotPath(ref, snapshotRoot)
   if (!path) {
     return null
@@ -130,6 +160,42 @@ export function writeTerminalScrollbackSnapshotSync(args: {
       `[terminal-scrollback] Failed to write snapshot: ${err instanceof Error ? err.message : String(err)}`
     )
     return null
+  }
+}
+
+export async function writeTerminalScrollbackSnapshot(args: {
+  tabId: string
+  leafId: string
+  buffer: string
+  storage?: TerminalScrollbackSnapshotStorage
+}): Promise<string | null> {
+  if (!args.buffer) {
+    return null
+  }
+  const ref = makeTerminalScrollbackSnapshotRef(args.tabId, args.leafId)
+  const snapshotRoot = getTerminalScrollbackSnapshotRoot(args.storage)
+  const path = snapshotPath(ref, snapshotRoot)
+  if (!path) {
+    return null
+  }
+  const tmpPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+  let renamed = false
+  try {
+    await mkdir(snapshotRoot, { recursive: true, mode: 0o700 })
+    const bytes = trailingUtf8Bytes(args.buffer, TERMINAL_SCROLLBACK_STORE_BYTE_LIMIT)
+    await writeFile(tmpPath, bytes, { mode: 0o600 })
+    await rename(tmpPath, path)
+    renamed = true
+    return ref
+  } catch (err) {
+    console.warn(
+      `[terminal-scrollback] Failed to write snapshot: ${err instanceof Error ? err.message : String(err)}`
+    )
+    return null
+  } finally {
+    if (!renamed) {
+      await rm(tmpPath, { force: true }).catch(() => {})
+    }
   }
 }
 
@@ -158,6 +224,15 @@ export function deleteTerminalScrollbackSnapshotSync(
       // Best-effort cleanup; stale refs are harmless and bounded by per-file caps.
     }
   }
+}
+
+export async function deleteTerminalScrollbackSnapshot(
+  ref: string,
+  storage?: TerminalScrollbackSnapshotStorage
+): Promise<void> {
+  await Promise.all(
+    snapshotReadPaths(ref, storage).map((path) => rm(path, { force: true }).catch(() => {}))
+  )
 }
 
 export function collectTerminalScrollbackSnapshotRefs(session: WorkspaceSessionState): Set<string> {

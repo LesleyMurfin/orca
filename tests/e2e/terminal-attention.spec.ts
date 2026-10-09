@@ -12,7 +12,7 @@ import {
   waitForSessionReady
 } from './helpers/store'
 import { getRendererTitleLog, installRendererTitleLog } from './helpers/terminal-title-log'
-import { POST_REPLAY_MODE_RESET } from '../../src/renderer/src/components/terminal-pane/layout-serialization'
+import { POST_REPLAY_MODE_RESET } from '../../src/shared/terminal-mode-reset-profiles'
 import { waitForPtyShellEcho } from './terminal-pty-readiness'
 
 test.describe.configure({ mode: 'serial' })
@@ -66,7 +66,7 @@ async function activateTerminalTab(page: Page, tabId: string): Promise<void> {
       throw new Error('activateTerminalTab: window.__store is unavailable')
     }
     const state = store.getState()
-    state.setActiveTabType('terminal')
+    state.setActiveTabType('terminal', state.activeWorktreeId)
     state.setActiveTab(targetTabId)
   }, tabId)
 
@@ -191,7 +191,10 @@ test.describe('Terminal attention', () => {
         throw new Error(`No owner worktree found for terminal tab ${tabId}`)
       }
       state.markWorktreeUnread(ownerWorktreeId)
-      state.markTerminalTabUnread(tabId)
+      // Why: the attention contract reads the marker value, not key presence
+      // (#20525). Production always marks with 'terminal-bell'; a bare call
+      // stores undefined, which the DOM correctly ignores.
+      state.markTerminalTabUnread(tabId, 'terminal-bell')
     }, secondTabId)
 
     await expect
@@ -310,7 +313,9 @@ test.describe('Terminal attention', () => {
     // Focused BEL owns the tab indicator; seed pane attention separately so the
     // Escape path proves it clears both store surfaces that pty-connection owns.
     await orcaPage.evaluate((paneKey) => {
-      window.__store?.getState().markTerminalPaneUnread(paneKey)
+      // Why: consumers read the marker value, not key presence (#20525); a bare
+      // call seeds `undefined`, which the pane attention DOM correctly ignores.
+      window.__store?.getState().markTerminalPaneUnread(paneKey, 'terminal-bell')
     }, activePaneKey)
     await expect
       .poll(async () => (await getUnreadTerminalPaneKeys(orcaPage)).includes(activePaneKey), {
@@ -353,7 +358,7 @@ test.describe('Terminal attention', () => {
   // even though the underlying shell is fresh. Pane clicks then emit
   // `\e[I` / `\e[O` into zsh, which rings the bell as unbound-key input.
   //
-  // POST_REPLAY_MODE_RESET (in layout-serialization.ts) clears these mode
+  // POST_REPLAY_MODE_RESET (in shared/terminal-mode-reset-profiles.ts) clears these mode
   // bits after every scrollback replay so the mode state matches the fresh
   // shell. This test pins that fix: after writing a DECSET 1004 byte into
   // the terminal, focus events should NOT be emitted back to the PTY.

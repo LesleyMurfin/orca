@@ -1,7 +1,14 @@
-import { exec, spawn, type ChildProcess } from 'node:child_process'
+import { mergeCommandEnvironment } from '../shared/command-environment'
+import { PromiseSettlementWaiters } from '../shared/promise-settlement-waiters'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
 import type { RelayDispatcher, RequestContext } from './dispatcher'
+import { applyTerminalGitCredentialPromptGuard } from '../shared/terminal-git-credential-guard'
+import { mergeGitConfigEnvProtocol } from '../shared/git-credential-prompt-env'
+import { terminateRelaySubprocessTree } from './subprocess-tree-termination'
+import { RelayAgentProcessLifetime } from './relay-agent-process-lifetime'
+import { resolveLoginShellEnvironment } from '../main/startup/login-shell-environment'
 
 const DEFAULT_TIMEOUT_MS = 60_000
 const MAX_TIMEOUT_MS = 5 * 60 * 1000
@@ -64,29 +71,6 @@ function getWindowsSafeSpawn(
   return { spawnCmd: getCmdExePath(), spawnArgs: ['/d', '/s', '/c', commandLine] }
 }
 
-// Why: mirrors src/main/text-generation/commit-message-text-generation.ts. On
-// Windows, npm-installed CLIs like `claude`/`codex` are usually `.cmd` shims.
-// We route those through cmd.exe so Node can launch them, and taskkill is
-// needed to terminate the whole wrapper + node.exe process tree. Kept
-// duplicated rather than imported because the relay ships to remote hosts.
-function killProcessTree(child: ChildProcess): void {
-  const pid = child.pid
-  if (!pid) {
-    return
-  }
-  if (process.platform === 'win32') {
-    exec(`taskkill /pid ${pid} /T /F`, () => {
-      // Best-effort; the spawn's `close` listener fires once the tree exits.
-    })
-    return
-  }
-  try {
-    child.kill('SIGKILL')
-  } catch {
-    // Child may already have exited between the kill request and now.
-  }
-}
-
 type ExecParams = {
   binary: unknown
   args: unknown
@@ -95,6 +79,7 @@ type ExecParams = {
   timeoutMs: unknown
   env: unknown
   operation: unknown
+  shell: unknown
 }
 
 type CancelParams = {
@@ -107,7 +92,7 @@ function laneKeyFor(cwd: string, operation: unknown): string {
   return JSON.stringify([op, cwd])
 }
 
-type InFlightExec = { child: ChildProcess; cancel: () => void }
+type InFlightExec = { child?: ChildProcess; cancel: () => void }
 
 type ExecResult = {
   stdout: string
@@ -128,13 +113,10 @@ type ExecResult = {
  * and a clean exit code instead of an interactive session.
  */
 export class AgentExecHandler {
+  private readonly processLifetime = new RelayAgentProcessLifetime()
   // Why: commit-message and PR-field generation can run together for one cwd;
   // operation lanes let cancel target only the user-visible job that stopped.
   private inFlightByLane = new Map<string, InFlightExec>()
-
-  private laneKey(cwd: string, operation: unknown): string {
-    return laneKeyFor(cwd, operation)
-  }
 
   constructor(dispatcher: RelayDispatcher) {
     dispatcher.onRequest('agent.execNonInteractive', (p, context) =>
@@ -143,9 +125,15 @@ export class AgentExecHandler {
     dispatcher.onRequest('agent.cancelExec', (p) => this.cancel(p as CancelParams))
   }
 
+  dispose(): Promise<void> {
+    return this.processLifetime.dispose()
+  }
+
+  reopen = (): void => this.processLifetime.reopen()
+
   private async cancel(params: CancelParams): Promise<{ canceled: boolean }> {
     const cwd = typeof params.cwd === 'string' ? params.cwd : ''
-    const entry = this.inFlightByLane.get(this.laneKey(cwd, params.operation))
+    const entry = this.inFlightByLane.get(laneKeyFor(cwd, params.operation))
     if (!entry) {
       return { canceled: false }
     }
@@ -154,6 +142,7 @@ export class AgentExecHandler {
   }
 
   private async exec(params: ExecParams, context?: RequestContext): Promise<ExecResult> {
+    this.processLifetime.assertAdmission()
     const binary = typeof params.binary === 'string' ? params.binary : ''
     if (!binary) {
       throw new Error('agent.execNonInteractive: binary is required')
@@ -163,17 +152,76 @@ export class AgentExecHandler {
     const stdinPayload = typeof params.stdin === 'string' ? params.stdin : null
     const requestedTimeout =
       typeof params.timeoutMs === 'number' ? params.timeoutMs : DEFAULT_TIMEOUT_MS
-    const timeoutMs = Math.max(1_000, Math.min(MAX_TIMEOUT_MS, requestedTimeout))
+    const deadline = Date.now() + Math.max(1_000, Math.min(MAX_TIMEOUT_MS, requestedTimeout))
     const extraEnv =
       params.env && typeof params.env === 'object' && !Array.isArray(params.env)
         ? (params.env as Record<string, string>)
         : null
-    const spawnEnv = extraEnv ? { ...process.env, ...extraEnv } : process.env
+    let hostEnv = process.env
+    if (params.shell === true) {
+      const timeoutError = new Error('Profile resolution exceeded the request deadline')
+      const controller = new AbortController()
+      const key = laneKeyFor(cwd ?? '', params.operation)
+      const pending = { cancel: (): void => controller.abort() }
+      this.inFlightByLane.get(key)?.cancel()
+      this.inFlightByLane.set(key, pending)
+      context?.signal?.addEventListener('abort', pending.cancel, { once: true })
+      if (context?.signal?.aborted) {
+        pending.cancel()
+      }
+      try {
+        hostEnv = await new PromiseSettlementWaiters(
+          resolveLoginShellEnvironment({ env: process.env })
+        ).wait({
+          signal: controller.signal,
+          timeoutMs: Math.max(1, deadline - Date.now()),
+          createTimeoutError: () => timeoutError
+        })
+      } catch (error) {
+        if (error === timeoutError) {
+          return { stdout: '', stderr: '', exitCode: null, timedOut: true }
+        }
+        if (controller.signal.aborted) {
+          return { stdout: '', stderr: '', exitCode: null, timedOut: false, canceled: true }
+        }
+        throw error
+      } finally {
+        context?.signal?.removeEventListener('abort', pending.cancel)
+        if (this.inFlightByLane.get(key) === pending) {
+          this.inFlightByLane.delete(key)
+        }
+      }
+      if (controller.signal.aborted) {
+        return { stdout: '', stderr: '', exitCode: null, timedOut: false, canceled: true }
+      }
+    }
+    // Why again: shutdown may have fenced while the login shell resolved.
+    this.processLifetime.assertAdmission()
+    if (Date.now() >= deadline) {
+      return { stdout: '', stderr: '', exitCode: null, timedOut: true }
+    }
+    const baseEnv = mergeCommandEnvironment(hostEnv, extraEnv ? {} : undefined, process.platform)
+    const overrides = mergeCommandEnvironment({}, extraEnv ?? undefined, process.platform)
+    const spawnEnv = Object.fromEntries(
+      Object.entries(mergeGitConfigEnvProtocol(baseEnv ?? hostEnv, overrides)).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string'
+      )
+    )
+    // Why: this RPC has no interactive terminal, regardless of which wrapper
+    // launches the agent or hook command.
+    applyTerminalGitCredentialPromptGuard(spawnEnv, {
+      isUnattended: true,
+      platform: process.platform
+    })
 
     return new Promise<ExecResult>((resolve) => {
       let child
       try {
         const { spawnCmd, spawnArgs } = getWindowsSafeSpawn(binary, args, spawnEnv)
+        if (Date.now() >= deadline) {
+          resolve({ stdout: '', stderr: '', exitCode: null, timedOut: true })
+          return
+        }
         child = spawn(spawnCmd, spawnArgs, {
           cwd,
           env: spawnEnv,
@@ -191,6 +239,7 @@ export class AgentExecHandler {
         return
       }
 
+      this.processLifetime.track(child)
       let stdout = ''
       let stderr = ''
       let stdoutBytes = 0
@@ -198,7 +247,7 @@ export class AgentExecHandler {
       let timedOut = false
       let canceled = false
       let settled = false
-      const laneKey = typeof cwd === 'string' ? this.laneKey(cwd, params.operation) : ''
+      const laneKey = typeof cwd === 'string' ? laneKeyFor(cwd, params.operation) : ''
       let entry: InFlightExec | null = null
       let timer: ReturnType<typeof setTimeout> | null = null
       let detachChildListeners = (): void => {}
@@ -221,7 +270,7 @@ export class AgentExecHandler {
       }
       const cancelCurrent = (): void => {
         canceled = true
-        killProcessTree(child)
+        terminateRelaySubprocessTree(child)
       }
       if (laneKey) {
         // Why: the relay owns one visible non-interactive job per cwd+operation.
@@ -229,26 +278,14 @@ export class AgentExecHandler {
         // that process until timeout because future cancelExec calls reach only
         // the newest map entry.
         this.inFlightByLane.get(laneKey)?.cancel()
-        entry = {
-          child,
-          cancel: cancelCurrent
-        }
+        entry = { child, cancel: cancelCurrent }
         this.inFlightByLane.set(laneKey, entry)
       }
-
-      timer = setTimeout(() => {
-        timedOut = true
-        // Why: tree-kill because some CLIs trap SIGTERM and continue streaming;
-        // also Windows wraps `.cmd` shims in cmd.exe, so the immediate child
-        // is not the real node.exe process.
-        killProcessTree(child)
-        finish({ stdout, stderr, exitCode: null, timedOut, canceled })
-      }, timeoutMs)
 
       const onStdoutData = (chunk: Buffer): void => {
         stdoutBytes += chunk.byteLength
         if (stdoutBytes > MAX_OUTPUT_BYTES) {
-          killProcessTree(child)
+          terminateRelaySubprocessTree(child)
           return
         }
         stdout += chunk.toString('utf-8')
@@ -256,23 +293,15 @@ export class AgentExecHandler {
       const onStderrData = (chunk: Buffer): void => {
         stderrBytes += chunk.byteLength
         if (stderrBytes > MAX_OUTPUT_BYTES) {
-          killProcessTree(child)
+          terminateRelaySubprocessTree(child)
           return
         }
         stderr += chunk.toString('utf-8')
       }
-      const onError = (error: Error): void => {
-        finish({
-          stdout,
-          stderr,
-          exitCode: null,
-          timedOut,
-          spawnError: error.message
-        })
-      }
-      const onClose = (code: number | null): void => {
+      const onError = (error: Error): void =>
+        finish({ stdout, stderr, exitCode: null, timedOut, spawnError: error.message })
+      const onClose = (code: number | null): void =>
         finish({ stdout, stderr, exitCode: code, timedOut, canceled })
-      }
       child.stdout?.on('data', onStdoutData)
       child.stderr?.on('data', onStderrData)
       child.on('error', onError)
@@ -283,6 +312,19 @@ export class AgentExecHandler {
         child.off('error', onError)
         child.off('close', onClose)
       }
+
+      const expireCurrent = (): void => {
+        timedOut = true
+        // Why: wrappers and signal-trapping CLIs require terminating the whole tree.
+        terminateRelaySubprocessTree(child)
+        finish({ stdout, stderr, exitCode: null, timedOut, canceled })
+      }
+      const remainingTimeoutMs = deadline - Date.now()
+      if (remainingTimeoutMs <= 0) {
+        expireCurrent()
+        return
+      }
+      timer = setTimeout(expireCurrent, remainingTimeoutMs)
 
       if (context?.signal) {
         if (context.signal.aborted) {
@@ -295,11 +337,7 @@ export class AgentExecHandler {
         }
       }
 
-      if (stdinPayload !== null) {
-        child.stdin?.end(stdinPayload)
-      } else {
-        child.stdin?.end()
-      }
+      child.stdin?.end(stdinPayload ?? undefined)
     })
   }
 }

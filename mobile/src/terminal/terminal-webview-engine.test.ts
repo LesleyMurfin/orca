@@ -1,14 +1,83 @@
-import { readFileSync } from 'node:fs'
+// @vitest-environment happy-dom
 import { Script } from 'node:vm'
 import { parse } from 'acorn'
-import { describe, expect, it } from 'vitest'
-import { XTERM_ENGINE_CSS, XTERM_ENGINE_JS } from './terminal-webview-engine.generated'
+import { describe, expect, it, vi } from 'vitest'
+import { XTERM_ENGINE_CSS } from './terminal-webview-engine-css.generated'
+import { XTERM_ENGINE_JS } from './terminal-webview-engine.generated'
+import { createTerminalDocumentScope } from './document/document-scope'
+import { attachWebglAddon, startWebglRecovery } from './document/webgl-recovery'
 import { XTERM_HTML } from './terminal-webview-html'
 
-const terminalHtmlSource = readFileSync(
-  new URL('./terminal-webview-html.ts', import.meta.url),
-  'utf8'
-)
+function createWebglRecoveryHarness(failSecondAttach = false) {
+  const timers: Array<() => void> = []
+  const addons: Array<{
+    clearTextureAtlas: ReturnType<typeof vi.fn>
+    dispose: ReturnType<typeof vi.fn>
+    fireContextLoss: () => void
+  }> = []
+  const term = {
+    rows: 24,
+    // The theme path writes these two, which is how a case reads that it ran.
+    options: { theme: {}, minimumContrastRatio: 0, fontSize: 13 },
+    refresh: vi.fn(),
+    loadAddon: vi.fn(() => {
+      if (failSecondAttach && addons.length === 2) {
+        throw new Error('retry unavailable')
+      }
+    })
+  }
+  function WebglAddon() {
+    let contextLoss = () => {}
+    const addon = {
+      clearTextureAtlas: vi.fn(),
+      dispose: vi.fn(),
+      fireContextLoss: () => contextLoss()
+    }
+    addons.push(addon)
+    return Object.assign(addon, {
+      onContextLoss: (listener: () => void) => {
+        contextLoss = listener
+      }
+    })
+  }
+  const logged: Record<string, unknown>[] = []
+  const terminalThemeInput = { mode: 'dark' }
+  // The recovery's own timer, held rather than run: every case decides when the retry fires.
+  vi.spyOn(globalThis, 'setTimeout').mockImplementation((callback: TimerHandler) => {
+    if (typeof callback === 'function') {
+      timers.push(() => {
+        callback()
+      })
+    }
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the document holds this only to clear it, and nothing here clears a timer.
+    return timers.length as unknown as ReturnType<typeof setTimeout>
+  })
+  const scope = createTerminalDocumentScope({
+    createWebglAddon: () => WebglAddon(),
+    postToHost: (message) => logged.push(message)
+  })
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the double implements the members the recovery path reaches, which is what each case asserts about.
+  scope.term = term as unknown as typeof scope.term
+  scope.terminalGeneration = 1
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the recovery only re-applies this value through the theme path; its shape is that path's own input.
+  scope.terminalThemeInput = terminalThemeInput as unknown as typeof scope.terminalThemeInput
+  startWebglRecovery(scope)
+  attachWebglAddon(scope, true)
+  return {
+    addons,
+    // The theme is re-applied through the document's own path, which is observable on the terminal
+    // rather than through a spy on the function.
+    appliedThemes: () => term.options.theme,
+    fireVisibilityChange: () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    },
+    logged,
+    scope,
+    term,
+    terminalThemeInput,
+    timers
+  }
+}
 
 describe('terminal WebView bundled engine', () => {
   it('keeps the assembled terminal HTML free of external engine URLs', () => {
@@ -20,6 +89,35 @@ describe('terminal WebView bundled engine', () => {
 
   it('parses the bundled engine at the Chrome 74 syntax floor', () => {
     expect(() => parse(XTERM_ENGINE_JS, { ecmaVersion: 2019 })).not.toThrow()
+  })
+
+  it('answers the mode query OpenCode sends during startup', async () => {
+    vi.useFakeTimers()
+    const reply = vi.fn()
+    const window = {}
+    try {
+      new Script(
+        `${XTERM_ENGINE_JS}; const terminal = new window.Terminal();
+        terminal.onData(reply); terminal.write('\\x1b[?1004$p');`
+      ).runInNewContext({
+        window,
+        self: window,
+        document: {},
+        navigator: { platform: 'Linux', userAgent: 'Chrome/74' },
+        structuredClone,
+        performance,
+        setTimeout,
+        clearTimeout,
+        queueMicrotask,
+        console,
+        URL,
+        reply
+      })
+      await vi.runAllTimersAsync()
+      expect(reply).toHaveBeenCalledWith('\x1b[?1004;2$y')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   // Why: the context deliberately omits WeakRef (Chrome 84+) / structuredClone
@@ -73,37 +171,56 @@ describe('terminal WebView bundled engine', () => {
     expect(XTERM_ENGINE_CSS).not.toMatch(/<\/style/i)
   })
 
-  it('reports WebView message handler failures instead of swallowing them', () => {
-    const start = terminalHtmlSource.indexOf('function handleIncomingMessage')
-    const end = terminalHtmlSource.indexOf("window.addEventListener('resize'", start)
-    expect(start).toBeGreaterThanOrEqual(0)
-    expect(end).toBeGreaterThan(start)
-    const handlerSource = terminalHtmlSource.slice(start, end)
+  it('recreates WebGL once after context loss, then stays on the DOM renderer', () => {
+    const { addons, logged, term, timers } = createWebglRecoveryHarness()
 
-    expect(handlerSource).toContain('reportEngineError(')
-    expect(handlerSource).toContain("'terminal init failed'")
-    expect(handlerSource).toContain("'terminal message failed'")
-    expect(handlerSource).not.toContain('catch(ex) {}')
+    expect(addons).toHaveLength(1)
+    addons[0]?.fireContextLoss()
+    // The log reaches the host through the notify seam, which is where a real host reads it.
+    expect(logged).toContainEqual({
+      type: 'log',
+      tag: '[fit]webgl-context-loss',
+      payload: expect.objectContaining({ retry: true })
+    })
+    expect(addons[0]?.dispose).toHaveBeenCalledTimes(1)
+    expect(term.refresh).toHaveBeenCalledTimes(1)
+    expect(timers).toHaveLength(1)
+
+    timers.shift()?.()
+    expect(addons).toHaveLength(2)
+    expect(addons[1]?.clearTextureAtlas).toHaveBeenCalledTimes(1)
+    expect(term.refresh).toHaveBeenCalledTimes(2)
+    addons[1]?.fireContextLoss()
+    expect(addons[1]?.dispose).toHaveBeenCalledTimes(1)
+    expect(term.refresh).toHaveBeenCalledTimes(3)
+    expect(timers).toHaveLength(0)
   })
 
-  it('classifies runtime errors by a document-scoped ever-ready latch', () => {
-    // Why: init() flips `ready` false on every re-init (live width reflow keeps the
-    // old surface visible meanwhile), so the fatal default and the init-catch must
-    // key off `everReady` — otherwise a transient reflow error blanks a live
-    // terminal behind the fatal overlay. The latch stays set for the document.
-    expect(terminalHtmlSource).toContain('var everReady = false;')
-    expect(terminalHtmlSource).toContain('everReady = true;')
-    expect(terminalHtmlSource).toContain('fatal === undefined ? !everReady : !!fatal')
-    expect(terminalHtmlSource).toContain("msg.type === 'init' && !everReady")
-    expect(terminalHtmlSource).not.toMatch(/fatal === undefined \? !ready\b/)
+  it('falls back to a refreshed DOM renderer when the delayed WebGL retry fails', () => {
+    const { addons, term, timers } = createWebglRecoveryHarness(true)
+
+    addons[0]?.fireContextLoss()
+    timers.shift()?.()
+
+    expect(addons).toHaveLength(2)
+    expect(addons[1]?.dispose).toHaveBeenCalledTimes(1)
+    expect(term.refresh).toHaveBeenCalledTimes(2)
   })
 
-  it('bounds error capture and non-fatal reporting on a degraded engine', () => {
-    // Why: a constructed-but-broken engine can throw per render frame; both
-    // onerror capture sites must cap the buffer and non-fatal notifies must
-    // stop flooding RN while fatal reports always emit.
-    const capSites = terminalHtmlSource.match(/__engineErrors\.length < 20/g) ?? []
-    expect(capSites.length).toBe(2)
-    expect(terminalHtmlSource).toContain('nonFatalErrorNotifies > 5')
+  it('reapplies theme, clears the active atlas, and refreshes when visible', () => {
+    const harness = createWebglRecoveryHarness()
+
+    // Hidden: nothing is re-applied, because a repaint of an invisible terminal is wasted. happy-dom
+    // reports a visible document, so the hidden arm is the stub and the visible one is the default.
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    harness.fireVisibilityChange()
+    expect(harness.term.options.theme).toEqual({})
+    vi.restoreAllMocks()
+
+    harness.fireVisibilityChange()
+    // The theme is re-applied through the document's own path, read off the terminal it wrote to.
+    expect(harness.term.options.theme).not.toEqual({})
+    expect(harness.addons[0]?.clearTextureAtlas).toHaveBeenCalledTimes(1)
+    expect(harness.term.refresh).toHaveBeenCalledTimes(1)
   })
 })

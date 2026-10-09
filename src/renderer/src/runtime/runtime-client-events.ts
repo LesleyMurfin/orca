@@ -4,6 +4,9 @@ import type {
 } from '../../../shared/runtime-client-events'
 import type { RuntimeRpcResponse } from '../../../shared/runtime-rpc-envelope'
 import { isRuntimeSubscriptionReplayResponse } from '../../../shared/runtime-subscription-replay'
+import { admitSshConnectionState } from '../../../shared/ssh-retained-payload-admission'
+import { getRuntimeEnvironmentRevision } from './runtime-environment-revision'
+import { subscribeRuntimeEnvironment } from './runtime-environment-pairing-refresh'
 
 export type RuntimeClientEventSubscription = {
   unsubscribe: () => void
@@ -19,11 +22,12 @@ export async function subscribeRuntimeClientEvents(
   // per-environment SSH bucket) may have missed transitions and must resync.
   onReplayedAfterReconnect?: () => void
 ): Promise<RuntimeClientEventSubscription> {
-  const handle = await window.api.runtimeEnvironments.subscribe(
+  const handle = await subscribeRuntimeEnvironment(
     {
       selector: environmentId,
       method: 'runtime.clientEvents.subscribe',
-      timeoutMs: 15_000
+      timeoutMs: 15_000,
+      expectedEnvironmentPairingRevision: getRuntimeEnvironmentRevision(environmentId)
     },
     {
       onResponse: (response) => {
@@ -49,7 +53,27 @@ function handleRuntimeClientEventResponse(
     onReplayedAfterReconnect?.()
   }
   const message = response.result as RuntimeClientEventStreamMessage
-  if (message.type === 'ready' || message.type === 'end') {
+  if (message.type === 'ready') {
+    for (const sshState of message.snapshot?.sshStates ?? []) {
+      const state = admitSshConnectionState(sshState.state, sshState.targetId)
+      if (state) {
+        onEvent({ type: 'sshStateChanged', targetId: sshState.targetId, state })
+      } else {
+        onError(new Error('Invalid retained SSH connection state'))
+      }
+    }
+    return
+  }
+  if (message.type === 'end') {
+    return
+  }
+  if (message.type === 'sshStateChanged') {
+    const state = admitSshConnectionState(message.state, message.targetId)
+    if (state) {
+      onEvent({ type: 'sshStateChanged', targetId: message.targetId, state })
+    } else {
+      onError(new Error('Invalid retained SSH connection state'))
+    }
     return
   }
   if (isRuntimeClientEvent(message)) {
@@ -63,8 +87,12 @@ function isRuntimeClientEvent(
   return (
     message.type === 'reposChanged' ||
     message.type === 'worktreesChanged' ||
+    message.type === 'nativeChatLaunchDraftResolved' ||
+    message.type === 'terminalSideEffects' ||
     message.type === 'sshStateChanged' ||
+    message.type === 'automationsChanged' ||
     message.type === 'linearLinkedIssueUpdated' ||
-    message.type === 'activateWorktree'
+    message.type === 'activateWorktree' ||
+    message.type === 'worktreeTerminalSleepState'
   )
 }

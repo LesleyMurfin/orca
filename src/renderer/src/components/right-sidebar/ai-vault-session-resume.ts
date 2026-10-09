@@ -1,4 +1,6 @@
-import type { Repo, Worktree } from '../../../../shared/types'
+import { getAiVaultResumeWorkspaceWslDistro } from '@/lib/ai-vault-resume-shell'
+import type { Repo } from '../../../../shared/repo-types'
+import type { Worktree } from '../../../../shared/worktree/types'
 import {
   canResumeAiVaultSessionOnTarget,
   getAiVaultResumeWorkspaceExecutionHostId,
@@ -9,17 +11,20 @@ import {
   type AiVaultSession
 } from '../../../../shared/ai-vault-types'
 import type { AppState } from '@/store/types'
+import { getIndexedWorktreeMap } from '@/store/worktree-repo-index'
 import { translate } from '@/i18n/i18n'
 import { parseWorkspaceKey } from '../../../../shared/workspace-scope'
 import {
   canJumpToAiVaultSessionWorktree,
+  resolveAiVaultSessionWorktreeInfo,
   type AiVaultSessionWorktreeInfo
 } from './ai-vault-session-worktree'
 
 export type AiVaultSessionResumeTargetState = Pick<
   AppState,
   'folderWorkspaces' | 'projectGroups' | 'repos' | 'worktreesByRepo'
->
+> &
+  Partial<Pick<AppState, 'activeRepoId' | 'activeWorktreeId' | 'projects' | 'settings'>>
 
 export type AiVaultSessionResumeState = {
   blocked: boolean
@@ -81,6 +86,32 @@ export function resolveAiVaultSessionResumeState(args: {
     worktreeId: null,
     usesSessionWorktree: false
   }
+}
+
+export function resolveAiVaultHistorySessionResumeState(
+  args: Omit<
+    Parameters<typeof resolveAiVaultSessionResumeState>[0],
+    'sessionFilePath' | 'sessionExecutionHostId'
+  > & {
+    session: AiVaultSession
+  }
+): AiVaultSessionResumeState {
+  const child = Boolean(args.session.subagent)
+  return resolveAiVaultSessionResumeState({
+    ...args,
+    sessionFilePath: args.session.filePath,
+    sessionExecutionHostId: args.session.executionHostId,
+    worktreeInfo: child
+      ? resolveAiVaultSessionWorktreeInfo({
+          session: args.session,
+          worktrees: args.worktrees,
+          repos: args.repos,
+          activeWorktreeId: args.activeWorktreeId
+        })
+      : args.worktreeInfo,
+    // Lazy children are absent from the panel map; never resume them in an unrelated active workspace.
+    activeWorktreeId: child ? null : args.activeWorktreeId
+  })
 }
 
 export function resolveAiVaultSessionResumeActions(args: {
@@ -145,9 +176,7 @@ export function isKnownAiVaultResumeWorkspaceTarget(
   }
 
   const worktreeId = workspaceKey?.type === 'worktree' ? workspaceKey.worktreeId : workspaceId
-  return Object.values(state.worktreesByRepo).some((worktrees) =>
-    worktrees.some((worktree) => worktree.id === worktreeId)
-  )
+  return getIndexedWorktreeMap(state.worktreesByRepo).has(worktreeId)
 }
 
 function resolveSupportedResumeWorktreeId(args: {
@@ -174,7 +203,8 @@ function resolveSupportedResumeWorktreeId(args: {
       sessionFilePath: args.sessionFilePath,
       sessionExecutionHostId: args.sessionExecutionHostId,
       targetStatus,
-      targetExecutionHostId
+      targetExecutionHostId,
+      targetWslDistro: getAiVaultResumeWorkspaceWslDistro(args.targetState, args.worktreeId)
     })
   ) {
     return null
@@ -204,17 +234,16 @@ function resolveAiVaultResumeTargetState(args: {
 }
 
 // Resume needs actual conversation content: a zero-turn transcript would resume
-// into an empty session. Workspace-target blocking only disables in-app resume;
-// copying the command stays available for blocked-but-real sessions, so the copy
-// affordance is gated on content alone.
+// into an empty session. Copy stays available for blocked CLI sessions, while a
+// structured owner reopens natively and must never expose a legacy command.
 export function aiVaultSessionRowResumeGating(
-  session: Pick<AiVaultSession, 'messageCount' | 'previewMessages'>,
+  session: Pick<AiVaultSession, 'messageCount' | 'previewMessages' | 'structuredSession'>,
   state: Pick<AiVaultSessionResumeState, 'blocked'> | null
 ): { resumeDisabled: boolean; canCopyResumeCommand: boolean } {
   const hasResumableContent = isAiVaultSessionResumableContent(session)
   return {
     resumeDisabled: (state?.blocked ?? true) || !hasResumableContent,
-    canCopyResumeCommand: hasResumableContent
+    canCopyResumeCommand: hasResumableContent && !session.structuredSession
   }
 }
 

@@ -1,5 +1,6 @@
 import type { HookCommandConfig, HookDefinition } from '../agent-hooks/installer-utils'
 import type { CodexEventLabel, CodexTrustEntry } from './config-toml-trust'
+import { normalizeCodexHookTimeoutSec } from './codex-trust-identity'
 
 // Why: Codex's trust hash key uses the snake_case event label (see
 // codex-rs/hooks/src/lib.rs::hook_event_key_label) while hooks.json uses the
@@ -8,10 +9,13 @@ import type { CodexEventLabel, CodexTrustEntry } from './config-toml-trust'
 export const CODEX_HOOK_EVENT_LABEL: Record<string, CodexEventLabel> = {
   SessionStart: 'session_start',
   UserPromptSubmit: 'user_prompt_submit',
+  SubagentStart: 'subagent_start',
+  SubagentStop: 'subagent_stop',
   PreToolUse: 'pre_tool_use',
   PermissionRequest: 'permission_request',
   PostToolUse: 'post_tool_use',
   Stop: 'stop',
+  Interrupt: 'interrupt',
   PreCompact: 'pre_compact',
   PostCompact: 'post_compact'
 }
@@ -19,10 +23,13 @@ export const CODEX_HOOK_EVENT_LABEL: Record<string, CodexEventLabel> = {
 export const CODEX_EVENT_NAME_BY_LABEL: Record<CodexEventLabel, string> = {
   session_start: 'SessionStart',
   user_prompt_submit: 'UserPromptSubmit',
+  subagent_start: 'SubagentStart',
+  subagent_stop: 'SubagentStop',
   pre_tool_use: 'PreToolUse',
   permission_request: 'PermissionRequest',
   post_tool_use: 'PostToolUse',
   stop: 'Stop',
+  interrupt: 'Interrupt',
   pre_compact: 'PreCompact',
   post_compact: 'PostCompact'
 }
@@ -64,7 +71,7 @@ export function getCodexHookTrustSignature(entry: CodexTrustEntry): string {
   return JSON.stringify({
     eventLabel: entry.eventLabel,
     command: entry.command,
-    timeoutSec: Math.max(1, entry.timeoutSec ?? 600),
+    timeoutSec: normalizeCodexHookTimeoutSec(entry.eventLabel, entry.timeoutSec),
     async: entry.async ?? false,
     matcher: entry.matcher ?? null,
     statusMessage: entry.statusMessage ?? null

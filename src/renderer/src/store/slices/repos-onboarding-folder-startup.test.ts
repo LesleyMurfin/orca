@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { getDefaultOnboardingState, getDefaultSettings } from '../../../../shared/constants'
+import { getDefaultSettings } from '../../../../shared/constants'
+import { getDefaultOnboardingState } from '../../../../shared/onboarding-defaults'
 import { createTestStore, makeWorktree } from './store-test-helpers'
 
 const worktreeActivation = vi.hoisted(() => ({
@@ -56,6 +57,7 @@ describe('repo slice skipped-onboarding folder startup', () => {
       1,
       'folder-1::/folder',
       {
+        sidebarRevealBehavior: 'auto',
         startup: {
           command: "codex '--dangerously-bypass-approvals-and-sandbox'",
           env: {},
@@ -65,6 +67,7 @@ describe('repo slice skipped-onboarding folder startup', () => {
             agentArgs: '--dangerously-bypass-approvals-and-sandbox',
             agentEnv: {}
           },
+          sessionOptions: undefined,
           telemetry: {
             agent_kind: 'codex',
             launch_source: 'onboarding',
@@ -76,7 +79,7 @@ describe('repo slice skipped-onboarding folder startup', () => {
     expect(worktreeActivation.activateAndRevealWorktree).toHaveBeenNthCalledWith(
       2,
       'folder-2::/folder',
-      undefined
+      { sidebarRevealBehavior: 'auto' }
     )
   })
 })

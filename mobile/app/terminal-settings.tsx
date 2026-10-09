@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { View, Text, StyleSheet, Pressable, Switch } from 'react-native'
+import { View, Text, Pressable, Switch } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import Animated, {
@@ -9,14 +9,16 @@ import Animated, {
 } from 'react-native-reanimated'
 import { useRouter } from 'expo-router'
 import { ChevronLeft, ChevronRight, Smartphone, Type } from 'lucide-react-native'
-import { colors, radii, spacing, typography } from '../src/theme/mobile-theme'
+import { colors, spacing } from '../src/theme/mobile-theme'
 import { loadHosts } from '../src/transport/host-store'
 import type { HostProfile } from '../src/transport/types'
-import { useAllHostClients } from '../src/transport/client-context'
+import { useFocusedSettingsHostClients } from '../src/transport/settings-host-client-connections'
 import type { RpcClient } from '../src/transport/rpc-client'
 import { PickerModal, type PickerOption } from '../src/components/PickerModal'
 import { TerminalShortcutSettings } from '../src/components/TerminalShortcutSettings'
 import { setTerminalAutoRestoreFitMsForHost } from '../src/terminal/terminal-auto-restore-fit-state'
+import { terminalSettingsScreenStyles as styles } from '../src/terminal/terminal-settings-screen-styles'
+import { setTerminalSettingsScrollEnabled } from '../src/terminal/terminal-settings-scroll-lock'
 import {
   loadTerminalAutocompleteEnabled,
   loadTerminalTextScale,
@@ -127,7 +129,7 @@ export default function TerminalSettingsScreen() {
     void loadHosts().then(setHosts)
   }, [])
   const hostIds = useMemo(() => hosts.map((h) => h.id), [hosts])
-  const hostClients = useAllHostClients(hostIds)
+  const { clients: hostClients } = useFocusedSettingsHostClients(hostIds)
   const hostClientsById = useMemo(
     () => new Map(hostClients.map((entry) => [entry.hostId, entry.client])),
     [hostClients]
@@ -244,7 +246,7 @@ export default function TerminalSettingsScreen() {
   // is active would rebuild the row gestures and could cancel the drag.
   const setScrollEnabled = useCallback(
     (enabled: boolean) => {
-      scrollRef.current?.setNativeProps({ scrollEnabled: enabled })
+      setTerminalSettingsScrollEnabled(scrollRef, enabled)
     },
     [scrollRef]
   )
@@ -277,7 +279,7 @@ export default function TerminalSettingsScreen() {
           While you&apos;re using a terminal on your phone, Orca shrinks it to fit your screen. When
           you close the app or switch away, this controls whether it stays at phone size (so
           interactive CLI tools don&apos;t reflow) or resizes back to your desktop. You can always
-          use Restore this terminal or Restore all terminals on the banner to resize manually.
+          use Restore on the desktop banner to resize manually.
         </Text>
 
         {hosts.length === 0 ? (
@@ -380,92 +382,3 @@ export default function TerminalSettingsScreen() {
     </GestureHandlerRootView>
   )
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.bgBase,
-    paddingHorizontal: spacing.lg,
-    paddingTop: 0
-  },
-  topRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: spacing.sm,
-    marginBottom: spacing.lg
-  },
-  backButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: spacing.sm
-  },
-  heading: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: colors.textPrimary
-  },
-  scrollContent: {
-    paddingBottom: spacing.xl
-  },
-  groupHeading: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.textMuted,
-    letterSpacing: 0.5,
-    marginBottom: spacing.xs,
-    paddingHorizontal: spacing.xs
-  },
-  groupDescription: {
-    fontSize: typography.bodySize - 1,
-    color: colors.textSecondary,
-    lineHeight: 20,
-    paddingHorizontal: spacing.xs
-  },
-  section: {
-    backgroundColor: colors.bgPanel,
-    borderRadius: radii.card,
-    overflow: 'hidden'
-  },
-  sectionTopGap: {
-    marginTop: spacing.sm
-  },
-  inputGroupGap: {
-    marginTop: spacing.xl
-  },
-  emptyText: {
-    fontSize: typography.bodySize,
-    color: colors.textSecondary,
-    padding: spacing.md
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm + 2,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.md + 2
-  },
-  rowPressed: {
-    backgroundColor: colors.bgRaised
-  },
-  rowContent: {
-    flex: 1
-  },
-  rowLabel: {
-    fontSize: typography.bodySize,
-    fontWeight: '500',
-    color: colors.textPrimary
-  },
-  rowSublabel: {
-    fontSize: typography.bodySize - 2,
-    color: colors.textSecondary,
-    marginTop: 2
-  },
-  separator: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.borderSubtle,
-    marginHorizontal: spacing.md
-  }
-})

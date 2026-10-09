@@ -3,16 +3,18 @@
  *
  * Why this suite exists:
  *   A TUI that armed mouse tracking (?1000/1002/1003 + SGR 1006/1016) and died
- *   uncleanly never emits the disable sequence. The daemon's private-mode
- *   tracker keeps the mode and buildRehydrateSequences re-arms it on every
- *   reattach, but POST_REPLAY_REATTACH_RESET used to clear cursor/focus/kitty
- *   state and NOT mouse modes. A plain shell in the reattached pane then echoed
+ *   uncleanly never emits the disable sequence. When the daemon cannot prove
+ *   the death (no OSC 133, refuted proof) it keeps the mode and
+ *   buildRehydrateSequences re-arms it on every reattach, but
+ *   POST_REPLAY_REATTACH_RESET used to clear cursor/focus/kitty state and NOT
+ *   mouse modes. A plain shell in the reattached pane then echoed
  *   every pointer-motion report (`<35;col;rowM`) as literal text.
  *
  * What it covers (full stack, no mocks):
  *   - First launch arms the leak for real: a fixture writes the enable sequence
- *     to stdout and exits, and the live pane is asserted to enter mouse-reporting
- *     mode (the byte flow the daemon's tracker also records and re-arms).
+ *     to stdout, stays alive while the live pane is asserted to enter
+ *     mouse-reporting mode and through the reattach, so no OSC 133;D lets the
+ *     daemon ground it and only the reattach reset can disarm the pane.
  *   - After a warm reattach, the renderer terminal ends with mouse reporting
  *     DISARMED: mouseTrackingMode is 'none', the enable-mouse-events class is
  *     gone, and real pointer motion produces zero mouse reports.
@@ -34,7 +36,9 @@ import { TEST_REPO_PATH_FILE } from './global-setup'
 import {
   discoverActivePtyId,
   execInTerminal,
+  sendToTerminal,
   waitForActiveTerminalManager,
+  waitForActivePanePtyId,
   waitForPaneCount,
   waitForTerminalOutput
 } from './helpers/terminal'
@@ -98,17 +102,18 @@ test.describe('reattach mouse-mode leak', () => {
       test.skip(!shellExecutes, 'PTY shell does not execute commands in this environment')
 
       // Arm mouse tracking exactly as a TUI would, then let the shell foreground
-      // return — the disable is never sent, so the daemon's tracker keeps the
-      // mode and re-arms it on reattach. printf is a shell builtin (no external
-      // binary), and its typed argument is literal backslashes, so only real
-      // execution emits the ESC bytes that arm xterm below.
-      await execInTerminal(firstLaunch.page, ptyId, `printf '\\033[?1003h\\033[?1006h'`)
+      // return — the disable is never sent. printf is a shell builtin (no
+      // external binary), and its typed argument is literal backslashes, so only
+      // real execution emits the ESC bytes that arm xterm below.
+      // Why the sleep: the daemon grounds a proven program death at the next
+      // OSC 133;D, so the program must outlive the reattach assertion.
+      await execInTerminal(firstLaunch.page, ptyId, `printf '\\033[?1003h\\033[?1006h'; sleep 120`)
 
       // Precondition: the printf armed real mouse reporting in the live
-      // pane (proving the leak's byte flow reached the terminal). The daemon's
-      // tracker sees the same output stream and re-arms this mode on every
-      // reattach — the rehydrate half is locked by the repro-7329 unit test; this
-      // suite proves the reattach reset disarms it end to end.
+      // pane (proving the leak's byte flow reached the terminal). Until a 133;D
+      // lets the daemon ground it (or with no shell integration at all), the
+      // daemon re-arms this mode on reattach — the rehydrate half is locked by
+      // the repro-7329 unit test; this suite proves the reattach reset disarms it.
       await expect
         .poll(
           async () =>
@@ -146,10 +151,13 @@ test.describe('reattach mouse-mode leak', () => {
       await ensureTerminalVisible(secondLaunch.page)
       await waitForActiveTerminalManager(secondLaunch.page, 30_000)
       await waitForPaneCount(secondLaunch.page, 1, 30_000)
+      // Live output is released only after reattach replay has finished.
+      const reattachedPtyId = await waitForActivePanePtyId(secondLaunch.page)
 
-      // The reattach replay re-arms mouse via rehydrate, then the reset must
-      // clear it. Poll until it settles to 'none' (times out if the reset
-      // regresses to not touching mouse modes).
+      // The arming program still runs, so the daemon has not grounded it: the
+      // reattach replay re-arms mouse via rehydrate, then the reset must clear
+      // it. Poll until it settles to 'none' (times out if the reset regresses
+      // to not touching mouse modes).
       await expect
         .poll(
           async () =>
@@ -172,6 +180,10 @@ test.describe('reattach mouse-mode leak', () => {
           }
         )
         .toBe('none')
+
+      await sendToTerminal(secondLaunch.page, reattachedPtyId, '\x03')
+      await execInTerminal(secondLaunch.page, reattachedPtyId, 'echo ORCA_REATTACHED_$((21+21))')
+      await waitForTerminalOutput(secondLaunch.page, 'ORCA_REATTACHED_42', 15_000)
 
       // Behavioral proof + positive control: real pointer motion must produce
       // no reports post-reattach, but the same probe DOES observe reports once
@@ -230,11 +242,25 @@ test.describe('reattach mouse-mode leak', () => {
           await new Promise<void>((resolve) =>
             pane.terminal.write('\x1b[?1003h\x1b[?1006h', () => resolve())
           )
-          await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)))
-          const classAfterArm = pane.terminal.element.classList.contains('enable-mouse-events')
-          await dispatchMotion()
+          // Why: xterm binds the enable-mouse-events class AND the motion
+          // listener together in one _handleProtocolChange pass, so poll a bounded
+          // number of frames — dispatching motion each round — until arming takes
+          // rather than reading a single frame that can precede the binding.
+          let classAfterArm = false
+          let armedReports = 0
+          for (let attempt = 0; attempt < 40 && armedReports === 0; attempt += 1) {
+            await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)))
+            classAfterArm =
+              classAfterArm || pane.terminal.element.classList.contains('enable-mouse-events')
+            await dispatchMotion()
+            armedReports = motionReports().length
+          }
 
-          return { afterReattach, classAfterArm, armedReports: motionReports().length }
+          return {
+            afterReattach,
+            classAfterArm,
+            armedReports
+          }
         } finally {
           disposable.dispose()
         }

@@ -1,18 +1,26 @@
 import { MessageSquare, TriangleAlert } from 'lucide-react'
 import { translate } from '@/i18n/i18n'
 import { formatAgentTypeLabel } from '@/lib/agent-status'
+import { NATIVE_CHAT_EMPTY_STATE_COPY } from '../../../../shared/native-chat-empty-state'
 import type { NativeChatSession } from '../../../../shared/native-chat-types'
 
 export function NativeChatEmptyState({
   kind,
   message,
-  agent
+  headline,
+  agent,
+  retrying = false
 }: {
   kind: 'loading' | 'empty' | 'error' | 'not-agent'
   message?: string
+  /** The chat's own sentence for the failure, said once: it takes the generic title's place. */
+  headline?: string
   agent?: NativeChatSession['agent']
+  /** The read retries on its own (structured chat), so the error says only that it didn't load,
+   *  never pointing back to the terminal. */
+  retrying?: boolean
 }): React.JSX.Element {
-  const copy = emptyStateCopy(kind, message, agent)
+  const copy = emptyStateCopy(kind, { message, headline }, agent, retrying)
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
       <div
@@ -38,34 +46,49 @@ export function NativeChatEmptyState({
 
 function emptyStateCopy(
   kind: 'loading' | 'empty' | 'error' | 'not-agent',
-  message?: string,
-  agent?: NativeChatSession['agent']
+  words: { message?: string; headline?: string },
+  agent?: NativeChatSession['agent'],
+  retrying = false
 ): { title: string; subtitle: string | null } {
   switch (kind) {
     case 'loading':
       return {
-        title: translate('components.native-chat.state.loading.title', 'Loading conversation…'),
+        title: translate(
+          'components.native-chat.state.loading.title',
+          NATIVE_CHAT_EMPTY_STATE_COPY.loading.title
+        ),
         subtitle: translate(
           'components.native-chat.state.loading.subtitle',
-          'Reading the agent transcript.'
+          NATIVE_CHAT_EMPTY_STATE_COPY.loading.subtitle
         )
       }
-    case 'error':
-      return {
-        title: translate('components.native-chat.state.error.title', 'Could not load conversation'),
-        subtitle:
-          message ??
-          translate(
-            'components.native-chat.state.error.subtitle',
-            'The transcript could not be read. Toggle back to the terminal to keep working.'
-          )
+    case 'error': {
+      if (words.headline) {
+        return { title: words.headline, subtitle: null }
       }
+      return {
+        title: translate(
+          'components.native-chat.state.error.title',
+          NATIVE_CHAT_EMPTY_STATE_COPY.error.title
+        ),
+        subtitle: retrying
+          ? null
+          : (words.message ??
+            translate(
+              'components.native-chat.state.error.subtitle',
+              NATIVE_CHAT_EMPTY_STATE_COPY.error.subtitle
+            ))
+      }
+    }
     case 'not-agent':
       return {
-        title: translate('components.native-chat.state.notAgent.title', 'No conversation here'),
+        title: translate(
+          'components.native-chat.state.notAgent.title',
+          NATIVE_CHAT_EMPTY_STATE_COPY.notAgent.title
+        ),
         subtitle: translate(
           'components.native-chat.state.notAgent.subtitle',
-          'This terminal is not running a recognized coding agent.'
+          NATIVE_CHAT_EMPTY_STATE_COPY.notAgent.subtitle
         )
       }
     case 'empty': {
@@ -73,12 +96,12 @@ function emptyStateCopy(
       return {
         title: translate(
           'components.native-chat.state.empty.title',
-          'Start a chat with {{value0}}',
+          NATIVE_CHAT_EMPTY_STATE_COPY.empty.title,
           { value0: agentName }
         ),
         subtitle: translate(
           'components.native-chat.state.empty.subtitle',
-          'Ask {{value0}} to inspect code, explain output, or make a change.',
+          NATIVE_CHAT_EMPTY_STATE_COPY.empty.subtitle,
           { value0: agentName }
         )
       }

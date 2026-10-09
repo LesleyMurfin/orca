@@ -1,4 +1,5 @@
 import type { AppState } from '@/store/types'
+import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../shared/constants'
 import { parseWslUncPath } from '../../../shared/wsl-paths'
 import {
   deriveGlobalWindowsRuntimeDefaultFromLegacySettings,
@@ -6,87 +7,54 @@ import {
   type ProjectExecutionRuntimeResolution
 } from '../../../shared/project-execution-runtime'
 import { getRepoExecutionHostId, LOCAL_EXECUTION_HOST_ID } from '../../../shared/execution-host'
-import type { Repo, Worktree } from '../../../shared/types'
+import type { Repo } from '../../../shared/repo-types'
+import type { Worktree } from '../../../shared/worktree/types'
+import { parseWorkspaceKey } from '../../../shared/workspace-scope'
+import { getIndexedRepoMap } from '@/store/worktree-repo-index'
+import { getLocalProjectRuntimeWorkspace } from './local-project-runtime-workspace'
 import { getProviderRuntimeContextKey } from './provider-runtime-context'
 import { getRendererAppPlatform } from './renderer-app-platform'
 import {
   getCachedWindowsTerminalCapabilities,
   hasCachedWindowsTerminalCapabilities
 } from './windows-terminal-capabilities'
+import {
+  getProjectRuntimePreflightContext,
+  getWslPreflightContext,
+  type LocalPreflightContext
+} from './local-preflight-context-cache'
 
 export { localPreflightContextKey } from './local-preflight-context-key'
+export type { LocalPreflightContext } from './local-preflight-context-cache'
+export {
+  _getProjectRuntimePreflightContextCacheSizeForTest,
+  _getWslPreflightContextCacheSizeForTest,
+  _hasProjectRuntimePreflightContextCacheEntryForTest,
+  _hasWslPreflightContextCacheEntryForTest,
+  resetLocalPreflightContextCachesForTests
+} from './local-preflight-context-cache'
 
 type LocalProjectRuntimeState = Pick<
   AppState,
   'activeRepoId' | 'activeWorktreeId' | 'projects' | 'repos' | 'settings' | 'worktreesByRepo'
->
+> &
+  Partial<Pick<AppState, 'folderWorkspaces' | 'projectGroups'>>
+
+// Why: the shared indexes are WeakMap-keyed on slice identity, so a fresh `{}`
+// or `[]` fallback would miss the cache on every read.
+const EMPTY_REPOS: AppState['repos'] = []
 
 type LocalProjectRuntimeWslContext = {
   wslAvailable?: boolean
   availableWslDistros?: readonly string[] | null
 }
 
-export type LocalPreflightContext =
-  | {
-      wslDistro?: string | null
-      wslDefault?: boolean
-      runtimeContextKey?: string
-      projectRuntime?: ProjectExecutionRuntimeResolution
-    }
-  | undefined
-
-const wslPreflightContextsByDistro = new Map<string, NonNullable<LocalPreflightContext>>()
-const projectRuntimePreflightContextsByKey = new Map<string, NonNullable<LocalPreflightContext>>()
-
+/** Extracts a WSL distribution name from supported UNC path forms. */
 export function getWslDistroFromPath(path?: string | null): string | null {
   return path ? (parseWslUncPath(path)?.distro ?? null) : null
 }
 
-function getWslPreflightContext(wslDistro: string): NonNullable<LocalPreflightContext> {
-  const cached = wslPreflightContextsByDistro.get(wslDistro)
-  if (cached) {
-    return cached
-  }
-
-  // Why: React/Zustand selectors must return a cached snapshot. A fresh object
-  // here triggers a useSyncExternalStore loop when Settings observes WSL repos.
-  const context = Object.freeze({ wslDistro })
-  wslPreflightContextsByDistro.set(wslDistro, context)
-  return context
-}
-
-function getProjectRuntimeContextObjectCacheKey(
-  resolution: ProjectExecutionRuntimeResolution
-): string {
-  if (resolution.status === 'resolved') {
-    return `${resolution.runtime.cacheKey}:${resolution.runtime.reason}`
-  }
-  return `${resolution.repair.cacheKey}:${resolution.repair.source}`
-}
-
-function getProjectRuntimePreflightContext(
-  resolution: ProjectExecutionRuntimeResolution
-): NonNullable<LocalPreflightContext> {
-  const cacheKey = getProjectRuntimeContextObjectCacheKey(resolution)
-  const cached = projectRuntimePreflightContextsByKey.get(cacheKey)
-  if (cached) {
-    return cached
-  }
-
-  const wslDistro =
-    resolution.status === 'resolved' && resolution.runtime.kind === 'wsl'
-      ? resolution.runtime.distro
-      : undefined
-  // Why: selectors compare by reference; cache each resolved runtime context so
-  // adding projectRuntime does not reintroduce useSyncExternalStore churn.
-  const context = Object.freeze({
-    ...(wslDistro ? { wslDistro } : {}),
-    projectRuntime: resolution
-  })
-  projectRuntimePreflightContextsByKey.set(cacheKey, context)
-  return context
-}
-
+/** Resolves the owning local project's Windows runtime for project-scoped targets. */
 export function getLocalProjectExecutionRuntimeContext(
   state: LocalProjectRuntimeState,
   worktreeId?: string | null,
@@ -97,7 +65,16 @@ export function getLocalProjectExecutionRuntimeContext(
     return undefined
   }
 
-  const worktree = getLocalWorktree(state, worktreeId)
+  if (worktreeId === FLOATING_TERMINAL_WORKTREE_ID) {
+    return undefined
+  }
+  const worktree = getLocalProjectRuntimeWorkspace(state, worktreeId)
+  if (
+    !worktree &&
+    parseWorkspaceKey(worktreeId ?? state.activeWorktreeId ?? '')?.type === 'folder'
+  ) {
+    return undefined
+  }
   const repo = getLocalRuntimeRepoForWorktree(state, worktree)
   if (!isLocalRuntimeRepo(repo) || !isLocalRuntimeWorktree(worktree)) {
     return undefined
@@ -122,6 +99,31 @@ export function getLocalProjectExecutionRuntimeContext(
   })
 }
 
+/** Resolves the Windows default only when no project can own the runtime. */
+export function getGlobalWindowsExecutionRuntimeContext(
+  state: LocalProjectRuntimeState,
+  worktreeId?: string | null,
+  appPlatform: NodeJS.Platform = getRendererAppPlatform(),
+  wslContext: LocalProjectRuntimeWslContext = {}
+): ProjectExecutionRuntimeResolution | undefined {
+  if (
+    appPlatform !== 'win32' ||
+    worktreeId ||
+    state.activeRepoId ||
+    state.activeWorktreeId ||
+    !state.settings?.localWindowsRuntimeDefault
+  ) {
+    return undefined
+  }
+  return resolveProjectExecutionRuntime({
+    appPlatform: 'win32',
+    projectId: getLocalPreflightProjectId(state, worktreeId),
+    projectRuntimePreference: { kind: 'inherit-global' },
+    globalWindowsRuntimeDefault: state.settings.localWindowsRuntimeDefault,
+    ...wslContext
+  })
+}
+
 export function getLocalRepoProjectExecutionRuntimeContext(
   state: LocalProjectRuntimeState,
   repoId: string | null | undefined,
@@ -132,7 +134,7 @@ export function getLocalRepoProjectExecutionRuntimeContext(
     return undefined
   }
 
-  const repo = (state.repos ?? []).find((entry) => entry.id === repoId)
+  const repo = getIndexedRepoMap(state.repos ?? EMPTY_REPOS).get(repoId)
   if (!isLocalRuntimeRepo(repo)) {
     return undefined
   }
@@ -179,11 +181,16 @@ export function getLocalPreflightContext(
 export function getLocalAgentPreflightContext(
   state: AppState,
   appPlatform: NodeJS.Platform = getRendererAppPlatform(),
-  wslContext: LocalProjectRuntimeWslContext = getCachedLocalProjectRuntimeWslContext()
+  wslContext: LocalProjectRuntimeWslContext = getCachedLocalProjectRuntimeWslContext(),
+  worktreeId?: string | null
 ): LocalPreflightContext {
+  // Why: Floating owns native host authority and must not inherit any agent runtime fallback.
+  if (worktreeId === FLOATING_TERMINAL_WORKTREE_ID) {
+    return undefined
+  }
   const projectRuntime = getLocalProjectExecutionRuntimeContext(
     state,
-    undefined,
+    worktreeId,
     appPlatform,
     wslContext
   )
@@ -191,23 +198,16 @@ export function getLocalAgentPreflightContext(
     return getProjectRuntimePreflightContext(projectRuntime)
   }
 
-  if (
-    appPlatform === 'win32' &&
-    !state.activeRepoId &&
-    !state.activeWorktreeId &&
-    state.settings?.localWindowsRuntimeDefault
-  ) {
-    // Why: Settings -> Agents is global and can mount before any project is
-    // active; still respect the Windows/WSL runtime default for PATH detection.
-    return getProjectRuntimePreflightContext(
-      resolveProjectExecutionRuntime({
-        appPlatform: 'win32',
-        projectId: getLocalPreflightProjectId(state),
-        projectRuntimePreference: { kind: 'inherit-global' },
-        globalWindowsRuntimeDefault: state.settings.localWindowsRuntimeDefault,
-        ...wslContext
-      })
-    )
+  // Why: Settings -> Agents is global and can mount before any project is
+  // active; still respect the Windows/WSL runtime default for PATH detection.
+  const globalRuntime = getGlobalWindowsExecutionRuntimeContext(
+    state,
+    worktreeId,
+    appPlatform,
+    wslContext
+  )
+  if (globalRuntime) {
+    return getProjectRuntimePreflightContext(globalRuntime)
   }
 
   const explicitAgentRuntime = appPlatform === 'win32' ? state.settings?.localAgentRuntime : null
@@ -215,7 +215,7 @@ export function getLocalAgentPreflightContext(
     return getProjectRuntimePreflightContext(
       resolveProjectExecutionRuntime({
         appPlatform: 'win32',
-        projectId: getLocalPreflightProjectId(state),
+        projectId: getLocalPreflightProjectId(state, worktreeId),
         projectRuntimePreference: { kind: 'windows-host' },
         globalWindowsRuntimeDefault: deriveGlobalWindowsRuntimeDefaultFromLegacySettings(
           state.settings
@@ -229,7 +229,7 @@ export function getLocalAgentPreflightContext(
       return getProjectRuntimePreflightContext(
         resolveProjectExecutionRuntime({
           appPlatform: 'win32',
-          projectId: getLocalPreflightProjectId(state),
+          projectId: getLocalPreflightProjectId(state, worktreeId),
           projectRuntimePreference: { kind: 'wsl', distro: explicitDistro },
           globalWindowsRuntimeDefault: deriveGlobalWindowsRuntimeDefaultFromLegacySettings(
             state.settings
@@ -240,7 +240,7 @@ export function getLocalAgentPreflightContext(
     return getProjectRuntimePreflightContext(
       resolveProjectExecutionRuntime({
         appPlatform: 'win32',
-        projectId: getLocalPreflightProjectId(state),
+        projectId: getLocalPreflightProjectId(state, worktreeId),
         projectRuntimePreference: { kind: 'inherit-global' },
         globalWindowsRuntimeDefault: deriveGlobalWindowsRuntimeDefaultFromLegacySettings(
           state.settings
@@ -249,7 +249,7 @@ export function getLocalAgentPreflightContext(
     )
   }
 
-  const wslDistro = getLocalPreflightWslDistro(state)
+  const wslDistro = getLocalPreflightWslDistro(state, worktreeId)
   if (wslDistro) {
     return getWslPreflightContext(wslDistro)
   }
@@ -269,8 +269,8 @@ function getCachedLocalProjectRuntimeWslContext(): LocalProjectRuntimeWslContext
   }
 }
 
-function getLocalPreflightWslDistro(state: AppState): string | null {
-  const activeWorktree = getLocalWorktree(state)
+function getLocalPreflightWslDistro(state: AppState, worktreeId?: string | null): string | null {
+  const activeWorktree = getLocalProjectRuntimeWorkspace(state, worktreeId)
   const repo = getLocalRuntimeRepoForWorktree(state, activeWorktree)
   if (!isLocalRuntimeRepo(repo) || !isLocalRuntimeWorktree(activeWorktree)) {
     return null
@@ -283,8 +283,11 @@ function getLocalRuntimeRepoForWorktree(
   state: LocalProjectRuntimeState,
   worktree?: Pick<Worktree, 'repoId'> | null
 ): Pick<Repo, 'id' | 'path' | 'connectionId' | 'executionHostId'> | undefined {
+  if (!worktree && parseWorkspaceKey(state.activeWorktreeId ?? '')?.type === 'folder') {
+    return undefined
+  }
   const repoId = worktree?.repoId ?? state.activeRepoId
-  return repoId ? (state.repos ?? []).find((repo) => repo.id === repoId) : undefined
+  return repoId ? getIndexedRepoMap(state.repos ?? EMPTY_REPOS).get(repoId) : undefined
 }
 
 function isLocalRuntimeRepo(
@@ -311,23 +314,11 @@ function getLocalRuntimeProject(
   )
 }
 
-function getLocalWorktree(
-  state: LocalProjectRuntimeState,
-  worktreeId?: string | null
-): Pick<Worktree, 'id' | 'repoId' | 'projectId' | 'path' | 'hostId'> | null {
-  const targetWorktreeId = worktreeId ?? state.activeWorktreeId
-  return targetWorktreeId
-    ? (Object.values(state.worktreesByRepo ?? {})
-        .flat()
-        .find((worktree) => worktree.id === targetWorktreeId) ?? null)
-    : null
-}
-
 function getLocalPreflightProjectId(
   state: LocalProjectRuntimeState,
   worktreeId?: string | null
 ): string {
-  const activeWorktree = getLocalWorktree(state, worktreeId)
+  const activeWorktree = getLocalProjectRuntimeWorkspace(state, worktreeId)
   return (
     activeWorktree?.projectId ?? activeWorktree?.repoId ?? state.activeRepoId ?? 'local-project'
   )

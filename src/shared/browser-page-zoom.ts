@@ -1,5 +1,10 @@
 export type BrowserPageZoomDirection = 'in' | 'out' | 'reset'
 
+export type BrowserPageZoomCommand = {
+  browserPageId: string
+  direction: BrowserPageZoomDirection
+}
+
 export const BROWSER_PAGE_ZOOM_STEP = 0.5
 export const BROWSER_PAGE_ZOOM_MIN = -3
 export const BROWSER_PAGE_ZOOM_MAX = 5
@@ -23,7 +28,7 @@ export function normalizeBrowserPageZoomLevel(value: unknown): number {
 export function browserPageZoomLevelToPercent(level: number): number {
   // Why: Electron zoom levels are exponential; show the same percentage users
   // expect from Chromium browser zoom controls.
-  return Math.round(100 * Math.pow(1.2, normalizeBrowserPageZoomLevel(level)))
+  return Math.round(100 * 1.2 ** normalizeBrowserPageZoomLevel(level))
 }
 
 export function nextBrowserPageZoomLevel(

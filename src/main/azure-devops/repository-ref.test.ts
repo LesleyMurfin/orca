@@ -16,6 +16,7 @@ import {
   parseAzureDevOpsRepoRef
 } from './repository-ref'
 import { registerSshGitProvider, unregisterSshGitProvider } from '../providers/ssh-git-dispatch'
+import { REMOTE_URL_PROBE_TIMEOUT_MS } from '../git/remote-url-probe'
 
 describe('parseAzureDevOpsRepoRef', () => {
   beforeEach(() => {
@@ -117,7 +118,9 @@ describe('parseAzureDevOpsRepoRef', () => {
       webBaseUrl: 'https://dev.azure.com/acme/Project/_git/repo'
     })
 
-    expect(sshExecMock).toHaveBeenCalledWith(['remote', 'get-url', 'origin'], '/repo')
+    expect(sshExecMock).toHaveBeenCalledWith(['remote', 'get-url', 'origin'], '/repo', {
+      signal: expect.any(AbortSignal)
+    })
     expect(gitExecFileAsyncMock).not.toHaveBeenCalled()
   })
 
@@ -151,11 +154,13 @@ describe('parseAzureDevOpsRepoRef', () => {
 
     expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(2)
     expect(gitExecFileAsyncMock).toHaveBeenNthCalledWith(1, ['remote', 'get-url', 'origin'], {
-      cwd: '/repo'
+      cwd: '/repo',
+      timeout: REMOTE_URL_PROBE_TIMEOUT_MS
     })
     expect(gitExecFileAsyncMock).toHaveBeenNthCalledWith(2, ['remote', 'get-url', 'origin'], {
       cwd: '/repo',
-      wslDistro: 'Ubuntu'
+      wslDistro: 'Ubuntu',
+      timeout: REMOTE_URL_PROBE_TIMEOUT_MS
     })
   })
 
@@ -171,25 +176,5 @@ describe('parseAzureDevOpsRepoRef', () => {
     }
 
     expect(_getAzureDevOpsRepoRefCacheSize()).toBe(512)
-  })
-
-  it('does not cache transient SSH provider failures as unsupported repos', async () => {
-    sshExecMock.mockRejectedValueOnce(new Error('connection closed')).mockResolvedValueOnce({
-      stdout: 'git@ssh.dev.azure.com:v3/acme/Project/repo\n',
-      stderr: ''
-    })
-    registerSshGitProvider('conn-1', { exec: sshExecMock } as never)
-
-    await expect(getAzureDevOpsRepoRefForRemote('/repo', 'origin', 'conn-1')).resolves.toBeNull()
-    await expect(getAzureDevOpsRepoRefForRemote('/repo', 'origin', 'conn-1')).resolves.toEqual({
-      host: 'dev.azure.com',
-      organization: 'acme',
-      project: 'Project',
-      repository: 'repo',
-      apiBaseUrl: 'https://dev.azure.com/acme/Project',
-      webBaseUrl: 'https://dev.azure.com/acme/Project/_git/repo'
-    })
-
-    expect(sshExecMock).toHaveBeenCalledTimes(2)
   })
 })

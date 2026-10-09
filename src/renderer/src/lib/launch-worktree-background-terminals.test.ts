@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mockSpawn = vi.fn()
+const mockKill = vi.fn()
 const mockCreateTab = vi.fn()
 const mockSetTabCustomTitle = vi.fn()
 const mockSetTabColor = vi.fn()
@@ -31,6 +32,7 @@ const state = {
       }
     ]
   },
+  tabsByWorktree: { 'wt-1': [] as { id: string }[] },
   allWorktrees: vi.fn(() => state.worktreesByRepo['repo-1'] ?? []),
   createTab: mockCreateTab,
   setTabCustomTitle: mockSetTabCustomTitle,
@@ -78,15 +80,34 @@ describe('launchWorktreeBackgroundTerminals', () => {
         displayName: 'Worktree'
       }
     ]
+    state.tabsByWorktree = { 'wt-1': [] }
     let tabIndex = 0
-    mockCreateTab.mockImplementation(() => ({ id: `tab-${++tabIndex}` }))
+    mockCreateTab.mockImplementation(() => {
+      const tab = { id: `tab-${++tabIndex}` }
+      state.tabsByWorktree['wt-1'].push(tab)
+      return tab
+    })
+    // Placement reads the row back from the store, so title and color writes must land there.
+    const patchTab = (tabId: string, patch: { customTitle?: string; color?: string }): void => {
+      state.tabsByWorktree['wt-1'] = state.tabsByWorktree['wt-1'].map((tab) =>
+        tab.id === tabId ? { ...tab, ...patch } : tab
+      )
+    }
+    mockSetTabCustomTitle.mockImplementation((tabId: string, customTitle: string) =>
+      patchTab(tabId, { customTitle })
+    )
+    mockSetTabColor.mockImplementation((tabId: string, color: string) => patchTab(tabId, { color }))
+    mockCloseTab.mockImplementation((tabId: string) => {
+      state.tabsByWorktree['wt-1'] = state.tabsByWorktree['wt-1'].filter((tab) => tab.id !== tabId)
+    })
     let ptyIndex = 0
     mockSpawn.mockImplementation(async () => ({ id: `pty-${++ptyIndex}` }))
     mockGetActiveRuntimeTarget.mockReturnValue({ kind: 'local' })
     vi.stubGlobal('window', {
       api: {
         pty: {
-          spawn: mockSpawn
+          spawn: mockSpawn,
+          kill: mockKill
         }
       }
     })
@@ -125,7 +146,11 @@ describe('launchWorktreeBackgroundTerminals', () => {
         connectionId: null,
         worktreeId: 'wt-1',
         tabId: 'tab-1',
-        leafId: '00000000-0000-4000-8000-000000000001'
+        leafId: '00000000-0000-4000-8000-000000000001',
+        placement: {
+          kind: 'new-tab',
+          row: expect.objectContaining({ customTitle: 'Dev', color: '#f97316' })
+        }
       })
     )
     expect(mockSpawn).toHaveBeenNthCalledWith(
@@ -134,7 +159,8 @@ describe('launchWorktreeBackgroundTerminals', () => {
         command: 'bash /tmp/setup.sh',
         env: expect.objectContaining({ ORCA_WORKTREE_PATH: '/repo/worktree' }),
         tabId: 'tab-2',
-        leafId: '00000000-0000-4000-8000-000000000002'
+        leafId: '00000000-0000-4000-8000-000000000002',
+        placement: { kind: 'new-tab', row: expect.objectContaining({ customTitle: 'Setup' }) }
       })
     )
     expect(mockUpdateTabPtyId).toHaveBeenCalledWith('tab-1', 'pty-1')
@@ -157,7 +183,8 @@ describe('launchWorktreeBackgroundTerminals', () => {
       1,
       expect.objectContaining({
         tabId: 'tab-1',
-        leafId: '00000000-0000-4000-8000-000000000001'
+        leafId: '00000000-0000-4000-8000-000000000001',
+        placement: { kind: 'new-tab', row: expect.any(Object) }
       })
     )
     expect(mockSpawn.mock.calls[0]?.[0]).not.toHaveProperty('command')
@@ -166,7 +193,18 @@ describe('launchWorktreeBackgroundTerminals', () => {
       expect.objectContaining({
         command: 'bash /tmp/setup.sh',
         tabId: 'tab-1',
-        leafId: '00000000-0000-4000-8000-000000000002'
+        leafId: '00000000-0000-4000-8000-000000000002',
+        placement: {
+          kind: 'split',
+          parentLeafId: '00000000-0000-4000-8000-000000000001',
+          direction: 'horizontal',
+          proposedRoot: {
+            type: 'split',
+            direction: 'horizontal',
+            first: { type: 'leaf', leafId: '00000000-0000-4000-8000-000000000001' },
+            second: { type: 'leaf', leafId: '00000000-0000-4000-8000-000000000002' }
+          }
+        }
       })
     )
     expect(mockSetTabLayout).toHaveBeenLastCalledWith(
@@ -239,6 +277,37 @@ describe('launchWorktreeBackgroundTerminals', () => {
     )
   })
 
+  it('uses configured WSL setup commands for Windows bash runner paths', async () => {
+    state.repos = [{ id: 'repo-1', connectionId: null }]
+    state.worktreesByRepo['repo-1'] = [
+      {
+        id: 'wt-1',
+        repoId: 'repo-1',
+        path: 'C:\\repo\\worktree',
+        displayName: 'Worktree'
+      }
+    ]
+    const { launchWorktreeBackgroundTerminals } =
+      await import('./launch-worktree-background-terminals')
+
+    await launchWorktreeBackgroundTerminals({
+      worktreeId: 'wt-1',
+      setup: {
+        runnerScriptPath: 'C:\\repo\\.git\\worktrees\\wt\\orca\\setup-runner.sh',
+        shell: { family: 'posix', executable: 'wsl.exe' },
+        envVars: { ORCA_WORKTREE_PATH: 'C:\\repo\\worktree' }
+      }
+    })
+
+    expect(mockSpawn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        command: 'bash /mnt/c/repo/.git/worktrees/wt/orca/setup-runner.sh',
+        connectionId: null
+      })
+    )
+  })
+
   it('still attempts setup when a default tab fails to spawn', async () => {
     const spawnError = new Error('pty unavailable')
     mockSpawn
@@ -258,7 +327,10 @@ describe('launchWorktreeBackgroundTerminals', () => {
       }
     })
 
-    expect(mockCloseTab).toHaveBeenCalledWith('tab-1', { recordInteraction: false })
+    expect(mockCloseTab).toHaveBeenCalledWith('tab-1', {
+      recordInteraction: false,
+      reason: 'cleanup'
+    })
     expect(mockSpawn).toHaveBeenCalledTimes(3)
     expect(mockSpawn).toHaveBeenNthCalledWith(
       3,
@@ -287,5 +359,64 @@ describe('launchWorktreeBackgroundTerminals', () => {
 
     expect(mockCreateTab).not.toHaveBeenCalled()
     expect(mockSpawn).not.toHaveBeenCalled()
+  })
+
+  it('kills a PTY whose tab is closed before the spawn resolves', async () => {
+    let resolveSpawn!: (result: { id: string }) => void
+    mockSpawn.mockReturnValueOnce(
+      new Promise<{ id: string }>((resolve) => {
+        resolveSpawn = resolve
+      })
+    )
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { launchWorktreeBackgroundTerminals } =
+      await import('./launch-worktree-background-terminals')
+
+    const launch = launchWorktreeBackgroundTerminals({
+      worktreeId: 'wt-1',
+      defaultTabs: { runCommands: true, tabs: [{ command: 'pnpm dev' }] }
+    })
+    await vi.waitFor(() => expect(mockCreateTab).toHaveBeenCalledOnce())
+    state.tabsByWorktree['wt-1'] = []
+    resolveSpawn({ id: 'pty-after-close' })
+    await launch
+
+    expect(mockKill).toHaveBeenCalledWith('pty-after-close')
+    expect(mockUpdateTabPtyId).not.toHaveBeenCalled()
+    expect(mockRegisterEagerPtyBuffer).not.toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it('kills a late setup split PTY when its parent tab closes', async () => {
+    state.settings = { activeRuntimeEnvironmentId: null, setupScriptLaunchMode: 'split-horizontal' }
+    let resolveSetupSpawn!: (result: { id: string }) => void
+    mockSpawn.mockResolvedValueOnce({ id: 'pty-primary' }).mockReturnValueOnce(
+      new Promise<{ id: string }>((resolve) => {
+        resolveSetupSpawn = resolve
+      })
+    )
+    const { launchWorktreeBackgroundTerminals } =
+      await import('./launch-worktree-background-terminals')
+
+    const launch = launchWorktreeBackgroundTerminals({
+      worktreeId: 'wt-1',
+      setup: setupLaunch
+    })
+    await vi.waitFor(() => expect(mockSpawn).toHaveBeenCalledTimes(2))
+    state.closeTab('tab-1')
+    resolveSetupSpawn({ id: 'pty-setup-after-close' })
+    await launch
+
+    expect(mockKill).toHaveBeenCalledWith('pty-setup-after-close')
+    expect(mockUpdateTabPtyId).toHaveBeenCalledTimes(1)
+    expect(mockUpdateTabPtyId).toHaveBeenCalledWith('tab-1', 'pty-primary')
+    expect(mockSetTabLayout).not.toHaveBeenCalledWith(
+      'tab-1',
+      expect.objectContaining({
+        ptyIdsByLeafId: expect.objectContaining({
+          '00000000-0000-4000-8000-000000000002': 'pty-setup-after-close'
+        })
+      })
+    )
   })
 })

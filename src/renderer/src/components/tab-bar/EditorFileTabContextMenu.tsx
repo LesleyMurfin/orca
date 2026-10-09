@@ -1,8 +1,10 @@
 import {
   Copy,
+  CopyX,
   ExternalLink,
   Eye,
   ListX,
+  PanelLeftClose,
   PanelRightClose,
   Pencil,
   Pin,
@@ -18,22 +20,17 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { useAppStore } from '@/store'
-import { showLocalPathOpenBlockedToast } from '@/lib/local-path-open-guard'
 import { useOptionalShortcutLabel } from '@/hooks/useShortcutLabel'
 import type { OpenFile } from '../../store/slices/editor'
-import { shouldBlockEditorTabLocalOpen } from './editor-tab-local-open-guard'
 import { translate } from '@/i18n/i18n'
+import { LocalOnlyMenuHint } from '@/components/local-only-menu-hint'
+import {
+  getRevealInFileManagerLabel,
+  isRevealInFileManagerBlocked,
+  revealInFileManager
+} from '@/lib/reveal-in-file-manager'
 import { TabWorkspaceLayoutMenuSection } from './TabWorkspaceLayoutMenuSection'
-
-const isMac = navigator.userAgent.includes('Mac')
-const isLinux = navigator.userAgent.includes('Linux')
-
-/** Platform-appropriate label: macOS → Finder, Windows → File Explorer, Linux → Files */
-const revealLabel = isMac
-  ? 'Reveal in Finder'
-  : isLinux
-    ? 'Open Containing Folder'
-    : 'Reveal in File Explorer'
+import { TAB_CONTEXT_MENU_CONTENT_CLASS } from './tab-context-menu-sizing'
 
 type EditorFileTabContextMenuProps = {
   open: boolean
@@ -44,6 +41,8 @@ type EditorFileTabContextMenuProps = {
   isPinned: boolean
   isRenaming: boolean
   hasTabsToRight: boolean
+  hasTabsToLeft: boolean
+  tabCount: number
   canRename: boolean
   canShowMarkdownPreview: boolean
   resolvedLanguage: string
@@ -54,8 +53,10 @@ type EditorFileTabContextMenuProps = {
   onOpenRenameInput: () => void
   onTogglePin: () => void
   onClose: () => void
+  onCloseOthers: () => void
   onCloseAll: () => void
   onCloseToRight: () => void
+  onCloseToLeft: () => void
   onOpenMarkdownPreview: (
     file: {
       filePath: string
@@ -77,6 +78,8 @@ export function EditorFileTabContextMenu({
   isPinned,
   isRenaming,
   hasTabsToRight,
+  hasTabsToLeft,
+  tabCount,
   canRename,
   canShowMarkdownPreview,
   resolvedLanguage,
@@ -87,13 +90,21 @@ export function EditorFileTabContextMenu({
   onOpenRenameInput,
   onTogglePin,
   onClose,
+  onCloseOthers,
   onCloseAll,
   onCloseToRight,
+  onCloseToLeft,
   onOpenMarkdownPreview
 }: EditorFileTabContextMenuProps): React.JSX.Element {
   const renameShortcut = useOptionalShortcutLabel('tab.rename')
   const closeShortcut = useOptionalShortcutLabel('tab.close')
   const closeAllShortcut = useOptionalShortcutLabel('tab.closeAll')
+  const revealBlocked = useAppStore((s) =>
+    isRevealInFileManagerBlocked(s.settings, {
+      connectionId: file.externalSshTargetId ?? repoConnectionId,
+      runtimeEnvironmentId: file.runtimeEnvironmentId
+    })
+  )
 
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange} modal={false}>
@@ -106,7 +117,7 @@ export function EditorFileTabContextMenu({
         />
       </DropdownMenuTrigger>
       <DropdownMenuContent
-        className="w-48"
+        className={TAB_CONTEXT_MENU_CONTENT_CLASS}
         sideOffset={0}
         align="start"
         onCloseAutoFocus={(event) => {
@@ -115,6 +126,10 @@ export function EditorFileTabContextMenu({
           }
           skipMenuFocusRestoreRef.current = false
           event.preventDefault()
+          // Why: opening the input in onSelect lets the still-closing menu reclaim
+          // focus, and the resulting blur commits the rename away before the user types.
+          onActivate()
+          onOpenRenameInput()
         }}
       >
         <TabWorkspaceLayoutMenuSection
@@ -126,8 +141,6 @@ export function EditorFileTabContextMenu({
           disabled={!canRename || isRenaming}
           onSelect={() => {
             skipMenuFocusRestoreRef.current = true
-            onActivate()
-            onOpenRenameInput()
           }}
         >
           <Pencil className="size-3.5" />
@@ -147,6 +160,10 @@ export function EditorFileTabContextMenu({
           {translate('auto.components.tab.bar.EditorFileTabContextMenu.1ba8492c5b', 'Close')}
           {closeShortcut ? <DropdownMenuShortcut>{closeShortcut}</DropdownMenuShortcut> : null}
         </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onCloseOthers} disabled={tabCount <= 1}>
+          <CopyX className="size-3.5" />
+          {translate('components.tab.bar.EditorFileTabContextMenu.closeOthers', 'Close Others')}
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={onCloseAll}>
           <ListX className="size-3.5" />
           {translate(
@@ -162,6 +179,13 @@ export function EditorFileTabContextMenu({
           {translate(
             'auto.components.tab.bar.EditorFileTabContextMenu.e5ff31ccaf',
             'Close Tabs To The Right'
+          )}
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onCloseToLeft} disabled={!hasTabsToLeft}>
+          <PanelLeftClose className="size-3.5" />
+          {translate(
+            'components.tab.bar.EditorFileTabContextMenu.closeTabsToLeft',
+            'Close Tabs To The Left'
           )}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
@@ -210,25 +234,20 @@ export function EditorFileTabContextMenu({
             'Copy Relative Path'
           )}
         </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onSelect={() => {
-            if (
-              shouldBlockEditorTabLocalOpen(
-                useAppStore.getState().settings,
-                file.runtimeEnvironmentId,
-                repoConnectionId
-              )
-            ) {
-              showLocalPathOpenBlockedToast()
-              return
-            }
-            window.api.shell.openPath(file.filePath)
-          }}
-        >
-          <ExternalLink className="size-3.5" />
-          {revealLabel}
-        </DropdownMenuItem>
+        {/* Why: virtual editor tabs use synthetic ids instead of on-disk paths. */}
+        {file.mode !== 'check-details' && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              disabled={revealBlocked}
+              onSelect={() => void revealInFileManager(file.filePath)}
+            >
+              <ExternalLink className="size-3.5" />
+              {getRevealInFileManagerLabel()}
+              {revealBlocked ? <LocalOnlyMenuHint /> : null}
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )

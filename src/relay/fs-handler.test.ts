@@ -7,6 +7,8 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { subscribeWithInProcessWatcher } from '../main/ipc/parcel-watcher-in-process-fallback'
+import { createMockDispatcher } from './relay-fs-test-dispatcher'
 
 const { mockSubscribe } = vi.hoisted(() => ({
   mockSubscribe: vi.fn()
@@ -15,90 +17,6 @@ const { mockSubscribe } = vi.hoisted(() => ({
 vi.mock('@parcel/watcher', () => ({
   subscribe: mockSubscribe
 }))
-
-function createMockDispatcher() {
-  const requestHandlers = new Map<
-    string,
-    (
-      params: Record<string, unknown>,
-      context?: { clientId: number; isStale: () => boolean }
-    ) => Promise<unknown>
-  >()
-  const notificationHandlers = new Map<
-    string,
-    (
-      params: Record<string, unknown>,
-      context?: { clientId: number; isStale: () => boolean }
-    ) => void
-  >()
-  const detachListeners = new Set<(clientId: number) => void>()
-  const notifications: { method: string; params?: Record<string, unknown> }[] = []
-
-  return {
-    onRequest: vi.fn(
-      (
-        method: string,
-        handler: (
-          params: Record<string, unknown>,
-          context?: { clientId: number; isStale: () => boolean }
-        ) => Promise<unknown>
-      ) => {
-        requestHandlers.set(method, handler)
-      }
-    ),
-    onNotification: vi.fn(
-      (
-        method: string,
-        handler: (
-          params: Record<string, unknown>,
-          context?: { clientId: number; isStale: () => boolean }
-        ) => void
-      ) => {
-        notificationHandlers.set(method, handler)
-      }
-    ),
-    notify: vi.fn((method: string, params?: Record<string, unknown>) => {
-      notifications.push({ method, params })
-    }),
-    onClientDetached: vi.fn((listener: (clientId: number) => void) => {
-      detachListeners.add(listener)
-      return () => detachListeners.delete(listener)
-    }),
-    _requestHandlers: requestHandlers,
-    _notificationHandlers: notificationHandlers,
-    _notifications: notifications,
-    async callRequest(
-      method: string,
-      params: Record<string, unknown> = {},
-      context?: { clientId?: number; isStale: () => boolean }
-    ) {
-      const handler = requestHandlers.get(method)
-      if (!handler) {
-        throw new Error(`No handler for ${method}`)
-      }
-      return handler(params, {
-        clientId: context?.clientId ?? 1,
-        isStale: context?.isStale ?? (() => false)
-      })
-    },
-    callNotification(
-      method: string,
-      params: Record<string, unknown> = {},
-      context?: { clientId: number; isStale: () => boolean }
-    ) {
-      const handler = notificationHandlers.get(method)
-      if (!handler) {
-        throw new Error(`No handler for ${method}`)
-      }
-      handler(params, context ?? { clientId: 1, isStale: () => false })
-    },
-    detachClient(clientId: number) {
-      for (const listener of detachListeners) {
-        listener(clientId)
-      }
-    }
-  }
-}
 
 function statIdentity(stats: {
   dev?: number
@@ -121,7 +39,13 @@ describe('FsHandler', () => {
     tmpDir = mkdtempSync(path.join(tmpdir(), 'relay-fs-'))
     dispatcher = createMockDispatcher()
     const ctx = new RelayContext()
-    handler = new FsHandler(dispatcher as unknown as RelayDispatcher, ctx)
+    handler = new FsHandler(dispatcher as unknown as RelayDispatcher, ctx, {
+      dispose: vi.fn(),
+      forgetRoot: vi.fn(),
+      disposeAndWait: vi.fn(async () => {}),
+      reopen: vi.fn(),
+      subscribe: subscribeWithInProcessWatcher
+    })
   })
 
   afterEach(async () => {
@@ -148,6 +72,7 @@ describe('FsHandler', () => {
     expect(methods).toContain('fs.listFiles')
     expect(methods).toContain('fs.workspaceSpaceScan')
     expect(methods).toContain('fs.watch')
+    expect(methods).toContain('fs.unwatchAndWait')
 
     const notifMethods = Array.from(dispatcher._notificationHandlers.keys())
     expect(notifMethods).toContain('fs.unwatch')
@@ -157,19 +82,23 @@ describe('FsHandler', () => {
     await expect(dispatcher.callRequest('fs.tempDir')).resolves.toBe(tmpdir())
   })
 
-  it('readDir returns sorted entries with directories first', async () => {
+  it('readDir returns entries directories-first in natural name order', async () => {
     mkdirSync(path.join(tmpDir, 'subdir'))
-    writeFileSync(path.join(tmpDir, 'file.txt'), 'hello')
-    writeFileSync(path.join(tmpDir, 'aaa.txt'), 'world')
+    for (const name of ['file.txt', '100 - b.txt', '99 - a.txt', '9 - c.txt']) {
+      writeFileSync(path.join(tmpDir, name), 'x')
+    }
 
     const result = (await dispatcher.callRequest('fs.readDir', { dirPath: tmpDir })) as {
       name: string
       isDirectory: boolean
     }[]
-    expect(result[0].name).toBe('subdir')
-    expect(result[0].isDirectory).toBe(true)
-    expect(result.find((e) => e.name === 'file.txt')).toBeDefined()
-    expect(result.find((e) => e.name === 'aaa.txt')).toBeDefined()
+    expect(result[0]).toMatchObject({ name: 'subdir', isDirectory: true })
+    expect(result.slice(1).map((e) => e.name)).toEqual([
+      '9 - c.txt',
+      '99 - a.txt',
+      '100 - b.txt',
+      'file.txt'
+    ])
   })
 
   it('readDir reports symlinked directories as directories', async () => {
@@ -488,6 +417,28 @@ describe('FsHandler', () => {
     await expect(fs.access(filePath)).rejects.toThrow()
   })
 
+  it('holds the relay watcher fence through recursive directory deletion', async () => {
+    const directoryPath = path.join(tmpDir, 'watched-orphan')
+    mkdirSync(directoryPath)
+    const unsubscribe = vi.fn()
+    mockSubscribe.mockResolvedValue({ unsubscribe })
+    await dispatcher.callRequest(
+      'fs.watch',
+      { rootPath: directoryPath, watchId: 77 },
+      { clientId: 3, isStale: () => false }
+    )
+
+    await dispatcher.callRequest('fs.deletePath', { targetPath: directoryPath, recursive: true })
+
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+    expect(dispatcher.notifyClient).toHaveBeenCalledWith(3, 'fs.watchFailed', {
+      rootPath: directoryPath,
+      watchId: 77,
+      message: 'Remote worktree is being removed'
+    })
+    await expect(fs.access(directoryPath)).rejects.toThrow()
+  })
+
   it('createFile creates an empty file with parent dirs', async () => {
     const filePath = path.join(tmpDir, 'deep', 'nested', 'file.txt')
     await dispatcher.callRequest('fs.createFile', { filePath })
@@ -727,6 +678,103 @@ describe('FsHandler', () => {
       }
     )
     expect(unsubscribe).toHaveBeenCalledTimes(1)
+  })
+
+  it('settles acknowledged unwatch only after native unsubscribe completes', async () => {
+    let resolveUnsubscribe: () => void = () => {}
+    const unsubscribe = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveUnsubscribe = resolve
+        })
+    )
+    mockSubscribe.mockResolvedValue({ unsubscribe })
+    await dispatcher.callRequest('fs.watch', { rootPath: tmpDir })
+
+    let settled = false
+    const unwatch = dispatcher.callRequest('fs.unwatchAndWait', { rootPath: tmpDir }).then(() => {
+      settled = true
+    })
+    await vi.waitFor(() => expect(unsubscribe).toHaveBeenCalledTimes(1))
+    expect(settled).toBe(false)
+
+    resolveUnsubscribe()
+    await unwatch
+    expect(settled).toBe(true)
+  })
+
+  it('waits for in-flight native setup before acknowledging teardown', async () => {
+    handler.dispose()
+    let resolveSubscribe: (value: { unsubscribe: () => Promise<void> }) => void = () => {}
+    const unsubscribe = vi.fn(async () => undefined)
+    const subscribe = vi.fn(
+      () =>
+        new Promise<{ unsubscribe: () => Promise<void> }>((resolve) => {
+          resolveSubscribe = resolve
+        })
+    )
+    handler = new FsHandler(dispatcher as unknown as RelayDispatcher, new RelayContext(), {
+      dispose: vi.fn(),
+      forgetRoot: vi.fn(),
+      disposeAndWait: vi.fn(async () => {}),
+      reopen: vi.fn(),
+      subscribe
+    })
+
+    const watch = dispatcher.callRequest('fs.watch', { rootPath: tmpDir })
+    let unwatchSettled = false
+    const unwatch = dispatcher.callRequest('fs.unwatchAndWait', { rootPath: tmpDir }).then(() => {
+      unwatchSettled = true
+    })
+    await vi.waitFor(() => expect(subscribe).toHaveBeenCalledTimes(1))
+    expect(unwatchSettled).toBe(false)
+
+    resolveSubscribe({ unsubscribe })
+    await Promise.all([watch, unwatch])
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+  })
+
+  it('joins a physical unsubscribe already started by the notification path', async () => {
+    let resolveUnsubscribe: () => void = () => {}
+    const unsubscribe = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveUnsubscribe = resolve
+        })
+    )
+    mockSubscribe.mockResolvedValue({ unsubscribe })
+    await dispatcher.callRequest('fs.watch', { rootPath: tmpDir })
+    dispatcher.callNotification('fs.unwatch', { rootPath: tmpDir })
+
+    let settled = false
+    const joined = dispatcher.callRequest('fs.unwatchAndWait', { rootPath: tmpDir }).then(() => {
+      settled = true
+    })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    resolveUnsubscribe()
+    await joined
+  })
+
+  it('retains a failed native unsubscribe slot until acknowledged retry succeeds', async () => {
+    const unsubscribe = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('native handle still active'))
+      .mockResolvedValueOnce(undefined)
+    mockSubscribe.mockResolvedValue({ unsubscribe })
+    await dispatcher.callRequest('fs.watch', { rootPath: tmpDir })
+
+    await expect(dispatcher.callRequest('fs.unwatchAndWait', { rootPath: tmpDir })).rejects.toThrow(
+      'native handle still active'
+    )
+    await expect(
+      dispatcher.callRequest('fs.unwatchAndWait', { rootPath: tmpDir })
+    ).resolves.toBeUndefined()
+    expect(unsubscribe).toHaveBeenCalledTimes(2)
+
+    await expect(dispatcher.callRequest('fs.watch', { rootPath: tmpDir })).resolves.toBeUndefined()
+    expect(mockSubscribe).toHaveBeenCalledTimes(2)
   })
 
   it('allows a shared watch attach even when the root watch cap is full', async () => {

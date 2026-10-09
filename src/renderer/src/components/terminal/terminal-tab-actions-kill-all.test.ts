@@ -29,14 +29,15 @@ import { closeTerminalTab } from './terminal-tab-actions'
 function baseState(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     settings: { activeRuntimeEnvironmentId: null, confirmClosePinnedTab: true },
-    repos: [],
-    worktreesByRepo: {},
+    repos: [{ id: 'repo', executionHostId: 'local', connectionId: null }],
+    worktreesByRepo: { repo: [{ id: 'wt', repoId: 'repo' }] },
     tabsByWorktree: { wt: [{ id: 'terminal-1' }] },
     unifiedTabsByWorktree: {},
     activeWorktreeId: 'wt',
     activeTabId: 'terminal-1',
     openFiles: [],
     browserTabsByWorktree: {},
+    reconcileWorktreeTabModel: vi.fn(() => ({ renderableTabCount: 0 })),
     closeTab: vi.fn(),
     closeUnifiedTab: vi.fn(),
     setActiveFile: vi.fn(),
@@ -59,6 +60,7 @@ describe('closeTerminalTab kill-all routing', () => {
   })
 
   it('force-closes a pinned terminal without opening a second confirmation', () => {
+    const closeTab = vi.fn()
     const closeUnifiedTab = vi.fn()
     const requestPinnedTabCloseConfirm = vi.fn()
     getStateMock.mockReturnValue(
@@ -74,6 +76,7 @@ describe('closeTerminalTab kill-all routing', () => {
             }
           ]
         },
+        closeTab,
         closeUnifiedTab,
         requestPinnedTabCloseConfirm
       })
@@ -82,7 +85,8 @@ describe('closeTerminalTab kill-all routing', () => {
     closeTerminalTab('terminal-1', { force: true })
 
     expect(requestPinnedTabCloseConfirm).not.toHaveBeenCalled()
-    expect(closeUnifiedTab).toHaveBeenCalledWith('visible-pinned')
+    expect(closeTab).toHaveBeenCalledWith('terminal-1', { reason: undefined })
+    expect(closeUnifiedTab).not.toHaveBeenCalled()
   })
 
   it('routes the last active terminal to an existing editor without closing it', () => {
@@ -95,7 +99,7 @@ describe('closeTerminalTab kill-all routing', () => {
 
     expect(state.closeTab).toHaveBeenCalledWith('terminal-1')
     expect(state.setActiveFile).toHaveBeenCalledWith('editor-1')
-    expect(state.setActiveTabType).toHaveBeenCalledWith('editor')
+    expect(state.setActiveTabType).toHaveBeenCalledWith('editor', 'wt')
     expect(state.closeFile).not.toHaveBeenCalled()
     expect(state.closeBrowserTab).not.toHaveBeenCalled()
     expect(state.setActiveWorktree).not.toHaveBeenCalled()
@@ -111,7 +115,7 @@ describe('closeTerminalTab kill-all routing', () => {
     closeTerminalTab('terminal-1', { force: true })
 
     expect(state.setActiveBrowserTab).toHaveBeenCalledWith('browser-1')
-    expect(state.setActiveTabType).toHaveBeenCalledWith('browser')
+    expect(state.setActiveTabType).toHaveBeenCalledWith('browser', 'wt')
     expect(state.closeBrowserTab).not.toHaveBeenCalled()
     expect(state.setActiveWorktree).not.toHaveBeenCalled()
     expect(state.createTab).not.toHaveBeenCalled()

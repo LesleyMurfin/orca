@@ -10,16 +10,21 @@
 // WSL's Windows→WSL forwarder grab the freed Windows-side port and blackhole
 // stale Windows-side hook posts — so unlike the SSH relay there is no grace
 // period and no daemon socket.
+import { AGENT_HOOK_INFER_INTERRUPT_METHOD } from '../shared/agent-hook-interrupt-reconciliation'
 import { homedir } from 'node:os'
 
 import { RELAY_SENTINEL } from './protocol'
 import { RelayDispatcher } from './dispatcher'
 import { RelayAgentHookServer } from './agent-hook-server'
 import { registerWslHookFsHandlers } from './wsl-hook-fs-bridge'
+import { PluginOverlayManager } from './plugin-overlay'
+import { createInstallPluginsHandler } from './wsl-install-plugins-handler'
+import { PreflightHandler } from './preflight-handler'
 import {
-  AGENT_HOOK_NOTIFICATION_METHOD,
+  AGENT_HOOK_INSTALL_PLUGINS_METHOD,
   AGENT_HOOK_REQUEST_REPLAY_METHOD
 } from '../shared/agent-hook-relay'
+import { publishAgentHookEnvelope } from './agent-hook-envelope-publication'
 import {
   sanitizeWslHookInstanceKey,
   WSL_HOOK_RELAY_INSTANCE_ENV,
@@ -35,12 +40,26 @@ async function main(): Promise<void> {
   }
 
   let stdoutAlive = true
-  const dispatcher = new RelayDispatcher((data) => {
-    if (!stdoutAlive) {
-      return
+  const dispatcher = new RelayDispatcher(
+    (data, onSettled) => {
+      if (!stdoutAlive) {
+        onSettled({ ok: false, error: new Error('WSL relay stdout is closed') })
+        return false
+      }
+      return process.stdout.write(data, (error) => {
+        onSettled(error ? { ok: false, error } : { ok: true })
+      })
+    },
+    {
+      supportsWriteCallback: true,
+      writableLength: () => process.stdout.writableLength,
+      writableHighWaterMark: () => process.stdout.writableHighWaterMark,
+      waitWriteDrain: (callback) => {
+        process.stdout.once('drain', callback)
+        return () => process.stdout.off('drain', callback)
+      }
     }
-    return process.stdout.write(data)
-  })
+  )
 
   // Why: restart-stable instance key keeps the endpoint file at one path
   // across app restarts so surviving agents re-coordinate off its rewrite.
@@ -50,16 +69,25 @@ async function main(): Promise<void> {
     endpointDir: wslHookRelayEndpointDir(homedir(), instanceKey),
     token,
     preferredPort: windowsPort,
-    forward: (envelope) =>
-      dispatcher.notify(
-        AGENT_HOOK_NOTIFICATION_METHOD,
-        envelope as unknown as Record<string, unknown>
-      )
+    forward: (envelope) => publishAgentHookEnvelope(dispatcher, envelope)
   })
+  dispatcher.onRequest(AGENT_HOOK_INFER_INTERRUPT_METHOD, async (params) => ({
+    applied: hookServer.inferInterrupt(params)
+  }))
+  new PreflightHandler(dispatcher)
 
   dispatcher.onRequest(AGENT_HOOK_REQUEST_REPLAY_METHOD, async () => ({
     replayed: hookServer.replayCachedPayloadsForPanes()
   }))
+
+  // Why: OpenCode reports status via a plugin (not a hooks.json script), so the
+  // host ships its source over the wire and the guest materializes a config
+  // overlay here — the same PluginOverlayManager path the SSH relay uses. One
+  // handler for the relay's life: it remembers the materialized overlay so
+  // repeat installs don't rebuild it under running agents.
+  const installPlugins = createInstallPluginsHandler(new PluginOverlayManager(), process.env)
+  dispatcher.onRequest(AGENT_HOOK_INSTALL_PLUGINS_METHOD, async (params) => installPlugins(params))
+
   registerWslHookFsHandlers(dispatcher, homedir(), () => ({
     portFallback: hookServer.usedPortFallback,
     boundPort: hookServer.getCoordinates().port
@@ -108,7 +136,7 @@ async function main(): Promise<void> {
 
   // Signal readiness — the host watches for this exact string before
   // sending framed data (same contract as the SSH relay).
-  process.stdout.write(RELAY_SENTINEL)
+  dispatcher.writePrimaryBytes(Buffer.from(RELAY_SENTINEL))
 }
 
 void main()

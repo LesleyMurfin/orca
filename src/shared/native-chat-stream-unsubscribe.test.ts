@@ -9,10 +9,21 @@ describe('native-chat stream unsubscribe key builder', () => {
     expect(buildNativeChatSubscriptionId('claude', 'sess-1')).toBe('claude:sess-1')
   })
 
+  it('suffixes a per-subscription instance onto the cleanup token', () => {
+    expect(buildNativeChatSubscriptionId('claude', 'sess-1', 'sub-7')).toBe('claude:sess-1:sub-7')
+  })
+
   it('builds the unsubscribe RPC frame mobile and web share', () => {
     expect(buildNativeChatUnsubscribe('codex', 'abc')).toEqual({
       method: 'nativeChat.unsubscribe',
       params: { subscriptionId: 'codex:abc' }
+    })
+  })
+
+  it('echoes a pane-specific token when the subscriber supplied one', () => {
+    expect(buildNativeChatUnsubscribe('claude', 'same-session', 'pane-2')).toEqual({
+      method: 'nativeChat.unsubscribe',
+      params: { subscriptionId: 'pane-2' }
     })
   })
 })

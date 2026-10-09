@@ -1,3 +1,4 @@
+import '../unused-default-rpc-methods.test-fixture'
 import { describe, expect, it, vi } from 'vitest'
 import { RpcDispatcher } from '../dispatcher'
 import type { RpcRequest } from '../core'
@@ -23,11 +24,14 @@ describe('diagnostics RPC methods', () => {
       host: {
         totalMemory: 4096,
         freeMemory: 1024,
+        availableMemory: 1024,
+        availableMemorySource: 'free-memory',
         usedMemory: 3072,
         memoryUsagePercent: 75,
         cpuCoreCount: 8,
         loadAverage1m: 1.25
       },
+      processMemoryMetric: 'rss',
       totalCpu: 1,
       totalMemory: 1024,
       collectedAt: 123

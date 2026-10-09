@@ -1,11 +1,6 @@
-// Pure state machine for the native chat composer. Given the current draft,
-// caret position, sent-input history, and the active agent's known slash
-// commands/skills, it derives the autocomplete mode, the
-// query, and the filtered suggestions. Keeping this DOM-free makes the slash /
-// mention / skill / history behavior unit-testable; the .tsx only owns rendering and
-// the actual textarea/caret wiring.
-
 import type { DiscoveredSkill } from '../../../../shared/skills'
+import { formatNativeChatFileReference } from '../../../../shared/agent-image-paste'
+import type { NativeChatAgentProfile } from '../../../../shared/native-chat-agent-profiles'
 import {
   filterSlashCommands,
   isSlashCommandDraft,
@@ -13,145 +8,186 @@ import {
   slashCommandDispatchText,
   type SlashCommandSuggestion
 } from '../../../../shared/native-chat-slash-commands'
+import {
+  buildNativeChatPickerItems,
+  LEADING_SLASH_TRIGGER,
+  MID_PROMPT_SLASH_TRIGGER,
+  type NativeChatPickerItem,
+  type NativeChatSkillDiscoverySnapshot
+} from './native-chat-picker-items'
 
 export type { SlashCommandSuggestion }
 export { filterSlashCommands, isSlashCommandDraft, applySlashSuggestion, slashCommandDispatchText }
+export {
+  applyPickerSuggestion,
+  buildNativeChatPickerItems,
+  classifyNativeChatSend,
+  type NativeChatPickerItem,
+  type NativeChatSendClassification,
+  type NativeChatSkillDiscoverySnapshot
+} from './native-chat-picker-items'
 
-export type ComposerAutocompleteMode = 'none' | 'slash' | 'mention' | 'skill'
+type PickerAutocomplete = {
+  query: string
+  items: NativeChatPickerItem[]
+  triggerKey: string
+  prefix: '/'
+  /** Only a draft-leading `/command` reaches the agent as a command. */
+  dispatchable: boolean
+  grouped: boolean
+  commandsEnabled: boolean
+  skillsEnabled: boolean
+  skillStatus: NativeChatSkillDiscoverySnapshot['status']
+  skillErrorKind?: NativeChatSkillDiscoverySnapshot['errorKind']
+}
 
 export type ComposerAutocomplete =
   | { mode: 'none' }
-  | { mode: 'slash'; query: string; suggestions: SlashCommandSuggestion[] }
-  | { mode: 'mention'; query: string }
-  | { mode: 'skill'; query: string; suggestions: DiscoveredSkill[] }
+  | ({ mode: 'slash' } & PickerAutocomplete)
+  | { mode: 'mention'; query: string; triggerKey: string }
 
-export type ComposerDerivation = {
-  autocomplete: ComposerAutocomplete
+const EMPTY_DISCOVERY: NativeChatSkillDiscoverySnapshot = { status: 'ready', skills: [] }
+
+/** Whether the caret sits in a token that needs the skill catalog loaded. */
+export function isSkillPickerTriggered(
+  before: string,
+  profile: NativeChatAgentProfile | null
+): boolean {
+  if (!profile) {
+    return false
+  }
+  return LEADING_SLASH_TRIGGER.test(before) || MID_PROMPT_SLASH_TRIGGER.test(before)
 }
 
-/**
- * Detect the active autocomplete trigger from the text before the caret.
- *
- * Rules (intentionally conservative to avoid firing inside ordinary prose):
- *  - Slash: the draft starts with `/` and the caret is within that first token
- *    (no whitespace between `/` and the caret). Agent slash commands are only
- *    valid at the very start of the input, mirroring how the TUIs accept them.
- *  - Mention: an `@` immediately preceded by start-of-input or whitespace, with
- *    no whitespace between it and the caret. Works anywhere in the line so you
- *    can reference a file mid-sentence.
- */
 export function deriveComposerAutocomplete(
   draft: string,
   caret: number,
   agentCommands: readonly SlashCommandSuggestion[],
-  skills: readonly DiscoveredSkill[] = []
+  skills: readonly DiscoveredSkill[] = [],
+  profile: NativeChatAgentProfile | null = null,
+  discovery: NativeChatSkillDiscoverySnapshot = { ...EMPTY_DISCOVERY, skills },
+  dismissedTriggerKey: string | null = null,
+  sessionSkillNames?: readonly string[]
 ): ComposerAutocomplete {
   const before = draft.slice(0, caret)
-
-  // Slash: only at the absolute start of the input, and only while the caret is
-  // still inside the unbroken command token.
-  if (before.startsWith('/') && !/\s/.test(before)) {
-    const query = before.slice(1)
-    return { mode: 'slash', query, suggestions: filterSlashCommands(agentCommands, query) }
+  const leadingMatch = before.match(LEADING_SLASH_TRIGGER)
+  if (leadingMatch) {
+    return deriveSlashAutocomplete(
+      leadingMatch[1],
+      0,
+      agentCommands,
+      profile,
+      discovery,
+      dismissedTriggerKey,
+      sessionSkillNames
+    )
   }
-
   const mentionMatch = before.match(/(?:^|\s)@(\S*)$/)
   if (mentionMatch) {
-    return { mode: 'mention', query: mentionMatch[1] }
+    const triggerKey = `@:${before.length - mentionMatch[1].length - 1}`
+    return dismissedTriggerKey === triggerKey
+      ? { mode: 'none' }
+      : { mode: 'mention', query: mentionMatch[1], triggerKey }
   }
-
-  const skillMatch = before.match(/(?:^|\s)\$(\S*)$/)
-  if (skillMatch) {
-    const query = skillMatch[1]
-    return { mode: 'skill', query, suggestions: filterSkillSuggestions(skills, query) }
+  // Why: `/` is the whole composer grammar, so a mid-prompt token opens the same
+  // menu a leading one does — it just cannot dispatch.
+  const midPromptMatch = profile ? before.match(MID_PROMPT_SLASH_TRIGGER) : null
+  if (!midPromptMatch) {
+    return { mode: 'none' }
   }
-
-  return { mode: 'none' }
+  const query = midPromptMatch[1]
+  return deriveSlashAutocomplete(
+    query,
+    before.length - query.length - 1,
+    agentCommands,
+    profile,
+    discovery,
+    dismissedTriggerKey,
+    sessionSkillNames
+  )
 }
 
-export function filterSkillSuggestions(
-  skills: readonly DiscoveredSkill[],
-  query: string
-): DiscoveredSkill[] {
-  const normalized = query.toLowerCase()
-  const installed = skills.filter((skill) => skill.installed)
-  if (normalized === '') {
-    return installed.slice(0, 12)
+function deriveSlashAutocomplete(
+  query: string,
+  triggerPosition: number,
+  agentCommands: readonly SlashCommandSuggestion[],
+  profile: NativeChatAgentProfile | null,
+  discovery: NativeChatSkillDiscoverySnapshot,
+  dismissedTriggerKey: string | null,
+  sessionSkillNames: readonly string[] | undefined
+): ComposerAutocomplete {
+  const triggerKey = `/:${triggerPosition}`
+  if (dismissedTriggerKey === triggerKey) {
+    return { mode: 'none' }
   }
-  return installed
-    .filter((skill) => {
-      const name = skill.name.toLowerCase()
-      const dirName = skill.directoryPath.split(/[\\/]/).findLast(Boolean)?.toLowerCase()
-      return name.startsWith(normalized) || dirName?.startsWith(normalized)
-    })
-    .slice(0, 12)
-}
-
-export type HistoryState = {
-  /** Most-recent-last list of previously sent drafts. */
-  entries: readonly string[]
-  /** Cursor into `entries`; null means "live draft" (not recalling). */
-  index: number | null
-}
-
-export const EMPTY_HISTORY: HistoryState = { entries: [], index: null }
-
-/** Append a sent draft to history and reset the recall cursor. Blank sends and
- *  immediate duplicates of the last entry are not recorded (shell-style). */
-export function pushHistory(history: HistoryState, sent: string): HistoryState {
-  if (sent.trim() === '') {
-    return { entries: history.entries, index: null }
-  }
-  if (history.entries.at(-1) === sent) {
-    return { entries: history.entries, index: null }
-  }
-  return { entries: [...history.entries, sent], index: null }
-}
-
-export type HistoryRecall = {
-  history: HistoryState
-  /** The draft text to show, or null to leave the live draft untouched. */
-  draft: string | null
-}
-
-/**
- * Move one step toward older entries (Up arrow). From the live draft this jumps
- * to the most recent entry; thereafter it walks backward and clamps at the
- * oldest. Returns the recalled draft, or null when there is nothing to recall.
- */
-export function recallPrevious(history: HistoryState): HistoryRecall {
-  if (history.entries.length === 0) {
-    return { history, draft: null }
-  }
-  const nextIndex =
-    history.index === null ? history.entries.length - 1 : Math.max(0, history.index - 1)
+  // Every agent with a known grammar offers skills here; only the token a pick
+  // inserts differs. The caller owns catalog policy (e.g. Grok ships skills-only
+  // until a verified catalog lands), so this derivation must not re-gate per agent.
+  const skillsEnabled = profile !== null
+  const items = buildNativeChatPickerItems(
+    agentCommands,
+    skillsEnabled ? discovery.skills : [],
+    query,
+    profile?.skillPrefix ?? '/',
+    skillsEnabled ? sessionSkillNames : []
+  )
   return {
-    history: { entries: history.entries, index: nextIndex },
-    draft: history.entries[nextIndex]
+    mode: 'slash',
+    query,
+    triggerKey,
+    prefix: '/',
+    dispatchable: triggerPosition === 0,
+    grouped: skillsEnabled,
+    commandsEnabled: agentCommands.length > 0,
+    skillsEnabled,
+    items,
+    skillStatus: skillsEnabled
+      ? discovery.status === 'idle'
+        ? 'loading'
+        : discovery.status
+      : 'ready',
+    ...(skillsEnabled && discovery.errorKind ? { skillErrorKind: discovery.errorKind } : {})
   }
 }
 
-/**
- * Move one step toward newer entries (Down arrow). Walking past the newest entry
- * returns to the live (empty) draft and clears the recall cursor. Returns null
- * draft when not currently recalling.
- */
-export function recallNext(history: HistoryState): HistoryRecall {
-  if (history.index === null) {
-    return { history, draft: null }
+/** True when one edit both removed and inserted text across the dismissed
+ *  trigger token — a wholesale replacement (e.g. select-all + paste), which is
+ *  a new trigger occurrence even though a trigger character lands back on the
+ *  same draft position. Typing or deleting inside the token is not. */
+export function editReplacesTriggerToken(
+  previous: string,
+  next: string,
+  triggerKey: string
+): boolean {
+  const triggerPosition = Number.parseInt(triggerKey.slice(triggerKey.indexOf(':') + 1), 10)
+  if (!Number.isFinite(triggerPosition) || previous === next) {
+    return false
   }
-  const nextIndex = history.index + 1
-  if (nextIndex >= history.entries.length) {
-    return { history: { entries: history.entries, index: null }, draft: '' }
+  let commonPrefix = 0
+  const maxPrefix = Math.min(previous.length, next.length)
+  while (commonPrefix < maxPrefix && previous[commonPrefix] === next[commonPrefix]) {
+    commonPrefix += 1
   }
-  return {
-    history: { entries: history.entries, index: nextIndex },
-    draft: history.entries[nextIndex]
+  let commonSuffix = 0
+  while (
+    commonSuffix < previous.length - commonPrefix &&
+    commonSuffix < next.length - commonPrefix &&
+    previous[previous.length - 1 - commonSuffix] === next[next.length - 1 - commonSuffix]
+  ) {
+    commonSuffix += 1
   }
+  const removed = previous.length - commonPrefix - commonSuffix
+  const inserted = next.length - commonPrefix - commonSuffix
+  if (removed === 0 || inserted === 0) {
+    return false
+  }
+  let tokenEnd = triggerPosition + 1
+  while (tokenEnd < previous.length && !/\s/.test(previous[tokenEnd])) {
+    tokenEnd += 1
+  }
+  return commonPrefix < tokenEnd && previous.length - commonSuffix > triggerPosition
 }
 
-/** Replace the active `@query` token before the caret with the chosen path.
- *  Returns the new full draft and the caret offset to place after insertion. */
 export function applyMentionSuggestion(
   draft: string,
   caret: number,
@@ -163,25 +199,7 @@ export function applyMentionSuggestion(
   if (!match) {
     return { draft, caret }
   }
-  const tokenStart = before.length - match[2].length - 1 // -1 for the '@'
-  const insertion = `@${path} `
-  const nextBefore = before.slice(0, tokenStart) + insertion
-  return { draft: nextBefore + after, caret: nextBefore.length }
-}
-
-export function applySkillSuggestion(
-  draft: string,
-  caret: number,
-  skillName: string
-): { draft: string; caret: number } {
-  const before = draft.slice(0, caret)
-  const after = draft.slice(caret)
-  const match = before.match(/(^|\s)\$(\S*)$/)
-  if (!match) {
-    return { draft, caret }
-  }
-  const tokenStart = before.length - match[2].length - 1 // -1 for the '$'
-  const insertion = `$${skillName} `
-  const nextBefore = before.slice(0, tokenStart) + insertion
-  return { draft: nextBefore + after, caret: nextBefore.length }
+  const tokenStart = before.length - match[2].length - 1
+  const nextBefore = `${before.slice(0, tokenStart)}${formatNativeChatFileReference(path)} `
+  return { draft: nextBefore + after.replace(/^ /, ''), caret: nextBefore.length }
 }

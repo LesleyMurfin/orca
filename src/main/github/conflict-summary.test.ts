@@ -298,6 +298,26 @@ describe('getPRConflictSummary caching', () => {
     ).toHaveLength(1)
   })
 
+  it('preserves background admission across the complete WSL derivation chain', async () => {
+    mockGitDispatch()
+
+    await getPRConflictSummary('/repo-root', 'main', 'github-base-oid', 'head-oid-1', {
+      wslDistro: 'Ubuntu',
+      admissionTier: 'background'
+    })
+
+    expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(5)
+    for (const [, options] of gitExecFileAsyncMock.mock.calls) {
+      expect(options).toEqual(
+        expect.objectContaining({
+          cwd: '/repo-root',
+          wslDistro: 'Ubuntu',
+          admissionTier: 'background'
+        })
+      )
+    }
+  })
+
   it('keeps identities distinct when paths or ref names contain a joiner character', async () => {
     mockGitDispatch()
 
@@ -327,5 +347,22 @@ describe('getPRConflictSummary caching', () => {
     mockGitDispatch()
     await expect(deriveSummary()).resolves.toEqual(expectedSummary)
     expect(spawnCount('merge-base')).toBe(2)
+  })
+
+  it('does not repeat merge-tree --write-tree after an old-Git rejection', async () => {
+    mockGitDispatch({
+      'merge-tree': () =>
+        Promise.reject(
+          Object.assign(new Error('unknown option'), {
+            stdout: 'usage: git merge-tree <base-tree> <branch1> <branch2>'
+          })
+        )
+    })
+
+    await expect(deriveSummary('head-oid-1')).resolves.toBeUndefined()
+    await expect(deriveSummary('head-oid-2')).resolves.toBeUndefined()
+
+    expect(spawnCount('merge-base')).toBe(2)
+    expect(spawnCount('merge-tree')).toBe(1)
   })
 })

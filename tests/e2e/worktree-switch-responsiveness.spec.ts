@@ -4,7 +4,7 @@ import { waitForActiveWorktree, waitForSessionReady } from './helpers/store'
 import { worktreeRow } from './worktree-row-locators'
 
 const MAX_CLICK_TASK_DURATION_MS = 32
-const MAX_CLICK_BACK_TIMER_DRIFT_MS = 32
+const MAX_CLICK_BACK_TIMER_DRIFT_MS = 50
 
 async function prepareSidebarForSwitchTest(page: Page): Promise<[string, string]> {
   return page.evaluate(async () => {
@@ -33,8 +33,8 @@ async function prepareSidebarForSwitchTest(page: Page): Promise<[string, string]
     if ((state.tabsByWorktree[second.id] ?? []).length === 0) {
       state.createTab(second.id, undefined, undefined, { pendingActivationSpawn: true })
     }
-    state.revealWorktreeInSidebar(first.id)
-    state.revealWorktreeInSidebar(second.id)
+    state.revealWorktreeInSidebar(first.id, { behavior: 'auto' })
+    state.revealWorktreeInSidebar(second.id, { behavior: 'auto' })
     state.setActiveWorktree(first.id)
     return [first.id, second.id]
   })

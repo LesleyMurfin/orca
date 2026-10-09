@@ -1,9 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  BRANCH_REFRESH_INTERVAL_MS,
   CompareSummary,
   CompareSummaryToolbarButton,
-  refreshSourceControlAfterRemoteAction,
   resolveSourceControlBaseRef,
   resolveSourceControlCompareBaseRef,
   resolveSourceControlPickerBaseRef,
@@ -12,7 +10,8 @@ import {
   shouldRefreshBranchCompareForStatusHead,
   shouldShowCompareSummary
 } from './SourceControl'
-import type { GitBranchCompareSummary, GitUpstreamStatus } from '../../../../shared/types'
+import type { GitBranchCompareSummary } from '../../../../shared/git-diff-compare-types'
+import type { GitUpstreamStatus } from '../../../../shared/git-status-types'
 
 type ReactElementLike = {
   type: unknown
@@ -410,10 +409,6 @@ describe('SourceControl compare summary', () => {
     expect(collectCompareSummaryToolbarLabels(node)).toEqual(['Change base ref', 'Retry'])
   })
 
-  it('keeps a 30 second branch compare fallback refresh', () => {
-    expect(BRANCH_REFRESH_INTERVAL_MS).toBe(30_000)
-  })
-
   it('refreshes branch compare when git status observes a new head for the same base', () => {
     expect(
       shouldRefreshBranchCompareForStatusHead(
@@ -499,23 +494,5 @@ describe('SourceControl compare summary', () => {
         ahead: 1
       })
     ).toBe(false)
-  })
-
-  it('keeps immediate refresh paths for remote actions', () => {
-    const refreshGitStatus = vi.fn(async () => {})
-    const refreshBranchCompare = vi.fn(async () => {})
-    const refreshGitHistory = vi.fn(async () => {})
-
-    refreshSourceControlAfterRemoteAction({
-      refreshGitStatus,
-      refreshBranchCompare,
-      refreshGitHistory
-    })
-
-    expect(refreshGitStatus).toHaveBeenCalledTimes(1)
-    expect(refreshBranchCompare).toHaveBeenCalledTimes(1)
-    expect(refreshGitHistory).toHaveBeenCalledTimes(1)
-    // Direct commit, manual, retry, and base-ref refresh paths remain component-level
-    // behavior covered by the existing UI wiring; keep this test on the pure helper.
   })
 })

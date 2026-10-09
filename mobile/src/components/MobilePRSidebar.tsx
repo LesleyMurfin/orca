@@ -14,6 +14,8 @@ import {
   type MobilePrTitleAction
 } from '../session/use-mobile-pr-title-action'
 import { useMobilePrAiTriage, type MobilePrAiTriage } from '../session/use-mobile-pr-ai-triage'
+import { useHostProtocolGates } from './HostProtocolGate'
+import { usePRBotAuthorOverrides } from '../session/use-pr-bot-author-overrides'
 import { buildFixChecksPrompt, buildResolveConflictsPrompt } from '../session/pr-ai-triage-prompt'
 import { prSidebarRenderBranch } from './mobile-pr-sidebar-presentation'
 import { mobilePrSidebarStyles as styles } from './pr-sidebar/mobile-pr-sidebar-styles'
@@ -41,6 +43,8 @@ type Props = {
   bottomInset?: number
   // Hub chrome already shows open-on-web; hide the in-body icon there.
   showOpenOnWeb?: boolean
+  /** Named when an AI button's agent starts; the branch stands in when absent. */
+  workspaceLabel: string | null
 }
 
 // Mutation hooks run unconditionally here and gate internally until a PR is ready.
@@ -55,8 +59,10 @@ export function MobilePRSidebar({
   gitStatus,
   headSha,
   bottomInset = 0,
-  showOpenOnWeb = true
+  showOpenOnWeb = true,
+  workspaceLabel
 }: Props) {
+  const launchWorkspaceLabel = workspaceLabel || gitBranch
   const branch = prSidebarRenderBranch(state)
   // prNumber is 0 until ready; the hook gates on `ready` so it never fires early.
   const prNumber = state.kind === 'ready' ? state.data.pr.number : 0
@@ -88,7 +94,23 @@ export function MobilePRSidebar({
     prRepo,
     refetch
   })
-  const triage = useMobilePrAiTriage({ client, connState, worktreeId })
+  const { hostCapabilities, statusPending, statusReadable } = useHostProtocolGates()
+  const triage = useMobilePrAiTriage({
+    client,
+    connState,
+    worktreeId,
+    workspaceLabel: launchWorkspaceLabel,
+    hostCapabilities,
+    hostStatusPending: statusPending,
+    hostStatusReadable: statusReadable
+  })
+  // Keyed on the PR payload identity so overrides re-fetch with each PR refetch
+  // instead of staying a stale one-shot snapshot for the whole session.
+  const botAuthorOverrides = usePRBotAuthorOverrides(
+    client,
+    connState,
+    state.kind === 'ready' ? state.data.details : null
+  )
 
   return (
     <ScrollView
@@ -114,6 +136,8 @@ export function MobilePRSidebar({
         commentActions={commentActions}
         titleAction={titleAction}
         triage={triage}
+        workspaceLabel={launchWorkspaceLabel}
+        botAuthorOverrides={botAuthorOverrides}
         showOpenOnWeb={showOpenOnWeb}
       />
     </ScrollView>
@@ -134,7 +158,9 @@ function PrSidebarContent({
   commentActions,
   titleAction,
   triage,
-  showOpenOnWeb
+  workspaceLabel,
+  showOpenOnWeb,
+  botAuthorOverrides
 }: {
   branch: ReturnType<typeof prSidebarRenderBranch>
   state: PrSidebarState
@@ -149,7 +175,9 @@ function PrSidebarContent({
   commentActions: MobilePrCommentActions
   titleAction: MobilePrTitleAction
   triage: MobilePrAiTriage
+  workspaceLabel: string | null
   showOpenOnWeb: boolean
+  botAuthorOverrides: ReadonlySet<string>
 }) {
   if (branch === 'loading') {
     return (
@@ -200,6 +228,7 @@ function PrSidebarContent({
         gitBranch={gitBranch}
         gitStatus={gitStatus}
         connState={connState}
+        workspaceLabel={workspaceLabel}
         onCreated={refetch}
       />
     )
@@ -215,6 +244,7 @@ function PrSidebarContent({
         titleAction={titleAction}
         triage={triage}
         refetch={refetch}
+        botAuthorOverrides={botAuthorOverrides}
         showOpenOnWeb={showOpenOnWeb}
       />
     )
@@ -231,7 +261,8 @@ function PrSidebarSections({
   titleAction,
   triage,
   refetch,
-  showOpenOnWeb
+  showOpenOnWeb,
+  botAuthorOverrides
 }: {
   data: Extract<PrSidebarState, { kind: 'ready' }>['data']
   client: RpcClient | null
@@ -242,6 +273,7 @@ function PrSidebarSections({
   triage: MobilePrAiTriage
   refetch: () => void
   showOpenOnWeb: boolean
+  botAuthorOverrides: ReadonlySet<string>
 }) {
   const pr = data.pr
   // Bind the triage launchers to this PR's data; the prompt builders are pure so
@@ -257,7 +289,8 @@ function PrSidebarSections({
         })
       ),
     isBusy: triage.isBusy('fix-checks'),
-    error: triage.error
+    availability: triage.availability,
+    ...triage.noticeFor('fix-checks')
   }
   const conflictsTriage = {
     resolveConflicts: () =>
@@ -269,7 +302,8 @@ function PrSidebarSections({
         })
       ),
     isBusy: triage.isBusy('resolve-conflicts'),
-    error: triage.error
+    availability: triage.availability,
+    ...triage.noticeFor('resolve-conflicts')
   }
   // One card for identity + actions so the ready PR isn't a stack of thin
   // duplicate blocks (badge row, title, branches, then another action band).
@@ -303,6 +337,7 @@ function PrSidebarSections({
       />
       <PRChecksSection
         checks={data.checks}
+        checksError={data.checksError}
         client={client}
         worktreeId={worktreeId}
         prRepo={data.pr.prRepo ?? null}
@@ -314,6 +349,7 @@ function PrSidebarSections({
         prState={data.pr.state}
         prRepo={data.pr.prRepo ?? null}
         actions={commentActions}
+        botAuthorOverrides={botAuthorOverrides}
       />
     </>
   )

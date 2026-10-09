@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { safeStorage } from 'electron'
-import { writeSecureJsonFile } from '../../shared/secure-file'
+import { isUnreadableError, writeSecureJsonFile } from '../../shared/secure-file'
 import type {
   OrcaCloudCapabilities,
   OrcaCloudOrgSummary,
@@ -10,6 +10,12 @@ import type {
 import { getOrcaProfileDirectory } from './profile-storage-paths'
 import { allowsPlaintextOrcaCloudSession } from './profile-cloud-auth-config'
 import type { OrcaCloudSessionExchangeResponse } from './profile-cloud-session-exchange'
+import {
+  cloudSessionIdentity,
+  isCloudSessionMutationCurrent,
+  recordSuccessfulCloudSessionLogin,
+  type CloudSessionMutationSnapshot
+} from './profile-cloud-session-mutation'
 
 export type OrcaCloudSession = {
   accessToken: string
@@ -23,6 +29,11 @@ export type OrcaCloudSessionReadResult =
   | { status: 'found'; session: OrcaCloudSession; persistence: OrcaCloudSessionPersistence }
   | { status: 'missing'; persistence: 'none' }
   | { status: 'decrypt-failed'; persistence: 'none'; error: string }
+  /**
+   * The file is there and this process may not read it. Distinct from `decrypt-failed` because
+   * that one means "read it, it was garbage" and licenses replacing it; this one licenses nothing.
+   */
+  | { status: 'unreadable'; persistence: 'none'; error: string }
 
 type PersistedEncryptedSession = {
   version: 1
@@ -44,6 +55,19 @@ type CachedOrcaCloudSession = {
 }
 
 const memorySessions = new Map<string, CachedOrcaCloudSession>()
+export const MAX_MEMORY_CLOUD_SESSIONS = 64
+
+function rememberMemorySession(key: string, session: CachedOrcaCloudSession): void {
+  memorySessions.delete(key)
+  memorySessions.set(key, session)
+  while (memorySessions.size > MAX_MEMORY_CLOUD_SESSIONS) {
+    const oldest = memorySessions.keys().next()
+    if (oldest.done || oldest.value === key) {
+      break
+    }
+    memorySessions.delete(oldest.value)
+  }
+}
 
 function sessionCacheKey(profileId: string, userDataPath: string): string {
   return `${userDataPath}\0${profileId}`
@@ -108,7 +132,7 @@ export function saveOrcaCloudSession(
       ciphertext: safeStorage.encryptString(JSON.stringify(session)).toString('base64')
     }
     writeSecureJsonFile(getOrcaCloudSessionPath(profileId, userDataPath), encrypted)
-    memorySessions.set(cacheKey, { session, persistence: 'encrypted' })
+    rememberMemorySession(cacheKey, { session, persistence: 'encrypted' })
     return 'encrypted'
   }
 
@@ -120,13 +144,13 @@ export function saveOrcaCloudSession(
       session
     }
     writeSecureJsonFile(getOrcaCloudSessionPath(profileId, userDataPath), plaintext)
-    memorySessions.set(cacheKey, { session, persistence: 'dev-plaintext' })
+    rememberMemorySession(cacheKey, { session, persistence: 'dev-plaintext' })
     return 'dev-plaintext'
   }
 
   // Why: Orca account refresh tokens must not silently fall back to plaintext
   // in production. Memory-only keeps cloud features usable until restart.
-  memorySessions.set(cacheKey, { session, persistence: 'memory-only' })
+  rememberMemorySession(cacheKey, { session, persistence: 'memory-only' })
   return 'memory-only'
 }
 
@@ -135,6 +159,7 @@ export function saveOrcaCloudSessionExchange(
   userDataPath: string,
   exchange: OrcaCloudSessionExchangeResponse
 ): OrcaCloudSessionPersistence {
+  recordSuccessfulCloudSessionLogin(cloudSessionIdentity(profileId, exchange.cloud), userDataPath)
   return saveOrcaCloudSession(profileId, userDataPath, {
     accessToken: exchange.accessToken,
     refreshToken: exchange.refreshToken,
@@ -144,6 +169,20 @@ export function saveOrcaCloudSessionExchange(
   })
 }
 
+export function saveOrcaCloudSessionIfCurrent(
+  profileId: string,
+  userDataPath: string,
+  session: OrcaCloudSession,
+  snapshot: CloudSessionMutationSnapshot
+): OrcaCloudSessionPersistence | null {
+  // Why: the check and sync save share one main-process turn, so an async
+  // refresh captured before sign-out/org-switch cannot resurrect the session.
+  if (!isCloudSessionMutationCurrent(profileId, userDataPath, snapshot)) {
+    return null
+  }
+  return saveOrcaCloudSession(profileId, userDataPath, session)
+}
+
 export function readOrcaCloudSession(
   profileId: string,
   userDataPath: string
@@ -151,6 +190,8 @@ export function readOrcaCloudSession(
   const cacheKey = sessionCacheKey(profileId, userDataPath)
   const memorySession = memorySessions.get(cacheKey)
   if (memorySession) {
+    memorySessions.delete(cacheKey)
+    memorySessions.set(cacheKey, memorySession)
     return {
       status: 'found',
       session: memorySession.session,
@@ -183,18 +224,25 @@ export function readOrcaCloudSession(
       if (!isOrcaCloudSession(session)) {
         return { status: 'decrypt-failed', persistence: 'none', error: 'Invalid saved session.' }
       }
-      memorySessions.set(cacheKey, { session, persistence: 'encrypted' })
+      rememberMemorySession(cacheKey, { session, persistence: 'encrypted' })
       return { status: 'found', session, persistence: 'encrypted' }
     }
     if (parsed.format === 'dev-plaintext-v1' && allowsPlaintextOrcaCloudSession()) {
       if (!isOrcaCloudSession(parsed.session)) {
         return { status: 'decrypt-failed', persistence: 'none', error: 'Invalid saved session.' }
       }
-      memorySessions.set(cacheKey, { session: parsed.session, persistence: 'dev-plaintext' })
+      rememberMemorySession(cacheKey, { session: parsed.session, persistence: 'dev-plaintext' })
       return { status: 'found', session: parsed.session, persistence: 'dev-plaintext' }
     }
     return { status: 'decrypt-failed', persistence: 'none', error: 'Unsafe session format.' }
-  } catch {
+  } catch (error) {
+    if (isUnreadableError(error)) {
+      return {
+        status: 'unreadable',
+        persistence: 'none',
+        error: 'Cannot read the saved Orca account session: the read failed.'
+      }
+    }
     return {
       status: 'decrypt-failed',
       persistence: 'none',
@@ -206,4 +254,8 @@ export function readOrcaCloudSession(
 export function clearOrcaCloudSession(profileId: string, userDataPath: string): void {
   memorySessions.delete(sessionCacheKey(profileId, userDataPath))
   rmSync(getOrcaCloudSessionPath(profileId, userDataPath), { force: true })
+}
+
+export function getOrcaCloudMemorySessionCountForTests(): number {
+  return memorySessions.size
 }

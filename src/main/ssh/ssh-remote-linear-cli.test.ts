@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { OrcaRuntimeService } from '../runtime/orca-runtime'
 import { isLinearProjectListResult } from './ssh-remote-linear-result-guards'
-import { runRemoteOrcaCli } from './ssh-remote-orca-cli'
+import { runControlGrantedRemoteOrcaCli as runRemoteOrcaCli } from './ssh-bridge-caller-scope.test-fixture'
 
 function createRuntime() {
   const runtime = {
@@ -29,7 +29,6 @@ function createRuntime() {
       meta: {
         requested: {
           current: true,
-          include: { comments: true, children: true, attachments: true, relations: true },
           depth: 2
         },
         resolved: {
@@ -214,7 +213,7 @@ describe('runRemoteOrcaCli Linear commands', () => {
     expect(payload.ok).toBe(true)
     expect(payload.result.request).toMatchObject({
       current: true,
-      include: { comments: true, children: true, attachments: true, relations: true },
+      include: expect.objectContaining({ activity: true }),
       context: {
         remote: true,
         terminalHandle: 'term_ssh',
@@ -241,7 +240,7 @@ describe('runRemoteOrcaCli Linear commands', () => {
     expect(payload.ok).toBe(true)
     expect(payload.result.request).toMatchObject({
       input: 'ENG-123',
-      include: { comments: true, children: true, attachments: true, relations: true }
+      include: expect.objectContaining({ activity: true })
     })
   })
 

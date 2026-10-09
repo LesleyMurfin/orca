@@ -1,22 +1,27 @@
-import {
-  registerEagerPtyBuffer,
-  type EagerPtyHandle
-} from '@/components/terminal-pane/pty-dispatcher'
 import { createBrowserUuid } from '@/lib/browser-uuid'
 import { getSettingsForWorktreeRuntimeOwner } from '@/lib/worktree-runtime-owner'
 import { getActiveRuntimeTarget } from '@/runtime/runtime-rpc-client'
 import { singlePaneLayoutSnapshot } from '@/store/slices/terminal-helpers'
+import { retireUnownedTerminal } from '@/lib/retire-unowned-background-terminal'
+import { registerBackgroundPaneBuffer } from '@/lib/background-pane-exit-output'
+import { terminalPanePlacementRow } from '@/lib/terminal-pane-placement-row'
 import { useAppStore } from '@/store'
 import { translate } from '@/i18n/i18n'
-import { isWindowsAbsolutePathLike } from '../../../shared/cross-platform-path'
 import { makePaneKey } from '../../../shared/stable-pane-id'
-import { buildSetupRunnerCommand } from '../../../shared/setup-runner-command'
+import {
+  buildSetupRunnerCommand,
+  getSetupRunnerCommandPlatformForPath
+} from '../../../shared/setup-runner-command'
 import type {
   TerminalLayoutSnapshot,
-  Worktree,
+  TerminalPaneLayoutNode
+} from '../../../shared/terminal-tab-types'
+import type { TerminalPanePlacement } from '../../../shared/terminal-pane-placement'
+import type {
   WorktreeDefaultTabsLaunch,
   WorktreeSetupLaunch
-} from '../../../shared/types'
+} from '../../../shared/worktree/launch-types'
+import type { Worktree } from '../../../shared/worktree/types'
 
 type BackgroundPane = {
   leafId: string
@@ -59,6 +64,19 @@ function buildPaneEnv(
   }
 }
 
+function buildSplitRoot(
+  firstLeafId: string,
+  secondLeafId: string,
+  direction: 'horizontal' | 'vertical'
+): TerminalPaneLayoutNode {
+  return {
+    type: 'split',
+    direction,
+    first: { type: 'leaf', leafId: firstLeafId },
+    second: { type: 'leaf', leafId: secondLeafId }
+  }
+}
+
 function buildSplitLayout(
   first: BackgroundPane,
   second: BackgroundPane,
@@ -66,12 +84,7 @@ function buildSplitLayout(
   secondTitle: string
 ): TerminalLayoutSnapshot {
   return {
-    root: {
-      type: 'split',
-      direction,
-      first: { type: 'leaf', leafId: first.leafId },
-      second: { type: 'leaf', leafId: second.leafId }
-    },
+    root: buildSplitRoot(first.leafId, second.leafId, direction),
     activeLeafId: first.leafId,
     expandedLeafId: null,
     ptyIdsByLeafId: {
@@ -84,55 +97,27 @@ function buildSplitLayout(
   }
 }
 
-function persistExitedPaneOutput(tabId: string, leafId: string, output: string): void {
-  const store = useAppStore.getState()
-  const layout = store.terminalLayoutsByTabId[tabId]
-  if (!layout) {
-    return
-  }
-  const { ptyIdsByLeafId: existingPtyIds, buffersByLeafId: existingBuffers, ...rest } = layout
-  const nextPtyIds = { ...existingPtyIds }
-  delete nextPtyIds[leafId]
-  const trimmedOutput = output.trim() ? output : ''
-  store.setTabLayout(tabId, {
-    ...rest,
-    ...(Object.keys(nextPtyIds).length > 0 ? { ptyIdsByLeafId: nextPtyIds } : {}),
-    ...(trimmedOutput
-      ? {
-          buffersByLeafId: {
-            ...existingBuffers,
-            [leafId]: output
-          }
-        }
-      : existingBuffers
-        ? { buffersByLeafId: existingBuffers }
-        : {})
-  })
-}
-
-function registerBackgroundPaneBuffer(tabId: string, leafId: string, ptyId: string): void {
-  let eagerBuffer: EagerPtyHandle | null = null
-  eagerBuffer = registerEagerPtyBuffer(ptyId, (exitPtyId) => {
-    persistExitedPaneOutput(tabId, leafId, eagerBuffer?.flush() ?? '')
-    useAppStore.getState().clearTabPtyId(tabId, exitPtyId)
-  })
-}
-
 function buildSetupCommand(setup: WorktreeSetupLaunch): string {
+  // Why: background setup tabs can launch later, so they must reuse the same shell chosen when the runner was written.
   return buildSetupRunnerCommand(
     setup.runnerScriptPath,
-    isWindowsAbsolutePathLike(setup.runnerScriptPath) ? 'windows' : 'posix'
+    getSetupRunnerCommandPlatformForPath(setup.runnerScriptPath, 'posix'),
+    setup.shell
   )
 }
+
+/** The id a background pane got, plus which lifetime of it this spawn owns. */
+type SpawnedPane = { ptyId: string; incarnationId?: string }
 
 async function spawnPane(args: {
   worktree: Worktree
   connectionId: string | null
   tabId: string
   leafId: string
+  placement: TerminalPanePlacement
   command?: string
   env?: Record<string, string>
-}): Promise<string> {
+}): Promise<SpawnedPane> {
   const result = await window.api.pty.spawn({
     cols: 120,
     rows: 40,
@@ -142,9 +127,13 @@ async function spawnPane(args: {
     connectionId: args.connectionId,
     worktreeId: args.worktree.id,
     tabId: args.tabId,
-    leafId: args.leafId
+    leafId: args.leafId,
+    placement: args.placement
   })
-  return result.id
+  return {
+    ptyId: result.id,
+    ...(result.incarnationId ? { incarnationId: result.incarnationId } : {})
+  }
 }
 
 async function createBackgroundTab(args: {
@@ -166,24 +155,36 @@ async function createBackgroundTab(args: {
 
   const leafId = createBrowserUuid()
   store.setTabLayout(tab.id, singlePaneLayoutSnapshot(leafId))
-  let ptyId: string
+  const created =
+    useAppStore.getState().tabsByWorktree[args.worktree.id]?.find(({ id }) => id === tab.id) ?? tab
+  let pane: SpawnedPane
   try {
-    ptyId = await spawnPane({
+    pane = await spawnPane({
       worktree: args.worktree,
       connectionId: args.connectionId,
       tabId: tab.id,
       leafId,
+      placement: { kind: 'new-tab', row: terminalPanePlacementRow(created) },
       command: args.launch.command,
       env: args.launch.env
     })
   } catch (error) {
-    store.closeTab(tab.id, { recordInteraction: false })
+    store.closeTab(tab.id, { recordInteraction: false, reason: 'cleanup' })
     throw error
   }
-  store.updateTabPtyId(tab.id, ptyId)
-  store.setTabLayout(tab.id, singlePaneLayoutSnapshot(leafId, ptyId))
-  registerBackgroundPaneBuffer(tab.id, leafId, ptyId)
-  return { tabId: tab.id, primary: { leafId, ptyId } }
+  if (
+    await retireUnownedTerminal({
+      owner: { tabId: tab.id },
+      ptyId: pane.ptyId,
+      runtimeTarget: { kind: 'local' }
+    })
+  ) {
+    throw new Error('The terminal tab was closed before its session finished starting.')
+  }
+  store.updateTabPtyId(tab.id, pane.ptyId)
+  store.setTabLayout(tab.id, singlePaneLayoutSnapshot(leafId, pane.ptyId))
+  registerBackgroundPaneBuffer(tab.id, leafId, pane)
+  return { tabId: tab.id, primary: { leafId, ptyId: pane.ptyId } }
 }
 
 async function addSetupSplit(args: {
@@ -195,25 +196,40 @@ async function addSetupSplit(args: {
 }): Promise<void> {
   const store = useAppStore.getState()
   const setupLeafId = createBrowserUuid()
-  const setupPtyId = await spawnPane({
+  const setupPane = await spawnPane({
     worktree: args.worktree,
     connectionId: args.connectionId,
     tabId: args.tab.tabId,
     leafId: setupLeafId,
+    placement: {
+      kind: 'split',
+      parentLeafId: args.tab.primary.leafId,
+      direction: args.direction,
+      proposedRoot: buildSplitRoot(args.tab.primary.leafId, setupLeafId, args.direction)
+    },
     command: buildSetupCommand(args.setup),
     env: args.setup.envVars
   })
-  store.updateTabPtyId(args.tab.tabId, setupPtyId)
+  if (
+    await retireUnownedTerminal({
+      owner: { tabId: args.tab.tabId },
+      ptyId: setupPane.ptyId,
+      runtimeTarget: { kind: 'local' }
+    })
+  ) {
+    return
+  }
+  store.updateTabPtyId(args.tab.tabId, setupPane.ptyId)
   store.setTabLayout(
     args.tab.tabId,
     buildSplitLayout(
       args.tab.primary,
-      { leafId: setupLeafId, ptyId: setupPtyId },
+      { leafId: setupLeafId, ptyId: setupPane.ptyId },
       args.direction,
       getSetupTabTitle()
     )
   )
-  registerBackgroundPaneBuffer(args.tab.tabId, setupLeafId, setupPtyId)
+  registerBackgroundPaneBuffer(args.tab.tabId, setupLeafId, setupPane)
 }
 
 function getDefaultTabLaunches(

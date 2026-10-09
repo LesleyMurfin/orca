@@ -1,8 +1,8 @@
+import type { GlobalSettings } from '../../../shared/global-settings-types'
 import type {
   ClaudeRateLimitAccountsState,
-  CodexRateLimitAccountsState,
-  GlobalSettings
-} from '../../../shared/types'
+  CodexRateLimitAccountsState
+} from '../../../shared/managed-account-types'
 import type { RateLimitState } from '../../../shared/rate-limit-types'
 import type { RuntimeRpcResponse } from '../../../shared/runtime-rpc-envelope'
 import { callRuntimeRpc, getActiveRuntimeTarget, RuntimeRpcCallError } from './runtime-rpc-client'
@@ -12,6 +12,9 @@ export type ProviderAccountsSnapshot = {
   claude: ClaudeRateLimitAccountsState
   codex: CodexRateLimitAccountsState
   rateLimits: RateLimitState | null
+  // Why: a partial local load substitutes an empty state for the failed
+  // provider; consumers must not treat that half as an authoritative roster.
+  failedProviders?: ('claude' | 'codex')[]
 }
 
 type ProviderAccountSelection = {
@@ -30,6 +33,16 @@ const REMOTE_ACCOUNTS_FIRST_SNAPSHOT_TIMEOUT_MS = 15_000
 // refreshes, and those refreshes can crawl behind broken auth. Give the call
 // room to finish instead of reporting failure for an applied switch.
 const REMOTE_ACCOUNT_MUTATION_TIMEOUT_MS = 30_000
+const pendingProviderAccountsSnapshots = new Map<string, Promise<ProviderAccountsSnapshot>>()
+
+function getProviderAccountsOwnerKey(
+  settings: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined
+): string {
+  const target = getActiveRuntimeTarget(settings)
+  // Why: environment ids are user-controlled strings; prefix the target kind
+  // so a remote id such as “local” cannot share the desktop's pending read.
+  return target.kind === 'local' ? 'local' : `environment:${target.environmentId}`
+}
 
 export function hasRemoteProviderAccountOwner(
   settings: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined
@@ -39,6 +52,19 @@ export function hasRemoteProviderAccountOwner(
 
 export type ProviderAccountsWatcher = {
   close: () => void
+}
+
+export function emptyClaudeAccountsState(): ClaudeRateLimitAccountsState {
+  return { accounts: [], activeAccountId: null, activeAccountIdsByRuntime: { host: null, wsl: {} } }
+}
+
+export function emptyCodexAccountsState(): CodexRateLimitAccountsState {
+  return { accounts: [], activeAccountId: null, activeAccountIdsByRuntime: { host: null, wsl: {} } }
+}
+
+function providerAccountsLoadError(provider: 'Claude' | 'Codex', cause: unknown): Error {
+  const message = String((cause as Error)?.message ?? cause)
+  return new Error(`Could not load ${provider} accounts: ${message}`)
 }
 
 // Watches the provider-account snapshot for whichever runtime owns accounts.
@@ -58,17 +84,50 @@ export function watchProviderAccounts(
   const target = getActiveRuntimeTarget(settings)
   if (target.kind === 'local') {
     let closed = false
-    void Promise.all([window.api.claudeAccounts.list(), window.api.codexAccounts.list()])
-      .then(([claude, codex]) => {
-        if (!closed) {
-          handlers.onSnapshot({ claude, codex, rateLimits: null })
-        }
+    void Promise.allSettled([
+      window.api.claudeAccounts.list(),
+      window.api.codexAccounts.list()
+    ]).then(([claudeResult, codexResult]) => {
+      if (closed) {
+        return
+      }
+
+      const claudeError =
+        claudeResult.status === 'rejected'
+          ? providerAccountsLoadError('Claude', claudeResult.reason)
+          : null
+      const codexError =
+        codexResult.status === 'rejected'
+          ? providerAccountsLoadError('Codex', codexResult.reason)
+          : null
+      if (claudeError && codexError) {
+        const errors = [claudeError, codexError]
+        handlers.onError(new AggregateError(errors, errors.map((error) => error.message).join(' ')))
+        return
+      }
+
+      const failedProviders: ('claude' | 'codex')[] = []
+      if (claudeError) {
+        failedProviders.push('claude')
+      }
+      if (codexError) {
+        failedProviders.push('codex')
+      }
+      handlers.onSnapshot({
+        claude:
+          claudeResult.status === 'fulfilled' ? claudeResult.value : emptyClaudeAccountsState(),
+        codex: codexResult.status === 'fulfilled' ? codexResult.value : emptyCodexAccountsState(),
+        rateLimits: null,
+        ...(failedProviders.length > 0 ? { failedProviders } : {})
       })
-      .catch((error: unknown) => {
-        if (!closed) {
+      // Why: publish the healthy provider first so one-shot consumers keep it,
+      // but re-check closed since an onSnapshot handler may close the watcher.
+      for (const error of [claudeError, codexError]) {
+        if (error && !closed) {
           handlers.onError(error)
         }
-      })
+      }
+    })
     return {
       close: () => {
         closed = true
@@ -145,10 +204,16 @@ export function watchProviderAccounts(
 
 // One-shot convenience over watchProviderAccounts for surfaces that only need
 // the current snapshot (status-bar switcher menus).
-export async function fetchProviderAccountsSnapshot(
+export function fetchProviderAccountsSnapshot(
   settings: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined
 ): Promise<ProviderAccountsSnapshot> {
-  return await new Promise((resolve, reject) => {
+  const ownerKey = getProviderAccountsOwnerKey(settings)
+  const pending = pendingProviderAccountsSnapshots.get(ownerKey)
+  if (pending) {
+    return pending
+  }
+
+  const request = new Promise<ProviderAccountsSnapshot>((resolve, reject) => {
     const watcher = watchProviderAccounts(settings, {
       onSnapshot: (snapshot) => {
         watcher.close()
@@ -160,6 +225,16 @@ export async function fetchProviderAccountsSnapshot(
       }
     })
   })
+  pendingProviderAccountsSnapshots.set(ownerKey, request)
+  const clearPending = (): void => {
+    if (pendingProviderAccountsSnapshots.get(ownerKey) === request) {
+      pendingProviderAccountsSnapshots.delete(ownerKey)
+    }
+  }
+  // Why: both status-bar switchers mount together; share their in-flight read
+  // without caching the result past completion or across account owners.
+  void request.then(clearPending, clearPending)
+  return request
 }
 
 export async function selectClaudeProviderAccount(

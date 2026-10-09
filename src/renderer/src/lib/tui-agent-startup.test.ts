@@ -30,6 +30,24 @@ describe('buildAgentStartupPlan', () => {
     })
   })
 
+  // Native chat ignores a custom launch command; a terminal launch must still run it.
+  it('starts a terminal Claude with its custom launch command', () => {
+    expect(
+      buildAgentStartupPlan({
+        agent: 'claude',
+        prompt: 'Fix the bug',
+        cmdOverrides: { claude: 'claude-wrapper' },
+        platform: 'darwin'
+      })
+    ).toEqual({
+      agent: 'claude',
+      launchCommand: "claude-wrapper 'Fix the bug'",
+      expectedProcess: 'claude',
+      followupPrompt: null,
+      launchConfig: emptyLaunchConfig('claude-wrapper')
+    })
+  })
+
   it('uses Gemini interactive prompt mode instead of dropping the prompt', () => {
     expect(
       buildAgentStartupPlan({
@@ -115,6 +133,84 @@ describe('buildAgentStartupPlan', () => {
     })
   })
 
+  it('passes the prompt to Trae as a positional argv behind a `--` separator', () => {
+    expect(
+      buildAgentStartupPlan({
+        agent: 'trae',
+        prompt: 'Summarize the failing tests',
+        cmdOverrides: {},
+        platform: 'linux'
+      })
+    ).toEqual({
+      agent: 'trae',
+      launchCommand: "traecli -- 'Summarize the failing tests'",
+      expectedProcess: 'traecli',
+      followupPrompt: null,
+      launchConfig: emptyLaunchConfig('traecli')
+    })
+  })
+
+  // Why: without the separator these dispatch to Trae's `help`/`config` subcommands instead.
+  it('keeps subcommand-shaped Trae prompts as the positional prompt', () => {
+    expect(
+      buildAgentStartupPlan({
+        agent: 'trae',
+        prompt: 'help me name this config',
+        cmdOverrides: {},
+        platform: 'linux'
+      })?.launchCommand
+    ).toBe("traecli -- 'help me name this config'")
+  })
+
+  it('delivers the Muse prompt after its composer is ready', () => {
+    expect(
+      buildAgentStartupPlan({
+        agent: 'muse',
+        prompt: 'Summarize the failing tests',
+        cmdOverrides: {},
+        platform: 'linux'
+      })
+    ).toEqual({
+      agent: 'muse',
+      launchCommand: 'muse --trust-workspace',
+      expectedProcess: 'muse',
+      followupPrompt: 'Summarize the failing tests',
+      launchConfig: {
+        ...emptyLaunchConfig('muse'),
+        agentCommand: 'muse --trust-workspace'
+      }
+    })
+  })
+
+  it('passes the prompt to Prime Agent as a positional argv behind a `--` separator', () => {
+    expect(
+      buildAgentStartupPlan({
+        agent: 'prime-agent',
+        prompt: 'Summarize the failing tests',
+        cmdOverrides: {},
+        platform: 'linux'
+      })
+    ).toEqual({
+      agent: 'prime-agent',
+      launchCommand: "prime-agent -- 'Summarize the failing tests'",
+      expectedProcess: 'prime-agent',
+      followupPrompt: null,
+      launchConfig: emptyLaunchConfig('prime-agent')
+    })
+  })
+
+  // Why: without the separator these dispatch to Prime Agent's `help`/`agents` subcommands instead.
+  it('keeps subcommand-shaped Prime Agent prompts as the positional prompt', () => {
+    expect(
+      buildAgentStartupPlan({
+        agent: 'prime-agent',
+        prompt: 'help me name this config',
+        cmdOverrides: {},
+        platform: 'linux'
+      })?.launchCommand
+    ).toBe("prime-agent -- 'help me name this config'")
+  })
+
   it('uses cursor-agent as the actual launch binary', () => {
     expect(
       buildAgentStartupPlan({
@@ -166,7 +262,7 @@ describe('buildAgentStartupPlan', () => {
     })
   })
 
-  it('launches Grok first and injects the prompt after startup', () => {
+  it('launches Grok with the prompt as a positional argv', () => {
     expect(
       buildAgentStartupPlan({
         agent: 'grok',
@@ -176,9 +272,9 @@ describe('buildAgentStartupPlan', () => {
       })
     ).toEqual({
       agent: 'grok',
-      launchCommand: 'grok',
+      launchCommand: "grok -- 'Trace the failing test'",
       expectedProcess: 'grok',
-      followupPrompt: 'Trace the failing test',
+      followupPrompt: null,
       launchConfig: emptyLaunchConfig('grok')
     })
   })
@@ -194,12 +290,12 @@ describe('buildAgentStartupPlan', () => {
       })
     ).toEqual({
       agent: 'devin',
-      launchCommand: "devin '--permission-mode' 'bypass'",
+      launchCommand: "devin '--permission-mode' 'bypass' '--respect-workspace-trust' 'false'",
       expectedProcess: 'devin',
       followupPrompt: 'Trace the failing test',
       launchConfig: {
-        agentCommand: "devin '--permission-mode' 'bypass'",
-        agentArgs: '--permission-mode bypass',
+        agentCommand: "devin '--permission-mode' 'bypass' '--respect-workspace-trust' 'false'",
+        agentArgs: '--permission-mode bypass --respect-workspace-trust false',
         agentEnv: {}
       }
     })
@@ -231,23 +327,6 @@ describe('buildAgentStartupPlan', () => {
         platform: 'darwin'
       })
     ).toBeNull()
-  })
-
-  it('uses -i flag for copilot to start an interactive session with initial prompt', () => {
-    expect(
-      buildAgentStartupPlan({
-        agent: 'copilot',
-        prompt: 'Fix the bug',
-        cmdOverrides: {},
-        platform: 'darwin'
-      })
-    ).toEqual({
-      agent: 'copilot',
-      launchCommand: "copilot -i 'Fix the bug'",
-      expectedProcess: 'copilot',
-      followupPrompt: null,
-      launchConfig: emptyLaunchConfig('copilot')
-    })
   })
 })
 
@@ -294,7 +373,7 @@ describe('buildAgentDraftLaunchPlan', () => {
       })
     ).toEqual({
       agent: 'pi',
-      launchCommand: 'pi; unset ORCA_PI_PREFILL',
+      launchCommand: `pi; command test -n "$fish_pid" && set --erase -g ORCA_PI_PREFILL; command test -z "$fish_pid" && unset ORCA_PI_PREFILL; true`,
       expectedProcess: 'pi',
       env: { ORCA_PI_PREFILL: 'https://github.com/acme/repo/issues/42' },
       launchConfig: emptyLaunchConfig('pi')
@@ -351,6 +430,8 @@ describe('isShellProcess', () => {
     expect(isShellProcess('C:\\Program Files\\Git\\bin\\bash.exe')).toBe(true)
     expect(isShellProcess('pwsh.exe')).toBe(true)
     expect(isShellProcess('/bin/zsh')).toBe(true)
+    expect(isShellProcess('/bin/ksh')).toBe(true)
+    expect(isShellProcess('dash')).toBe(true)
     expect(isShellProcess('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')).toBe(
       true
     )

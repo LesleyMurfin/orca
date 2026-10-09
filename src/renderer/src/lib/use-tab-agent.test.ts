@@ -6,13 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '@/store'
 import type { AgentStatusEntry } from '../../../shared/agent-status-types'
 import { makePaneKey } from '../../../shared/stable-pane-id'
-import type { TerminalLayoutSnapshot, TerminalTab, TuiAgent } from '../../../shared/types'
-import { resolveTabAgentFromSignals, useTabAgent } from './use-tab-agent'
+import type { TerminalLayoutSnapshot, TerminalTab } from '../../../shared/terminal-tab-types'
+import type { TerminalAgent } from '../../../shared/terminal-agent'
+import { resolveTabAgentFromSignals } from './tab-agent-from-signals'
+import { useTabAgent } from './use-tab-agent'
 
 const initialAppState = useAppStore.getInitialState()
 const LEAF_ID = '11111111-1111-4111-8111-111111111111'
 const SECOND_LEAF_ID = '22222222-2222-4222-8222-222222222222'
-let latestHookAgent: TuiAgent | null | undefined
+let latestHookAgent: TerminalAgent | null | undefined
 const hookRoots: Root[] = []
 
 function HookProbe({ tab }: { tab: TerminalTab }): null {
@@ -254,6 +256,54 @@ describe('resolveTabAgentFromSignals', () => {
         title: '✳ Claude Code',
         hookAgent: null,
         launchAgent: 'codex'
+      })
+    ).toBe('claude')
+  })
+
+  // Why: #8478 — OpenCode native `OC | …` titles must reclaim a stale Claude
+  // launch identity so the tab icon is OpenCode, not Claude.
+  it('uses OpenCode native session titles to replace stale Claude launch identity', () => {
+    expect(
+      resolveTabAgentFromSignals({
+        hasObservedAgentSignal: false,
+        isRemote: false,
+        title: 'OC | Understand about the plugin',
+        hookAgent: null,
+        launchAgent: 'claude'
+      })
+    ).toBe('opencode')
+  })
+
+  // Why: #8940 — an OpenCode session whose task text mentions Claude flipped the tab icon
+  // to Claude Code as soon as its hook row went stale (restart, mobile, between turns).
+  it('keeps an OpenCode tab OpenCode when its task title merely mentions Claude', () => {
+    for (const title of [
+      'OC | ⠋ ask claude about this',
+      '⠋ OpenCode',
+      '⠋ use Claude Sonnet',
+      '⠋ claude 스타일로 리팩터',
+      'OpenCode ready'
+    ]) {
+      for (const hasObservedAgentSignal of [true, false]) {
+        expect(
+          resolveTabAgentFromSignals({
+            hasObservedAgentSignal,
+            isRemote: false,
+            title,
+            hookAgent: null,
+            launchAgent: 'opencode'
+          })
+        ).toBe('opencode')
+      }
+    }
+    // Real pane reuse: the title PRESENTS Claude, so it still reclaims the pane.
+    expect(
+      resolveTabAgentFromSignals({
+        hasObservedAgentSignal: true,
+        isRemote: false,
+        title: '✳ Claude Code',
+        hookAgent: null,
+        launchAgent: 'opencode'
       })
     ).toBe('claude')
   })
