@@ -107,7 +107,6 @@ describe('transcript follow ownership across growth and appends', () => {
         session={session(transcriptAt(step))}
         isWorking
         expandSignal={false}
-        fontScale={1}
         workingStartedAt={TURN_STARTED_AT}
       />
     )
@@ -454,6 +453,7 @@ describe('transcript follow ownership across growth and appends', () => {
     const scheduleSpy = vi.spyOn(window, 'requestAnimationFrame')
     const scrollToSpy = vi.spyOn(scroller, 'scrollTo')
     const readingAt = 2000
+    fireEvent.wheel(scroller, { deltaY: -100 })
     scroller.scrollTop = readingAt
     fireEvent.scroll(scroller)
     expect(scrollToSpy).toHaveBeenLastCalledWith({ behavior: 'auto', top: readingAt })
@@ -481,8 +481,8 @@ describe('transcript follow ownership across growth and appends', () => {
   // short by everything outside the spacer, so it reads a reader who is clearly
   // above the end as sitting on it.
   describe('with a gutter above the transcript', () => {
-    /** `pt-10` plus the "Load earlier" block and its gap — what sits above the
-     *  spacer once a resumed session still has older history to page in. */
+    /** A gutter well past `pt-10`, standing in for any chrome in flow above
+     *  the spacer. */
     const GUTTER_PX = 92
     /** Far enough up that the transcript itself calls the reader detached, and
      *  still inside the band the virtualizer computes (48 + 92 + 24). */

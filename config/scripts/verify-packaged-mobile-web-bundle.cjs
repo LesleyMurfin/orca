@@ -35,7 +35,7 @@ function assertInteger(value, field) {
 
 /**
  * Canonical serialization of the asset list. Must stay byte-identical to
- * serializeMobileWebBundleAssets in config/scripts/build-mobile-web-bundle.mjs; a divergence here
+ * serializeMobileWebBundleAssets in config/scripts/mobile-web-bundle-manifest.mjs; a divergence here
  * would reject every honest bundle, so the two move together.
  */
 function serializeAssets(assets) {
@@ -188,4 +188,6 @@ function assertMobileWebBundleBuilt(bundleDir = MOBILE_WEB_BUNDLE_DIR) {
   return manifest
 }
 
-module.exports = { MOBILE_WEB_BUNDLE_DIR, assertMobileWebBundleBuilt }
+// serializeAssets is exported for the parity test that pins it against the builder's and the
+// contract's serializers; nothing in packaging calls it from outside this module.
+module.exports = { MOBILE_WEB_BUNDLE_DIR, assertMobileWebBundleBuilt, serializeAssets }
