@@ -1,5 +1,9 @@
 {
   "app": {
+    "saving": {
+      "delayedTitle": "El almacenamiento del perfil está tardando más de lo habitual",
+      "delayedDescription": "Los siguientes guardados pueden retrasarse hasta que termine esta operación."
+    },
     "recoverableError": {
       "rootTitle": "Orca tuvo un error de renderizado.",
       "rootDescription": "El shell de la aplicación no pudo terminar de renderizarse. Vuelva a intentar volver a montarlo o reinicie Orca si el error persiste.",
@@ -164,6 +168,7 @@
     "reportCrash": "Informar fallo...",
     "file": "Archivo",
     "exit": "Salir",
+    "quitApp": "Salir de {{appName}}",
     "edit": "Editar",
     "appearance": "Apariencia",
     "toggleLeftSidebar": "Alternar barra lateral izquierda",
@@ -4056,16 +4061,14 @@
             "checkAriaOne": "1 chat por revisar tras la reanudación. Haz clic para ver los detalles.",
             "checkAria": "{{value0}} chats por revisar tras la reanudación. Haz clic para ver los detalles.",
             "checkTooltip": "Chats que Orca no pudo reanudar, o no pudo confirmar que reanudó, tras el reinicio. Haz clic para ver los detalles.",
-            "resumingLabelOne": "Reanudando 1 chat",
-            "resumingLabel": "Reanudando {{value0}} chats",
-            "resumingAriaOne": "Reanudando 1 chat. Haz clic para ver los detalles.",
-            "resumingAria": "Reanudando {{value0}} chats. Haz clic para ver los detalles.",
             "resumingTooltip": "Restaurando los chats interrumpidos y pidiéndoles que continúen…",
             "labelOne": "1 chat para reanudar",
             "label": "{{value0}} chats para reanudar",
             "ariaLabelOne": "1 chat disponible para reanudar",
             "ariaLabel": "{{value0}} chats disponibles para reanudar",
-            "tooltip": "Abrir chats interrumpidos disponibles para reanudar"
+            "tooltip": "Abrir chats interrumpidos disponibles para reanudar",
+            "resumingProgressLabel": "Reanudando chats {{value0}}/{{value1}}",
+            "resumingProgressAria": "Reanudando chats, {{value0}} de {{value1}} listos. Haz clic para ver los detalles."
           },
           "RuntimeHostStatusRow": {
             "previous_connection_closed": "La conexión anterior cerrada.",
@@ -7194,14 +7197,7 @@
           },
           "nativeChat": {
             "title": "Chat UI",
-            "description": "Previsualiza la interfaz de chat de escritorio para sesiones de terminal de agentes compatibles.",
-            "copy": "Añade una vista de Chat UI a la que puedes cambiar desde paneles de terminal de agentes compatibles. Es experimental mientras ajustamos la fidelidad de las transcripciones, la transmisión y la paridad con el terminal.",
             "toggleLabel": "Alternar Chat UI",
-            "defaultTitle": "Vista predeterminada",
-            "defaultCopy": "Elige cómo se abren las nuevas pestañas de terminal de agentes compatibles.",
-            "defaultViewLabel": "Vista predeterminada de Chat UI",
-            "defaultViewTerminal": "Chat en terminal",
-            "defaultViewNative": "Chat UI",
             "shellEnvNamesLabel": "Variables que se pasan desde tu shell",
             "shellEnvNamePlaceholder": "Nombre de la variable",
             "shellEnvNameAdd": "Agregar",
@@ -7212,10 +7208,6 @@
             "shellEnvCopy": "Los chats de Codex y Claude empiezan con todas las variables que exporta tu shell de inicio de sesión, igual que un terminal. Desactívalo para elegir cuáles reciben.",
             "shellEnvToggleLabel": "Alternar el uso del entorno de tu shell",
             "resumeCopy": "Cuando Orca se cierra o instala una actualización, los chats que estaban trabajando se reanudan automáticamente al volver a abrir Orca.",
-            "structuredTitle": "Utilice el chat nativo estructurado actualizado",
-            "structuredCopy": "Abre nuevos agentes como chats estructurados cuando sea posible. Si está desactivado, los abre en el chat respaldado por la terminal. Los chats que ya existen permanecen como están.",
-            "structuredScope": "Se ejecuta en esta máquina y en servidores Orca emparejados que ejecutan una versión que lo admita; los servidores más antiguos mantienen el chat de terminal. Los hosts WSL y SSH continúan usando el chat de terminal.",
-            "structuredToggleLabel": "Alternar chat nativo estructurado actualizado",
             "resumeTitle": "Reanudar los chats de trabajo automáticamente después de reiniciar",
             "resumeToggleLabel": "Alternar reanudación automática después de un reinicio"
           },
@@ -9663,7 +9655,6 @@
             },
             "nativeChat": {
               "title": "Chat UI",
-              "description": "Previsualiza la interfaz de chat de escritorio para sesiones de terminal de agentes compatibles.",
               "grok": "grok",
               "queue": "cola",
               "native": "nativo",
@@ -13657,7 +13648,9 @@
             "sessionDeleteFailed": "No se pudo eliminar la sesión",
             "resumeInChatConflict": "Otro chat ya está manteniendo esta conversación.",
             "resumeInChatTranscriptMissing": "El historial de esta conversación no se pudo cargar, por lo que no se puede reanudar en el chat.",
-            "resumeInChatFailed": "No se pudo reanudar esta sesión en un chat nuevo."
+            "resumeInChatFailed": "No se pudo reanudar esta sesión en un chat nuevo.",
+            "resumeInNewCliUnavailable": "Esta sesión no se puede abrir en la CLI.",
+            "resumeInNewCliHostTooOld": "Actualiza Orca en el host que ejecuta este chat para reanudarlo en una nueva CLI."
           },
           "AiVaultPanelControls": {
             "scanningSessions": "Buscando sesiones",
@@ -13793,7 +13786,10 @@
             "deleteReasonNonLocalHost": "Solo se pueden eliminar las sesiones de este dispositivo.",
             "deleteReasonSyntheticPath": "Esta sesión no se puede eliminar desde Orca.",
             "deleteReasonUnsupportedAgent": "Las sesiones de {{value0}} no se pueden eliminar desde Orca.",
-            "resumeInNewChat": "Reanudar en nuevo chat"
+            "resumeInNewNativeChat": "Reanudar en un nuevo chat nativo",
+            "resumeInNewCli": "Reanudar en una nueva CLI",
+            "resumeInNewCliTooltipFork": "Hace un fork de esta conversación en una nueva sesión de CLI.",
+            "resumeInNewCliTooltipChat": "El chat nativo queda como está."
           },
           "AiVaultSessionDeleteDialog": {
             "title": "¿Eliminar esta sesión?",
@@ -16154,7 +16150,6 @@
             "deb5293610": "Anotaciones del navegador no disponibles en runtime remoto",
             "90d021f2ad": "Agregar",
             "0cb3bd6221": "Intención de anotación",
-            "8f87e6c2e5": "Intención",
             "532bac48c5": "Describe aquí lo que el agente debería cambiar...",
             "d2a7092e6e": "Comentario de anotación",
             "b472c5fe03": "Agregar anotación del navegador",
@@ -17539,7 +17534,18 @@
         "selectAgent": "Reanudar {{value0}} chat \"{{value1}}\" en {{value2}}",
         "resumeSelected": "Reanudar {{value0}} chats",
         "resumeSelectedOne": "Reanudar 1 chat",
-        "dismissAll": "Descartar todo"
+        "dismissAll": "Descartar todo",
+        "selectWorkspace": "Seleccionar todos los chats en {{value0}}",
+        "workspaceSelectedCount": "{{value0}} de {{value1}}",
+        "selectAll": "Seleccionar todos los chats",
+        "selectAllLabel": "Seleccionar todo",
+        "selectedCount": "{{value0}} de {{value1}} seleccionados",
+        "selectProject": "Seleccionar todos los chats en {{value0}}",
+        "collapseNode": "Contraer {{value0}}",
+        "expandNode": "Expandir {{value0}}",
+        "selectMachine": "Seleccionar todos los chats en {{value0}}",
+        "sshHost": "SSH",
+        "done": "Listo"
       },
       "NativeChatResumeOutcomeRow": {
         "openChat": "Abrir chat",
@@ -17639,6 +17645,32 @@
       "HostedReviewUnlinkMenuItem": {
         "label": "Desvincular {{value0}} del espacio de trabajo",
         "description": "Orca ocultará los detalles de {{value0}} {{value1}} en este espacio de trabajo. El {{value0}} y la rama en {{value2}} no se modificarán."
+      },
+      "NativeChatResumeRunPanel": {
+        "resumedTitle": "Se reanudaron {{value0}} de {{value1}} chats",
+        "resumedTitleOne": "{{value0}} de 1 chat reanudado",
+        "resumingTitleOne": "Reanudando 1 chat",
+        "resumingTitle": "Reanudando {{value0}} chats",
+        "description": "Cada chat se restaura con todo su contexto y se le pide que revise dónde se detuvo. Puedes cerrar esto; la barra de estado sigue el progreso."
+      },
+      "NativeChatResumeRunStatusIcon": {
+        "waitingForReply": "Esperando respuesta",
+        "starting": "Iniciando",
+        "waitingToStart": "Esperando para iniciar",
+        "inFlight": "{{value0}} · {{value1}}",
+        "resumed": "Reanudado"
+      },
+      "NativeChatResumeRunSummary": {
+        "done": "{{value0}} de {{value1}} listos",
+        "starting": "{{value0}} iniciando",
+        "waitingForReply": "{{value0}} esperando respuesta",
+        "waitingToStart": "{{value0}} esperando para iniciar",
+        "all": "Todos",
+        "inProgress": "En curso",
+        "resumed": "Reanudados",
+        "attention": "Requieren tu atención",
+        "running": "En curso desde hace {{value0}}",
+        "filter": "Mostrar chats"
       }
     },
     "i18n": {
@@ -17746,6 +17778,11 @@
         "editSavedArguments": "Edítalos en Ajustes > Agentes > Argumentos.",
         "couldNotRestart": "{{agent}} no pudo reiniciarse.",
         "notSignedIn": "{{agent}} no tiene la sesión iniciada con la cuenta seleccionada.",
+        "claudeSystemNotSignedIn": "Claude no ha iniciado sesión. Ejecuta `claude` e inicia sesión con /login, o elige una cuenta en la configuración de Cuentas de Claude.",
+        "claudeManagedNotSignedIn": "Esta cuenta de Claude no ha iniciado sesión. Vuelve a iniciar sesión en la configuración de Cuentas de Claude.",
+        "codexSystemNotSignedIn": "Codex no ha iniciado sesión. Ejecuta `codex login`.",
+        "codexManagedNotSignedIn": "Esta cuenta de Codex no ha iniciado sesión. Vuelve a iniciar sesión en la configuración de Cuentas de Codex.",
+        "cliMissing": "No se encontró {{agent}} en el equipo que ejecuta este chat. Instálelo o revise su Comando en Ajustes → Agentes.",
         "signInFirst": "Inicie sesión primero.",
         "signInThenRunCommand": "Inicie sesión y vuelva a ejecutar /{{command}}.",
         "signInThenSend": "Inicie sesión y vuelva a enviar su mensaje.",
@@ -17822,7 +17859,7 @@
         "notDoneCommand": "El comando no se ejecutó.",
         "notDoneGoal": "El objetivo no se cambió.",
         "restartFailed": "El agente no pudo reiniciarse.",
-        "capacity": "Orca ha recibido demasiadas solicitudes en el último día.",
+        "capacity": "Orca en el equipo que ejecuta este chat alcanzó un límite de solicitudes. Actualice Orca en ese equipo y vuelva a intentarlo.",
         "outcomeUnknown": "Orca no pudo confirmar qué pasó. Revise el chat.",
         "sendOutcomeLost": "Orca no pudo confirmar que su mensaje llegó al agente. Revise el chat y vuelva a enviarlo si es necesario.",
         "questionChanged": "Esta pregunta ya se respondió o ha cambiado.",
@@ -17855,6 +17892,8 @@
         "waitForBackgroundTasks": "Espere a que terminen las tareas en segundo plano.",
         "messagesUnsettled": "Un mensaje que envió antes todavía no está confirmado.",
         "settleEarlierMessage": "Espere a que se entregue su mensaje anterior o vuelva a intentarlo.",
+        "queueTooLarge": "Hay demasiado texto esperando en la cola.",
+        "shrinkQueue": "Elimine un mensaje de la cola o espere a que se entregue uno y vuelva a intentarlo.",
         "optionRejected": "El agente no aceptó este ajuste.",
         "goalsUnsupported": "Este agente no admite objetivos.",
         "agentRefused": "El agente lo rechazó.",
@@ -18135,6 +18174,7 @@
         "estimated": "Estimado a partir de la última respuesta."
       },
       "dismissDeliveryNotice": "Descartar",
+      "addSelectionToChat": "Añadir al chat",
       "messageNotSent": "Mensaje no enviado",
       "deliveryUnconfirmed": "Entrega sin confirmar — revisa el chat antes de reintentar",
       "messageSending": "Enviando…",
@@ -18275,7 +18315,7 @@
         "plan": "Plan",
         "historyRepaired": "No se pudo cargar parte del historial de este chat.",
         "historyItemTooLarge": "Esta parte del chat era demasiado grande para mostrarla.",
-        "stoppedBeforeStart": "Detenido antes de que el agente empezara",
+        "stoppedBeforeStart": "Detenido manualmente",
         "dismiss": "Descartar",
         "copyError": "Copiar error",
         "orcaStopUpdate": "Orca en {{machine}} se reinició para actualizarse mientras esta respuesta estaba en curso.",
@@ -18640,8 +18680,8 @@
       }
     },
     "agentSessionContinuation": {
-      "continueInNewSession": "Continuar en una sesión nueva…",
-      "dialogTitle": "Continuar en una sesión nueva",
+      "handOffToAnotherAgent": "Pasar a otro agente",
+      "dialogTitle": "Pasar a otro agente",
       "dialogDescription": "Inicia una sesión nueva del agente desde este punto. La sesión original no cambia.",
       "untitledSession": "Sesión actual",
       "originalAgent": "Agente original: {{agent}}",

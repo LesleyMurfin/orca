@@ -26,6 +26,15 @@ export const AGENT_SESSION_FAILURE_COPY = {
   quitTerminalAgent: QUIT_TERMINAL_AGENT,
   startNewChat: START_NEW_CHAT,
   notSignedIn: '{{agent}} is not signed in for the selected account.',
+  claudeSystemNotSignedIn:
+    "Claude isn't signed in. Run `claude` and sign in with /login, or choose an account in Claude Accounts settings.",
+  claudeManagedNotSignedIn:
+    "This Claude account isn't signed in. Sign in again in Claude Accounts settings.",
+  codexSystemNotSignedIn: "Codex isn't signed in. Run `codex login`.",
+  codexManagedNotSignedIn:
+    "This Codex account isn't signed in. Sign in again in Codex Accounts settings.",
+  cliMissing:
+    "{{agent}} wasn't found on the computer running this chat. Install it, or check its Command in Settings → Agents.",
   signInFirst: 'Sign in first.',
   signInThenRunCommand: 'Sign in, then run /{{command}} again.',
   signInThenSend: 'Sign in, then send your message again.',

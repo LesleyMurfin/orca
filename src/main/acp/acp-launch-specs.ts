@@ -9,21 +9,29 @@ import {
 import { AGENT_HOOK_RUNTIME_ENV_KEYS } from '../ipc/pty/host-env/spawn-env-keys'
 import type { AcpDialect } from './acp-dialects/acp-dialect'
 import { GROK_ACP_DIALECT } from './acp-dialects/grok-dialect'
+import { OMP_ACP_DIALECT } from './acp-dialects/omp-dialect'
 import { OPENCODE_ACP_DIALECT } from './acp-dialects/opencode-dialect'
 import { directoryAccountBinding, type AcpAccountBinding } from './acp-account-binding'
 import { openCodeAcpAccountBinding } from '../opencode/opencode-structured-account-home'
 import { scrubOpenCodeAcpEnvironment } from '../opencode/opencode-acp-environment'
 import { openCodeStoredUserMessagesReader } from '../opencode/opencode-acp-stored-messages'
 import type { AcpStoredUserMessagesReader } from './acp-recovery-history'
-import { isStableCliVersionOnLine } from '../agent-cli-version-probe'
+import { isStableCliVersionFrom, isStableCliVersionOnLine } from '../agent-cli-version-probe'
 import type { TuiAgent } from '../../shared/tui-agent'
+import {
+  loadGrokVisualsSkill,
+  loadOmpVisualsSkill,
+  loadOpenCodeVisualsSkill,
+  type AcpVisualsSkillLoader
+} from './acp-visuals-skill'
 
 export type AcpLaunchSpec = {
   /** The Orca agent id, which names the agent's records, its catalog label and its settings. */
   agent: TuiAgent
   command: string
-  /** Built per launch: `fullAccess` is the Agent Permissions setting's bypass posture. */
-  args(input: { fullAccess: boolean }): string[]
+  /** Built per launch: `fullAccess` is the Agent Permissions setting's bypass posture;
+   *  `pluginDir` is a plugin folder `visualsSkill` asked the agent to load. */
+  args(input: { fullAccess: boolean; pluginDir: string | null }): string[]
   /** Laid over the child's environment last, after the account and the user's own variables. */
   env: Readonly<Record<string, string>>
   /** Rewrites what the child would inherit from Orca's own plumbing; returns the keys it must not
@@ -49,13 +57,20 @@ export type AcpLaunchSpec = {
   imagePrompts?: true
   /** The agent's own store of a session's user messages, read for restart recovery only. */
   readStoredUserMessages?: AcpStoredUserMessagesReader
+  /** How a launch loads the inline-visuals skill; absent, the agent's chats have no visuals. */
+  visualsSkill?: AcpVisualsSkillLoader
 }
 
 const GROK_LAUNCH_SPEC: AcpLaunchSpec = {
   agent: 'grok',
   command: 'grok',
   // `--always-approve` only for full access, as the user's setting chooses.
-  args: ({ fullAccess }) => ['agent', ...(fullAccess ? ['--always-approve'] : []), 'stdio'],
+  args: ({ fullAccess, pluginDir }) => [
+    'agent',
+    ...(fullAccess ? ['--always-approve'] : []),
+    ...(pluginDir ? ['--plugin-dir', pluginDir] : []),
+    'stdio'
+  ],
   env: {},
   dialect: GROK_ACP_DIALECT,
   loginCommand: ['grok', 'login'],
@@ -67,12 +82,19 @@ const GROK_LAUNCH_SPEC: AcpLaunchSpec = {
         ? 'cached_token'
         : undefined,
   account: directoryAccountBinding('GROK_HOME', (homePath) => join(homePath, '.grok')),
-  installDirectories: ({ env }) => (env.GROK_HOME ? [join(env.GROK_HOME, 'bin')] : [])
+  installDirectories: ({ env }) => (env.GROK_HOME ? [join(env.GROK_HOME, 'bin')] : []),
+  visualsSkill: loadGrokVisualsSkill
 }
 
-// OpenCode 1.x serves ACP in-process through `opencode acp`. OpenCode 2 (`opencode2`, and any
-// `opencode` that is 2.x) is not: its `acp` runs inside the user's own background service, which a
-// chat's environment and account pin do not reach, so it keeps its terminal-backed chat.
+// `opencode acp` on 1.x serves in-process; on 2.x it starts a private `opencode serve --stdio` child
+// with this environment and ends it with stdin, so both lines run the chat's own account.
+const OPENCODE_ACP_RELEASE_LINES = [
+  // The release the recorded sessions capture.
+  { major: 1, floor: '1.18.31' },
+  // The 2.x release verified to start that private child.
+  { major: 2, floor: '2.0.14' }
+] as const
+
 const OPENCODE_LAUNCH_SPEC: AcpLaunchSpec = {
   agent: 'opencode',
   command: 'opencode',
@@ -86,13 +108,39 @@ const OPENCODE_LAUNCH_SPEC: AcpLaunchSpec = {
   loginCommand: ['opencode', 'auth', 'login'],
   account: openCodeAcpAccountBinding(),
   installDirectories: ({ homePath }) => [join(homePath, '.opencode', 'bin')],
-  // Stable 1.x from 1.18.31, the release the recorded sessions capture.
-  supportsVersion: (version) => isStableCliVersionOnLine(version, { major: 1, floor: '1.18.31' }),
+  supportsVersion: (version) =>
+    OPENCODE_ACP_RELEASE_LINES.some((line) => isStableCliVersionOnLine(version, line)),
   imagePrompts: true,
-  readStoredUserMessages: openCodeStoredUserMessagesReader()
+  readStoredUserMessages: openCodeStoredUserMessagesReader(),
+  visualsSkill: loadOpenCodeVisualsSkill
 }
 
-export const ACP_LAUNCH_SPECS: readonly AcpLaunchSpec[] = [GROK_LAUNCH_SPEC, OPENCODE_LAUNCH_SPEC]
+// OMP serves ACP through `omp acp`; its environment reaches it as the user set it.
+const OMP_LAUNCH_SPEC: AcpLaunchSpec = {
+  agent: 'omp',
+  command: 'omp',
+  // Full access answers each permission request yes.
+  args: ({ pluginDir }) => ['acp', ...(pluginDir ? ['--plugin-dir', pluginDir] : [])],
+  env: {},
+  dialect: OMP_ACP_DIALECT,
+  // OMP signs in from its own `/login`.
+  loginCommand: ['omp'],
+  // The directory OMP's terminal chats read too; its default is OMP's own.
+  account: directoryAccountBinding('PI_CODING_AGENT_DIR', (homePath) =>
+    join(homePath, '.omp', 'agent')
+  ),
+  // OMP's installers use directories the shared resolver already searches after PATH.
+  installDirectories: () => [],
+  // Stable releases from 17.0.5, the release verified to serve `omp acp`.
+  supportsVersion: (version) => isStableCliVersionFrom(version, '17.0.5'),
+  visualsSkill: loadOmpVisualsSkill
+}
+
+export const ACP_LAUNCH_SPECS: readonly AcpLaunchSpec[] = [
+  GROK_LAUNCH_SPEC,
+  OPENCODE_LAUNCH_SPEC,
+  OMP_LAUNCH_SPEC
+]
 
 export function acpLaunchSpecFor(agent: string): AcpLaunchSpec | null {
   return ACP_LAUNCH_SPECS.find((spec) => spec.agent === agent) ?? null

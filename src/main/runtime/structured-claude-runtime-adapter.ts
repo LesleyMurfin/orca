@@ -57,7 +57,11 @@ export type StructuredClaudeRuntimeAdapterDeps = {
 export function structuredClaudeLifecycleEvent(
   event: ClaudeStructuredSessionEvent
 ): StructuredAgentSessionLifecycleEvent | null {
-  if (event.type === 'started' || event.type === 'options-skipped') {
+  if (
+    event.type === 'started' ||
+    event.type === 'options-reported' ||
+    event.type === 'options-skipped'
+  ) {
     return event
   }
   // Every exit of a child with an identity, expected or not: the host ends that child's record.

@@ -51,6 +51,7 @@ import { structuredAgentSessionReadFailureNotice } from './structured-agent-sess
 import { useStructuredAgentSessionDeliveryNotices } from './use-structured-agent-session-delivery-notices'
 import { useNativeChatHostOutage } from './use-native-chat-host-outage'
 import { useNativeChatHostOutageNotice } from './use-native-chat-host-outage-notice'
+import { useNativeChatAvailabilityNotice } from './use-native-chat-availability-notice'
 import { pendingPromptsAllUnanswerableHere } from '../../../../shared/agent-session-approval-subject'
 
 export function NativeChatStructuredSession(
@@ -197,11 +198,19 @@ export function NativeChatStructuredSession(
   const sessionError =
     viewState.kind === 'error' || !readFailure ? controller.error : readFailure.text
   const launch = { ...provisionalLaunch, retry: submits.retryLaunch }
+  const availability = useNativeChatAvailabilityNotice({
+    unavailable: controller.unavailable,
+    agent: props.agent,
+    agentLabel,
+    launchFailure: provisionalLaunch.lifecycle === 'failed' ? provisionalLaunch.failure : null,
+    journalItems: controller.journalItems
+  })
   const notices = structuredSessionNotices({
     launch,
     agentLabel,
     sessionError,
-    composerError: composerError ?? continuation.continueError
+    composerError: composerError ?? continuation.continueError,
+    availability
   })
   if (hostNotice) {
     notices.push(hostNotice)
