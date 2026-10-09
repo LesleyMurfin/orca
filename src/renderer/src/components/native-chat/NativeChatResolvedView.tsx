@@ -49,7 +49,7 @@ import {
   emptyNativeChatContextMenuActions,
   useNativeChatContextMenu
 } from './use-native-chat-context-menu'
-import { selectNativeChatRuntimeEnvironmentId } from './native-chat-runtime-owner'
+import { createNativeChatRuntimeSelector } from './native-chat-runtime-owner'
 import { useNativeChatPasteBridge } from './use-native-chat-paste-bridge'
 import { LinkActionPopover } from '@/components/link-actions/LinkActionPopover'
 import { useNativeChatLinkActions } from './use-native-chat-link-actions'
@@ -77,9 +77,8 @@ export function NativeChatResolvedView({
 }: NativeChatResolvedViewProps): React.JSX.Element {
   // Primitive owner selection (no useShallow): routes the pane's read/subscribe to
   // the remote runtime host for a runtime-owned pane; null keeps the local path.
-  const runtimeEnvironmentId = useAppStore((s) =>
-    selectNativeChatRuntimeEnvironmentId(s, terminalTabId)
-  )
+  const selectOwner = useMemo(() => createNativeChatRuntimeSelector(terminalTabId), [terminalTabId])
+  const runtimeEnvironmentId = useAppStore(selectOwner)
   const keybindings = useAppStore((s) => s.keybindings)
   const session = useNativeChatRetainedSession({
     paneKey,

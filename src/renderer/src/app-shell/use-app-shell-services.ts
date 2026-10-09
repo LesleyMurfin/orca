@@ -4,7 +4,6 @@ import { useIpcEvents } from '../hooks/useIpcEvents'
 import { useAutomationDispatchEvents } from '../hooks/useAutomationDispatchEvents'
 import { useAutoAckViewedAgent } from '../hooks/useAutoAckViewedAgent'
 import { useEditorExternalWatch } from '../hooks/useEditorExternalWatch'
-import { useGlobalFileDrop } from '../hooks/useGlobalFileDrop'
 import { useAppMenuPaste } from '../hooks/useAppMenuPaste'
 import { useAppMenuSelectionActions } from '../hooks/useAppMenuSelectionActions'
 import { useLargeTextControlPaste } from '../hooks/useLargeTextControlPaste'
@@ -23,9 +22,9 @@ import { useTerminalViewerColorPublication } from './use-terminal-viewer-color-p
 import { useBrowserIdentityMigrationNotice } from '../components/browser-pane/browser-user-agent-migration-notice'
 import { useCodexTerminalServerIsolationNotice } from '../components/terminal-pane/codex-terminal-server-isolation-notice'
 import { useCodexSharedSettingsNotice } from '../components/terminal-pane/codex-shared-settings-notice'
-import { useClaudeAccountSignInNotice } from '../lib/claude-account-sign-in-notice'
 import { useVisibleReviewRefreshReporting } from './use-visible-review-refresh-reporting'
 import { useVisibleHostedReviewRefresh } from './use-visible-hosted-review-refresh'
+import { useProfileStateSaveDelayNotice } from './use-profile-state-save-delay-notice'
 
 /**
  * App-level subscriptions that must outlive any individual surface. Each one is here because
@@ -46,6 +45,7 @@ export function useAppShellServices(): void {
   useHostStructuredAgentsSync()
   // Subscribe to IPC push events
   useIpcEvents()
+  useProfileStateSaveDelayNotice()
   useRemoteRuntimeRecoveryTriggers()
   useVisibleReviewRefreshReporting()
   useVisibleHostedReviewRefresh({ enabled: workspaceSessionReady })
@@ -55,7 +55,6 @@ export function useAppShellServices(): void {
   useGitStatusPolling({ enabled: workspaceSessionReady })
   // Why: wire file-change watching at App level so the editor keeps hearing FS changes when Explorer unmounts (right-sidebar switches to Source Control/Checks).
   useEditorExternalWatch()
-  useGlobalFileDrop()
   useAutoAckViewedAgent()
   useAppMenuPaste()
   useAppMenuSelectionActions()
@@ -65,5 +64,4 @@ export function useAppShellServices(): void {
   useBrowserIdentityMigrationNotice()
   useCodexTerminalServerIsolationNotice()
   useCodexSharedSettingsNotice()
-  useClaudeAccountSignInNotice()
 }
