@@ -7,12 +7,12 @@
 // Coalescing events inside a short sliding window collapses that burst into
 // a single batch before it ever crosses the process boundary.
 
-export interface WatcherEvent {
+export type WatcherEvent = {
   path: string
   type: 'create' | 'update' | 'delete'
 }
 
-export interface WatcherDebouncerStats {
+export type WatcherDebouncerStats = {
   totalEventsReceived: number
   coalescedCount: number
   batchesDispatched: number
