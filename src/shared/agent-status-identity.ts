@@ -6,6 +6,7 @@ import {
 } from './agent-status-types'
 import { resolveCanonicalPaneAgentIdentity } from './pane-agent-identity-adapter'
 import type { TuiAgent } from './tui-agent'
+import { isTuiAgent } from './tui-agent-config'
 
 type ExistingAgentIdentity = {
   agentType?: AgentType
@@ -73,9 +74,6 @@ export function resolveAgentStatusIdentity(args: {
   // TUI-agent replacement: if both existing and incoming are known top-level TUI agents
   // and they differ, replace immediately (do not inherit stale Codex icon when OMP opens).
   // This prevents Codex's 30-minute freshness window from outlasting its closure.
-  const isTuiAgent = (agent: AgentType | null): agent is TuiAgent => {
-    return agent === 'omp' || agent === 'codex'
-  }
   if (
     isTuiAgent(existingAgentType) &&
     isTuiAgent(incomingAgentType) &&

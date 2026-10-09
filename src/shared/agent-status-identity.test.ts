@@ -92,6 +92,16 @@ describe('resolveAgentStatusIdentity', () => {
     ).toEqual({ agentType: 'omp', inheritedFromActivePane: false })
   })
 
+  it('lets OMP replace a still-live Claude row on the same pane', () => {
+    expect(
+      resolveAgentStatusIdentity({
+        existing: existing({ agentType: 'claude', state: 'working' }),
+        incoming: 'omp',
+        now: NOW
+      })
+    ).toEqual({ agentType: 'omp', inheritedFromActivePane: false })
+  })
+
   it('lets OMP take over a Codex row older than the freshness window', () => {
     expect(
       resolveAgentStatusIdentity({
