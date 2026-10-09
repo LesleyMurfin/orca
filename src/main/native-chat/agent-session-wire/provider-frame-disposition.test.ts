@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_JOURNAL_PAYLOAD_LIMITS } from '../agent-session-journal/journal-payload-bounds'
 import {
   classifyProviderFrame,
+  hasTypedProviderFrameTranslator,
   isDeltaProviderFrameKind,
   PROVIDER_FRAME_CLASSIFICATIONS
 } from './provider-frame-disposition'
@@ -35,6 +36,9 @@ describe('provider frame classification catalog', () => {
       'suppressed-benign'
     )
     expect(classifyProviderFrame('claude', 'message:system:hook_started', {})).toBe(
+      'suppressed-benign'
+    )
+    expect(classifyProviderFrame('claude', 'message:stream_event:ping', {})).toBe(
       'suppressed-benign'
     )
   })
@@ -199,7 +203,22 @@ describe('typed translator coverage', () => {
     ).toMatchObject({ classification: 'error-surface' })
   })
 
-  it('covers Claude only — the same method name on another provider still falls back', () => {
+  it('covers the Codex thread status, which reports `systemError` beside the `error` row', () => {
+    const kind = 'notification:thread/status/changed'
+    const payload = { threadId: 'thread-1', status: { type: 'systemError' } }
+
+    expect(hasTypedProviderFrameTranslator('codex', kind)).toBe(true)
+    expect(
+      unhandledProviderFrameJournalItem('codex', kind, payload, DEFAULT_JOURNAL_PAYLOAD_LIMITS, {
+        coveredByTypedTranslator: true
+      })
+    ).toBeNull()
+    expect(unhandledProviderFrameJournalItem('codex', kind, payload)).toMatchObject({
+      classification: 'error-surface'
+    })
+  })
+
+  it('covers a kind only for its own provider — a Claude kind from Codex still falls back', () => {
     expect(
       unhandledProviderFrameJournalItem('codex', 'message:system:task_notification', {
         status: 'failed'

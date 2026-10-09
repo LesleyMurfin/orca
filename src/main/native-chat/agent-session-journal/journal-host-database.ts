@@ -6,16 +6,13 @@
 
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import type { AgentSessionJournalIdentity } from '../../../shared/agent-session-journal-types'
 import type Database from '../../sqlite/sync-database'
 import {
-  JOURNAL_SYNCHRONOUS,
   openJournalDatabase,
   runJournalTransaction,
   type OpenJournalDatabase
 } from './journal-database'
 import { journalOpenRefusalError } from './journal-open-failure'
-import { journalDirectoryFor } from './journal-paths'
 import { AgentSessionJournalError } from './journal-write-guards'
 
 const JOURNAL_DATABASE_FILE = 'agent-session-journal.db'
@@ -32,8 +29,9 @@ export class JournalHostDatabase {
   private stranded = false
 
   private constructor(
-    readonly stateDirectory: string,
-    opened: OpenJournalDatabase
+    opened: OpenJournalDatabase,
+    /** Where the database lives; per-runtime end records sit beside it. */
+    readonly stateDirectory: string
   ) {
     this.connection = opened.db
     this.readOnly = opened.readOnly
@@ -42,8 +40,8 @@ export class JournalHostDatabase {
   static open(stateDirectory: string): JournalHostDatabase {
     mkdirSync(stateDirectory, { recursive: true })
     return new JournalHostDatabase(
-      stateDirectory,
-      openJournalDatabase(journalDatabasePath(stateDirectory))
+      openJournalDatabase(journalDatabasePath(stateDirectory)),
+      stateDirectory
     )
   }
 
@@ -69,31 +67,6 @@ export class JournalHostDatabase {
     })
   }
 
-  /**
-   * The same transaction, committed without an fsync: for rows no reader follows until a later
-   * synced commit, which under WAL makes every earlier frame durable too. The setting is restored
-   * in the same task, so no other chat's commit runs under it.
-   */
-  unsyncedTransaction<T>(run: (db: Database.Database) => T): T {
-    const db = this.db
-    db.pragma('synchronous = NORMAL')
-    try {
-      return this.transaction(run)
-    } finally {
-      // SQLite refuses the change inside a transaction; freeing a stranded one restores it.
-      if (!db.isTransaction) {
-        db.pragma(`synchronous = ${JOURNAL_SYNCHRONOUS}`)
-      }
-    }
-  }
-
-  /** Where this chat's history lived before the journal was one database per host. */
-  legacyDirectoryFor(
-    identity: Pick<AgentSessionJournalIdentity, 'workspaceId' | 'sessionId'>
-  ): string {
-    return journalDirectoryFor(this.stateDirectory, identity)
-  }
-
   /** Last, after every store has drained. A close that fails keeps the handle, so the retried
    *  teardown closes this same connection. */
   close(): void {
@@ -114,7 +87,6 @@ export class JournalHostDatabase {
         throw journalOpenRefusalError(error)
       }
     }
-    connection.pragma(`synchronous = ${JOURNAL_SYNCHRONOUS}`)
     this.stranded = false
   }
 }

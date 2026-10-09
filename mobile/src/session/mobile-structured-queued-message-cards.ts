@@ -2,16 +2,18 @@
 // The wire carries no hold copy on purpose: the caption is derived here from the
 // draft's own state plus the live facts the client already holds.
 
-import { readAgentSessionFailureFact } from '../../../src/shared/agent-session-failure'
+import { readWholeAgentSessionFailureFact } from '../../../src/shared/agent-session-failure'
 import type { AgentJournalSubmission } from '../../../src/shared/agent-session-journal-types'
 import { agentSessionWriteNoticeEnglish } from '../../../src/shared/agent-session-refusal-notice'
 import { dispatchWasWithdrawn } from '../../../src/shared/structured-agent-session-dispatch-rejection'
-import { structuredAgentSessionAttemptFailureParts } from '../../../src/shared/structured-agent-session-send-disposition'
+import { structuredAgentSessionAttemptFailureParts } from '../../../src/shared/structured-agent-session-rejection-words'
 import {
   QUEUED_MESSAGE_PAUSED_SEND_FAILED,
   type AgentSessionQueuedMessage,
   type AgentSessionQueuePause
 } from '../../../src/shared/agent-session-wire'
+import { readAgentMessageSource } from '../../../src/shared/agent-session-message-source'
+import { agentMessageAttribution } from './mobile-agent-message-attribution'
 
 export type MobileQueuedMessageCard = {
   messageId: string
@@ -23,6 +25,8 @@ export type MobileQueuedMessageCard = {
   needsAttention: boolean
   /** Status under the text; null for a card plainly waiting its turn, the paused queue's too. */
   caption: string | null
+  /** "From <name>" on another agent's card; null on the person's. */
+  attribution: string | null
 }
 
 function queuedMessageBodyText(body: AgentSessionQueuedMessage['body']): string {
@@ -37,18 +41,18 @@ function returnedCaption(
   if (dispatchWasWithdrawn({ dispatchState: 'rejected', reason, rejection })) {
     return 'Stopped before it was sent'
   }
-  // Worded as the desktop card words it: the fact decides, the reason is the fallback, and the
-  // card's own Send is the retry, so the words leave out sending again.
+  // Worded as the desktop card words it: a fact read whole decides, the host's reason is the
+  // fallback, and the card's own Send is the retry, so the words leave out sending again.
   return agentSessionWriteNoticeEnglish(
     structuredAgentSessionAttemptFailureParts(
       { kind: 'rejected', reason },
       { retryControl: true },
-      readAgentSessionFailureFact(rejection)
+      readWholeAgentSessionFailureFact(rejection)
     )
   )
 }
 
-/** One card's own hold: only a failed conversion; the queue's pause is the list's first row. */
+/** One card's own hold: a failed conversion; the queue's pause is the list's first row. */
 function pausedCaption(reason: string | undefined): string {
   if (reason === QUEUED_MESSAGE_PAUSED_SEND_FAILED) {
     return "Couldn't send — tap Send to retry"
@@ -58,9 +62,7 @@ function pausedCaption(reason: string | undefined): string {
 }
 
 const QUEUE_PAUSE_LABELS: Readonly<Record<string, string>> = {
-  stopped: 'Queue paused because you interrupted',
-  restarted: 'Queue paused because Orca restarted',
-  cleared: 'Queue paused after you cleared the conversation'
+  stopped: 'Queue paused because you interrupted'
 }
 
 /** Whether Resume would send anything: a waiting card with no hold of its own, ahead of any
@@ -131,7 +133,8 @@ export function mobileQueuedMessageCards(
       needsAttention:
         draft.state === 'returned' ||
         (paused && draft.pausedReason === QUEUED_MESSAGE_PAUSED_SEND_FAILED),
-      caption
+      caption,
+      attribution: agentMessageAttribution('From', readAgentMessageSource(draft.body.from))
     })
     if (draft.state === 'returned') {
       behindReturned = true

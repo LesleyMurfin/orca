@@ -8,6 +8,7 @@ import {
 } from './cell-admission-selector.js'
 import type { RelayCellConfig } from './config.js'
 import {
+  consumeRelayCellInventoryHold,
   openInMemoryRelayDatabase,
   type RelayDatabase,
   type RelayLockOptions,
@@ -54,6 +55,9 @@ class QueryCountingDatabase implements RelayDatabase {
   // Fails the first statement containing this fragment, so a test can roll a
   // transaction back at a chosen point.
   failOnce: string | undefined
+  // Locked statements that report the row busy, in order: each fragment fires
+  // once, on the first locked statement containing it after the one before.
+  lockUnavailableSequence: string[] = []
 
   constructor(private readonly delegate: RelayDatabase) {}
 
@@ -83,8 +87,17 @@ class QueryCountingDatabase implements RelayDatabase {
     params?: unknown[],
     options?: RelayLockOptions
   ): Promise<SqlRow[]> {
-    this.record(sql)
+    this.recordLocked(sql)
     return await this.delegate.queryLocked(sql, params, options)
+  }
+
+  recordLocked(sql: string): void {
+    this.record(sql)
+    const next = this.lockUnavailableSequence[0]
+    if (next !== undefined && sql.includes(next)) {
+      this.lockUnavailableSequence.shift()
+      throw new Error('database_lock_unavailable')
+    }
   }
 
   async transaction<T>(
@@ -111,7 +124,7 @@ class QueryCountingDatabase implements RelayDatabase {
         return await inner.query(sql, params)
       },
       queryLocked: async (sql, params, options) => {
-        this.record(sql)
+        this.recordLocked(sql)
         return await inner.queryLocked(sql, params, options)
       },
       transaction: async (operation, options) => await inner.transaction(operation, options),
@@ -351,6 +364,23 @@ describe('re-placing a host off a cell isolated for a roll', () => {
       expect(grant.cellId).toBe(first.cellId)
       expect(grant.assignmentEpoch).toBe(first.assignmentEpoch)
     }
+  })
+
+  // Why its own site: the drain-return lane's service time is either this lock or
+  // the inventory, and only a separate p99 can say which.
+  it('samples the regional target rows it locks under their own hold site', async () => {
+    const { store, database, isolateForRoll } = await setup()
+    const first = await store.assign(IDENTITY, 'us-central1')
+    await isolateForRoll(first.cellId)
+    consumeRelayCellInventoryHold(database)
+
+    await store.assign(IDENTITY, 'us-central1')
+
+    expect(consumeRelayCellInventoryHold(database)).toMatchObject({
+      cellInventoryHolds: 1,
+      cellInventoryHoldMaxSite: 'isolated-replacement',
+      isolatedReplacementHolds: 1
+    })
   })
 
   it('stops re-placing once restore clears the stamp', async () => {
@@ -733,5 +763,80 @@ describe('re-placing a host off a cell isolated for a roll', () => {
       expect(await reserved(database, 'us-c2')).toBe(3)
       await expectAccounting(database)
     })
+  })
+  it('retries a busy isolated attempt in its own tier, never under the all-rows lock', async () => {
+    const { store, counter, isolateForRoll } = await setup()
+    const first = await store.assign(IDENTITY, 'us-central1')
+    await isolateForRoll(first.cellId)
+    counter.sql.length = 0
+    // The first attempt finds a target row busy, then its retry finds the host's
+    // lease rows busy after it has already taken the tier's rows.
+    counter.lockUnavailableSequence = [
+      'SELECT * FROM relay_cells WHERE cell_id IN (',
+      'FROM relay_assignment_activity_leases'
+    ]
+
+    const moved = await store.assign(IDENTITY, 'us-central1')
+    expect(counter.lockUnavailableSequence).toEqual([])
+    expect(moved).toMatchObject({ region: 'us-central1', assignmentEpoch: first.assignmentEpoch + 1 })
+    expect(counter.count('SELECT * FROM relay_cells ORDER BY cell_id ASC')).toBe(0)
+  })
+})
+
+describe('classifying a reconnect whose home is isolated for a roll', () => {
+  const classify = { classifyHomeRollIsolation: true }
+
+  it('marks the host only while the roll stamp is current', async () => {
+    const { store, heartbeat, isolateForRoll, restore, setNow } = await setup()
+    const first = await store.assign(IDENTITY, 'us-central1')
+
+    expect(await store.resolve(IDENTITY, classify)).not.toHaveProperty('homeCellRollIsolated')
+    await isolateForRoll(first.cellId)
+    expect(await store.resolve(IDENTITY, classify)).toMatchObject({
+      cellId: first.cellId,
+      homeCellRollIsolated: true
+    })
+    // The cell's own callers do not ask, and their read is unchanged.
+    expect(await store.resolve(IDENTITY)).not.toHaveProperty('homeCellRollIsolated')
+
+    const stale = START_MS + 2 * 60 * 60_000 + 1
+    setNow(stale)
+    for (const cell of CELLS) await heartbeat(cell, stale)
+    expect(await store.resolve(IDENTITY, classify)).not.toHaveProperty('homeCellRollIsolated')
+
+    setNow(START_MS)
+    await restore(first.cellId)
+    expect(await store.resolve(IDENTITY, classify)).not.toHaveProperty('homeCellRollIsolated')
+  })
+
+  it('does not mark a host parked without a stamp or held by a migration', async () => {
+    const { store, database, isolateForRoll, park } = await setup()
+    const first = await store.assign(IDENTITY, 'us-central1')
+    await park(first.cellId, 'migration-only')
+    expect(await store.resolve(IDENTITY, classify)).not.toHaveProperty('homeCellRollIsolated')
+
+    await isolateForRoll(first.cellId)
+    await insertMigration(database, {
+      sourceCellId: first.cellId,
+      targetCellId: 'us-c2',
+      assignmentEpoch: first.assignmentEpoch,
+      leases: 1
+    })
+    expect(await store.resolve(IDENTITY, classify)).not.toHaveProperty('homeCellRollIsolated')
+    // A stalled migration whose lease counter lapsed still owns the epoch.
+    await database.query(`UPDATE relay_assignments SET migration_leases = 0`)
+    expect(await store.resolve(IDENTITY, classify)).not.toHaveProperty('homeCellRollIsolated')
+  })
+
+  it('reads the classification in the verification query itself', async () => {
+    const { store, counter, isolateForRoll } = await setup()
+    const first = await store.assign(IDENTITY, 'us-central1')
+    await isolateForRoll(first.cellId)
+
+    counter.sql.length = 0
+    await store.resolve(IDENTITY, classify)
+
+    expect(counter.sql.filter((sql) => sql.includes('FROM relay_assignments'))).toHaveLength(1)
+    expect(counter.count('relay_cell_admission')).toBe(1)
   })
 })

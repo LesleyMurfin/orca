@@ -13,6 +13,7 @@ import type {
   AgentSessionStatusEvent,
   AgentSessionSubscribeEvent
 } from '../../../shared/agent-session-wire'
+import type { AgentChildWorkView } from '../../../shared/agent-status-child-work-view'
 import type { AgentSessionRecordStore } from '../../runtime/agent-session-record-store'
 import { openTestAgentSessionRecordStore } from '../../runtime/agent-session-record-store-test-harness'
 import type {
@@ -20,6 +21,7 @@ import type {
   StructuredAgentSessionAdapter
 } from './structured-agent-session-adapter'
 import { StructuredAgentSessionHost } from './structured-agent-session-host'
+import { claudeAndCodexAgents } from './structured-agent-session-adapter-router-test-support'
 import type { StructuredAgentSessionHostDeps } from './structured-agent-session-host-types'
 import {
   HOST_TEST_NOW,
@@ -32,6 +34,8 @@ import {
 } from './structured-agent-session-host-test-data'
 import { STRUCTURED_AGENT_SESSION_IDLE_MS } from './structured-agent-session-idle-sweep'
 import { openTestJournalHostDatabase } from '../agent-session-journal/journal-host-database-test-support'
+import { createStructuredAgentSessionLogger } from './structured-agent-session-logger'
+import { codexProviderHandle } from '../../../shared/agent-session-provider-handle-encoding'
 
 export const REST_TEST_CALLER = { callerKey: 'client-1' }
 export const IDLE_MS = STRUCTURED_AGENT_SESSION_IDLE_MS
@@ -44,7 +48,6 @@ export type RestTestAdapter = {
   acknowledgeSessionRelease: Mock<
     NonNullable<StructuredAgentSessionAdapter['acknowledgeSessionRelease']>
   >
-  backgroundTaskState: Mock<NonNullable<StructuredAgentSessionAdapter['backgroundTaskState']>>
   holdsDispatch: Mock<NonNullable<StructuredAgentSessionAdapter['holdsDispatch']>>
   readOptions: Mock<NonNullable<StructuredAgentSessionAdapter['readOptions']>>
 }
@@ -56,7 +59,12 @@ export type RestTestRig = {
   adapter: RestTestAdapter
   clock: { now: number }
   statusEvents: AgentSessionStatusEvent[]
-  sink: { publish: Mock; forget: Mock }
+  /** `readChildWork` serves the session's child records, as the host's store does. */
+  sink: {
+    publish: Mock
+    forget: Mock
+    readChildWork: Mock<(subject: unknown) => AgentChildWorkView[]>
+  }
   /** Opens a fresh host over the same store and journals: what a restart leaves behind. */
   restart: (deps?: Partial<StructuredAgentSessionHostDeps>) => Promise<StructuredAgentSessionHost>
   dispose: () => Promise<void>
@@ -127,7 +135,11 @@ export async function createRestTestRig(
   const root = await mkdtemp(join(tmpdir(), 'orca-rest-'))
   const clock = { now: HOST_TEST_NOW }
   const statusEvents: AgentSessionStatusEvent[] = []
-  const sink = { publish: vi.fn(), forget: vi.fn() }
+  const sink: RestTestRig['sink'] = {
+    publish: vi.fn(),
+    forget: vi.fn(),
+    readChildWork: vi.fn((): AgentChildWorkView[] => [])
+  }
   let store = await openTestAgentSessionRecordStore(root)
   const adapter: RestTestAdapter = {
     acquire: vi.fn(async ({ fence, spawnToken }) => ({
@@ -135,7 +147,7 @@ export async function createRestTestRig(
       process: { hostId: 'local', pid: 4242, processStartTimeMs: 1_700_000_000_000, spawnToken },
       link: {
         linkId: `link-${fence}`,
-        handle: { provider: 'codex' as const, threadId: THREAD },
+        handle: codexProviderHandle(THREAD),
         origin: store.getRecord(SESSION)?.providerHandleChain.length
           ? ('resumed' as const)
           : ('created' as const),
@@ -146,12 +158,13 @@ export async function createRestTestRig(
     closeSession: vi.fn(async () => true),
     dispatch: vi.fn(async () => acceptedDispatch()),
     acknowledgeSessionRelease: vi.fn(),
-    backgroundTaskState: vi.fn(() => undefined),
     holdsDispatch: vi.fn(() => false),
     readOptions: vi.fn(async () => ({ models: [], current: { model: 'gpt-live' } }))
   }
   const hostFor = (overrides: Partial<StructuredAgentSessionHostDeps>) =>
     new StructuredAgentSessionHost({
+      agents: claudeAndCodexAgents(),
+      logger: createStructuredAgentSessionLogger(),
       store,
       adapter: {
         ...adapter,

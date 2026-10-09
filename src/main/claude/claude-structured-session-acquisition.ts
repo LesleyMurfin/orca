@@ -9,7 +9,9 @@ import { openClaudeStreamJsonConnection } from './claude-stream-json-connection'
 import { buildClaudePermissionCallbacks } from './claude-structured-inbound-control'
 import { resolveClaudeReplayTurn } from './claude-replay-turn-resolution'
 import { claudeSessionStateEndsTurn } from './claude-session-state-turn-over'
+import { settleClaudeTurnEndWaiters } from './claude-request-end-wait'
 import {
+  createClaudeInitProof,
   readClaudeCapabilities,
   readClaudeFrameString,
   readClaudeInit
@@ -17,15 +19,15 @@ import {
 import { claudeConfigDirEnvPatch } from './claude-config-dir-pin'
 import { CLAUDE_SPAWN_TOKEN_ENV, claudeProcessIdentity } from './claude-structured-owner-identity'
 import { ClaudePromptRegistry } from './claude-structured-prompt-replies'
-import { restoredClaudeStructuredSessionOptions } from './claude-structured-options'
+import { adoptClaudeStructuredSpawnOptions } from './claude-structured-spawn-options'
 import { createClaudeSessionJournalTranslator } from './claude-structured-journal-translation'
 import { observeClaudeFastModeFacts } from './claude-structured-session-options'
 import {
-  createClaudeInitProof,
   readClaudeStartupFacts,
   settleClaudeSessionStartup
 } from './claude-structured-session-startup'
 import { createClaudeSessionPublication } from './claude-structured-session-publication'
+import { readClaudeStructuredSessionSettings } from './claude-structured-session-acquisition-options'
 import {
   mintClaudeAcquisitionGeneration,
   type ClaudeAcquisitionRegistry,
@@ -40,7 +42,7 @@ import { readClaudeTranscriptEntryUuid } from './claude-transcript-entry-uuid'
 import { persistClaudeTurnResumePoint } from './claude-structured-resume-point'
 import { withAgentSessionCreatePhase } from '../observability/agent-session-instrumentation'
 import { resolveClaudeAcquisitionLaunch } from './claude-structured-acquisition-launch'
-import { agentModelCatalogSessionAccess } from '../native-chat/agent-model-catalog/agent-model-catalog-fingerprint'
+import { claudeAcquireCatalogAccess } from './claude-structured-acquire-catalog'
 import {
   bindClaudeConnectionJournalControls,
   createClaudeJournalFailureHandler
@@ -90,10 +92,10 @@ export async function acquireClaudeSession({
   const onMessage = (message: Record<string, unknown>): void => {
     const init = readClaudeInit(message)
     if (readClaudeFrameString(message, 'session_id') !== expectedProviderSessionId) {
-      // An init proof for another (or unnamed) provider must fail acquisition
+      // An init proof for another (or unnamed) provider must fail the start or end the session
       // promptly, while ordinary foreign frames stay quarantined silently.
       if (init || (message.type === 'system' && message.subtype === 'init')) {
-        initProof.reject(new Error('claude provider session expected'))
+        initProof.refuse()
       }
       return
     }
@@ -120,6 +122,7 @@ export async function acquireClaudeSession({
       }
       // The CLI's idle releases its doubted sends; a late echo still accepts one it goes on to run.
       if (claudeSessionStateEndsTurn(message) && sessions.get(sessionId) === liveSession) {
+        settleClaudeTurnEndWaiters(liveSession)
         deps.onSessionIdle?.({ sessionId })
       }
     }
@@ -143,6 +146,7 @@ export async function acquireClaudeSession({
         message,
         ...(startsTurn ? { startsTurn: true } : {}),
         ...(requestedAt === null || requestedAt === undefined ? {} : { requestedAt }),
+        ...(turnOrigin?.clientMessageId ? { clientMessageId: turnOrigin.clientMessageId } : {}),
         ...observedAt
       })
     )
@@ -150,13 +154,9 @@ export async function acquireClaudeSession({
       settle()
     }
   }
-  const { canUseTool, onUserDialog } = buildClaudePermissionCallbacks({
-    sessionId,
-    prompts,
-    currentTurnId: () => translator?.currentTurnId ?? null,
-    emit: (event) =>
-      callbacks.deliver(attempt, sessionId, () => callbacks.emit(liveSession, input.events, event))
-  })
+  const emit = (event: Parameters<typeof callbacks.emit>[2]): void =>
+    callbacks.deliver(attempt, sessionId, () => callbacks.emit(liveSession, input.events, event))
+  const { canUseTool, onUserDialog } = buildClaudePermissionCallbacks({ sessionId, prompts, emit })
 
   try {
     const launch = await resolveClaudeAcquisitionLaunch({
@@ -194,11 +194,17 @@ export async function acquireClaudeSession({
           onMessage,
           canUseTool,
           onUserDialog,
+          ...(input.onOutput ? { onOutput: input.onOutput } : {}),
           onFault: (error) => {
             childEnded ??= error
             initProof.reject(error)
           },
-          onExit: (error) => {
+          onExit: (error, exit) => {
+            if (exit?.expected) {
+              // The end of a close Orca began; that close settles it, or finishes it now.
+              callbacks.finishClose(sessionId, attempt)
+              return
+            }
             // The child exited on its own; marked in place, as the fault report may hold this error.
             withObservedProviderExit(error)
             childEnded ??= error
@@ -216,8 +222,6 @@ export async function acquireClaudeSession({
       deps.now ? { now: deps.now } : {}
     )
     acquisitions.assertCurrent(sessionId, attempt)
-    const emit = (event: Parameters<typeof callbacks.emit>[2]): void =>
-      callbacks.deliver(attempt, sessionId, () => callbacks.emit(liveSession, input.events, event))
     if (connection.pid === undefined) {
       // A pid-less spawn always reports its error next; surface that, not the missing pid.
       await initProof.promise
@@ -226,7 +230,7 @@ export async function acquireClaudeSession({
       { ...input, pid: connection.pid },
       deps.readProcessStartTime
     ).catch((error: unknown) => {
-      // A child that already ended explains why its start time could not be read.
+      // A child that already ended explains a missing pid or a failed read.
       throw childEnded ?? error
     })
     acquisitions.assertCurrent(sessionId, attempt)
@@ -249,17 +253,14 @@ export async function acquireClaudeSession({
       ...(unbindReadingControl ? { unbindReadingControl } : {}),
       process,
       acquisitionGeneration: mintClaudeAcquisitionGeneration(deps),
-      options: restoredClaudeStructuredSessionOptions(input.options),
+      options: launch.savedOptions.options,
       ...(deps.mintLinkId ? { linkId: deps.mintLinkId() } : {}),
       observedAt: deps.now?.() ?? Date.now()
     })
     const session = publication.session
     liveSession = session
-    const catalogAccess = agentModelCatalogSessionAccess(
-      deps.modelCatalog,
-      'claude',
-      launch.claudeConfigDir
-    )
+    adoptClaudeStructuredSpawnOptions(session, launch.savedOptions)
+    const catalogAccess = claudeAcquireCatalogAccess(deps.modelCatalog, launch.claudeConfigDir)
     if (catalogAccess) {
       session.catalogAccess = catalogAccess
     }
@@ -277,25 +278,28 @@ export async function acquireClaudeSession({
       settleClaudeSessionStartup({
         session,
         facts: readClaudeStartupFacts({
+          account: launch.account,
           connection,
           initProof,
           sessionId,
           providerSessionId: launch.providerSessionId,
+          startup: session.startup,
           resumesTranscript: launch.resumesTranscript,
-          inputOptions: input.options,
           requestTimeoutMs: deps.requestTimeoutMs,
           emit
         }),
+        readSettings: () => readClaudeStructuredSessionSettings(connection, deps.requestTimeoutMs),
         isCurrent: () => sessions.get(sessionId) === session,
-        requestTimeoutMs: deps.requestTimeoutMs,
         fault: (error) => callbacks.handleExit(sessionId, attempt, error),
-        onStarted: (options) =>
+        diagnose: (diagnostic) => emit({ type: 'auth-diagnostic', sessionId, diagnostic }),
+        // The host's minted attempt always carries it; only adapter tests that pass less omit it.
+        optionRevision: () => input.optionRevision?.() ?? 0,
+        report: (event) =>
           emit({
-            type: 'started',
+            ...event,
             sessionId,
             fence: input.fence,
-            acquisitionGeneration: session.acquisitionGeneration,
-            ...options
+            acquisitionGeneration: session.acquisitionGeneration
           })
       })
     ])
@@ -306,8 +310,7 @@ export async function acquireClaudeSession({
         exits.get(sessionId)?.error ?? new Error('claude session ended before acquisition returned')
       )
     }
-    // The start applies its facts and restores saved options only after publish, so the child
-    // is `starting` until `started` says otherwise.
+    // The start reads its facts only after publish, so the child is `starting` until `started`.
     return { ...publication.acquisition, providerChildPhase: 'starting' }
   } catch (error) {
     unbindReadingControl?.()

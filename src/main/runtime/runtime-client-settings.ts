@@ -42,18 +42,20 @@ export type RuntimeClientSettings = Pick<
   | 'githubProjects'
   | 'experimentalNewWorktreeCardStyle'
   | 'experimentalNativeChat'
-  | 'openAgentTabsInChatByDefault'
-  | 'experimentalStructuredNativeChat'
   | 'compactWorktreeCards'
   | 'minimaxGroupId'
   | 'minimaxUsageModels'
   | 'minimaxEndpoint'
+  | 'zcodePlanSite'
   | 'prBotAuthorOverrides'
   | 'artifactSharingEnabled'
   | 'worktreeVisibilityDefaults'
   | 'agentSkillSharingEnabled'
   | 'machineName'
 > & {
+  /** Older clients still read these; neither is persisted or accepted as an update. */
+  openAgentTabsInChatByDefault?: boolean
+  experimentalStructuredNativeChat?: boolean
   hostSettingOverrides: RuntimeHostDisplayLabelOverrides
   sourceControlAi: RuntimeClientSourceControlAi
 }
@@ -84,6 +86,7 @@ export type RuntimeClientSettingsUpdate = Pick<
   | 'minimaxGroupId'
   | 'minimaxUsageModels'
   | 'minimaxEndpoint'
+  | 'zcodePlanSite'
   | 'prBotAuthorOverrides'
   | 'worktreeVisibilityDefaults'
   | 'machineName'
@@ -123,15 +126,15 @@ export class RuntimeClientSettingsController {
         : null,
       githubProjects: settings.githubProjects,
       experimentalNewWorktreeCardStyle: settings.experimentalNewWorktreeCardStyle === true,
-      // The three that decide whether a new agent tab -- and so an orchestration worker -- is a
-      // structured chat session rather than a terminal agent.
       experimentalNativeChat: settings.experimentalNativeChat === true,
-      openAgentTabsInChatByDefault: settings.openAgentTabsInChatByDefault === true,
-      experimentalStructuredNativeChat: settings.experimentalStructuredNativeChat === true,
+      // Older clients use this key to fall back to terminal-backed chat. Keep their default terminal.
+      openAgentTabsInChatByDefault: false,
+      experimentalStructuredNativeChat: settings.experimentalNativeChat === true,
       compactWorktreeCards: settings.compactWorktreeCards === true,
       minimaxGroupId: settings.minimaxGroupId ?? '',
       minimaxUsageModels: settings.minimaxUsageModels ?? 'general',
       minimaxEndpoint: settings.minimaxEndpoint ?? 'overseas',
+      zcodePlanSite: settings.zcodePlanSite ?? 'zai',
       prBotAuthorOverrides: settings.prBotAuthorOverrides ?? [],
       artifactSharingEnabled: isArtifactSharingEnabled(settings),
       worktreeVisibilityDefaults: settings.worktreeVisibilityDefaults ?? { external: 'hide' },

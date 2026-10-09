@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -11,6 +11,10 @@ import type {
 import { __setWindowsProcessTreeLoaderForTests } from '../windows/windows-process-table'
 import { agentModelCatalogStore } from '../native-chat/agent-model-catalog/agent-model-catalog-store'
 import {
+  JournalHostDatabase,
+  journalDatabasePath
+} from '../native-chat/agent-session-journal/journal-host-database'
+import {
   createStructuredAgentSessionOwnerProbe,
   createStructuredAgentSessionOwnerProbes
 } from './structured-agent-session-owner-probe'
@@ -19,6 +23,7 @@ import {
   hasPersistedStructuredAgentSessionStore,
   stopStructuredAgentSessionRuntime
 } from './structured-agent-session-runtime'
+import { createStructuredAgentSessionLogger } from '../native-chat/agent-session-wire/structured-agent-session-logger'
 
 const HOST_ID = 'local'
 
@@ -54,35 +59,48 @@ const OWNER: AgentSessionProcessIdentity = {
 const deadProbe = () => vi.fn(async () => ({ outcome: 'pid-absent' }) as const)
 
 describe('structured agent-session store presence', () => {
-  it('stops after finding the durable primary store', () => {
-    const fileExists = vi.fn(() => true)
-
-    expect(hasPersistedStructuredAgentSessionStore('/profile', fileExists)).toBe(true)
-    expect(fileExists).toHaveBeenCalledOnce()
-    expect(fileExists).toHaveBeenCalledWith(
-      join('/profile', 'agent-sessions', 'agent-sessions.json')
-    )
+  let profile: string
+  afterEach(async () => {
+    if (profile) {
+      await rm(profile, { recursive: true, force: true })
+      profile = ''
+    }
   })
 
-  it('checks the durable backup when the primary store is absent', () => {
-    const fileExists = vi.fn((path: string) => path.endsWith('.bak'))
+  async function openProfileDatabase(): Promise<JournalHostDatabase> {
+    profile = await mkdtemp(join(tmpdir(), 'orca-session-presence-'))
+    return JournalHostDatabase.open(profile)
+  }
 
-    expect(hasPersistedStructuredAgentSessionStore('/profile', fileExists)).toBe(true)
-    expect(fileExists).toHaveBeenNthCalledWith(
-      1,
-      join('/profile', 'agent-sessions', 'agent-sessions.json')
-    )
-    expect(fileExists).toHaveBeenNthCalledWith(
-      2,
-      join('/profile', 'agent-sessions', 'agent-sessions.json.bak')
-    )
+  // Every host install creates the database, chats or not; startup restore must not wait on one.
+  it('reports a profile whose database holds no chat absent', async () => {
+    ;(await openProfileDatabase()).close()
+
+    expect(hasPersistedStructuredAgentSessionStore(profile)).toBe(false)
   })
 
-  it('reports a fresh profile absent after two bounded presence checks', () => {
+  it('reports a chat record in the database', async () => {
+    const database = await openProfileDatabase()
+    database.db
+      .prepare('INSERT INTO agent_session_records (session_id, record_json) VALUES (?, ?)')
+      .run('session-1', '{}')
+    database.close()
+
+    expect(hasPersistedStructuredAgentSessionStore(profile)).toBe(true)
+  })
+
+  it('reports a database it cannot read present', async () => {
+    profile = await mkdtemp(join(tmpdir(), 'orca-session-presence-'))
+    await writeFile(journalDatabasePath(profile), 'not a database')
+
+    expect(hasPersistedStructuredAgentSessionStore(profile)).toBe(true)
+  })
+
+  it('reports a fresh profile absent after one presence check', () => {
     const fileExists = vi.fn(() => false)
 
     expect(hasPersistedStructuredAgentSessionStore('/profile', fileExists)).toBe(false)
-    expect(fileExists).toHaveBeenCalledTimes(2)
+    expect(fileExists).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -205,10 +223,12 @@ describe('structured agent-session runtime install', () => {
   it('holds stop until the model catalog has written its coalesced save', async () => {
     stateDirectory = await mkdtemp(join(tmpdir(), 'orca-structured-runtime-'))
     await ensureStructuredAgentSessionHost({
+      logger: createStructuredAgentSessionLogger(),
       stateDirectory,
       hostId: HOST_ID,
       claimKeyId: 'key-1',
       resolveWorkspacePath: async () => stateDirectory!,
+      resolveLaunchArgs: () => [],
       resolveClaudeAuthPolicy: () => ({ stripAuthEnv: true }),
       resolveEnvironment: async () => ({})
     })
@@ -231,7 +251,7 @@ describe('structured agent-session runtime install', () => {
     expect(stopped).toBe(true)
   })
 
-  it('does not infer Windows process identity support from an injected reader', async () => {
+  it('supports native Windows creation without the process-table addon', async () => {
     stateDirectory = await mkdtemp(join(tmpdir(), 'orca-structured-runtime-'))
     const originalPlatform = process.platform
     const location: AgentSessionExecutionLocation = {
@@ -244,16 +264,20 @@ describe('structured agent-session runtime install', () => {
     __setWindowsProcessTreeLoaderForTests(() => null)
     try {
       const host = await ensureStructuredAgentSessionHost({
+        logger: createStructuredAgentSessionLogger(),
         stateDirectory,
         hostId: HOST_ID,
         claimKeyId: 'key-1',
         resolveWorkspacePath: async () => stateDirectory!,
         resolveEnvironment: async () => ({}),
+        resolveLaunchArgs: () => [],
         resolveClaudeAuthPolicy: () => ({ stripAuthEnv: true }),
         readProcessStartTime: async () => 1_700_000_000_000
       })
 
-      expect(host.supportsCreate(location, 'codex')).toBe(false)
+      // No addon means no creation times; chat no longer depends on them.
+      expect(host.supportsCreate(location, 'codex')).toBe(true)
+      expect(host.supportsCreate(location, 'claude')).toBe(true)
     } finally {
       __setWindowsProcessTreeLoaderForTests()
       Object.defineProperty(process, 'platform', { configurable: true, value: originalPlatform })

@@ -13,28 +13,26 @@ import {
   type AgentSessionSendResult,
   type AgentSessionWireRefusal
 } from '../../../shared/agent-session-wire'
-import {
-  createStructuredAgentSessionOperationId,
-  structuredAgentSessionPayloadFingerprint
-} from '../../../shared/structured-agent-session-mutation'
+import { createStructuredAgentSessionOperationId } from '../../../shared/structured-agent-session-mutation'
+import { agentSessionSendBodyFingerprint } from '../../../shared/structured-agent-session-send-mutation'
 import { queuedSendAnswer } from './structured-agent-session-queued-send-answer'
 import { structuredAgentSessionSendBlock } from './structured-agent-session-send-preparation'
-import { isUnsettledQueuedMessage } from '../agent-session-journal/queued-message-table'
+import { queuedMessagesPublishedBytesRefusal } from './structured-agent-session-queued-published-bytes'
 import type { AgentSessionRecord } from '../../../shared/agent-session-record'
 import { isStructuredAgentSessionMainAgentWorking } from '../../../shared/structured-agent-session-main-agent-working'
 import type { AgentSessionJournal } from '../agent-session-journal/journal-store'
+import type { AgentSessionTurnContext } from './structured-agent-session-turns'
 import { QueuedMessageNotConsumableError } from '../agent-session-journal/journal-queued-messages'
 import type { QueuedMessageRow } from '../agent-session-journal/queued-message-table'
 import type { StructuredAgentSessionHostSession } from './structured-agent-session-host-types'
 import {
   structuredAgentSessionHostInstance,
-  structuredQueuePause
+  structuredQueuePauses
 } from './structured-agent-session-queued-pause'
-
-/** Budget at accept, in the send schema's own unit (`Buffer.byteLength` of the
- *  serialized blocks); refused readably rather than trimmed. */
-export const QUEUED_MESSAGES_MAX_COUNT = 20
-export const QUEUED_MESSAGES_MAX_TOTAL_BYTES = 1024 * 1024
+import { nextSendableQueuedCard } from '../agent-session-journal/queued-message-pause'
+import type { StructuredAgentSessionLogger } from './structured-agent-session-logger'
+import { agentSessionAttachmentExpiredRefusal } from './structured-agent-session-turns'
+import { isAgentSessionAttachmentExpiredError } from '../agent-session-attachments/agent-session-attachment-claims'
 
 /** Text-only v1: any image block routes to the immediate path. */
 export function queuedMessageBodyIsTextOnly(body: AgentJournalMessageItem): boolean {
@@ -57,27 +55,18 @@ export function pendingPromptExists(journal: Pick<AgentSessionJournal, 'visitIte
   return pending
 }
 
-/** Waiting, not held on its own, not positioned behind a returned card, and the
- *  queue not paused. The admission rule (§accept) and the drain's selection
- *  both read it. */
+/** Waiting, not held on its own, and not positioned behind a returned card or a
+ *  card the queue's pause holds: the queue never reorders. The admission rule
+ *  (§accept) and the drain's selection both read it. */
 function oldestActionableQueuedMessage(
-  journal: Pick<AgentSessionJournal, 'queuedMessages' | 'cursor' | 'wroteBeforeOpen'>
+  journal: Pick<AgentSessionJournal, 'queuedMessages'>
 ): QueuedMessageRow | null {
   const rows = journal.queuedMessages.list()
   // Nothing waiting costs no pause derivation: this runs on every journal publish.
-  if (!rows.some((row) => row.state === 'waiting') || structuredQueuePause(journal) !== null) {
+  if (!rows.some((row) => row.state === 'waiting')) {
     return null
   }
-  for (const row of rows) {
-    if (row.state === 'returned') {
-      // A returned card blocks everything after it until the user acts.
-      return null
-    }
-    if (row.state === 'waiting' && row.holdReason === null) {
-      return row
-    }
-  }
-  return null
+  return nextSendableQueuedCard(structuredQueuePauses(journal), rows)
 }
 
 /**
@@ -128,6 +117,27 @@ export function structuredQueueHold(input: {
   return null
 }
 
+/** The card the drain sends next, or null while anything holds the queue: the drain's own pick
+ *  through the one gate, so a client told this reads what the drain acts on. Live facts only; the
+ *  backlog is never a gate, so a lone draft drains. */
+export function nextStructuredQueuedMessage(input: {
+  journal: AgentSessionJournal
+  record: AgentSessionRecord | null
+  fence: number
+}): QueuedMessageRow | null {
+  const next = oldestActionableQueuedMessage(input.journal)
+  const { journal, fence } = input
+  // The gate's cheap `working` first: publication asks on every streamed frame, and the gate's
+  // prompt check walks the whole fold.
+  if (
+    next === null ||
+    isStructuredAgentSessionMainAgentWorking(journal.activeTurnId(), journal.submissions(), fence)
+  ) {
+    return null
+  }
+  return structuredQueueHold(input) === null ? next : null
+}
+
 /**
  * Whether a `queue-if-active` send becomes a draft: any queue hold short of
  * `blocked`, or an actionable draft already exists (FIFO backlog — an
@@ -153,35 +163,6 @@ export function shouldQueueStructuredAgentSessionSend(input: {
   return oldestActionableQueuedMessage(input.journal) !== null
 }
 
-/** A draft's payload fingerprint in the session that will send it: the reducer
- *  aliases the provider's echo to the submission by recomputing exactly this. */
-export function queuedMessageFingerprint(sessionId: string, body: AgentJournalMessageItem): string {
-  return structuredAgentSessionPayloadFingerprint({
-    method: 'agentSession.send',
-    sessionId,
-    fields: { body }
-  })
-}
-
-/** The accept-side budget refusal, or null when the draft fits. */
-export function queuedMessageBudgetRefusal(
-  journal: AgentSessionJournal,
-  body: AgentJournalMessageItem
-): AgentSessionWireRefusal | null {
-  const unsettled = journal.queuedMessages.list().filter(isUnsettledQueuedMessage)
-  const bytes = unsettled.reduce(
-    (sum, row) => sum + Buffer.byteLength(JSON.stringify(row.body.blocks), 'utf8'),
-    Buffer.byteLength(JSON.stringify(body.blocks), 'utf8')
-  )
-  if (unsettled.length >= QUEUED_MESSAGES_MAX_COUNT || bytes > QUEUED_MESSAGES_MAX_TOTAL_BYTES) {
-    return {
-      code: 'agent_session_operation_invalid',
-      message: 'The message queue is full. Send again after the current turn ends.'
-    }
-  }
-  return null
-}
-
 /**
  * The accept branch: a capable send while the session is working (or behind an
  * actionable backlog) becomes a draft instead of a submission. Returns null for
@@ -192,15 +173,15 @@ export async function maybeQueueStructuredAgentSessionSend(
   context: {
     deps: { store: { getRecord: (sessionId: string) => AgentSessionRecord | null } }
   },
-  ctx: {
-    sessionId: string
-    journal: AgentSessionJournal
-    fence: number
-  },
+  ctx: Pick<AgentSessionTurnContext, 'sessionId' | 'journal' | 'fence' | 'operationReceipt'>,
   params: {
     envelope: { clientOperationId: string }
     body: AgentJournalMessageItem
     delivery?: 'queue-if-active'
+    /** A person's send at a chat surface: every attachment it names must still be stored. */
+    userSend?: true
+    /** A person's message the host sends for them. */
+    personsMessage?: true
   }
 ): Promise<
   | { ok: true; value: AgentSessionSendResult }
@@ -221,9 +202,7 @@ export async function maybeQueueStructuredAgentSessionSend(
   if (ctx.journal.submissions().some((entry) => entry.clientMessageId === clientMessageId)) {
     return null
   }
-  // A newer Orca's journal takes no new draft: the immediate path refuses the send.
   if (
-    ctx.journal.isReadOnly ||
     !shouldQueueStructuredAgentSessionSend({
       journal: ctx.journal,
       record: context.deps.store.getRecord(ctx.sessionId),
@@ -232,18 +211,35 @@ export async function maybeQueueStructuredAgentSessionSend(
   ) {
     return null
   }
-  const refusal = queuedMessageBudgetRefusal(ctx.journal, params.body)
+  const refusal = queuedMessagesPublishedBytesRefusal(
+    ctx.journal,
+    params.body,
+    params.userSend === true || params.personsMessage === true
+  )
   if (refusal) {
     return { ok: false, refusal }
   }
   // The insert notifies through the journal's commit listener: publication and
   // the drain re-derive with no call here to forget.
-  const row = await ctx.journal.queuedMessages.insert({
-    messageId: clientMessageId,
-    body: params.body,
-    fingerprint: queuedMessageFingerprint(ctx.sessionId, params.body),
-    hostInstance: structuredAgentSessionHostInstance()
-  })
+  let row: QueuedMessageRow
+  try {
+    row = await ctx.journal.queuedMessages.insert(
+      {
+        messageId: clientMessageId,
+        body: params.body,
+        // In the session that will send it: the reducer aliases the provider's echo by exactly this.
+        fingerprint: agentSessionSendBodyFingerprint(ctx.sessionId, params.body),
+        hostInstance: structuredAgentSessionHostInstance(),
+        ...(params.userSend ? { requireAttachments: true } : {})
+      },
+      ctx.operationReceipt
+    )
+  } catch (error) {
+    if (isAgentSessionAttachmentExpiredError(error)) {
+      return agentSessionAttachmentExpiredRefusal()
+    }
+    throw error
+  }
   return {
     ok: true,
     value: {
@@ -257,13 +253,10 @@ export type QueuedMessageDrainDeps = {
   sessions: ReadonlyMap<string, StructuredAgentSessionHostSession>
   getRecord: (sessionId: string) => AgentSessionRecord | null
   serialize: <T>(sessionId: string, task: () => Promise<T>) => Promise<T>
-  /** The streamed-event barrier: a turn-open already accepted by the host is
-   *  committed before the gates are read, so no stored busy flag is needed. */
-  flushStreamedEvents: (sessionId: string) => Promise<void>
   conversationFence: (sessionId: string) => number
   /** The consumed submission is ordinary #22821 work from here on. */
   wakeDelivery: (sessionId: string) => void
-  onError: (sessionId: string, error: unknown) => void
+  logger: StructuredAgentSessionLogger
 }
 
 /**
@@ -274,17 +267,25 @@ export type QueuedMessageDrainDeps = {
  */
 export class StructuredAgentSessionQueuedMessageDrain {
   private readonly scheduled = new Set<string>()
+  private disposed = false
 
   constructor(private readonly deps: QueuedMessageDrainDeps) {}
 
+  /** Quit, with delivery: a hand-off made now could only be settled by the next process, so a
+   *  quit leaves the cards exactly as a crash does. Read by the step at its start, and again
+   *  right before it appends, since quit can land while it awaits. */
+  dispose(): void {
+    this.disposed = true
+  }
+
   schedule(sessionId: string): void {
-    const journal = this.deps.sessions.get(sessionId)?.journal
-    if (!journal || journal.isReadOnly) {
+    const journal = this.disposed ? undefined : this.deps.sessions.get(sessionId)?.journal
+    if (!journal) {
       return
     }
     // Cheap pre-check so token streams do not pay a serialized step per delta.
     // Skipping while working is safe: whatever ends the work is itself a commit
-    // that schedules again, and the step re-reads every gate after its flush.
+    // that schedules again, and the step re-reads every gate from the fold.
     try {
       if (
         !journal.queuedMessages.settlementOwed() &&
@@ -312,33 +313,35 @@ export class StructuredAgentSessionQueuedMessageDrain {
       })
       .catch((error: unknown) => {
         this.scheduled.delete(sessionId)
-        this.deps.onError(sessionId, error)
+        this.deps.logger.warn('draining queued messages failed', {
+          scope: 'queued-drain',
+          sessionId,
+          error
+        })
       })
   }
 
   private async step(sessionId: string): Promise<void> {
     const session = this.deps.sessions.get(sessionId)
-    if (!session || session.journal.isReadOnly) {
+    if (this.disposed || !session) {
       return
     }
-    await this.deps.flushStreamedEvents(sessionId)
     const journal = session.journal
     if (journal.queuedMessages.settlementOwed() || journal.queuedMessages.deliveredByEchoOwed()) {
       // A live per-row hook was skipped; heal now, before a draft sends, rather than at reopen.
       await journal.queuedMessages.settleOwed().catch((error: unknown) => {
-        this.deps.onError(sessionId, error)
+        this.deps.logger.warn('settling owed queued-message bookkeeping failed', {
+          scope: 'queued-settle-owed',
+          sessionId,
+          error
+        })
       })
     }
-    const next = oldestActionableQueuedMessage(journal)
-    if (!next) {
-      return
-    }
-    const record = this.deps.getRecord(sessionId)
     const fence = this.deps.conversationFence(sessionId)
-    // Live facts only, through the one gate; the backlog is never a gate, so a
-    // lone draft drains. Whatever clears a hold publishes or commits, which
-    // re-derives this step.
-    if (structuredQueueHold({ journal, record, fence }) !== null) {
+    // Whatever clears a hold publishes or commits, which re-derives this step.
+    const record = this.deps.getRecord(sessionId)
+    const next = nextStructuredQueuedMessage({ journal, record, fence })
+    if (this.disposed || !next) {
       return
     }
     // Always a fresh id: the submission names its draft by `queuedMessageId`, never by id equality.
@@ -347,7 +350,7 @@ export class StructuredAgentSessionQueuedMessageDrain {
       await journal.appendSubmission(
         {
           clientMessageId: submissionId,
-          // The queue's own automatic send: it never ends a pause.
+          // The queue's own automatic send, never kept as a card by a restart or a close.
           origin: 'host',
           payloadFingerprint: next.fingerprint,
           body: next.body,
@@ -358,12 +361,13 @@ export class StructuredAgentSessionQueuedMessageDrain {
           messageId: next.messageId,
           expect: 'waiting',
           settledByOp: null,
-          hostInstance: structuredAgentSessionHostInstance()
+          hostInstance: structuredAgentSessionHostInstance(),
+          yieldsToPause: true
         }
       )
     } catch (error) {
       if (error instanceof QueuedMessageNotConsumableError) {
-        // Lost a race with a Send-now or Delete; their transition stands.
+        // Lost a race with a Send-now, a Delete or a Stop; their transition stands.
         return
       }
       // Pre-consume failure: the draft stays waiting, held with the marker on

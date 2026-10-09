@@ -241,8 +241,7 @@ describe('the hand-off link on answers', () => {
         clientOperationId
       ),
       body,
-      delivery: 'queue-if-active' as const,
-      userSend: true as const
+      delivery: 'queue-if-active' as const
     }
     await host.send(CALLER, params)
     await settleAccepted(working, 'a')
@@ -286,9 +285,10 @@ describe('Send-now rerun', () => {
       expect(await drafts()).toMatchObject([{ messageId: draftId, state: 'returned' }])
     )
     // The host died before the Send's answer settled: its ledger row is still pending, so it reruns.
-    for (const row of store['transactions'].state.operations.values()) {
+    const operations = store['transactions'].state.operations
+    for (const [key, row] of operations) {
       if (row.operationId === operationId) {
-        row.outcome = { status: 'pending' }
+        operations.set(key, { ...row, outcome: { status: 'pending' } })
       }
     }
     const count = (await host.journalSnapshot(SESSION)).submissions.length

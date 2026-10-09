@@ -8,8 +8,7 @@ import type Database from '../../sqlite/sync-database'
 import type { AgentJournalSubmission } from '../../../shared/agent-session-journal-types'
 import {
   consumedSubmissionWasRejected,
-  journalDispatchRowNewlyRejects,
-  rejectedDraftSettlement
+  journalDispatchRowNewlyRejects
 } from './journal-dispatch-settlement'
 import type { JournalReducerState } from './journal-reducer'
 import type { JournalRow } from './journal-row-schema'
@@ -34,20 +33,6 @@ export function queuedMessageSettlementOwed(
       row.consumedAs !== null &&
       consumedSubmissionWasRejected(submissions.get(row.consumedAs))
   )
-}
-
-/** A dispatched draft's consumed submission settled so that the draft is owed a
- *  return to waiting (a withdrawal, not a refusal): what a queue pause must still
- *  count as a card it holds back while that settlement is owed. */
-export function owedBackToWaiting(submissions: Submissions): (consumedRef: string) => boolean {
-  return (consumedRef) => {
-    const submission = submissions.get(consumedRef)
-    return (
-      submission !== undefined &&
-      consumedSubmissionWasRejected(submission) &&
-      rejectedDraftSettlement(submission).state === 'waiting'
-    )
-  }
 }
 
 /** Applies each owed settlement, and withdraws each waiting draft an applied echo proves
@@ -96,7 +81,8 @@ export function settleOwedQueuedMessages(
  * The live hook, before `row` applies: an echo proving a waiting draft's first
  * send was delivered withdraws it; a row that NEWLY settles a dispatched
  * draft's current submission to `rejected` settles the draft — a refusal
- * returns it, a withdrawal (a Stop, a restart) sends it back to waiting.
+ * returns it, a withdrawal (a Stop, a restart) sends it back to waiting
+ * (`rejectedDraftSettlement`).
  * Decided by the same function the reducer folds rows through, so a row the
  * journal's settlement rules ignore never alters a draft. Returns how many
  * drafts changed.
@@ -128,7 +114,8 @@ export function settleQueuedMessagesForRow(
   if (row.kind !== 'dispatch' || row.state !== 'rejected') {
     return changed
   }
-  if (!journalDispatchRowNewlyRejects(input.state.submissions.get(row.clientMessageId), row)) {
+  const submission = input.state.submissions.get(row.clientMessageId)
+  if (!journalDispatchRowNewlyRejects(submission, row)) {
     return changed
   }
   const settled = settleRejectedQueuedMessage(db, {

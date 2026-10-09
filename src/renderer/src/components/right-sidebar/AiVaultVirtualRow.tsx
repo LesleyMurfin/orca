@@ -1,4 +1,5 @@
 import type { AgentStatusState } from '../../../../shared/agent-status-types'
+import { isAntigravityReferenceSession } from '../../../../shared/antigravity-session-origin'
 import type { AiVaultScope, AiVaultSession } from '../../../../shared/ai-vault-types'
 import type { AiVaultResumeStartup } from '@/lib/ai-vault-resume-command'
 import { cn } from '@/lib/utils'
@@ -22,6 +23,7 @@ import {
   canUseLocalAiVaultSessionPathActions
 } from './ai-vault-session-path-actions'
 import { canContinueAiVaultSessionInNewSession } from './ai-vault-session-continuation'
+import { aiVaultSessionCliForkWorktreeId } from './ai-vault-session-cli-fork'
 import type { AiVaultResumeInChatEligibility } from './ai-vault-session-resume-in-chat'
 import type { AiVaultSearchHit } from '../../../../shared/ai-vault-search-types'
 import { canResumeAiVaultSearchHit, hasAiVaultSearchHitPath } from './ai-vault-search-session'
@@ -54,6 +56,7 @@ export function AiVaultVirtualRow({
   onResume,
   onContinueInNewSession,
   onResumeInNewChat,
+  onResumeInNewCli,
   onCopyResume,
   onCopyId,
   onCopyPath,
@@ -86,6 +89,7 @@ export function AiVaultVirtualRow({
   onResume: (session: AiVaultSession, worktreeId: string) => void
   onContinueInNewSession: (session: AiVaultSession, worktreeId: string) => void
   onResumeInNewChat: (session: AiVaultSession, worktreeId: string) => void
+  onResumeInNewCli: (session: AiVaultSession, worktreeId: string) => void
   onCopyResume: (session: AiVaultSession, worktreeId?: string | null) => void
   onCopyId: (session: AiVaultSession) => void
   onCopyPath: (session: AiVaultSession) => void
@@ -125,6 +129,13 @@ export function AiVaultVirtualRow({
       ? aiVaultSessionRowResumeGating(row.session, resumeState)
       : { resumeDisabled: true, canCopyResumeCommand: false }
   const resumeLabel = resumeState ? aiVaultSessionResumeLabel(resumeState) : ''
+  const cliForkWorktreeId =
+    row.type === 'session'
+      ? aiVaultSessionCliForkWorktreeId(row.session, {
+          worktreeId: resumeState?.worktreeId,
+          disabled: resumeGating.resumeDisabled
+        })
+      : null
   const canOpenLocalSessionPaths =
     row.type === 'session' && canUseLocalAiVaultSessionPathActions(row.session.executionHostId)
   // Why: in-Orca View Log additionally withholds synthetic (SQLite/OpenCode)
@@ -135,10 +146,14 @@ export function AiVaultVirtualRow({
   const searchResumeAllowed = searchHit ? canResumeAiVaultSearchHit(searchHit) : true
   const searchPathAllowed = searchHit ? hasAiVaultSearchHitPath(searchHit) : true
   const usesLegacyResumeCommand = row.type === 'session' && !row.session.structuredSession
-  const resumeStartup =
-    row.type === 'session' && searchResumeAllowed && usesLegacyResumeCommand
-      ? buildResumeStartup(row.session, resumeState?.worktreeId)
-      : { command: '' }
+  const canBuildResumeStartup =
+    row.type === 'session' &&
+    searchResumeAllowed &&
+    usesLegacyResumeCommand &&
+    (!isAntigravityReferenceSession(row.session) || !resumeGating.resumeDisabled)
+  const resumeStartup = canBuildResumeStartup
+    ? buildResumeStartup(row.session, resumeState?.worktreeId)
+    : { command: '' }
   const visibleResumeActions =
     searchResumeAllowed && resumeActions
       ? resumeActions
@@ -170,7 +185,7 @@ export function AiVaultVirtualRow({
           liveState={getSessionLiveState(row.session)}
           resumeStartup={resumeStartup}
           realHomeResumeStartup={
-            searchResumeAllowed && usesLegacyResumeCommand
+            canBuildResumeStartup
               ? buildResumeStartup({ ...row.session, codexHome: null }, resumeState?.worktreeId)
               : resumeStartup
           }
@@ -203,6 +218,11 @@ export function AiVaultVirtualRow({
           onResumeInNewChat={
             searchResumeAllowed && resumeInChat?.available
               ? () => onResumeInNewChat(row.session, resumeInChat.workspaceId)
+              : undefined
+          }
+          onResumeInNewCli={
+            searchResumeAllowed && cliForkWorktreeId
+              ? () => onResumeInNewCli(row.session, cliForkWorktreeId)
               : undefined
           }
           onResumeInWorktree={() => {

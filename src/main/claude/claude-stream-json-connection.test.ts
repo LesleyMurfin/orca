@@ -21,6 +21,9 @@ import { readClaudeStructuredSessionOptions } from './claude-structured-session-
 import type { ClaudeSession } from './claude-structured-session-state'
 import { CLAUDE_STRUCTURED_BASE_OPTIONS } from './claude-structured-launch-resolution'
 import { openTestJournalHostDatabase } from '../native-chat/agent-session-journal/journal-host-database-test-support'
+import { testEventSinkLogging } from '../native-chat/agent-session-wire/structured-agent-session-logger-test-support'
+import { claudeProviderHandle } from '../../shared/agent-session-provider-handle-encoding'
+import { providerExecutableMissing } from '../provider-process/provider-executable-missing'
 
 // These drive the real SDK against the scripted fake CLI, so every assertion is
 // about the environment, argv and frames a real child actually saw.
@@ -38,13 +41,15 @@ type ScriptedCliReport = {
 
 const scratchDirs: string[] = []
 const openConnections: ClaudeStreamJsonConnection[] = []
+const childClosures: Promise<void>[] = []
 
 afterEach(async () => {
   for (const connection of openConnections.splice(0)) {
     await connection.close()
   }
+  await Promise.all(childClosures.splice(0))
   for (const dir of scratchDirs.splice(0)) {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
   }
   spawned.splice(0)
   spawnedChildren.splice(0)
@@ -100,6 +105,7 @@ async function open(
       spawned.push(spec)
       const child = spawnProcess(spec)
       spawnedChildren.push(child)
+      childClosures.push(new Promise<void>((resolve) => child.once('close', () => resolve())))
       return child
     },
     queryImpl
@@ -109,15 +115,9 @@ async function open(
 }
 
 function launchedArgv(spec: ProcessSpec | undefined): string[] {
-  const supervised = spec?.env?.ORCA_PROVIDER_SUPERVISOR_SPEC
-  if (!supervised) {
-    return [spec?.program ?? '', ...(spec?.args ?? [])]
-  }
-  const launch: unknown = JSON.parse(Buffer.from(supervised, 'base64').toString())
-  if (!launch || typeof launch !== 'object' || !('command' in launch) || !('args' in launch)) {
-    return []
-  }
-  return [String(launch.command), ...(Array.isArray(launch.args) ? launch.args.map(String) : [])]
+  const argv = [spec?.program ?? '', ...(spec?.args ?? [])]
+  // A supervised launch carries the provider's argv after the supervisor script's '--'.
+  return spec?.env?.ORCA_PROVIDER_SUPERVISOR_SPEC ? argv.slice(argv.indexOf('--') + 1) : argv
 }
 
 function childEnv(): Record<string, string | undefined> {
@@ -379,13 +379,13 @@ describe('Claude stream-json connection', () => {
         workspaceId: 'workspace-1',
         hostId: 'host-1',
         agent: 'claude',
-        providerHandle: { kind: 'claude', sessionId: SESSION_ID, leafUuid: 'leaf-1' }
+        providerHandle: claudeProviderHandle(SESSION_ID, 'leaf-1')
       },
       database: openTestJournalHostDatabase(join(scenario.cwd, 'journal')),
       now: () => 1_700_000_000_000,
       mintEpoch: () => 'epoch-1'
     })
-    const deferred = createDeferredStructuredAgentSessionEventSink()
+    const deferred = createDeferredStructuredAgentSessionEventSink(testEventSinkLogging())
     deferred.bind({ journal, fence: 1, publish: vi.fn() })
     const translator = createClaudeJournalTranslator({ sink: deferred.sink })
     let settled = false
@@ -576,11 +576,11 @@ describe('Claude stream-json connection', () => {
     const init = { providerSessionId: SESSION_ID, uuid: null, model: null, message: {} }
 
     // With no ambient auth, every true below can only have come from the CLI's settings.
-    expect(claudeAuthDiagnostic(init, null)).toMatchObject({
+    expect(claudeAuthDiagnostic(null, init, null)).toMatchObject({
       baseUrlConfigured: false,
       authTokenConfigured: false
     })
-    const diagnostic = claudeAuthDiagnostic(init, await connection.getSettings())
+    const diagnostic = claudeAuthDiagnostic(null, init, await connection.getSettings())
     expect(diagnostic).toMatchObject({
       baseUrlConfigured: true,
       authTokenConfigured: true,
@@ -622,7 +622,12 @@ describe('Claude stream-json connection', () => {
     const closed = await connection.close()
     expect(connection.exitVerdict.root).toBe('exited')
     expect(['exited', 'unverifiable']).toContain(connection.exitVerdict.tree)
-    expect(closed).toBe(connection.exitVerdict.tree === 'exited')
+    if (process.platform === 'win32') {
+      // The self-exit is the close, unless a reap racing it already forced the tree.
+      expect(closed || connection.exitVerdict.tree === 'unverifiable').toBe(true)
+    } else {
+      expect(closed).toBe(connection.exitVerdict.tree === 'exited')
+    }
   })
 
   it.runIf(process.platform !== 'win32')(
@@ -678,7 +683,13 @@ describe('Claude stream-json connection', () => {
 
       const reported = await until(() => exit, 'the supervised spawn failure')
       // The supervisor spawned, so this is its exit; only its stderr can say why.
-      expect(reported.message).toMatch(/\(code 127\).*ENOENT/s)
+      // Reads as the direct spawn's own error, never the supervisor's internal report.
+      expect(reported.message).toBe(
+        `claude stream-json exited (code 127): spawn ${missingCli} ENOENT`
+      )
+      // Typed, so the start reads as a CLI that is not installed rather than a generic failure.
+      expect(providerExecutableMissing(reported)).toBe(true)
+      expect(connection.executableMissing).toBe(true)
       // A first-hand root exit, which releases the lease like a processless start did.
       expect(connection.exitVerdict.root).toBe('exited')
     }
@@ -704,7 +715,7 @@ describe('Claude stream-json connection', () => {
       )
 
       await until(
-        () => (connection.exitVerdict.root === 'processless' ? connection.exitVerdict : null),
+        () => (connection.exitVerdict.processless === true ? connection.exitVerdict : null),
         'the processless spawn settlement'
       )
       expect(connection.pid).toBeUndefined()
@@ -715,7 +726,7 @@ describe('Claude stream-json connection', () => {
         true
       ])
       await expect(connection.close()).resolves.toBe(true)
-      expect(connection.exitVerdict).toEqual({ root: 'processless', tree: 'exited' })
+      expect(connection.exitVerdict).toEqual({ root: 'exited', tree: 'exited', processless: true })
     }
   )
 

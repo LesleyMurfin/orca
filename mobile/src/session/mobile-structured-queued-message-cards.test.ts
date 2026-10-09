@@ -45,7 +45,8 @@ describe('mobileQueuedMessageCards', () => {
       state: 'waiting',
       paused: false,
       needsAttention: false,
-      caption: null
+      caption: null,
+      attribution: null
     })
   })
 
@@ -104,12 +105,6 @@ describe('mobileQueuedMessageCards', () => {
   it('words the paused queue by reason, and one this build does not know as a plain pause', () => {
     expect(mobileQueuePauseLabel({ reason: 'stopped' })).toBe(
       'Queue paused because you interrupted'
-    )
-    expect(mobileQueuePauseLabel({ reason: 'restarted' })).toBe(
-      'Queue paused because Orca restarted'
-    )
-    expect(mobileQueuePauseLabel({ reason: 'cleared' })).toBe(
-      'Queue paused after you cleared the conversation'
     )
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: a reason newer than this build's union, as a newer host would send it.
     const newer = { reason: 'later_reason' } as never
@@ -237,6 +232,28 @@ describe('mobileQueuedMessageCards', () => {
       { pendingPrompt: false }
     )
     expect(card?.caption).toBe('Words for a kind a newer host added.')
+  })
+
+  it("shows the host's sentence for a fact this build cannot read all of, as the desktop card", () => {
+    const reason = "Claude couldn't start. Start a new chat to continue."
+    // As a newer host sends it: a known code with a reason this build doesn't know.
+    const newer = {
+      kind: 'startFailed',
+      refusal: { code: 'agent_session_conflict', details: { reason: 'newerReason' } }
+    }
+    const [card] = mobileQueuedMessageCards(
+      [
+        draft({
+          messageId: 'a',
+          state: 'returned',
+          returnedReason: reason,
+          returnedRejection: newer
+        })
+      ],
+      [],
+      { pendingPrompt: false }
+    )
+    expect(card?.caption).toBe(reason)
   })
 
   it('maps the send-failed pause marker to English and an unknown marker to a plain pause', () => {

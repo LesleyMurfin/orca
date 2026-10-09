@@ -22,10 +22,8 @@ import {
 } from '../agent-session-journal/journal-open-failure'
 import type { QueuedMessageRow } from '../agent-session-journal/queued-message-table'
 import type { MutationPlan } from './structured-agent-session-mutation-plans'
-import {
-  queuedMessageFingerprint,
-  structuredQueueHold
-} from './structured-agent-session-queued-messages'
+import { structuredQueueHold } from './structured-agent-session-queued-messages'
+import { agentSessionSendBodyFingerprint } from '../../../shared/structured-agent-session-send-mutation'
 import {
   resumeStructuredQueue,
   structuredAgentSessionHostInstance
@@ -34,7 +32,7 @@ import { unsettledQueuedMessages } from './structured-agent-session-queued-stop'
 import {
   mutateStructuredAgentSession,
   type StructuredAgentSessionMutationContext
-} from './structured-agent-session-host-mutations'
+} from './structured-agent-session-mutation-context'
 import type { StructuredAgentSessionCaller } from './structured-agent-session-host-types'
 import {
   openForWrite,
@@ -80,21 +78,21 @@ export async function withdrawQueuedMessagesForOperation(
  * cards stay visible where the user now is. The replacement's queue starts
  * paused ('cleared'), lifted exactly like a Stop's: the cards were written for the context /clear just
  * discarded, so they wait for the user's next turn there, or Resume, rather than
- * sending into the fresh context unasked. Each card lands with the pause in one
- * transaction, so the drain never sees a carried card unpaused and no pause is
- * left over an empty queue if an insert fails. Runs after the
- * replacement's attach succeeded and before the clear commits. Each insert is
- * idempotent on (session, message), so a retried clear replays it safely; the source rows are then tombstoned. Bookkeeping around the clear:
- * a failure leaves the cards on the superseded source — whose supersession
- * fence already blocks the drain — reported, never gating the clear. A crash
- * between the copy and the tombstone leaves both, which the fence also makes
- * harmless: nothing is lost and nothing runs.
+ * sending into the fresh context unasked. Each card records the conversation it
+ * came from, which IS that pause, so the drain never sees a carried card unpaused
+ * and no pause outlives the cards. Runs after the clear commits, opening the
+ * replacement's conversation only when there are drafts to carry; the source
+ * rows are then tombstoned. Bookkeeping around the clear: a failure, or a crash
+ * before the carry, leaves the cards on the superseded source — whose
+ * supersession fence already blocks the drain — reported, never gating the
+ * clear. A crash between the copy and the tombstone leaves both, which the
+ * fence also makes harmless: nothing is lost and nothing runs.
  */
 export async function carryQueuedMessagesToClearReplacement(
   ctx: AgentSessionTurnContext,
   input: {
     replacementSessionId: string
-    replacementJournal: AgentSessionJournal | undefined
+    openReplacementJournal: () => Promise<AgentSessionJournal | undefined>
     callerKey: string
     operationId: string
   }
@@ -104,7 +102,7 @@ export async function carryQueuedMessagesToClearReplacement(
     if (rows.length === 0) {
       return
     }
-    const replacement = input.replacementJournal
+    const replacement = await input.openReplacementJournal()
     if (!replacement) {
       throw new Error('the replacement journal is not open')
     }
@@ -115,9 +113,9 @@ export async function carryQueuedMessagesToClearReplacement(
       await replacement.queuedMessages.insert({
         messageId: row.messageId,
         body: row.body,
-        fingerprint: queuedMessageFingerprint(input.replacementSessionId, row.body),
+        fingerprint: agentSessionSendBodyFingerprint(input.replacementSessionId, row.body),
         hostInstance: structuredAgentSessionHostInstance(),
-        pausedBy: 'cleared'
+        carriedFrom: ctx.sessionId
       })
     }
     await withdrawQueuedMessagesForOperation(ctx.journal, {
@@ -127,9 +125,11 @@ export async function carryQueuedMessagesToClearReplacement(
       operationId: input.operationId
     })
   } catch (error) {
-    console.warn("[agent-session] /clear's queued-draft carry skipped:", {
+    ctx.logger.warn("carrying queued drafts to /clear's replacement failed", {
+      scope: 'clear-queued-carry',
       sessionId: ctx.sessionId,
-      error: error instanceof Error ? error.message : String(error)
+      replacementSessionId: input.replacementSessionId,
+      error
     })
   }
 }
@@ -219,7 +219,7 @@ export function sendQueuedStructuredAgentMessage(
         await ctx.journal.appendSubmission(
           {
             clientMessageId: submissionId,
-            // The person asked for this turn, so it ends a Stop's pause once it starts.
+            // The person asked for this turn: a restart or a close keeps it as a card.
             origin: 'client',
             payloadFingerprint: row.fingerprint,
             body: row.body,
@@ -311,7 +311,7 @@ export function deleteQueuedStructuredAgentMessage(
 
 /** Resume: ends the queue's pause — a Stop's, or a restart's — so the cards send
  *  again, oldest first, as the session goes idle. A no-op when nothing is paused,
- *  and a per-card `send_failed` hold stays for its own Send. */
+ *  and a per-card hold (`send_failed`, `kept`) stays for its own Send. */
 export function resumeStructuredAgentQueue(
   context: StructuredAgentSessionMutationContext,
   caller: StructuredAgentSessionCaller,
@@ -321,11 +321,11 @@ export function resumeStructuredAgentQueue(
     method: 'agentSession.queuedMessagesResume',
     fields: {},
     conversationWrite: true,
-    // The lift notifies through the journal's commit listener, which publishes the
-    // cleared pause and wakes the drain.
+    // The Resume row notifies through the journal's commit listener, which publishes the
+    // lifted pause and wakes the drain.
     run: async (ctx) => ({
       ok: true,
-      value: { resumed: await resumeStructuredQueue(ctx.journal) }
+      value: { resumed: await resumeStructuredQueue(ctx.journal, ctx.fence) }
     }),
     // Like Stop's replay: the Resume already ran, so this one lifts nothing.
     replay: () => ({ resumed: false })
