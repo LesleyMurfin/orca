@@ -1,10 +1,11 @@
-import { mkdirSync, rmSync, writeFileSync } from 'fs'
-import path from 'path'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
 import type { Page, TestInfo } from '@stablyai/playwright-test'
 import { test, expect } from './helpers/orca-app'
 import { ensureTerminalVisible, waitForActiveWorktree, waitForSessionReady } from './helpers/store'
 import { waitForActiveTerminalManager } from './helpers/terminal'
 import { analyzeRasterCursorCells, type RasterCursorCell } from './terminal-cursor-raster-probe'
+import { quotePowerShellLiteral } from '../../src/shared/powershell-native-argument'
 
 type ShellCase = {
   label: string
@@ -168,10 +169,6 @@ function isUnexpectedVisibleCursorFrame(frame: ScreenSnapshot): boolean {
   return !isInputCursorRow(frame, frame.marker.cellY)
 }
 
-function quotePowerShellSingleQuoted(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`
-}
-
 async function createShellTab(
   page: Page,
   shellOverride: ShellCase['shellOverride']
@@ -251,7 +248,7 @@ async function prepareCodexTerminal(
 
   const launchCommand =
     shellCase.shellOverride === 'powershell.exe'
-      ? `Set-Location -LiteralPath ${quotePowerShellSingleQuoted(process.cwd())}; ${shellCase.codexCommand}`
+      ? `Set-Location -LiteralPath ${quotePowerShellLiteral(process.cwd())}; ${shellCase.codexCommand}`
       : shellCase.codexCommand
   await page.keyboard.insertText(launchCommand)
   await page.keyboard.press('Enter')

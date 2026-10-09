@@ -1,20 +1,25 @@
 import {
   ALL_EXECUTION_HOSTS_SCOPE,
   getRepoExecutionHostId,
+  isRuntimeOwnedSshTargetId,
   type ExecutionHostScope
 } from './execution-host'
 import { isGitRepoKind } from './repo-kind'
-import type { Repo } from './types'
+import type { Repo } from './repo-types'
 
 type NewWorkspaceDialogRepo = Pick<
   Repo,
   'id' | 'path' | 'kind' | 'connectionId' | 'executionHostId'
 >
 
-export function getNewWorkspaceDialogEligibleRepos<T extends Pick<Repo, 'path'>>(
+export function getNewWorkspaceDialogEligibleRepos<T extends Pick<Repo, 'path' | 'connectionId'>>(
   repos: readonly T[]
 ): T[] {
-  return repos.filter((repo) => Boolean(repo.path))
+  // Why: a runtime-owned (per-workspace-env) SSH repo is hidden plumbing, not a real project. If it
+  // were selectable here, creating an ephemeral VM would seed the composer to that repo — which has
+  // no recipes — hiding the "Run on" picker entirely on the next create. Exclude it like every other
+  // user-facing surface does.
+  return repos.filter((repo) => Boolean(repo.path) && !isRuntimeOwnedSshTargetId(repo.connectionId))
 }
 
 export function resolveNewWorkspaceDialogRepoId({

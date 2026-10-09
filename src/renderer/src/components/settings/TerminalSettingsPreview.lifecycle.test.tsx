@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Mock } from 'vitest'
-import type { GlobalSettings } from '../../../../shared/types'
+import type { GlobalSettings } from '../../../../shared/global-settings-types'
 
 type Cleanup = () => void
 
@@ -118,7 +118,7 @@ vi.mock('@/lib/pane-manager/pane-terminal-options', () => ({
   buildDefaultTerminalOptions: () => ({ scrollback: 0 })
 }))
 
-vi.mock('@/components/terminal-pane/layout-serialization', () => ({
+vi.mock('@/lib/monospace-font-family', () => ({
   buildFontFamily: (font: string) => `built:${font}`
 }))
 
@@ -178,7 +178,7 @@ function renderPreview(settings = makeSettings()): void {
 }
 
 function runCleanups(): void {
-  for (const cleanup of [...mockReactRuntime.cleanups].reverse()) {
+  for (const cleanup of [...mockReactRuntime.cleanups].toReversed()) {
     cleanup()
   }
   mockReactRuntime.cleanups.length = 0
@@ -223,6 +223,12 @@ describe('TerminalSettingsPreview terminal lifecycle', () => {
 
     runCleanups()
     expect(terminal.dispose).toHaveBeenCalledOnce()
+  })
+
+  it('does not pass a persisted sub-minimum line height to xterm', () => {
+    renderPreview(makeSettings({ terminalLineHeight: 0.85 }))
+
+    expect(mockXterm.instances[0]?.options.lineHeight).toBe(1)
   })
 
   it('disposes the ligatures addon before disposing the terminal', () => {

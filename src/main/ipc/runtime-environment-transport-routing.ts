@@ -1,114 +1,146 @@
-import {
-  getPreferredPairingOffer,
-  type KnownRuntimeEnvironment
-} from '../../shared/runtime-environments'
+import { getRuntimeEnvironmentStatus } from './runtime-environment-status-probe'
+import { getPreferredPairingOffer } from '../../shared/runtime-environments'
+import { ELECTRON_REMOTE_RUNTIME_CLIENT_CAPABILITIES } from '../../shared/electron-remote-runtime-client-capabilities'
 import { resolveEnvironment, markEnvironmentUsed } from '../../shared/runtime-environment-store'
-import type { RuntimeRpcResponse } from '../../shared/runtime-rpc-envelope'
-import type { RuntimeStatus } from '../../shared/runtime-types'
-import { REMOTE_RUNTIME_SHARED_CONTROL_CAPABILITY } from '../../shared/protocol-version'
+import { resolveManagedRuntimeEnvironment } from './runtime-environment-managed-tunnel'
+import { recordRuntimeEnvironmentUsage } from './runtime-environment-usage-record'
+import type {
+  RuntimeOrchestrationEnvelope,
+  RuntimeRpcResponse
+} from '../../shared/runtime-rpc-envelope'
 import {
-  sendRemoteRuntimeRequest,
   subscribeRemoteRuntimeRequest,
   type RemoteRuntimeSubscription
 } from '../../shared/remote-runtime-client'
+import { withRemoteRuntimeTailscaleHint } from '../../shared/remote-runtime-tailscale-hint'
 import { enqueueRuntimeCall } from './runtime-environment-call-queue'
 import {
-  sendRemoteRuntimeConnectionRequest,
-  sendRemoteRuntimeSharedControlRequest,
-  subscribeRemoteRuntimeSharedControlRequest
-} from './runtime-environment-request-connections'
-import { attachRemoteControlDiagnostics } from './runtime-environment-status-diagnostics'
+  sendRemoteRuntimeConnectionRequestAbortable,
+  sendRemoteRuntimeRequestAbortable
+} from './runtime-environment-abortable-requests'
+import { runtimeEnvironmentRevisionFailure } from './runtime-environment-revision-guard'
+import { resetSharedControlSupport } from './runtime-environment-shared-control-support'
+import {
+  executeSupportRoutedCall,
+  shouldUseSharedControlEnvelope,
+  shouldRouteCallBySupport,
+  shouldRouteSubscriptionBySupport,
+  subscribeSupportRoutedRuntimeEnvironment
+} from './runtime-environment-support-routing'
 
 const DEFAULT_REMOTE_RUNTIME_TIMEOUT_MS = 15_000
-const sharedControlSupport = new Map<string, { cacheKey: string; check: Promise<boolean> }>()
 
-export function resetSharedControlSupport(): void {
-  sharedControlSupport.clear()
-}
+export { resetSharedControlSupport }
 
-export function clearSharedControlSupport(environmentId: string): void {
-  sharedControlSupport.delete(environmentId)
-}
-
-export async function getRuntimeEnvironmentStatus(
-  userDataPath: string,
-  selector: string,
-  timeoutMs?: number
-): Promise<RuntimeRpcResponse<RuntimeStatus>> {
-  const environment = resolveEnvironment(userDataPath, selector)
-  let response: RuntimeRpcResponse<RuntimeStatus>
-  try {
-    response = await sendRemoteRuntimeRequest<RuntimeStatus>(
-      getPreferredPairingOffer(environment),
-      'status.get',
-      undefined,
-      timeoutMs ?? DEFAULT_REMOTE_RUNTIME_TIMEOUT_MS
-    )
-  } catch (error) {
-    // Why: the status UI needs shared-control diagnostics most when the
-    // fresh status probe failed and the host is reconnecting/offline.
-    return attachRemoteControlDiagnostics(
-      {
-        id: 'status.get',
-        ok: false,
-        error: {
-          code: 'runtime_unavailable',
-          message: error instanceof Error ? error.message : String(error)
-        },
-        _meta: { runtimeId: environment.runtimeId }
-      },
-      environment.id
-    )
-  }
-  if (response.ok === true) {
-    markEnvironmentUsed(userDataPath, environment.id, { runtimeId: response._meta.runtimeId })
-  }
-  return attachRemoteControlDiagnostics(response, environment.id)
-}
+export { getRuntimeEnvironmentStatus } from './runtime-environment-status-probe'
 
 export async function callRuntimeEnvironment(
   userDataPath: string,
   selector: string,
   method: string,
   params: unknown,
-  timeoutMs?: number
+  timeoutMs?: number,
+  expectedEnvironmentPairingRevision?: number,
+  envelope?: RuntimeOrchestrationEnvelope,
+  options?: { signal?: AbortSignal; expectedEnvironmentRuntimeId?: string }
 ): Promise<RuntimeRpcResponse<unknown>> {
+  if (method === 'status.get') {
+    const environment = resolveEnvironment(userDataPath, selector)
+    const failure = runtimeEnvironmentRevisionFailure(
+      environment,
+      expectedEnvironmentPairingRevision,
+      method
+    )
+    return failure ?? getRuntimeEnvironmentStatus(userDataPath, selector, timeoutMs, options)
+  }
   const environment = resolveEnvironment(userDataPath, selector)
-  return enqueueRuntimeCall(environment.id, method, async () => {
-    const currentEnvironment = resolveEnvironment(userDataPath, environment.id)
-    const pairing = getPreferredPairingOffer(currentEnvironment)
-    const effectiveTimeoutMs = timeoutMs ?? DEFAULT_REMOTE_RUNTIME_TIMEOUT_MS
-    if (shouldUseCachedRequestConnection(method)) {
-      const response = await sendRemoteRuntimeConnectionRequest(
-        currentEnvironment.id,
-        pairing,
-        method,
-        params,
-        effectiveTimeoutMs
-      )
-      markEnvironmentUsedFromResponse(userDataPath, currentEnvironment.id, response)
-      return response
+  // Why: connection failures reject (they don't resolve as ok:false), so the
+  // Tailscale hint is applied to the thrown error here — wrapping the resolved
+  // value would miss the in-use connect/timeout case the toast surfaces.
+  // Track the endpoint the queued closure actually used: it re-resolves the
+  // environment, so a re-pair between enqueue and dispatch can change it.
+  let endpoint = getPreferredPairingOffer(environment).endpoint
+  try {
+    return await enqueueRuntimeCall(
+      environment.id,
+      method,
+      async () => {
+        const currentEnvironment = await resolveManagedRuntimeEnvironment(
+          userDataPath,
+          environment.id
+        )
+        const revisionFailure = runtimeEnvironmentRevisionFailure(
+          currentEnvironment,
+          expectedEnvironmentPairingRevision,
+          method,
+          options?.expectedEnvironmentRuntimeId
+        )
+        if (revisionFailure) {
+          return revisionFailure
+        }
+        const pairing = getPreferredPairingOffer(currentEnvironment)
+        endpoint = pairing.endpoint
+        const effectiveTimeoutMs = timeoutMs ?? DEFAULT_REMOTE_RUNTIME_TIMEOUT_MS
+        const sharedControlEnvelope = shouldUseSharedControlEnvelope(method, params, envelope)
+        if (envelope && !sharedControlEnvelope) {
+          const response = await sendRemoteRuntimeRequestAbortable(
+            pairing,
+            method,
+            params,
+            effectiveTimeoutMs,
+            envelope,
+            options?.signal,
+            ELECTRON_REMOTE_RUNTIME_CLIENT_CAPABILITIES
+          )
+          markEnvironmentUsedFromResponse(userDataPath, currentEnvironment.id, response)
+          return response
+        }
+        if (shouldUseCachedRequestConnection(method)) {
+          const response = await sendRemoteRuntimeConnectionRequestAbortable(
+            currentEnvironment.id,
+            pairing,
+            method,
+            params,
+            effectiveTimeoutMs,
+            options?.signal
+          )
+          markEnvironmentUsedFromResponse(userDataPath, currentEnvironment.id, response)
+          return response
+        }
+        if (shouldRouteCallBySupport(method)) {
+          return executeSupportRoutedCall({
+            userDataPath,
+            environment: currentEnvironment,
+            method,
+            params,
+            timeoutMs: effectiveTimeoutMs,
+            expectedPairingRevision: expectedEnvironmentPairingRevision,
+            envelope: sharedControlEnvelope,
+            signal: options?.signal
+          })
+        }
+        // Why: startup/control-plane RPCs use the proven one-shot path so repo
+        // hydration cannot be coupled to a stale terminal-control connection.
+        const response = await sendRemoteRuntimeRequestAbortable(
+          pairing,
+          method,
+          params,
+          effectiveTimeoutMs,
+          sharedControlEnvelope,
+          options?.signal,
+          ELECTRON_REMOTE_RUNTIME_CLIENT_CAPABILITIES
+        )
+        markEnvironmentUsedFromResponse(userDataPath, currentEnvironment.id, response)
+        return response
+      },
+      options?.signal
+    )
+  } catch (error) {
+    if (error instanceof Error && error.name !== 'AbortError') {
+      error.message = withRemoteRuntimeTailscaleHint(error.message, endpoint)
     }
-    if (
-      method !== 'status.get' &&
-      (await supportsSharedControl(userDataPath, currentEnvironment, pairing, effectiveTimeoutMs))
-    ) {
-      const response = await sendRemoteRuntimeSharedControlRequest(
-        currentEnvironment.id,
-        pairing,
-        method,
-        params,
-        effectiveTimeoutMs
-      )
-      markEnvironmentUsedFromResponse(userDataPath, currentEnvironment.id, response)
-      return response
-    }
-    // Why: startup/control-plane RPCs use the proven one-shot path so repo
-    // hydration cannot be coupled to a stale terminal-control connection.
-    const response = await sendRemoteRuntimeRequest(pairing, method, params, effectiveTimeoutMs)
-    markEnvironmentUsedFromResponse(userDataPath, currentEnvironment.id, response)
-    return response
-  })
+    throw error
+  }
 }
 
 export async function subscribeRuntimeEnvironment(
@@ -126,18 +158,20 @@ export async function subscribeRuntimeEnvironment(
         | { type: 'close' }
     ) => void
     onClose: () => void
-  }
+  },
+  isCurrent: () => boolean = () => true,
+  signal?: AbortSignal
 ): Promise<RemoteRuntimeSubscription> {
-  const environment = resolveEnvironment(userDataPath, selector)
+  const environment = await resolveManagedRuntimeEnvironment(userDataPath, selector)
   const pairing = getPreferredPairingOffer(environment)
   const effectiveTimeoutMs = timeoutMs ?? DEFAULT_REMOTE_RUNTIME_TIMEOUT_MS
   let markedUsed = false
   const markUsedOnce = (runtimeId: string): void => {
-    if (markedUsed) {
+    if (markedUsed || !isCurrent()) {
       return
     }
     markedUsed = true
-    markEnvironmentUsed(userDataPath, environment.id, { runtimeId })
+    recordRuntimeEnvironmentUsage(userDataPath, environment.id, { runtimeId })
   }
   const callbacksWithMarkUsed = {
     onResponse: (response: RuntimeRpcResponse<unknown>) => {
@@ -149,33 +183,45 @@ export async function subscribeRuntimeEnvironment(
     onBinary: (bytes: Uint8Array<ArrayBufferLike>) =>
       callbacks.onEvent({ type: 'binary' as const, bytes }),
     onError: (error: { code: string; message: string }) =>
-      callbacks.onEvent({ type: 'error' as const, code: error.code, message: error.message }),
+      callbacks.onEvent({
+        type: 'error' as const,
+        code: error.code,
+        message: withRemoteRuntimeTailscaleHint(error.message, pairing.endpoint)
+      }),
     onClose: () => {
       callbacks.onEvent({ type: 'close' as const })
       callbacks.onClose()
     }
   }
-  if (
-    shouldUseSharedControlSubscription(method) &&
-    !shouldKeepDedicatedSubscriptionSocket(method) &&
-    (await supportsSharedControl(userDataPath, environment, pairing, effectiveTimeoutMs))
-  ) {
-    return await subscribeRemoteRuntimeSharedControlRequest(
-      environment.id,
+  // Why: an initial-connect failure rejects (mid-stream drops go through
+  // onError above), so the hint is applied to the thrown error here too.
+  try {
+    if (shouldRouteSubscriptionBySupport(method)) {
+      return await subscribeSupportRoutedRuntimeEnvironment({
+        userDataPath,
+        environment,
+        method,
+        params,
+        timeoutMs: effectiveTimeoutMs,
+        callbacks,
+        isCurrent,
+        signal
+      })
+    }
+    return await subscribeRemoteRuntimeRequest(
       pairing,
       method,
       params,
       effectiveTimeoutMs,
-      callbacksWithMarkUsed
+      callbacksWithMarkUsed,
+      { clientCapabilities: ELECTRON_REMOTE_RUNTIME_CLIENT_CAPABILITIES, signal }
     )
+  } catch (error) {
+    if (error instanceof Error) {
+      error.message = withRemoteRuntimeTailscaleHint(error.message, pairing.endpoint)
+    }
+    throw error
   }
-  return await subscribeRemoteRuntimeRequest(
-    pairing,
-    method,
-    params,
-    effectiveTimeoutMs,
-    callbacksWithMarkUsed
-  )
 }
 
 function markEnvironmentUsedFromResponse(
@@ -190,82 +236,4 @@ function markEnvironmentUsedFromResponse(
 
 function shouldUseCachedRequestConnection(method: string): boolean {
   return method === 'terminal.send' || method === 'terminal.updateViewport'
-}
-
-function shouldKeepDedicatedSubscriptionSocket(method: string): boolean {
-  return method === 'browser.screencast' || method === 'terminal.multiplex'
-}
-
-function shouldUseSharedControlSubscription(method: string): boolean {
-  return (
-    method === 'runtime.clientEvents.subscribe' ||
-    method === 'session.tabs.subscribe' ||
-    method === 'session.tabs.subscribeAll' ||
-    method === 'accounts.subscribe' ||
-    method === 'notifications.subscribe' ||
-    method === 'files.watch'
-  )
-}
-
-async function supportsSharedControl(
-  userDataPath: string,
-  environment: KnownRuntimeEnvironment,
-  pairing: ReturnType<typeof getPreferredPairingOffer>,
-  timeoutMs: number
-): Promise<boolean> {
-  const cacheKey = getSharedControlSupportCacheKey(environment, pairing)
-  const cached = sharedControlSupport.get(environment.id)
-  if (cached?.cacheKey === cacheKey) {
-    return cached.check
-  }
-  let resolvedCacheKey = cacheKey
-  const check = (async () => {
-    const response = await sendRemoteRuntimeRequest<RuntimeStatus>(
-      pairing,
-      'status.get',
-      undefined,
-      timeoutMs
-    )
-    if (response.ok === true) {
-      markEnvironmentUsed(userDataPath, environment.id, { runtimeId: response._meta.runtimeId })
-      resolvedCacheKey = getSharedControlSupportCacheKey(
-        environment,
-        pairing,
-        response._meta.runtimeId
-      )
-      return (
-        response.result.capabilities?.includes(REMOTE_RUNTIME_SHARED_CONTROL_CAPABILITY) === true
-      )
-    }
-    return false
-  })()
-  // Why: the same saved host can be re-paired or point at a different runtime
-  // binary over time; capability support belongs to that pairing/runtime identity.
-  sharedControlSupport.set(environment.id, { cacheKey, check })
-  try {
-    const supported = await check
-    const cachedAfterCheck = sharedControlSupport.get(environment.id)
-    if (cachedAfterCheck?.check === check && cachedAfterCheck.cacheKey !== resolvedCacheKey) {
-      sharedControlSupport.set(environment.id, { cacheKey: resolvedCacheKey, check })
-    }
-    return supported
-  } catch (error) {
-    if (sharedControlSupport.get(environment.id)?.check === check) {
-      sharedControlSupport.delete(environment.id)
-    }
-    throw error
-  }
-}
-
-function getSharedControlSupportCacheKey(
-  environment: KnownRuntimeEnvironment,
-  pairing: ReturnType<typeof getPreferredPairingOffer>,
-  runtimeId = environment.runtimeId
-): string {
-  return [
-    runtimeId ?? 'unknown-runtime',
-    pairing.endpoint,
-    pairing.deviceToken,
-    pairing.publicKeyB64
-  ].join('\0')
 }

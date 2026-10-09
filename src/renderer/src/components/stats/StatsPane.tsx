@@ -4,7 +4,9 @@ import { useAppStore } from '../../store'
 import { StatCard } from './StatCard'
 import { ClaudeUsagePane } from './ClaudeUsagePane'
 import { CodexUsagePane } from './CodexUsagePane'
+import { GrokUsagePane } from './GrokUsagePane'
 import { OpenCodeUsagePane } from './OpenCodeUsagePane'
+import { MuseUsagePane } from './MuseUsagePane'
 import { UsageOverviewPane } from './UsageOverviewPane'
 import { Button } from '../ui/button'
 import {
@@ -14,7 +16,7 @@ import {
   DropdownMenuTrigger
 } from '../ui/dropdown-menu'
 import { AgentIcon } from '@/lib/agent-catalog'
-import { translate } from '@/i18n/i18n'
+import { getIntlLocale, translate } from '@/i18n/i18n'
 export { getStatsPaneSearchEntries } from './stats-search'
 
 function formatDuration(ms: number): string {
@@ -42,10 +44,16 @@ function formatTrackingSince(timestamp: number | null): string {
     return ''
   }
   const date = new Date(timestamp)
-  return `Tracking since ${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`
+  return translate('auto.components.stats.StatsPane.trackingSince', 'Tracking since {{value0}}', {
+    value0: date.toLocaleDateString(getIntlLocale(), {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    })
+  })
 }
 
-type UsageTab = 'overview' | 'claude' | 'codex' | 'opencode'
+type UsageTab = 'overview' | 'claude' | 'codex' | 'opencode' | 'muse' | 'grok'
 
 const USAGE_ANALYTICS_OPTIONS = [
   {
@@ -70,6 +78,18 @@ const USAGE_ANALYTICS_OPTIONS = [
     id: 'opencode',
     get label() {
       return translate('auto.components.stats.StatsPane.1e696db2f6', 'OpenCode')
+    }
+  },
+  {
+    id: 'muse',
+    get label() {
+      return translate('auto.lib.agent.catalog.muse_label', 'Muse')
+    }
+  },
+  {
+    id: 'grok',
+    get label() {
+      return translate('auto.components.stats.StatsPane.grokUsageTab', 'Grok')
     }
   }
 ] as const satisfies readonly { id: UsageTab; label: string }[]
@@ -193,8 +213,12 @@ export function StatsPane(): React.JSX.Element {
             <ClaudeUsagePane />
           ) : activeUsageTab === 'codex' ? (
             <CodexUsagePane />
-          ) : (
+          ) : activeUsageTab === 'opencode' ? (
             <OpenCodeUsagePane />
+          ) : activeUsageTab === 'muse' ? (
+            <MuseUsagePane />
+          ) : (
+            <GrokUsagePane />
           )}
         </div>
       </div>

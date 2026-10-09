@@ -1,19 +1,38 @@
+import { abortSignalReason } from './abort-signal-reason'
+import { REMOTE_RUNTIME_MAX_PREPARED_RPC_BYTES } from './remote-runtime-memory-limits'
+
 const DEFAULT_REMOTE_RUNTIME_CALL_CONCURRENCY = 8
 const DEFAULT_REMOTE_RUNTIME_BACKGROUND_CALL_CONCURRENCY = 2
+export const RUNTIME_RPC_MAX_QUEUED_CALLS_PER_SELECTOR = 256
+export const RUNTIME_RPC_MAX_QUEUED_CALLS_TOTAL = 2_048
+export const RUNTIME_RPC_QUEUE_OVERLOAD_CODE = 'runtime_rpc_queue_overloaded'
+
+export class RuntimeRpcCallQueueOverloadError extends Error {
+  readonly code = RUNTIME_RPC_QUEUE_OVERLOAD_CODE
+
+  constructor(readonly scope: 'selector' | 'global' | 'memory') {
+    super('Remote runtime call queue is full; retry after current calls finish.')
+    this.name = 'RuntimeRpcCallQueueOverloadError'
+  }
+}
 
 type QueuedRuntimeCall<T> = {
   background: boolean
+  retainedBytes: number
   run: () => Promise<T>
   resolve: (value: T) => void
   reject: (error: unknown) => void
+  started: boolean
+  signal?: AbortSignal
+  onAbort?: () => void
 }
 
 type RuntimeCallQueue = {
   active: number
   backgroundActive: number
-  foreground: QueuedRuntimeCall<unknown>[]
+  foreground: (QueuedRuntimeCall<unknown> | undefined)[]
   foregroundHead: number
-  background: QueuedRuntimeCall<unknown>[]
+  background: (QueuedRuntimeCall<unknown> | undefined)[]
   backgroundHead: number
 }
 
@@ -32,26 +51,73 @@ export function isBackgroundRuntimeMethod(method: string): boolean {
   )
 }
 
+// Why its own lane: these reply only when slow host work finishes (worktree.rm when Git has deleted
+// the checkout, a model catalog read that waits on the first listing), so they would hold the
+// foreground slots listing refreshes and sends need; the background lane's slots belong to status.
+function isLongWaitRuntimeMethod(method: string): boolean {
+  return method === 'worktree.rm' || method === 'agentSession.modelCatalog'
+}
+
 export class RuntimeRpcCallQueuePool {
   private readonly queues = new Map<string, RuntimeCallQueue>()
+  private queuedCallCount = 0
+  private retainedCallBytes = 0
 
   constructor(
     private readonly concurrency = DEFAULT_REMOTE_RUNTIME_CALL_CONCURRENCY,
-    private readonly backgroundConcurrency = DEFAULT_REMOTE_RUNTIME_BACKGROUND_CALL_CONCURRENCY
+    private readonly backgroundConcurrency = DEFAULT_REMOTE_RUNTIME_BACKGROUND_CALL_CONCURRENCY,
+    private readonly maxQueuedPerSelector = RUNTIME_RPC_MAX_QUEUED_CALLS_PER_SELECTOR,
+    private readonly maxQueuedTotal = RUNTIME_RPC_MAX_QUEUED_CALLS_TOTAL,
+    private readonly maxRetainedBytes = REMOTE_RUNTIME_MAX_PREPARED_RPC_BYTES
   ) {}
 
-  enqueue<T>(selector: string, method: string, run: () => Promise<T>): Promise<T> {
-    const queue = this.getQueue(selector)
+  enqueue<T>(
+    selector: string,
+    method: string,
+    run: () => Promise<T>,
+    retainedBytes = 0,
+    signal?: AbortSignal
+  ): Promise<T> {
+    if (signal?.aborted) {
+      return Promise.reject(abortSignalReason(signal))
+    }
+    // Same concurrency bound, counted apart from the selector's other calls; global caps still apply.
+    const queueKey = isLongWaitRuntimeMethod(method) ? `${selector}\u0000long-wait` : selector
+    if (this.queuedCallCount >= this.maxQueuedTotal) {
+      return Promise.reject(new RuntimeRpcCallQueueOverloadError('global'))
+    }
+    const existingQueue = this.queues.get(queueKey)
+    if (existingQueue && this.queuedCount(existingQueue) >= this.maxQueuedPerSelector) {
+      return Promise.reject(new RuntimeRpcCallQueueOverloadError('selector'))
+    }
+    if (
+      !Number.isSafeInteger(retainedBytes) ||
+      retainedBytes < 0 ||
+      this.retainedCallBytes + retainedBytes > this.maxRetainedBytes
+    ) {
+      return Promise.reject(new RuntimeRpcCallQueueOverloadError('memory'))
+    }
+
+    const queue = this.getQueue(queueKey)
     return new Promise<T>((resolve, reject) => {
       const call: QueuedRuntimeCall<T> = {
         background: isBackgroundRuntimeMethod(method),
+        retainedBytes,
         run,
         resolve,
-        reject
+        reject,
+        started: false,
+        signal
       }
       const targetQueue = call.background ? queue.background : queue.foreground
       targetQueue.push(call as QueuedRuntimeCall<unknown>)
-      this.pump(selector, queue)
+      this.queuedCallCount += 1
+      this.retainedCallBytes += retainedBytes
+      if (signal) {
+        call.onAbort = () => this.cancelQueuedCall(queueKey, queue, call)
+        signal.addEventListener('abort', call.onAbort, { once: true })
+      }
+      this.pump(queueKey, queue)
     })
   }
 
@@ -81,6 +147,11 @@ export class RuntimeRpcCallQueuePool {
         break
       }
 
+      call.started = true
+      if (call.signal && call.onAbort) {
+        call.signal.removeEventListener('abort', call.onAbort)
+      }
+
       queue.active += 1
       if (call.background) {
         queue.backgroundActive += 1
@@ -96,6 +167,7 @@ export class RuntimeRpcCallQueuePool {
         runPromise = Promise.reject(error)
       }
       void runPromise.then(call.resolve, call.reject).finally(() => {
+        this.retainedCallBytes = Math.max(0, this.retainedCallBytes - call.retainedBytes)
         queue.active = Math.max(0, queue.active - 1)
         if (call.background) {
           queue.backgroundActive = Math.max(0, queue.backgroundActive - 1)
@@ -109,12 +181,39 @@ export class RuntimeRpcCallQueuePool {
     }
   }
 
+  private cancelQueuedCall<T>(
+    selector: string,
+    queue: RuntimeCallQueue,
+    call: QueuedRuntimeCall<T>
+  ): void {
+    if (call.started || !call.signal) {
+      return
+    }
+    const targetQueue = call.background ? queue.background : queue.foreground
+    const head = call.background ? queue.backgroundHead : queue.foregroundHead
+    const index = targetQueue.indexOf(call as QueuedRuntimeCall<unknown>, head)
+    if (index === -1) {
+      return
+    }
+    targetQueue.splice(index, 1)
+    this.queuedCallCount = Math.max(0, this.queuedCallCount - 1)
+    this.retainedCallBytes = Math.max(0, this.retainedCallBytes - call.retainedBytes)
+    call.reject(abortSignalReason(call.signal))
+    if (queue.active === 0 && this.isEmpty(queue)) {
+      this.queues.delete(selector)
+      return
+    }
+    this.pump(selector, queue)
+  }
+
   private takeForeground(queue: RuntimeCallQueue): QueuedRuntimeCall<unknown> | undefined {
     if (queue.foregroundHead >= queue.foreground.length) {
       return undefined
     }
     const call = queue.foreground[queue.foregroundHead]
+    queue.foreground[queue.foregroundHead] = undefined
     queue.foregroundHead += 1
+    this.queuedCallCount = Math.max(0, this.queuedCallCount - 1)
     this.compactForeground(queue)
     return call
   }
@@ -124,7 +223,9 @@ export class RuntimeRpcCallQueuePool {
       return undefined
     }
     const call = queue.background[queue.backgroundHead]
+    queue.background[queue.backgroundHead] = undefined
     queue.backgroundHead += 1
+    this.queuedCallCount = Math.max(0, this.queuedCallCount - 1)
     this.compactBackground(queue)
     return call
   }
@@ -133,8 +234,7 @@ export class RuntimeRpcCallQueuePool {
     if (queue.foregroundHead <= 32 || queue.foregroundHead * 2 < queue.foreground.length) {
       return
     }
-    // Why: large remote-runtime refresh bursts can queue many calls;
-    // head indexes avoid O(n) shift costs while compaction releases closures.
+    // Head indexes avoid repeated shifts; compaction bounds the consumed prefix.
     queue.foreground.splice(0, queue.foregroundHead)
     queue.foregroundHead = 0
   }
@@ -151,6 +251,15 @@ export class RuntimeRpcCallQueuePool {
     return (
       queue.foregroundHead >= queue.foreground.length &&
       queue.backgroundHead >= queue.background.length
+    )
+  }
+
+  private queuedCount(queue: RuntimeCallQueue): number {
+    return (
+      queue.foreground.length -
+      queue.foregroundHead +
+      queue.background.length -
+      queue.backgroundHead
     )
   }
 }

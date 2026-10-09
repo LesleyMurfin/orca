@@ -2,6 +2,7 @@ import type {
   ManagedPane,
   ManagedPaneInternal,
   PaneManagerOptions,
+  PaneSplitOptions,
   PaneStyleOptions
 } from './pane-manager-types'
 import type { DragReorderCallbacks } from './pane-drag-reorder'
@@ -20,6 +21,7 @@ import { disposeWebgl } from './pane-webgl-renderer'
 import { clearPendingSplitScrollRestore, scheduleSplitScrollRestore } from './pane-split-scroll'
 import { reattachWebglIfNeeded } from './pane-webgl-reattach'
 import { toPublicPane } from './pane-public-view'
+import { releaseTerminalScrollIntentKey } from './terminal-scroll-intent-key-store'
 
 type MovedPaneSplitState = {
   pane: ManagedPaneInternal
@@ -30,8 +32,10 @@ type MovedPaneSplitState = {
 type SplitManagedPaneArgs = {
   paneId: number
   direction: 'vertical' | 'horizontal'
-  opts?: { ratio?: number; cwd?: string; leafId?: string; ptyId?: string }
+  opts?: PaneSplitOptions
   sourceContainer?: HTMLElement
+  /** Before publishing, so the pane-created tree already has the final order. */
+  newPaneFirst?: boolean
   panes: Map<number, ManagedPaneInternal>
   root: HTMLElement
   styleOptions: PaneStyleOptions
@@ -63,9 +67,12 @@ export function splitManagedPane(args: SplitManagedPaneArgs): ManagedPane | null
 
   const movedPaneStates = prepareMovedPanesForSplit(existingContainer, existing, args.panes)
 
-  wrapInSplit(existingContainer, newPane.container, isVertical, divider, args.opts)
+  wrapInSplit(existingContainer, newPane.container, isVertical, divider, {
+    ratio: args.opts?.ratio,
+    newPaneFirst: args.newPaneFirst
+  })
   args.setActivePaneId(newPane.id)
-  openSplitPane(args, newPane, args.opts?.cwd)
+  openSplitPane(args, newPane, existing.leafId, args.opts?.cwd)
 
   for (const movedPaneState of movedPaneStates) {
     scheduleSplitScrollRestore(
@@ -137,20 +144,30 @@ function findManagedPanesInContainer(
 function openSplitPane(
   args: SplitManagedPaneArgs,
   newPane: ManagedPaneInternal,
+  parentLeafId: string,
   cwd?: string
 ): void {
-  openTerminal(newPane)
+  openTerminal(newPane, {
+    ligatures: args.managerOptions.terminalLigaturesEnabled?.(),
+    inlineImages: args.managerOptions.terminalInlineImagesEnabled?.()
+  })
   applyPaneOpacity(args.panes.values(), newPane.id, args.styleOptions)
   applyDividerStyles(args.root, args.styleOptions)
   newPane.terminal.focus()
   updateMultiPaneState(args.getDragCallbacks())
   // Why: forward one-shot spawn/adoption hints so the new pane inherits the
   // source cwd for local splits or attaches a runtime-spawned PTY for web splits.
-  const spawnHints = {
+  args.publishPaneCreated(newPane, {
     ...(cwd ? { cwd } : {}),
-    ...(args.opts?.ptyId ? { ptyId: args.opts.ptyId } : {})
-  }
-  args.publishPaneCreated(newPane, Object.keys(spawnHints).length > 0 ? spawnHints : undefined)
+    ...(args.opts?.cwdPromise ? { cwdPromise: args.opts.cwdPromise } : {}),
+    ...(args.opts?.ptyId ? { ptyId: args.opts.ptyId } : {}),
+    placement: {
+      kind: 'split',
+      parentLeafId,
+      direction: args.direction,
+      ...(args.opts?.ratio !== undefined ? { ratio: args.opts.ratio } : {})
+    }
+  })
   args.managerOptions.onLayoutChanged?.()
 }
 
@@ -166,7 +183,10 @@ type CloseManagedPaneArgs = {
   setActivePaneId: (paneId: number | null) => void
 }
 
-export function closeManagedPane(args: CloseManagedPaneArgs): void {
+function teardownManagedPane(
+  args: CloseManagedPaneArgs,
+  reason: 'close' | 'detach' | 'retire'
+): void {
   const pane = args.panes.get(args.paneId)
   if (!pane) {
     return
@@ -174,14 +194,48 @@ export function closeManagedPane(args: CloseManagedPaneArgs): void {
   const closedLeafId = pane.leafId
   args.releasePaneIdentity(args.paneId)
   removePaneContainer(args, pane)
+  if (reason === 'close') {
+    // Leaf ids are minted UUIDs and never reused, so a closed leaf's scroll
+    // intent is unreachable. Detach/retire hand the leaf to a new host, which
+    // must still be able to restore it.
+    releaseTerminalScrollIntentKey(closedLeafId)
+  }
   const nextActivePaneId = activateReplacementPane(args)
   applyPaneOpacity(args.panes.values(), nextActivePaneId, args.styleOptions)
   for (const p of args.panes.values()) {
     safeFit(p)
   }
   updateMultiPaneState(args.getDragCallbacks())
-  args.managerOptions.onPaneClosed?.(args.paneId, { paneId: args.paneId, leafId: closedLeafId })
+  args.managerOptions.onPaneClosed?.(args.paneId, {
+    paneId: args.paneId,
+    leafId: closedLeafId,
+    reason
+  })
   args.managerOptions.onLayoutChanged?.()
+}
+
+export function closeManagedPane(args: CloseManagedPaneArgs): void {
+  teardownManagedPane(args, 'close')
+}
+
+export function detachManagedPaneForExternalMove(args: CloseManagedPaneArgs): boolean {
+  // Why: refuse to detach the last pane — there is no other pane to fall back to.
+  if (!args.panes.has(args.paneId) || args.panes.size <= 1) {
+    return false
+  }
+  // Why: pane-to-tab detach tears down only this renderer pane; the PTY is
+  // adopted by the new tab, so the 'detach' reason tells TerminalPane to skip
+  // process-close cleanup.
+  teardownManagedPane(args, 'detach')
+  return true
+}
+
+export function retireManagedPanePreservingPty(args: CloseManagedPaneArgs): boolean {
+  if (!args.panes.has(args.paneId) || args.panes.size <= 1) {
+    return false
+  }
+  teardownManagedPane(args, 'retire')
+  return true
 }
 
 function removePaneContainer(args: CloseManagedPaneArgs, pane: ManagedPaneInternal): void {

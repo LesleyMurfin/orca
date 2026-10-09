@@ -5,10 +5,12 @@
  * These async operations accept a git executor callback so they
  * remain decoupled from the GitHandler class.
  */
-import * as path from 'path'
-import { bufferToBlob, parseBranchDiff } from './git-handler-utils'
+import * as path from 'node:path'
+import { isMissingGitBlobPath } from '../shared/git-blob-absence'
+import { bufferToBlob } from './git-handler-utils'
+import { parseGitChangeList } from '../shared/git-change-list'
 import { buildDiffResult } from './git-diff-result'
-import { isGitBufferOverflowError } from './git-buffer-overflow'
+import { isGitBufferOverflowError, isGitReadInterruptedError } from './git-buffer-overflow'
 import { readWorkingDiffFile } from './git-working-file-read'
 
 // ─── Executor types ──────────────────────────────────────────────────
@@ -16,7 +18,13 @@ import { readWorkingDiffFile } from './git-working-file-read'
 export type GitExec = (
   args: string[],
   cwd: string,
-  opts?: { maxBuffer?: number; disableOptionalLocks?: boolean; stdin?: string }
+  opts?: {
+    maxBuffer?: number
+    disableOptionalLocks?: boolean
+    signal?: AbortSignal
+    stdin?: string
+    timeout?: number
+  }
 ) => Promise<{ stdout: string; stderr: string }>
 
 export type GitBufferExec = (args: string[], cwd: string) => Promise<Buffer>
@@ -35,6 +43,9 @@ export async function readBlobAtOid(
     const buf = await gitBuffer(['show', '--end-of-options', `${oid}:${gitPath}`], cwd)
     return bufferToBlob(buf, filePath)
   } catch (error) {
+    if (isGitReadInterruptedError(error)) {
+      throw error
+    }
     if (isGitBufferOverflowError(error)) {
       return { content: '', isBinary: true }
     }
@@ -46,17 +57,20 @@ export async function readBlobAtIndex(
   gitBuffer: GitBufferExec,
   cwd: string,
   filePath: string
-): Promise<{ content: string; isBinary: boolean }> {
+): Promise<{ content: string; isBinary: boolean; missing: boolean }> {
   // Why: Git's `:<path>` syntax expects forward slashes even on Windows.
   const gitPath = filePath.replace(/\\/g, '/')
   try {
     const buf = await gitBuffer(['show', '--end-of-options', `:${gitPath}`], cwd)
-    return bufferToBlob(buf, filePath)
+    return { ...bufferToBlob(buf, filePath), missing: false }
   } catch (error) {
-    if (isGitBufferOverflowError(error)) {
-      return { content: '', isBinary: true }
+    if (isGitReadInterruptedError(error)) {
+      throw error
     }
-    return { content: '', isBinary: false }
+    if (isGitBufferOverflowError(error)) {
+      return { content: '', isBinary: true, missing: false }
+    }
+    return { content: '', isBinary: false, missing: isMissingGitBlobPath(error, gitPath) }
   }
 }
 
@@ -66,7 +80,7 @@ export async function readUnstagedLeft(
   filePath: string
 ): Promise<{ content: string; isBinary: boolean }> {
   const index = await readBlobAtIndex(gitBuffer, cwd, filePath)
-  if (index.content || index.isBinary) {
+  if (!index.missing) {
     return index
   }
   return readBlobAtOid(gitBuffer, cwd, 'HEAD', filePath)
@@ -85,16 +99,19 @@ export async function computeDiff(
   let modifiedContent = ''
   let originalIsBinary = false
   let modifiedIsBinary = false
+  let modifiedDeleted = false
 
   try {
     if (staged) {
-      const left = await readBlobAtOid(git, worktreePath, 'HEAD', filePath)
+      const [left, right] = await Promise.all([
+        readBlobAtOid(git, worktreePath, 'HEAD', filePath),
+        readBlobAtIndex(git, worktreePath, filePath)
+      ])
       originalContent = left.content
       originalIsBinary = left.isBinary
-
-      const right = await readBlobAtIndex(git, worktreePath, filePath)
       modifiedContent = right.content
       modifiedIsBinary = right.isBinary
+      modifiedDeleted = right.missing
     } else {
       const left = compareAgainstHead
         ? await readBlobAtOid(git, worktreePath, 'HEAD', filePath)
@@ -105,18 +122,28 @@ export async function computeDiff(
       const right = await readWorkingDiffFile(path.join(worktreePath, filePath))
       modifiedContent = right.content
       modifiedIsBinary = right.isBinary
+      modifiedDeleted = right.missing
     }
-  } catch {
+  } catch (error) {
+    if (isGitReadInterruptedError(error)) {
+      throw error
+    }
     // Fallback to empty
   }
 
-  return buildDiffResult(
+  const result = buildDiffResult(
     originalContent,
     modifiedContent,
     originalIsBinary,
     modifiedIsBinary,
     filePath
   )
+  // Why: mark a proven deletion so previewers can fall back to the original bytes
+  // without mistaking a read failure's empty modified side for a deletion.
+  if (result.kind === 'binary' && modifiedDeleted) {
+    return { ...result, modifiedDeleted: true }
+  }
+  return result
 }
 
 // ─── Branch compare ──────────────────────────────────────────────────
@@ -137,37 +164,40 @@ export async function branchCompare(
     status: 'loading'
   }
 
-  try {
-    const { stdout: branchOut } = await git(['branch', '--show-current'], worktreePath)
-    const branch = branchOut.trim()
-    if (branch) {
-      summary.compareRef = branch
-    }
-  } catch {
-    /* keep HEAD */
-  }
-
-  let headOid: string
-  let baseOid = ''
-  try {
-    const { stdout } = await git(['rev-parse', '--verify', 'HEAD'], worktreePath)
-    headOid = stdout.trim()
-    summary.headOid = headOid
-  } catch {
+  const readCompareRef = async (): Promise<string> => {
     try {
-      const { stdout } = await git(['rev-parse', '--verify', baseRef], worktreePath)
-      baseOid = stdout.trim()
-      summary.baseOid = baseOid
+      const { stdout } = await git(['branch', '--show-current'], worktreePath)
+      return stdout.trim() || 'HEAD'
+    } catch (error) {
+      if (isGitReadInterruptedError(error)) {
+        throw error
+      }
+      return 'HEAD'
+    }
+  }
+  const readOid = (ref: string) =>
+    git(['rev-parse', '--verify', ref], worktreePath).then(
+      ({ stdout }) => ({ ok: true as const, oid: stdout.trim() }),
+      (error) => ({ ok: false as const, error })
+    )
+  const [compareRef, headOidResult, baseOidResult] = await Promise.all([
+    readCompareRef(),
+    readOid('HEAD'),
+    readOid(baseRef)
+  ])
+  summary.compareRef = compareRef
+
+  if (!headOidResult.ok) {
+    if (baseOidResult.ok) {
+      summary.baseOid = baseOidResult.oid
       // Why: new remote worktrees can be on an unborn branch until the first
       // commit. There are no committed branch changes yet; surfacing this as a
       // compare error makes the source-control panel look broken.
       summary.changedFiles = 0
       summary.commitsAhead = 0
+      summary.commitsBehind = 0
       summary.status = 'ready'
       return { summary, entries: [] }
-    } catch {
-      // Preserve the existing unborn-head message when even the base is not
-      // resolvable; callers cannot compare or present a useful empty state.
     }
     summary.status = 'unborn-head'
     summary.errorMessage =
@@ -175,35 +205,47 @@ export async function branchCompare(
     return { summary, entries: [] }
   }
 
-  try {
-    const { stdout } = await git(['rev-parse', '--verify', baseRef], worktreePath)
-    baseOid = stdout.trim()
-    summary.baseOid = baseOid
-  } catch {
+  const headOid = headOidResult.oid
+  summary.headOid = headOid
+  if (!baseOidResult.ok) {
     summary.status = 'invalid-base'
     summary.errorMessage = `Base ref ${baseRef} could not be resolved in this repository.`
     return { summary, entries: [] }
   }
+  const baseOid = baseOidResult.oid
+  summary.baseOid = baseOid
 
   let mergeBase: string
   try {
     const { stdout } = await git(['merge-base', baseOid, headOid], worktreePath)
     mergeBase = stdout.trim()
     summary.mergeBase = mergeBase
-  } catch {
+  } catch (error) {
+    if (isGitReadInterruptedError(error)) {
+      throw error
+    }
     summary.status = 'no-merge-base'
     summary.errorMessage = `This branch and ${baseRef} do not share a merge base, so compare-to-base is unavailable.`
     return { summary, entries: [] }
   }
 
+  // Git must confirm equal raw tips are the same commit before skipping the reads.
+  if (baseOid === headOid && mergeBase === headOid) {
+    summary.commitsAhead = 0
+    summary.commitsBehind = 0
+    summary.status = 'ready'
+    return { summary, entries: [] }
+  }
+
   try {
-    const entries = await loadBranchChanges(mergeBase, headOid)
-    const { stdout: countOut } = await git(
-      ['rev-list', '--count', `${baseOid}..${headOid}`],
-      worktreePath
-    )
+    const [entries, { stdout: countOut }] = await Promise.all([
+      loadBranchChanges(mergeBase, headOid),
+      git(['rev-list', '--left-right', '--count', `${baseOid}...${headOid}`], worktreePath)
+    ])
     summary.changedFiles = entries.length
-    summary.commitsAhead = parseInt(countOut.trim(), 10) || 0
+    const [behindOut = '', aheadOut = ''] = countOut.trim().split(/\s+/)
+    summary.commitsAhead = Number.parseInt(aheadOut, 10) || 0
+    summary.commitsBehind = Number.parseInt(behindOut, 10) || 0
     summary.status = 'ready'
     return { summary, entries }
   } catch (error) {
@@ -233,16 +275,18 @@ export async function branchDiffEntries(
 
     const { stdout: mbOut } = await git(['merge-base', baseOid, headOid], worktreePath)
     mergeBase = mbOut.trim()
-  } catch {
+  } catch (error) {
+    if (isGitReadInterruptedError(error)) {
+      throw error
+    }
     return []
   }
 
-  // Why: see core.quotePath rationale in getStatusOp — keep UTF-8 paths intact.
   const { stdout } = await git(
-    ['-c', 'core.quotePath=false', 'diff', '--name-status', '-M', '-C', mergeBase, headOid],
+    ['diff', '--name-status', '-z', '-M', '-C', mergeBase, headOid, '--'],
     worktreePath
   )
-  const allChanges = parseBranchDiff(stdout)
+  const allChanges = parseGitChangeList(stdout, 'name-status')
 
   // Why: the IPC handler for single-file branch diff sends filePath/oldPath
   // to avoid reading blobs for every changed file — only the matched file.
@@ -268,13 +312,16 @@ export async function branchDiffEntries(
 
   const results: Record<string, unknown>[] = []
   for (const change of changes) {
-    const fp = change.path as string
-    const oldP = (change.oldPath as string) ?? fp
+    const fp = change.path
+    const oldP = change.oldPath ?? fp
     try {
       const left = await readBlobAtOid(gitBuffer, worktreePath, mergeBase, oldP)
       const right = await readBlobAtOid(gitBuffer, worktreePath, headOid, fp)
       results.push(buildDiffResult(left.content, right.content, left.isBinary, right.isBinary, fp))
-    } catch {
+    } catch (error) {
+      if (isGitReadInterruptedError(error)) {
+        throw error
+      }
       results.push({
         kind: 'text',
         originalContent: '',

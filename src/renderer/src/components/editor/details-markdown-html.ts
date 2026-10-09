@@ -1,6 +1,33 @@
 import type { MarkdownToken } from '@tiptap/core'
+import {
+  getMarkdownFenceRanges,
+  isInsideMarkdownFenceRange,
+  type MarkdownFenceRanges
+} from './markdown-fence-scanner'
 
-export const DETAILS_CLOSE_TAG = '</details>'
+// Toggle summaries can render at heading scales 1–5, mirroring the plain
+// heading levels the slash menu / toolbar dropdown offer (h1–h5).
+export type ToggleHeadingVariant =
+  | 'heading-1'
+  | 'heading-2'
+  | 'heading-3'
+  | 'heading-4'
+  | 'heading-5'
+
+export const TOGGLE_HEADING_VARIANTS: readonly ToggleHeadingVariant[] = [
+  'heading-1',
+  'heading-2',
+  'heading-3',
+  'heading-4',
+  'heading-5'
+]
+
+export function parseToggleHeadingVariant(value: unknown): ToggleHeadingVariant | null {
+  return typeof value === 'string' &&
+    TOGGLE_HEADING_VARIANTS.includes(value as ToggleHeadingVariant)
+    ? (value as ToggleHeadingVariant)
+    : null
+}
 
 export type DetailsHtmlToken = MarkdownToken & {
   attributes?: Record<string, unknown>
@@ -12,7 +39,6 @@ export type DetailsHtmlBlock = {
   raw: string
   openingAttributes: string
   inner: string
-  hasNestedDetails: boolean
 }
 
 export type DetailsSummaryHtml = {
@@ -30,11 +56,16 @@ export function escapeDetailsHtml(value: string): string {
 }
 
 export function parseDetailsAttributes(rawAttributes: string): Record<string, unknown> {
+  // Why: validation accepts normal HTML whitespace around `=`, so parsing
+  // must accept it too or an editable toggle loses its heading variant.
+  const variantMatch = rawAttributes.match(
+    /\sdata-orca-toggle\s*=\s*(?:"(heading-[1-5])"|'(heading-[1-5])'|(heading-[1-5]))(?:\s|$)/i
+  )
   return {
     open: /\sopen(?:\s|=|$)/i.test(rawAttributes),
-    variant: /\sdata-orca-toggle=(?:"heading-1"|'heading-1'|heading-1)(?:\s|$)/i.test(rawAttributes)
-      ? 'heading-1'
-      : null
+    variant: parseToggleHeadingVariant(
+      (variantMatch?.[1] ?? variantMatch?.[2] ?? variantMatch?.[3])?.toLowerCase()
+    )
   }
 }
 
@@ -49,8 +80,9 @@ export function detailsBodyHtmlToMarkdown(body: string): string {
 export function renderDetailsAttributes(attrs: Record<string, unknown> | undefined): string {
   const attributes = ['class="orca-details"']
 
-  if (attrs?.variant === 'heading-1') {
-    attributes.push('data-orca-toggle="heading-1"')
+  const variant = parseToggleHeadingVariant(attrs?.variant)
+  if (variant) {
+    attributes.push(`data-orca-toggle="${variant}"`)
   }
 
   if (attrs?.open === true) {
@@ -60,53 +92,19 @@ export function renderDetailsAttributes(attrs: Record<string, unknown> | undefin
   return attributes.join(' ')
 }
 
-function markdownFenceRanges(content: string): [number, number][] {
-  const ranges: [number, number][] = []
-  let offset = 0
-  let openFence: { marker: '`' | '~'; length: number; start: number } | null = null
-
-  for (const lineMatch of content.matchAll(/[^\r\n]*(?:\r\n|\n|\r|$)/g)) {
-    const line = lineMatch[0]
-    if (line === '') {
-      break
-    }
-
-    const lineText = line.replace(/(?:\r\n|\n|\r)$/u, '')
-    if (openFence) {
-      const closingFencePattern =
-        openFence.marker === '`'
-          ? new RegExp(`^ {0,3}\`{${openFence.length},}\\s*$`)
-          : new RegExp(`^ {0,3}~{${openFence.length},}\\s*$`)
-      if (closingFencePattern.test(lineText)) {
-        ranges.push([openFence.start, offset + line.length])
-        openFence = null
-      }
-    } else {
-      const openingFenceMatch = lineText.match(/^ {0,3}(`{3,}|~{3,})/u)
-      if (openingFenceMatch?.[1]) {
-        openFence = {
-          marker: openingFenceMatch[1][0] as '`' | '~',
-          length: openingFenceMatch[1].length,
-          start: offset
-        }
-      }
-    }
-
-    offset += line.length
-  }
-
-  if (openFence) {
-    ranges.push([openFence.start, content.length])
-  }
-
-  return ranges
+export function createDetailsMatcher(content: string): (start: number) => DetailsHtmlBlock | null {
+  let fenceRanges: MarkdownFenceRanges | undefined
+  return (start) =>
+    /^<details\b[^>]*>/i.test(content.slice(start))
+      ? matchDetailsHtmlBlock(content, start, (fenceRanges ??= getMarkdownFenceRanges(content)))
+      : null
 }
 
-function isInsideRange(index: number, ranges: [number, number][]): boolean {
-  return ranges.some(([start, end]) => index >= start && index < end)
-}
-
-export function matchDetailsHtmlBlock(content: string, start: number): DetailsHtmlBlock | null {
+export function matchDetailsHtmlBlock(
+  content: string,
+  start: number,
+  precomputedFenceRanges?: MarkdownFenceRanges
+): DetailsHtmlBlock | null {
   const openingMatch = content.slice(start).match(/^<details\b[^>]*>/i)
   if (!openingMatch) {
     return null
@@ -114,10 +112,9 @@ export function matchDetailsHtmlBlock(content: string, start: number): DetailsHt
 
   const detailsTagPattern = /<\/?details\b[^>]*>/gi
   detailsTagPattern.lastIndex = start
-  const fenceRanges = markdownFenceRanges(content)
+  const fenceRanges = precomputedFenceRanges ?? getMarkdownFenceRanges(content)
 
   let depth = 0
-  let hasNestedDetails = false
 
   for (;;) {
     const tagMatch = detailsTagPattern.exec(content)
@@ -126,7 +123,7 @@ export function matchDetailsHtmlBlock(content: string, start: number): DetailsHt
     }
 
     const tag = tagMatch[0]
-    if (tagMatch.index !== start && isInsideRange(tagMatch.index, fenceRanges)) {
+    if (tagMatch.index !== start && isInsideMarkdownFenceRange(tagMatch.index, fenceRanges)) {
       continue
     }
 
@@ -139,14 +136,10 @@ export function matchDetailsHtmlBlock(content: string, start: number): DetailsHt
         return {
           raw: content.slice(start, closingEnd),
           openingAttributes: openingMatch[0].replace(/^<details\b/i, '').replace(/>$/u, ''),
-          inner: content.slice(start + openingMatch[0].length, tagMatch.index),
-          hasNestedDetails
+          inner: content.slice(start + openingMatch[0].length, tagMatch.index)
         }
       }
     } else {
-      if (depth > 0) {
-        hasNestedDetails = true
-      }
       depth += 1
     }
   }
@@ -156,10 +149,26 @@ function hasOnlySupportedDetailsAttributes(rawAttributes: string): boolean {
   return (
     rawAttributes
       .replace(/\s+open(?:\s*=\s*(?:""|"open"|''|'open'|open))?(?=\s|$)/giu, '')
-      .replace(/\s+class\s*=\s*(?:"orca-details"|'orca-details'|orca-details)(?=\s|$)/giu, '')
-      .replace(/\s+data-orca-toggle\s*=\s*(?:"heading-1"|'heading-1'|heading-1)(?=\s|$)/giu, '')
+      // HTML attribute names ignore case; class tokens do not.
+      .replace(
+        /\s+[cC][lL][aA][sS][sS]\s*=\s*(?:"orca-details"|'orca-details'|orca-details)(?=\s|$)/gu,
+        ''
+      )
+      .replace(
+        /\s+data-orca-toggle\s*=\s*(?:"heading-[1-5]"|'heading-[1-5]'|heading-[1-5])(?=\s|$)/giu,
+        ''
+      )
       .trim() === ''
   )
+}
+
+export function normalizeDetailsOpeningTag(fragment: string): string {
+  const match = fragment.match(/^<details(\s[^<>]*)?>$/i)
+  const attributes = match?.[1] ?? ''
+  if (!match || !hasOnlySupportedDetailsAttributes(attributes)) {
+    return fragment
+  }
+  return `<details ${renderDetailsAttributes(parseDetailsAttributes(attributes))}>`
 }
 
 function hasOnlyPlainParagraphAndBreakTags(content: string): boolean {
@@ -236,11 +245,40 @@ function isHtmlTagNamePart(code: number): boolean {
   )
 }
 
-export function isEditableDetailsHtmlBlock(block: DetailsHtmlBlock): boolean {
-  if (block.hasNestedDetails) {
-    return false
-  }
+// Why: nested toggles validate recursively and each level rescans its own body,
+// so a pathological file would otherwise blow the stack or go quadratic.
+const MAX_DETAILS_NESTING_LEVELS = 16
 
+// Removes nested toggles that are themselves editable, so the caller's raw-tag
+// scan sees only the body's own markup. Null when a nested toggle can't be one.
+function stripEditableNestedDetails(bodyHtml: string, nestingLevel: number): string | null {
+  let result = ''
+  let index = 0
+  // Why: without sharing this, N sibling toggles rescan the whole body N times.
+  let fenceRanges: MarkdownFenceRanges | null = null
+
+  for (;;) {
+    const nestedStart = indexOfAsciiIgnoreCase(bodyHtml, '<details', index)
+    if (nestedStart === -1) {
+      return result + bodyHtml.slice(index)
+    }
+
+    if (nestingLevel >= MAX_DETAILS_NESTING_LEVELS) {
+      return null
+    }
+
+    fenceRanges ??= getMarkdownFenceRanges(bodyHtml)
+    const nested = matchDetailsHtmlBlock(bodyHtml, nestedStart, fenceRanges)
+    if (!nested || !isEditableDetailsHtmlBlock(nested, nestingLevel + 1)) {
+      return null
+    }
+
+    result += bodyHtml.slice(index, nestedStart)
+    index = nestedStart + nested.raw.length
+  }
+}
+
+export function isEditableDetailsHtmlBlock(block: DetailsHtmlBlock, nestingLevel = 1): boolean {
   if (!hasOnlySupportedDetailsAttributes(block.openingAttributes)) {
     return false
   }
@@ -258,7 +296,11 @@ export function isEditableDetailsHtmlBlock(block: DetailsHtmlBlock): boolean {
     return false
   }
 
-  const bodyHtml = block.inner.slice(summary.rawLength)
+  const bodyHtml = stripEditableNestedDetails(block.inner.slice(summary.rawLength), nestingLevel)
+  if (bodyHtml === null) {
+    return false
+  }
+
   if (!hasOnlyPlainParagraphAndBreakTags(bodyHtml)) {
     return false
   }

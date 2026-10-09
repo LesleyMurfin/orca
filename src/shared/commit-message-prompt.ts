@@ -1,3 +1,4 @@
+import { extractLeadingEnvAssignments } from './command-environment'
 // Why: keeping the base prompt and assembly here (in shared) lets both the
 // renderer (preview/tests) and main (actual generation) reach the exact same
 // string without duplicating the wording.
@@ -9,7 +10,7 @@ Rules:
 - First line: imperative mood, <= 72 chars, no trailing period.
 - Optional body: blank line, then wrapped at 72 chars explaining WHY.
 - Output ONLY the commit message - no preamble, no code fences, no quotes.
-- Do not include "Co-authored-by" trailers - Orca appends them after generation when configured.
+- Do not include "Co-authored-by" or other git trailers.
 
 Staged diff:
 \`\`\`diff
@@ -19,7 +20,9 @@ Staged diff:
 
 export {
   cleanGeneratedCommitMessage,
-  extractAgentErrorMessage
+  excerptAgentFailureOutput,
+  sanitizeAgentFailureDetail,
+  stripPrefilledReasoningPreamble
 } from './commit-message-agent-output'
 
 /** Builds the final prompt sent to the agent. The custom suffix is appended verbatim
@@ -131,8 +134,16 @@ export function truncateDiffForPrompt(
 
 export const CUSTOM_PROMPT_PLACEHOLDER = '{prompt}'
 
+/** Source range of a token: [start, end) offsets into the original string.
+ * `divergesFromShell` marks a token this tokenizer cannot model faithfully for
+ * the target shell: an unquoted operator (`;&|<>`), a word-leading `#`
+ * comment, an expansion opener whose body can span tokens (backtick, `$(`,
+ * `${`, quoted or not), or a cmd single-quoted region (cmd has no
+ * single-quote syntax). Not recoverable from the token value alone. */
+export type CommandTokenSpan = { start: number; end: number; divergesFromShell: boolean }
+
 export type TokenizeCustomCommandResult =
-  | { ok: true; tokens: string[] }
+  | { ok: true; tokens: string[]; spans: CommandTokenSpan[] }
   | { ok: false; error: string }
 
 // Why: deliberately POSIX-shell-style only for *grouping* (single + double
@@ -141,21 +152,47 @@ export type TokenizeCustomCommandResult =
 // "spawn this exact CLI" — adding shell semantics on top would create
 // surprising behavior across platforms (especially Windows) and a security
 // surface we don't need.
-export function tokenizeCustomCommandTemplate(template: string): TokenizeCustomCommandResult {
+/**
+ * `'escape'` (default) is POSIX: a backslash quotes the next byte, so `foo\ bar`
+ * is one token. `'literal'` is for a command that will run on native Windows,
+ * where `\` is the path separator — eating it turns
+ * `C:\Windows\System32\powershell.exe` into `C:WindowsSystem32powershell.exe`,
+ * a path that then "cannot be found" (#11375).
+ *
+ * Opt-in rather than sniffed from `process.platform` here, because the same
+ * template can be parsed on one host and executed on another.
+ */
+export type CommandTemplateBackslash = 'escape' | 'literal'
+
+export function tokenizeCustomCommandTemplate(
+  template: string,
+  backslash: CommandTemplateBackslash = 'escape'
+): TokenizeCustomCommandResult {
+  const backslashEscapes = backslash === 'escape'
   const tokens: string[] = []
+  const spans: CommandTokenSpan[] = []
   let current = ''
   let inToken = false
+  let tokenStart = 0
+  let divergesFromShell = false
   let quote: '"' | "'" | null = null
   let i = 0
 
   while (i < template.length) {
     const ch = template[i]
     if (quote) {
-      if (ch === '\\' && quote === '"' && i + 1 < template.length) {
+      if (backslashEscapes && ch === '\\' && quote === '"' && i + 1 < template.length) {
+        // Why: inside double quotes the shell only consumes the backslash
+        // before these; elsewhere it stays a literal byte this tokenizer drops.
+        divergesFromShell ||= !'$`"\\'.includes(template[i + 1])
         current += template[i + 1]
         i += 2
         continue
       }
+      // Why: a `"` inside $(…) or `…` re-opens a nested quoting context in the
+      // real shell, so this tokenizer's word boundaries stop matching it.
+      divergesFromShell ||=
+        quote === '"' && (ch === '`' || (ch === '$' && '({'.includes(template[i + 1] ?? '\0')))
       if (ch === quote) {
         quote = null
         i++
@@ -171,13 +208,22 @@ export function tokenizeCustomCommandTemplate(template: string): TokenizeCustomC
 
     if (ch === '"' || ch === "'") {
       quote = ch
+      if (!inToken) {
+        tokenStart = i
+      }
       inToken = true
       i++
       continue
     }
 
-    if (ch === '\\' && i + 1 < template.length) {
+    if (backslashEscapes && ch === '\\' && i + 1 < template.length) {
+      // Why: an unquoted line continuation joins words the shell splits, so a
+      // selector can hide inside the joined token and skip the gap check.
+      divergesFromShell ||= template[i + 1] === '\n'
       current += template[i + 1]
+      if (!inToken) {
+        tokenStart = i
+      }
       inToken = true
       i += 2
       continue
@@ -186,13 +232,25 @@ export function tokenizeCustomCommandTemplate(template: string): TokenizeCustomC
     if (/\s/.test(ch)) {
       if (inToken) {
         tokens.push(current)
+        spans.push({ start: tokenStart, end: i, divergesFromShell })
         current = ''
         inToken = false
+        divergesFromShell = false
       }
       i++
       continue
     }
 
+    if (!inToken) {
+      tokenStart = i
+    }
+    // Why: a trailing unpaired escape swallows whatever a consumer appends
+    // after the base, so the base is not safe to build on.
+    divergesFromShell ||= backslashEscapes && ch === '\\' && i + 1 >= template.length
+    divergesFromShell ||=
+      ';&|<>`'.includes(ch) ||
+      (ch === '#' && !inToken) ||
+      (ch === '$' && '({\'"'.includes(template[i + 1] ?? '\0'))
     current += ch
     inToken = true
     i++
@@ -203,12 +261,19 @@ export function tokenizeCustomCommandTemplate(template: string): TokenizeCustomC
   }
   if (inToken) {
     tokens.push(current)
+    spans.push({ start: tokenStart, end: template.length, divergesFromShell })
   }
-  return { ok: true, tokens }
+  return { ok: true, tokens, spans }
 }
 
 export type CustomCommandPlan =
-  | { ok: true; binary: string; args: string[]; stdinPayload: string | null }
+  | {
+      ok: true
+      binary: string
+      args: string[]
+      stdinPayload: string | null
+      env?: Record<string, string>
+    }
   | { ok: false; error: string }
 
 /**
@@ -220,15 +285,20 @@ export type CustomCommandPlan =
  * substituted prompt is always passed as a single argument regardless of
  * whether the template wrote `{prompt}` or `"{prompt}"`.
  */
-export function planCustomCommand(template: string, prompt: string): CustomCommandPlan {
-  const tokenized = tokenizeCustomCommandTemplate(template)
+export function planCustomCommand(
+  template: string,
+  prompt: string,
+  backslash: CommandTemplateBackslash = 'escape'
+): CustomCommandPlan {
+  const tokenized = tokenizeCustomCommandTemplate(template, backslash)
   if (!tokenized.ok) {
     return { ok: false, error: tokenized.error }
   }
   if (tokenized.tokens.length === 0) {
     return { ok: false, error: 'Custom command is empty.' }
   }
-  const [binary, ...rest] = tokenized.tokens
+  const { env, rest: commandTokens } = extractLeadingEnvAssignments(tokenized.tokens)
+  const [binary, ...rest] = commandTokens
   if (!binary) {
     return { ok: false, error: 'Custom command must start with a binary name.' }
   }
@@ -237,14 +307,15 @@ export function planCustomCommand(template: string, prompt: string): CustomComma
     token.includes(CUSTOM_PROMPT_PLACEHOLDER)
       ? token.split(CUSTOM_PROMPT_PLACEHOLDER).join(prompt)
       : token
-  const usesPlaceholder = tokenized.tokens.some((t) => t.includes(CUSTOM_PROMPT_PLACEHOLDER))
+  const usesPlaceholder = commandTokens.some((t) => t.includes(CUSTOM_PROMPT_PLACEHOLDER))
   if (usesPlaceholder) {
     return {
       ok: true,
       binary: substitute(binary),
       args: rest.map(substitute),
-      stdinPayload: null
+      stdinPayload: null,
+      ...(env ? { env } : {})
     }
   }
-  return { ok: true, binary, args: rest, stdinPayload: prompt }
+  return { ok: true, binary, args: rest, stdinPayload: prompt, ...(env ? { env } : {}) }
 }

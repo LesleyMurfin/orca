@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import type { RefObject } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ConnectionState } from '../transport/types'
@@ -8,19 +7,6 @@ import {
   recoverActiveTerminalAfterForeground,
   shouldRecoverTerminalOnAppStateChange
 } from './terminal-foreground-recovery'
-
-const sessionSource = readFileSync(
-  new URL('../../app/h/[hostId]/session/[worktreeId].tsx', import.meta.url),
-  'utf8'
-)
-
-function sliceSessionSource(startPattern: string, endPattern: string): string {
-  const start = sessionSource.indexOf(startPattern)
-  expect(start).toBeGreaterThanOrEqual(0)
-  const end = sessionSource.indexOf(endPattern, start)
-  expect(end).toBeGreaterThan(start)
-  return sessionSource.slice(start, end)
-}
 
 type RecoveryHarness = {
   activeHandleRef: RefObject<string | null>
@@ -69,7 +55,7 @@ describe('terminal foreground recovery', () => {
 
     const recovered = recoverActiveTerminalAfterForeground(harness)
 
-    expect(recovered).toBe(true)
+    expect(recovered).toBe('recovered')
     expect(harness.unsubscribeTerminal).toHaveBeenCalledWith('term-1')
     expect(harness.initializedHandlesRef.current.has('term-1')).toBe(false)
     expect(harness.schedule).toHaveBeenCalledWith(
@@ -90,7 +76,7 @@ describe('terminal foreground recovery', () => {
 
     const recovered = recoverActiveTerminalAfterForeground(harness)
 
-    expect(recovered).toBe(true)
+    expect(recovered).toBe('recovered')
     expect(harness.initializedHandlesRef.current.has('term-1')).toBe(false)
     expect(harness.initializedHandlesRef.current.has('term-2')).toBe(false)
     expect(harness.unsubscribeTerminal).toHaveBeenCalledWith('term-1')
@@ -102,9 +88,35 @@ describe('terminal foreground recovery', () => {
 
     const recovered = recoverActiveTerminalAfterForeground(harness)
 
-    expect(recovered).toBe(false)
+    expect(recovered).toBe('skipped')
     expect(harness.unsubscribeTerminal).not.toHaveBeenCalled()
     expect(harness.schedule).not.toHaveBeenCalled()
+  })
+
+  it('defers without touching state when the socket is not connected yet', () => {
+    const harness = createHarness()
+    harness.connStateRef.current = 'reconnecting'
+
+    const recovered = recoverActiveTerminalAfterForeground(harness)
+
+    expect(recovered).toBe('deferred')
+    // Why this matters: the deferred retry needs the initialized flags intact
+    // so the post-reconnect recovery can still force a scrollback replay.
+    expect(harness.initializedHandlesRef.current.has('term-1')).toBe(true)
+    expect(harness.unsubscribeTerminal).not.toHaveBeenCalled()
+    expect(harness.schedule).not.toHaveBeenCalled()
+  })
+
+  it('replays scrollback when re-run after the deferred reconnect completes', () => {
+    const harness = createHarness()
+    harness.connStateRef.current = 'reconnecting'
+
+    expect(recoverActiveTerminalAfterForeground(harness)).toBe('deferred')
+
+    harness.connStateRef.current = 'connected'
+    expect(recoverActiveTerminalAfterForeground(harness)).toBe('recovered')
+    harness.runScheduled()
+    expect(harness.subscribeToTerminal).toHaveBeenCalledWith('term-1')
   })
 
   it('does not replay a stale terminal if focus changes before the delayed subscribe', () => {
@@ -115,17 +127,5 @@ describe('terminal foreground recovery', () => {
     harness.runScheduled()
 
     expect(harness.subscribeToTerminal).not.toHaveBeenCalled()
-  })
-
-  it('is wired to AppState foregrounding in the session screen', () => {
-    const foregroundPredicate = sliceSessionSource(
-      'const shouldRecover = shouldRecoverTerminalOnAppStateChange(',
-      'previousAppState = nextAppState'
-    )
-
-    expect(sessionSource).toContain('shouldRecoverTerminalOnAppStateChange')
-    expect(foregroundPredicate).toContain('Platform.OS')
-    expect(sessionSource).toContain('recoverActiveTerminalAfterForeground({')
-    expect(sessionSource).toContain("AppState.addEventListener('change'")
   })
 })

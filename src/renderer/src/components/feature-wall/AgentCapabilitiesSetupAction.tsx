@@ -3,8 +3,11 @@ import { Check, Globe2, Loader2, MonitorCog, Terminal, Workflow } from 'lucide-r
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { useActiveProjectSkillRuntime } from '@/hooks/useActiveProjectSkillRuntime'
 import { useAppStore } from '@/store'
+import { AgentCapabilityStatusNote, AgentCapabilityStatusPill } from './AgentCapabilityStatusBadges'
 import { FeatureSetupInlineTerminal } from '../onboarding/FeatureSetupInlineTerminal'
+import type { OnboardingFeatureSetupRuntimeContext } from '../onboarding/onboarding-feature-setup-runtime'
 import {
   DEFAULT_ONBOARDING_FEATURE_SETUP_SELECTION,
   hasSelectedOnboardingFeatureSetup,
@@ -13,13 +16,12 @@ import {
   type OnboardingFeatureSetupSelection
 } from '../onboarding/onboarding-feature-setup'
 import {
-  getAgentCapabilityStatusClassName,
   getDefaultAgentCapabilitySetupSelection,
   isAgentCapabilityReadinessChecking,
+  isAgentCapabilityReadinessComplete,
   useAgentCapabilitySetupStatus,
   type AgentCapabilityInstallStatus
 } from './agent-capability-setup-status'
-import { FullDiskAccessSetupPrompt } from './FullDiskAccessSetupPrompt'
 import { translate } from '@/i18n/i18n'
 
 export function AgentCapabilitiesSetupAction(props: {
@@ -37,8 +39,11 @@ export function AgentCapabilitiesSetupAction(props: {
   const [featureSetupCommand, setFeatureSetupCommand] = useState<string | null>(null)
   const [featureSetupCommandSelection, setFeatureSetupCommandSelection] =
     useState<OnboardingFeatureSetupSelection | null>(null)
+  const [featureSetupRuntime, setFeatureSetupRuntime] =
+    useState<OnboardingFeatureSetupRuntimeContext | null>(null)
   const [setupBusyLabel, setSetupBusyLabel] = useState<string | null>(null)
   const recordFeatureInteraction = useAppStore((s) => s.recordFeatureInteraction)
+  const activeSkillRuntime = useActiveProjectSkillRuntime()
   useEffect(() => {
     onBrowserUseSkillInstalledChange(readiness.browserUseSkillInstalled)
   }, [onBrowserUseSkillInstalledChange, readiness.browserUseSkillInstalled])
@@ -65,7 +70,7 @@ export function AgentCapabilitiesSetupAction(props: {
     }
     setSetupBusyLabel('Setting up capabilities...')
     try {
-      const result = await runOnboardingFeatureSetup(featureSetup)
+      const result = await runOnboardingFeatureSetup(featureSetup, undefined, activeSkillRuntime)
       if (featureSetup.browserUse) {
         recordFeatureInteraction('agent-browser-setup')
       }
@@ -111,12 +116,19 @@ export function AgentCapabilitiesSetupAction(props: {
       }
       if (result.skillInstallCommand) {
         setFeatureSetupCommandSelection(featureSetup)
+        setFeatureSetupRuntime(activeSkillRuntime)
         setFeatureSetupCommand(result.skillInstallCommand)
       }
     } finally {
       setSetupBusyLabel(null)
     }
-  }, [featureSetup, featureSetupCommand, recordFeatureInteraction, setupBusyLabel])
+  }, [
+    activeSkillRuntime,
+    featureSetup,
+    featureSetupCommand,
+    recordFeatureInteraction,
+    setupBusyLabel
+  ])
 
   return (
     <div className="space-y-5">
@@ -125,8 +137,10 @@ export function AgentCapabilitiesSetupAction(props: {
         onFeatureSetupChange={handleFeatureSetupChange}
         featureSetupCommand={featureSetupCommand}
         featureSetupCommandSelection={featureSetupCommandSelection}
+        featureSetupRuntime={featureSetupRuntime}
         setupBusyLabel={setupBusyLabel}
         onStartFeatureSetup={() => void handleStartFeatureSetup()}
+        allReady={isAgentCapabilityReadinessComplete(readiness)}
         installStatus={capabilitySetupStatus.installStatus}
       />
     </div>
@@ -196,12 +210,16 @@ function AgentCapabilitySetupControls(props: {
   onFeatureSetupChange: (value: OnboardingFeatureSetupSelection) => void
   featureSetupCommand: string | null
   featureSetupCommandSelection: OnboardingFeatureSetupSelection | null
+  featureSetupRuntime: OnboardingFeatureSetupRuntimeContext | null
   setupBusyLabel: string | null
   onStartFeatureSetup: () => void
+  allReady: boolean
   installStatus: Record<OnboardingFeatureSetupId, AgentCapabilityInstallStatus>
 }): React.JSX.Element {
   const hasSelectedFeatures = hasSelectedOnboardingFeatureSetup(props.featureSetup)
   const showSetupAction = !props.featureSetupCommand
+  // Why: a disabled install button is noise once everything is set up.
+  const showAllReady = props.allReady && !hasSelectedFeatures && !props.setupBusyLabel
 
   return (
     <>
@@ -210,8 +228,15 @@ function AgentCapabilitySetupControls(props: {
         onChange={props.onFeatureSetupChange}
         installStatus={props.installStatus}
       />
-      <FullDiskAccessSetupPrompt />
-      {showSetupAction ? (
+      {showSetupAction && showAllReady ? (
+        <p className="mt-6 flex items-center gap-1.5 text-sm text-muted-foreground">
+          <Check className="size-4" />
+          {translate(
+            'auto.components.feature.wall.AgentCapabilitiesSetupAction.allInstalled',
+            'All skills installed'
+          )}
+        </p>
+      ) : showSetupAction ? (
         <div className="mt-6 flex items-center">
           <Button
             type="button"
@@ -227,8 +252,8 @@ function AgentCapabilitySetupControls(props: {
             )}
             {props.setupBusyLabel ??
               translate(
-                'auto.components.feature.wall.AgentCapabilitiesSetupAction.c89534cbe9',
-                'Install CLI & Skills'
+                'auto.components.feature.wall.AgentCapabilitiesSetupAction.installSkills',
+                'Install skills'
               )}
           </Button>
         </div>
@@ -236,6 +261,7 @@ function AgentCapabilitySetupControls(props: {
       {props.featureSetupCommand ? (
         <FeatureSetupInlineTerminal
           command={props.featureSetupCommand}
+          runtimeContext={props.featureSetupRuntime ?? undefined}
           selection={props.featureSetupCommandSelection ?? props.featureSetup}
         />
       ) : null}
@@ -262,35 +288,32 @@ function AgentCapabilitySetupChecklist(props: {
               aria-checked={selected}
               aria-label={`${selected ? 'Disable' : 'Enable'} ${row.title}`}
               className={cn(
-                'flex min-h-24 flex-col rounded-lg border px-4 py-3 text-left transition-colors',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                selected
-                  ? 'border-ring bg-accent text-foreground ring-2 ring-ring/25'
-                  : 'border-border bg-muted/20 text-muted-foreground hover:bg-muted/40'
+                'flex min-h-24 flex-col rounded-lg border px-4 py-3.5 text-left transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                selected ? 'border-foreground/60 bg-accent' : 'border-border hover:bg-accent/60'
               )}
               onClick={() => props.onChange({ ...props.value, [row.id]: !selected })}
             >
               <span className="flex items-start justify-between gap-3">
-                <span
-                  className={cn(
-                    'flex size-8 items-center justify-center rounded-lg border',
-                    selected
-                      ? 'border-border bg-background text-foreground'
-                      : 'border-border bg-muted/40'
-                  )}
-                >
+                <span className="grid size-7 place-items-center rounded-md bg-muted text-foreground">
                   {row.icon}
                 </span>
-                <span
-                  aria-hidden
-                  className={cn(
-                    'flex size-5 items-center justify-center rounded-full border transition-colors',
-                    selected
-                      ? 'border-primary bg-primary text-primary-foreground'
-                      : 'border-border bg-background'
-                  )}
-                >
-                  {selected ? <Check className="size-3" strokeWidth={3} /> : null}
+                <span className="flex items-center gap-2">
+                  <AgentCapabilityStatusPill status={installStatus} />
+                  {/* Why: an empty circle on an installed card reads as "not done"; show it only when it means something. */}
+                  {selected || !installStatus.installed ? (
+                    <span
+                      aria-hidden
+                      className={cn(
+                        'flex size-5 items-center justify-center rounded-full border transition-colors',
+                        selected
+                          ? 'border-foreground bg-foreground text-background'
+                          : 'border-border'
+                      )}
+                    >
+                      {selected ? <Check className="size-3" strokeWidth={3} /> : null}
+                    </span>
+                  ) : null}
                 </span>
               </span>
               <span className="mt-3 text-sm font-medium text-foreground">{row.title}</span>
@@ -303,43 +326,5 @@ function AgentCapabilitySetupChecklist(props: {
         })}
       </div>
     </section>
-  )
-}
-
-function AgentCapabilityStatusNote(props: {
-  status: AgentCapabilityInstallStatus
-}): React.JSX.Element {
-  if (props.status.installed) {
-    return (
-      <span className="mt-2 flex flex-wrap items-center gap-1.5">
-        <span className="rounded-full border border-green-500/45 bg-green-500/10 px-2 py-0.5 text-[11px] font-semibold leading-none text-green-700 dark:text-green-300">
-          {translate(
-            'auto.components.feature.wall.AgentCapabilitiesSetupAction.b8dc9dd8a2',
-            'Installed'
-          )}
-        </span>
-        {props.status.tone !== 'ready' ? (
-          <span
-            className={cn(
-              'text-xs font-medium',
-              getAgentCapabilityStatusClassName(props.status.tone)
-            )}
-          >
-            {props.status.label}
-          </span>
-        ) : null}
-      </span>
-    )
-  }
-
-  return (
-    <span
-      className={cn(
-        'mt-1 text-xs font-medium',
-        getAgentCapabilityStatusClassName(props.status.tone)
-      )}
-    >
-      {props.status.label}
-    </span>
   )
 }

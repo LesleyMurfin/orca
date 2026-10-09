@@ -1,6 +1,11 @@
 import { performance } from 'node:perf_hooks'
 import { describe, expect, it } from 'vitest'
 import {
+  TERMINAL_FILE_LINK_TAP_CONFORMANCE_CASES,
+  columnForTerminalFileLinkTap
+} from '../../../shared/terminal-file-link-conformance'
+import {
+  extractTerminalFileLinkCandidates,
   extractTerminalFileLinks,
   isPathInsideWorktree,
   resolveTerminalFileLink,
@@ -8,7 +13,27 @@ import {
   toWorktreeRelativePath
 } from './terminal-links'
 
+function extractTerminalFileLinkAtColumn(lineText: string, column: number) {
+  return (
+    extractTerminalFileLinks(lineText).find(
+      (link) => column >= link.startIndex && column < link.endIndex
+    ) ?? null
+  )
+}
+
 describe('terminal path helpers', () => {
+  describe('shared terminal file-link tap conformance', () => {
+    it.each(TERMINAL_FILE_LINK_TAP_CONFORMANCE_CASES)('$name', (testCase) => {
+      const link = extractTerminalFileLinkAtColumn(
+        testCase.lineText,
+        columnForTerminalFileLinkTap(testCase)
+      )
+      expect(
+        link ? { pathText: link.pathText, line: link.line, column: link.column } : null
+      ).toEqual(testCase.expected)
+    })
+  })
+
   it('keeps worktree-relative paths on Windows external files', () => {
     expect(isPathInsideWorktree('C:\\repo\\src\\file.ts', 'C:\\repo')).toBe(true)
     expect(toWorktreeRelativePath('C:\\repo\\src\\file.ts', 'C:\\repo')).toBe('src/file.ts')
@@ -90,6 +115,15 @@ describe('terminal path helpers', () => {
   })
 
   describe('extractTerminalFileLinks local path tokens', () => {
+    it('keeps Unicode path segments in the detected range', () => {
+      expect(extractTerminalFileLinks('/tmp/报告.html').map((link) => link.displayText)).toEqual([
+        '/tmp/报告.html'
+      ])
+      expect(
+        extractTerminalFileLinks('docs/café/report.pdf').map((link) => link.displayText)
+      ).toEqual(['docs/café/report.pdf'])
+    })
+
     it('detects tilde-prefixed POSIX paths', () => {
       const links = extractTerminalFileLinks('~/Documents/Path/file_name')
       expect(links).toHaveLength(1)
@@ -126,6 +160,20 @@ describe('terminal path helpers', () => {
         pathText: '/Users/alice/My Folder',
         displayText: '/Users/alice/My Folder'
       })
+    })
+
+    it('trims terminal padding after line-ending spaced paths', () => {
+      const links = extractTerminalFileLinks('/Users/alice/My Folder   ')
+      expect(links).toHaveLength(1)
+      expect(links[0]).toMatchObject({
+        pathText: '/Users/alice/My Folder',
+        displayText: '/Users/alice/My Folder'
+      })
+    })
+
+    it('does not treat mid-line command arguments as line-ending spaced paths', () => {
+      const links = extractTerminalFileLinks('run /usr/bin/env node, then continue')
+      expect(links.map((link) => link.pathText)).not.toContain('/usr/bin/env node')
     })
 
     it('keeps trailing separators on directory-like absolute paths', () => {
@@ -176,6 +224,15 @@ describe('terminal path helpers', () => {
       expect(links).toHaveLength(20_000)
       expect(links[0].pathText).toBe('/tmp/Foo Bar/file')
     }, 5_000)
+
+    it('keeps extension-heavy assistant prose on a bounded scan path', () => {
+      const filenames = Array.from({ length: 20_000 }, (_, index) => `report-${index}.txt`)
+      const links = extractTerminalFileLinks(`/tmp/root/${filenames.join(' ')}`)
+
+      expect(links).toHaveLength(2)
+      expect(links[0].pathText).toBe(`/tmp/root/${filenames.slice(0, -1).join(' ')}`)
+      expect(links.at(-1)?.pathText).toBe('report-19999.txt')
+    })
   })
 
   it('supports Windows cwd resolution for terminal file links', () => {
@@ -277,5 +334,32 @@ describe('terminal path helpers', () => {
 
   it('does not resolve partial text as an OSC hyperlink target', () => {
     expect(resolveTerminalFileLinkText('open docs/README.md', '/repo')).toBeNull()
+  })
+
+  describe('plain-text file:// URIs', () => {
+    it('extracts a printed file:// URI as a file link resolving to its path', () => {
+      const line = 'Report: file:///Users/dev/orca/report.html'
+      const link = extractTerminalFileLinks(line).find(
+        (candidate) => candidate.displayText === 'file:///Users/dev/orca/report.html'
+      )
+      expect(link).toMatchObject({ pathText: '/Users/dev/orca/report.html' })
+      expect(resolveTerminalFileLink(link!, '/Users/dev/orca')).toEqual({
+        absolutePath: '/Users/dev/orca/report.html',
+        line: null,
+        column: null
+      })
+    })
+
+    it('does not also emit a bare-path link for the URI body', () => {
+      const links = extractTerminalFileLinks('file:///Users/dev/orca/report.html')
+      expect(links.map((link) => link.displayText)).toEqual(['file:///Users/dev/orca/report.html'])
+    })
+
+    it('exposes file:// URIs to the hover candidate pass as well', () => {
+      const candidates = extractTerminalFileLinkCandidates('file:///tmp/out.txt:9')
+      expect(candidates.some((link) => link.pathText === '/tmp/out.txt' && link.line === 9)).toBe(
+        true
+      )
+    })
   })
 })

@@ -1,17 +1,19 @@
-import { createHash } from 'crypto'
+import { createHash } from 'node:crypto'
 import {
   closeSync,
   mkdirSync,
   openSync,
+  readFileSync,
   readSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync
-} from 'fs'
-import { join } from 'path'
-import { app } from 'electron'
-import type { WorkspaceSessionState } from '../shared/types'
+} from 'node:fs'
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { getAppEnvironment } from '../shared/app-environment'
+import type { WorkspaceSessionState } from '../shared/workspace-session-state-types'
 import {
   TERMINAL_SCROLLBACK_REPLAY_BYTE_LIMIT,
   TERMINAL_SCROLLBACK_STORE_BYTE_LIMIT
@@ -20,8 +22,23 @@ import {
 const SNAPSHOT_DIR_NAME = 'terminal-scrollback'
 const REF_PREFIX = 'v1'
 
-function getSnapshotRoot(): string {
-  return join(app.getPath('userData'), SNAPSHOT_DIR_NAME)
+export type TerminalScrollbackSnapshotStorage = {
+  snapshotRoot?: string
+  fallbackSnapshotRoot?: string | null
+}
+
+function getLegacySnapshotRoot(): string {
+  return join(getAppEnvironment().getPath('userData'), SNAPSHOT_DIR_NAME)
+}
+
+export function getProfileTerminalScrollbackSnapshotRoot(dataFile: string): string {
+  return join(dirname(dataFile), SNAPSHOT_DIR_NAME)
+}
+
+export function getTerminalScrollbackSnapshotRoot(
+  storage?: TerminalScrollbackSnapshotStorage
+): string {
+  return storage?.snapshotRoot ?? getLegacySnapshotRoot()
 }
 
 export function makeTerminalScrollbackSnapshotRef(tabId: string, leafId: string): string {
@@ -29,11 +46,51 @@ export function makeTerminalScrollbackSnapshotRef(tabId: string, leafId: string)
   return `${REF_PREFIX}-${hash}`
 }
 
-function snapshotPath(ref: string): string | null {
+function snapshotPath(ref: string, snapshotRoot: string): string | null {
   if (!/^v1-[0-9a-f]{32}$/.test(ref)) {
     return null
   }
-  return join(getSnapshotRoot(), `${ref}.bin`)
+  return join(snapshotRoot, `${ref}.bin`)
+}
+
+function snapshotReadPaths(ref: string, storage?: TerminalScrollbackSnapshotStorage): string[] {
+  const primaryRoot = getTerminalScrollbackSnapshotRoot(storage)
+  const primaryPath = snapshotPath(ref, primaryRoot)
+  if (!primaryPath) {
+    return []
+  }
+  const fallbackRoot = storage?.fallbackSnapshotRoot ?? null
+  if (!fallbackRoot || fallbackRoot === primaryRoot) {
+    return [primaryPath]
+  }
+  const fallbackPath = snapshotPath(ref, fallbackRoot)
+  return fallbackPath ? [primaryPath, fallbackPath] : [primaryPath]
+}
+
+export function getTerminalScrollbackSnapshotPath(
+  ref: string,
+  storage?: TerminalScrollbackSnapshotStorage
+): string | null {
+  return snapshotPath(ref, getTerminalScrollbackSnapshotRoot(storage))
+}
+
+/** The stored bytes for `ref`, bounded by the store limit; `null` when absent or out of bounds. */
+export function readTerminalScrollbackStoredBytesSync(
+  ref: string,
+  storage?: TerminalScrollbackSnapshotStorage
+): Buffer | null {
+  for (const path of snapshotReadPaths(ref, storage)) {
+    try {
+      const size = statSync(path).size
+      if (size <= 0 || size > TERMINAL_SCROLLBACK_STORE_BYTE_LIMIT) {
+        return null
+      }
+      return readFileSync(path)
+    } catch {
+      // Try the profile fallback when the primary snapshot is absent.
+    }
+  }
+  return null
 }
 
 function trailingUtf8Bytes(value: string, maxBytes: number): Buffer {
@@ -72,17 +129,19 @@ export function writeTerminalScrollbackSnapshotSync(args: {
   tabId: string
   leafId: string
   buffer: string
+  storage?: TerminalScrollbackSnapshotStorage
 }): string | null {
   if (!args.buffer) {
     return null
   }
   const ref = makeTerminalScrollbackSnapshotRef(args.tabId, args.leafId)
-  const path = snapshotPath(ref)
+  const snapshotRoot = getTerminalScrollbackSnapshotRoot(args.storage)
+  const path = snapshotPath(ref, snapshotRoot)
   if (!path) {
     return null
   }
   try {
-    mkdirSync(getSnapshotRoot(), { recursive: true, mode: 0o700 })
+    mkdirSync(snapshotRoot, { recursive: true, mode: 0o700 })
     const tmpPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
     const bytes = trailingUtf8Bytes(args.buffer, TERMINAL_SCROLLBACK_STORE_BYTE_LIMIT)
     let renamed = false
@@ -104,28 +163,76 @@ export function writeTerminalScrollbackSnapshotSync(args: {
   }
 }
 
-export function readTerminalScrollbackSnapshotSync(ref: string): string | null {
-  const path = snapshotPath(ref)
+export async function writeTerminalScrollbackSnapshot(args: {
+  tabId: string
+  leafId: string
+  buffer: string
+  storage?: TerminalScrollbackSnapshotStorage
+}): Promise<string | null> {
+  if (!args.buffer) {
+    return null
+  }
+  const ref = makeTerminalScrollbackSnapshotRef(args.tabId, args.leafId)
+  const snapshotRoot = getTerminalScrollbackSnapshotRoot(args.storage)
+  const path = snapshotPath(ref, snapshotRoot)
   if (!path) {
     return null
   }
+  const tmpPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+  let renamed = false
   try {
-    return readTrailingUtf8(path, TERMINAL_SCROLLBACK_REPLAY_BYTE_LIMIT)
-  } catch {
+    await mkdir(snapshotRoot, { recursive: true, mode: 0o700 })
+    const bytes = trailingUtf8Bytes(args.buffer, TERMINAL_SCROLLBACK_STORE_BYTE_LIMIT)
+    await writeFile(tmpPath, bytes, { mode: 0o600 })
+    await rename(tmpPath, path)
+    renamed = true
+    return ref
+  } catch (err) {
+    console.warn(
+      `[terminal-scrollback] Failed to write snapshot: ${err instanceof Error ? err.message : String(err)}`
+    )
     return null
+  } finally {
+    if (!renamed) {
+      await rm(tmpPath, { force: true }).catch(() => {})
+    }
   }
 }
 
-export function deleteTerminalScrollbackSnapshotSync(ref: string): void {
-  const path = snapshotPath(ref)
-  if (!path) {
-    return
+export function readTerminalScrollbackSnapshotSync(
+  ref: string,
+  storage?: TerminalScrollbackSnapshotStorage
+): string | null {
+  for (const path of snapshotReadPaths(ref, storage)) {
+    try {
+      return readTrailingUtf8(path, TERMINAL_SCROLLBACK_REPLAY_BYTE_LIMIT)
+    } catch {
+      // Try the legacy/global fallback when a profile-local snapshot is absent.
+    }
   }
-  try {
-    rmSync(path, { force: true })
-  } catch {
-    // Best-effort cleanup; stale refs are harmless and bounded by per-file caps.
+  return null
+}
+
+export function deleteTerminalScrollbackSnapshotSync(
+  ref: string,
+  storage?: TerminalScrollbackSnapshotStorage
+): void {
+  for (const path of snapshotReadPaths(ref, storage)) {
+    try {
+      rmSync(path, { force: true })
+    } catch {
+      // Best-effort cleanup; stale refs are harmless and bounded by per-file caps.
+    }
   }
+}
+
+export async function deleteTerminalScrollbackSnapshot(
+  ref: string,
+  storage?: TerminalScrollbackSnapshotStorage
+): Promise<void> {
+  await Promise.all(
+    snapshotReadPaths(ref, storage).map((path) => rm(path, { force: true }).catch(() => {}))
+  )
 }
 
 export function collectTerminalScrollbackSnapshotRefs(session: WorkspaceSessionState): Set<string> {
@@ -139,7 +246,8 @@ export function collectTerminalScrollbackSnapshotRefs(session: WorkspaceSessionS
 }
 
 export function migrateWorkspaceSessionTerminalScrollbackSnapshots(
-  session: WorkspaceSessionState
+  session: WorkspaceSessionState,
+  storage?: TerminalScrollbackSnapshotStorage
 ): { session: WorkspaceSessionState; changed: boolean } {
   let terminalLayoutsByTabId: WorkspaceSessionState['terminalLayoutsByTabId'] | null = null
   for (const [tabId, layout] of Object.entries(session.terminalLayoutsByTabId ?? {})) {
@@ -151,7 +259,7 @@ export function migrateWorkspaceSessionTerminalScrollbackSnapshots(
     const remainingBuffers: Record<string, string> = {}
     let layoutChanged = false
     for (const [leafId, buffer] of Object.entries(buffers)) {
-      const ref = writeTerminalScrollbackSnapshotSync({ tabId, leafId, buffer })
+      const ref = writeTerminalScrollbackSnapshotSync({ tabId, leafId, buffer, storage })
       if (ref) {
         refs[leafId] = ref
         layoutChanged = true

@@ -4,9 +4,10 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Tab, TabGroup, TabGroupLayoutNode } from '../../../../shared/types'
+import type { Tab, TabGroup, TabGroupLayoutNode } from '../../../../shared/tab-types'
 import { useAppStore } from '../../store'
 import type { TabDragItemData } from './useTabDragSplit'
+import { shouldActivateTabDragFromDistanceSample } from './tab-drag-pointer-sensor'
 import {
   canDropTabForPaneColumnSplit,
   canDropTabIntoPaneBody,
@@ -15,7 +16,9 @@ import {
   useTabDragSplit
 } from './useTabDragSplit'
 
-vi.mock('../browser-pane/webview-registry', () => ({
+globalThis.IS_REACT_ACT_ENVIRONMENT = true
+
+vi.mock('../browser-pane/host-guest/webview-registry', () => ({
   acquireWebviewsDragPassthrough: vi.fn(() => vi.fn())
 }))
 
@@ -93,10 +96,13 @@ function makeDragEvent(activeData: TabDragItemData, pointer: { x: number; y: num
   }
 }
 
-function renderDragHook(): ReturnType<typeof useTabDragSplit> {
+function renderDragHook(
+  onRender?: (drag: ReturnType<typeof useTabDragSplit>) => void
+): ReturnType<typeof useTabDragSplit> {
   let result: ReturnType<typeof useTabDragSplit> | null = null
   function Probe(): null {
     result = useTabDragSplit({ worktreeId: WT })
+    onRender?.(result)
     return null
   }
 
@@ -181,7 +187,6 @@ afterEach(() => {
 
 describe('tab drag activation distance', () => {
   it('uses the named threshold for enabled tab drags', () => {
-    expect(TAB_DRAG_ACTIVATION_DISTANCE_PX).toBe(12)
     expect(getTabDragActivationDistance(true)).toBe(TAB_DRAG_ACTIVATION_DISTANCE_PX)
   })
 
@@ -191,6 +196,27 @@ describe('tab drag activation distance', () => {
 
   it('uses an impossible activation distance when tab dragging is disabled', () => {
     expect(getTabDragActivationDistance(false)).toBe(Number.MAX_SAFE_INTEGER)
+  })
+
+  it('requires confirmation for an immediate over-threshold distance sample', () => {
+    expect(
+      shouldActivateTabDragFromDistanceSample({
+        elapsedMs: 10,
+        overThresholdSampleCount: 1
+      })
+    ).toBe(false)
+    expect(
+      shouldActivateTabDragFromDistanceSample({
+        elapsedMs: 10,
+        overThresholdSampleCount: 2
+      })
+    ).toBe(true)
+    expect(
+      shouldActivateTabDragFromDistanceSample({
+        elapsedMs: 60,
+        overThresholdSampleCount: 1
+      })
+    ).toBe(true)
   })
 })
 
@@ -245,6 +271,150 @@ describe('canDropTabIntoPaneBody', () => {
 })
 
 describe('useTabDragSplit', () => {
+  it('keeps the drag sensors across re-renders until enablement changes', () => {
+    const sensorsByRender: ReturnType<typeof useTabDragSplit>['sensors'][] = []
+    function Probe({ enabled }: { enabled: boolean }): null {
+      sensorsByRender.push(useTabDragSplit({ worktreeId: WT, enabled }).sensors)
+      return null
+    }
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    mounted.push({ container, root })
+
+    act(() => root.render(createElement(Probe, { enabled: true })))
+    act(() => root.render(createElement(Probe, { enabled: true })))
+    // Why: new sensors rebuild every tab's drag listeners, which re-renders every tab.
+    expect(sensorsByRender.at(-1)).toBe(sensorsByRender.at(-2))
+
+    act(() => root.render(createElement(Probe, { enabled: false })))
+    expect(sensorsByRender.at(-1)).not.toBe(sensorsByRender.at(-2))
+  })
+
+  it.each(['split', 'insertion'])(
+    'does not restore a %s preview after blur cleared the drag',
+    async (preview) => {
+      if (preview === 'split') {
+        addPanelGeometry(
+          'group-2',
+          rect({ left: 500, top: 0, width: 400, height: 600 }),
+          rect({ left: 500, top: 32, width: 400, height: 568 })
+        )
+      }
+      const onRender = vi.fn()
+      const drag = renderDragHook(onRender)
+      const event = {
+        ...makeDragEvent(makeDragData('group-1'), { x: 880, y: 300 }),
+        ...(preview === 'insertion'
+          ? {
+              over: {
+                data: { current: makeDragData('group-2', 'tab-2') },
+                rect: rect({ left: 500, top: 0, width: 400, height: 32 })
+              }
+            }
+          : {})
+      }
+      const previewKey = preview === 'split' ? 'hoveredDropTarget' : 'hoveredTabInsertion'
+      act(() => drag.onDragStart(event as unknown as Parameters<typeof drag.onDragStart>[0]))
+      act(() => drag.onDragMove(event as unknown as Parameters<typeof drag.onDragMove>[0]))
+      expect(onRender.mock.lastCall?.[0][previewKey]).not.toBeNull()
+
+      await act(async () => {
+        window.dispatchEvent(new Event('blur'))
+        await new Promise((resolve) => window.setTimeout(resolve, 0))
+      })
+      expect(onRender.mock.lastCall?.[0][previewKey]).toBeNull()
+      act(() => drag.onDragMove(event as unknown as Parameters<typeof drag.onDragMove>[0]))
+
+      expect(onRender.mock.lastCall?.[0][previewKey]).toBeNull()
+      expect(drag.isTabDragActiveRef.current).toBe(false)
+    }
+  )
+
+  it('does not commit a drop after blur cleared the drag', async () => {
+    addPanelGeometry(
+      'group-2',
+      rect({ left: 500, top: 0, width: 400, height: 600 }),
+      rect({ left: 500, top: 32, width: 400, height: 568 })
+    )
+    const dropUnifiedTab = vi.fn(() => true)
+    const reorderUnifiedTabs = vi.fn()
+    useAppStore.setState({ dropUnifiedTab, reorderUnifiedTabs })
+    const drag = renderDragHook()
+    const event = makeDragEvent(makeDragData('group-1'), { x: 880, y: 300 })
+    act(() => drag.onDragStart(event as unknown as Parameters<typeof drag.onDragStart>[0]))
+    await act(async () => {
+      window.dispatchEvent(new Event('blur'))
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    })
+    act(() => drag.onDragEnd(event as unknown as Parameters<typeof drag.onDragEnd>[0]))
+
+    expect(dropUnifiedTab).not.toHaveBeenCalled()
+    expect(reorderUnifiedTabs).not.toHaveBeenCalled()
+  })
+
+  it.each(['pointerup', 'pointercancel', 'blur', 'focus'])(
+    'clears a stuck active drag when %s arrives without a dnd end event',
+    async (eventName) => {
+      const activeData = makeDragData('group-1')
+      const drag = renderDragHook()
+
+      act(() => {
+        drag.onDragStart(
+          makeDragEvent(activeData, { x: 120, y: 20 }) as unknown as Parameters<
+            typeof drag.onDragStart
+          >[0]
+        )
+        // Why: dispatch in the same turn as drag start so the fallback must be
+        // installed synchronously, before React can run passive effects.
+        window.dispatchEvent(new MouseEvent(eventName, { bubbles: true }))
+      })
+      expect(drag.isTabDragActiveRef.current).toBe(true)
+
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0))
+      })
+
+      expect(drag.isTabDragActiveRef.current).toBe(false)
+    }
+  )
+
+  it('does not cancel a legitimate drag end when the fallback timer is pending', async () => {
+    addPanelGeometry(
+      'group-2',
+      rect({ left: 500, top: 0, width: 400, height: 600 }),
+      rect({ left: 500, top: 32, width: 400, height: 568 })
+    )
+    const activeData = makeDragData('group-1')
+    const dropUnifiedTab = vi.fn(() => true)
+    useAppStore.setState({ dropUnifiedTab } as Partial<ReturnType<typeof useAppStore.getState>>)
+
+    const drag = renderDragHook()
+
+    act(() => {
+      drag.onDragStart(
+        makeDragEvent(activeData, { x: 120, y: 20 }) as unknown as Parameters<
+          typeof drag.onDragStart
+        >[0]
+      )
+      window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      drag.onDragEnd(
+        makeDragEvent(activeData, { x: 880, y: 300 }) as unknown as Parameters<
+          typeof drag.onDragEnd
+        >[0]
+      )
+    })
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    })
+
+    expect(drag.isTabDragActiveRef.current).toBe(false)
+    expect(dropUnifiedTab).toHaveBeenCalledWith('tab-1', {
+      groupId: 'group-2',
+      splitDirection: 'right'
+    })
+  })
+
   it('commits a geometry-only pane split when drag end has no over target', () => {
     addPanelGeometry(
       'group-2',

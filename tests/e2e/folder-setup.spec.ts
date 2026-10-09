@@ -1,8 +1,9 @@
-import { execFileSync } from 'child_process'
-import { mkdirSync, rmSync, writeFileSync } from 'fs'
-import { mkdtemp } from 'fs/promises'
-import os from 'os'
-import path from 'path'
+import { openSidebarProjectDialog } from './helpers/sidebar-project-dialog'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtemp } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { test, expect } from './helpers/orca-app'
 import { waitForSessionReady } from './helpers/store'
 import type { ElectronApplication, Locator } from '@stablyai/playwright-test'
@@ -29,7 +30,11 @@ async function createNestedRepoFixture(): Promise<{
   projectPaths: string[]
   groupName: string
 }> {
-  const parentPath = await mkdtemp(path.join(os.tmpdir(), 'orca-e2e-folder-setup-'))
+  // Why: realpathSync so the projectPaths the test asserts on match the store's
+  // canonicalized repo.path / projectGroup.parentPath on macOS, where
+  // os.tmpdir() (/var/...) symlinks to /private/var/... and the app canonicalizes
+  // imported paths via `git rev-parse --show-toplevel`.
+  const parentPath = realpathSync(await mkdtemp(path.join(os.tmpdir(), 'orca-e2e-folder-setup-')))
   tempRoots.push(parentPath)
   const repoNames = ['api-service', 'web-client']
   const projectPaths = repoNames.map((name) => path.join(parentPath, name))
@@ -51,7 +56,12 @@ async function createLargeNestedRepoFixture(): Promise<{
   groupName: string
   selectedProjectPaths: string[]
 }> {
-  const parentPath = await mkdtemp(path.join(os.tmpdir(), 'orca-e2e-large-folder-setup-'))
+  // Why: realpathSync so the projectPaths the test asserts on match the store's
+  // canonicalized repo.path on macOS (os.tmpdir() /var/... symlinks to
+  // /private/var/...).
+  const parentPath = realpathSync(
+    await mkdtemp(path.join(os.tmpdir(), 'orca-e2e-large-folder-setup-'))
+  )
   tempRoots.push(parentPath)
   const nestedParent = path.join(
     parentPath,
@@ -113,10 +123,7 @@ test.describe('Folder setup', () => {
     const fixture = await createNestedRepoFixture()
     await chooseFolderInNativeDialog(electronApp, fixture.parentPath)
 
-    await orcaPage
-      .getByRole('button', { name: /Add Project/i })
-      .first()
-      .click()
+    await openSidebarProjectDialog(orcaPage)
     const dialog = orcaPage.getByRole('dialog', { name: /Add a project/i })
     await expect(dialog).toBeVisible()
     await dialog.getByRole('button', { name: /Browse folder/i }).click()
@@ -181,10 +188,7 @@ test.describe('Folder setup', () => {
     const fixture = await createLargeNestedRepoFixture()
     await chooseFolderInNativeDialog(electronApp, fixture.parentPath)
 
-    await orcaPage
-      .getByRole('button', { name: /Add Project/i })
-      .first()
-      .click()
+    await openSidebarProjectDialog(orcaPage)
     const dialog = orcaPage.getByRole('dialog', { name: /Add a project/i })
     await expect(dialog).toBeVisible()
     await dialog.getByRole('button', { name: /Browse folder/i }).click()

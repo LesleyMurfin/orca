@@ -5,7 +5,8 @@ import {
   GLOBAL_AGENT_SKILL_SOURCE_KINDS,
   _installedAgentSkillDiscoveryInternalsForTests,
   hasInstalledAgentSkill,
-  hasInstalledAgentSkillNamed
+  hasInstalledAgentSkillNamed,
+  notifyInstalledAgentSkillsRefreshed
 } from './useInstalledAgentSkills'
 
 afterEach(() => {
@@ -26,7 +27,6 @@ function skill(overrides: Partial<DiscoveredSkill>): DiscoveredSkill {
     directoryPath: '/Users/test/.agents/skills/example-skill',
     skillFilePath: '/Users/test/.agents/skills/example-skill/SKILL.md',
     installed: true,
-    fileCount: 1,
     updatedAt: null,
     ...overrides
   }
@@ -223,6 +223,31 @@ describe('discoverInstalledAgentSkills', () => {
     await expect(forcedRefresh).resolves.toBe(freshResult)
   })
 
+  it('lets completed-scan broadcasts reuse the cached result', async () => {
+    const discover = vi
+      .fn<() => Promise<SkillDiscoveryResult>>()
+      .mockResolvedValue(discoveryResult([skill({ name: 'orca-linear' })]))
+    vi.stubGlobal('window', {
+      api: { skills: { discover } },
+      dispatchEvent: vi.fn(),
+      CustomEvent: class {}
+    })
+
+    await _installedAgentSkillDiscoveryInternalsForTests.discoverInstalledAgentSkills(true)
+    notifyInstalledAgentSkillsRefreshed()
+    const fromSubscribers = [1, 2, 3].map(() =>
+      _installedAgentSkillDiscoveryInternalsForTests.discoverInstalledAgentSkills(false)
+    )
+
+    expect(discover).toHaveBeenCalledTimes(1)
+    for (const pending of fromSubscribers) {
+      await expect(pending).resolves.toMatchObject({
+        skills: [expect.objectContaining({ name: 'orca-linear' })]
+      })
+    }
+    expect(discover).toHaveBeenCalledTimes(1)
+  })
+
   it('caches host and WSL discovery results separately', async () => {
     const hostResult = discoveryResult([skill({ name: 'host-skill' })])
     const wslResult = discoveryResult([skill({ name: 'wsl-skill' })])
@@ -254,6 +279,44 @@ describe('discoverInstalledAgentSkills', () => {
     expect(discover).toHaveBeenCalledTimes(2)
     expect(discover).toHaveBeenNthCalledWith(1, undefined)
     expect(discover).toHaveBeenNthCalledWith(2, { runtime: 'wsl', wslDistro: null })
+  })
+
+  it('forwards filters and isolates filtered discovery caches', async () => {
+    const orchestrationResult = discoveryResult([skill({ name: 'orchestration' })])
+    const computerUseResult = discoveryResult([skill({ name: 'computer-use' })])
+    const discover = vi
+      .fn()
+      .mockResolvedValueOnce(orchestrationResult)
+      .mockResolvedValueOnce(computerUseResult)
+    vi.stubGlobal('window', { api: { skills: { discover } } })
+
+    await _installedAgentSkillDiscoveryInternalsForTests.discoverInstalledAgentSkills(
+      false,
+      { runtime: 'wsl', wslDistro: 'Ubuntu' },
+      undefined,
+      ['orchestration'],
+      GLOBAL_AGENT_SKILL_SOURCE_KINDS
+    )
+    await _installedAgentSkillDiscoveryInternalsForTests.discoverInstalledAgentSkills(
+      false,
+      { runtime: 'wsl', wslDistro: 'Ubuntu' },
+      undefined,
+      ['computer-use'],
+      GLOBAL_AGENT_SKILL_SOURCE_KINDS
+    )
+
+    expect(discover).toHaveBeenNthCalledWith(1, {
+      runtime: 'wsl',
+      wslDistro: 'Ubuntu',
+      names: ['orchestration'],
+      sourceKinds: ['home']
+    })
+    expect(discover).toHaveBeenNthCalledWith(2, {
+      runtime: 'wsl',
+      wslDistro: 'Ubuntu',
+      names: ['computer-use'],
+      sourceKinds: ['home']
+    })
   })
 
   it('forwards project runtime targets to skill discovery', async () => {

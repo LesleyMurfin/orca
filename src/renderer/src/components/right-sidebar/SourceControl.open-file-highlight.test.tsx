@@ -4,7 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import type { GitStatusEntry } from '../../../../shared/types'
+import type { GitStatusEntry } from '../../../../shared/git-status-types'
 import SourceControl from './SourceControl'
 
 const mocks = vi.hoisted(() => {
@@ -61,7 +61,7 @@ vi.mock('@/store/selectors', () => ({
   useWorktreeMap: () => new Map([[mocks.activeWorktree.id, mocks.activeWorktree]])
 }))
 
-vi.mock('@/components/confirmation-dialog', () => ({
+vi.mock('@/components/confirmation-dialog-context', () => ({
   useConfirmationDialog: () => vi.fn().mockResolvedValue(true)
 }))
 
@@ -104,6 +104,7 @@ function resetState(overrides: Partial<Record<string, unknown>> = {}): void {
     gitStatusByWorktree: { [mocks.activeWorktree.id]: [] },
     gitBranchChangesByWorktree: { [mocks.activeWorktree.id]: [] },
     gitBranchCompareSummaryByWorktree: { [mocks.activeWorktree.id]: null },
+    gitBranchLineTotalByWorktree: {},
     gitConflictOperationByWorktree: {},
     remoteStatusesByWorktree: {},
     isRemoteOperationActive: false,
@@ -132,6 +133,7 @@ function resetState(overrides: Partial<Record<string, unknown>> = {}): void {
     updateWorktreeGitIdentity: vi.fn(),
     beginGitBranchCompareRequest: vi.fn(() => 'request-key'),
     setGitBranchCompareResult: vi.fn(),
+    clearGitBranchCompare: vi.fn(),
     fetchUpstreamStatus: noopAsync(),
     setUpstreamStatus: vi.fn(),
     pushBranch: noopAsync(),

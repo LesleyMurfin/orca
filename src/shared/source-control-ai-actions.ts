@@ -1,16 +1,23 @@
 import { isCustomAgentId, type CustomAgentId } from './commit-message-agent-spec'
 import { isTuiAgent } from './tui-agent-config'
-import type { TuiAgent } from './types'
+import type { TuiAgent } from './tui-agent'
+
+// Why: the variable registry lives in `./source-control-ai-action-variables` for max-lines
+// headroom. It is deliberately not re-exported here — one import path per symbol keeps a
+// grep of that module's consumers complete (the chip row is the one that must not diverge).
 
 export type SourceControlTextActionId = 'commitMessage' | 'pullRequest' | 'branchName'
+export type AiTextActionId = SourceControlTextActionId | 'conversationName'
 
 export type SourceControlLaunchActionId =
   | 'fixCommitFailure'
+  | 'fixPushFailure'
   | 'fixChecks'
   | 'resolveConflicts'
   | 'resolveComments'
 
 export type SourceControlActionId = SourceControlTextActionId | SourceControlLaunchActionId
+export type AiActionId = AiTextActionId | SourceControlLaunchActionId
 
 export type SourceControlActionRecipe = {
   agentId?: TuiAgent | CustomAgentId | null
@@ -18,9 +25,7 @@ export type SourceControlActionRecipe = {
   agentArgs?: string
 }
 
-export type SourceControlAiActionDefaults = Partial<
-  Record<SourceControlActionId, SourceControlActionRecipe>
->
+export type SourceControlAiActionDefaults = Partial<Record<AiActionId, SourceControlActionRecipe>>
 
 export const SOURCE_CONTROL_TEXT_ACTION_IDS = [
   'commitMessage',
@@ -30,6 +35,7 @@ export const SOURCE_CONTROL_TEXT_ACTION_IDS = [
 
 export const SOURCE_CONTROL_LAUNCH_ACTION_IDS = [
   'fixCommitFailure',
+  'fixPushFailure',
   'fixChecks',
   'resolveConflicts',
   'resolveComments'
@@ -40,6 +46,16 @@ export const SOURCE_CONTROL_ACTION_IDS = [
   ...SOURCE_CONTROL_LAUNCH_ACTION_IDS
 ] as const satisfies readonly SourceControlActionId[]
 
+export const AI_TEXT_ACTION_IDS = [
+  ...SOURCE_CONTROL_TEXT_ACTION_IDS,
+  'conversationName'
+] as const satisfies readonly AiTextActionId[]
+
+export const AI_ACTION_IDS = [
+  ...AI_TEXT_ACTION_IDS,
+  ...SOURCE_CONTROL_LAUNCH_ACTION_IDS
+] as const satisfies readonly AiActionId[]
+
 export const SOURCE_CONTROL_TEXT_ACTION_LABELS: Record<SourceControlTextActionId, string> = {
   commitMessage: 'Commit message',
   pullRequest: 'Pull request details',
@@ -48,6 +64,7 @@ export const SOURCE_CONTROL_TEXT_ACTION_LABELS: Record<SourceControlTextActionId
 
 export const SOURCE_CONTROL_LAUNCH_ACTION_LABELS: Record<SourceControlLaunchActionId, string> = {
   fixCommitFailure: 'Commit failure fixes',
+  fixPushFailure: 'Push failure fixes',
   fixChecks: 'Broken checks fixes',
   resolveConflicts: 'Conflict resolution',
   resolveComments: 'Review comment resolution'
@@ -58,99 +75,19 @@ export const SOURCE_CONTROL_ACTION_LABELS: Record<SourceControlActionId, string>
   ...SOURCE_CONTROL_LAUNCH_ACTION_LABELS
 }
 
-export const DEFAULT_SOURCE_CONTROL_ACTION_COMMAND_TEMPLATES: Record<
-  SourceControlActionId,
-  string
-> = {
+export const DEFAULT_SOURCE_CONTROL_ACTION_COMMAND_TEMPLATES: Record<AiActionId, string> = {
   commitMessage: '{basePrompt}',
   pullRequest: '{basePrompt}',
   branchName: '{basePrompt}',
+  conversationName: '{basePrompt}',
   fixCommitFailure: '{basePrompt}',
+  fixPushFailure: '{basePrompt}',
   fixChecks: '{basePrompt}',
   resolveConflicts: '{basePrompt}',
   resolveComments: '{basePrompt}'
 }
 
-export const SOURCE_CONTROL_ACTION_VARIABLES: Record<SourceControlActionId, string[]> = {
-  commitMessage: ['basePrompt', 'branch', 'stagedFiles', 'stagedPatch'],
-  pullRequest: [
-    'basePrompt',
-    'branch',
-    'baseBranch',
-    'currentTitle',
-    'currentBody',
-    'commitSummary',
-    'changedFiles',
-    'patch'
-  ],
-  branchName: ['basePrompt', 'firstPrompt', 'assistantMessage'],
-  fixCommitFailure: ['basePrompt'],
-  fixChecks: ['basePrompt'],
-  resolveConflicts: ['basePrompt'],
-  resolveComments: ['basePrompt']
-}
-
-export type SourceControlActionVariableInfo = {
-  description: string
-  example: string
-}
-
-export const SOURCE_CONTROL_ACTION_VARIABLE_INFO: Record<string, SourceControlActionVariableInfo> =
-  {
-    basePrompt: {
-      description:
-        'Orca’s built-in prompt for this action, including the context Orca knows how to gather safely.',
-      example:
-        'Commit messages include staged diff guidance; PR details include branch comparison guidance; fix actions include the failure summary.'
-    },
-    branch: {
-      description: 'The current source-control branch name.',
-      example: 'feature/source-control-ai-recipes'
-    },
-    stagedFiles: {
-      description: 'A newline-separated list of staged files for commit-message generation.',
-      example: 'M src/shared/source-control-ai.ts\nA src/shared/source-control-ai-actions.ts'
-    },
-    stagedPatch: {
-      description: 'The staged git patch used for commit-message generation.',
-      example: 'diff --git a/src/app.ts b/src/app.ts\n+addActionRecipeDefaults()'
-    },
-    baseBranch: {
-      description: 'The target branch selected in the Create PR composer.',
-      example: 'main'
-    },
-    currentTitle: {
-      description: 'The PR title currently typed in the composer before generation starts.',
-      example: 'Improve Source Control AI customization'
-    },
-    currentBody: {
-      description: 'The PR description currently typed in the composer before generation starts.',
-      example: 'Adds configurable agents and command templates for Source Control actions.'
-    },
-    commitSummary: {
-      description: 'A newline-separated list of commits on the branch compared to the base.',
-      example: 'a1b2c3d Add action recipe defaults\nd4e5f6a Render command templates'
-    },
-    changedFiles: {
-      description: 'A summary of files changed between the branch and the base branch.',
-      example:
-        'src/shared/source-control-ai-actions.ts | 24 +++++\nsrc/main/text-generation.ts | 8 +-'
-    },
-    patch: {
-      description: 'The branch diff against the base branch used for PR-details generation.',
-      example: 'diff --git a/src/app.ts b/src/app.ts\n+renderSourceControlActionCommandTemplate()'
-    },
-    firstPrompt: {
-      description: 'The first user request that created the Orca workspace.',
-      example: 'Fix CI and commit the result'
-    },
-    assistantMessage: {
-      description: 'The initial agent response, when Orca has one available.',
-      example: 'I will inspect the failing check, patch the issue, and run tests.'
-    }
-  }
-
-const ACTION_ID_SET = new Set<string>(SOURCE_CONTROL_ACTION_IDS)
+const ACTION_ID_SET = new Set<string>(AI_ACTION_IDS)
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -160,7 +97,7 @@ function isSafeRecordKey(key: string): boolean {
   return key !== '' && key !== '__proto__' && key !== 'constructor' && key !== 'prototype'
 }
 
-function isSourceControlActionId(value: string): value is SourceControlActionId {
+function isAiActionId(value: string): value is AiActionId {
   return ACTION_ID_SET.has(value)
 }
 
@@ -198,7 +135,7 @@ export function normalizeSourceControlAiActionDefaults(
 
   const normalized: SourceControlAiActionDefaults = {}
   for (const [key, item] of Object.entries(value)) {
-    if (!isSafeRecordKey(key) || !isSourceControlActionId(key)) {
+    if (!isSafeRecordKey(key) || !isAiActionId(key)) {
       continue
     }
     const defaultValue = normalizeSourceControlActionRecipe(item)
@@ -211,7 +148,7 @@ export function normalizeSourceControlAiActionDefaults(
 
 export function readSourceControlActionDefault(
   defaults: SourceControlAiActionDefaults | null | undefined,
-  actionId: SourceControlActionId
+  actionId: AiActionId
 ): SourceControlActionRecipe {
   const value = defaults?.[actionId]
   return {
@@ -225,7 +162,7 @@ export function readSourceControlActionDefault(
 
 export function resolveSourceControlActionCommandTemplate(
   defaults: SourceControlAiActionDefaults | null | undefined,
-  actionId: SourceControlActionId
+  actionId: AiActionId
 ): string {
   const template = readSourceControlActionDefault(defaults, actionId).commandInputTemplate
   return template !== undefined
@@ -235,7 +172,7 @@ export function resolveSourceControlActionCommandTemplate(
 
 export function setSourceControlActionDefault(
   defaults: SourceControlAiActionDefaults | null | undefined,
-  actionId: SourceControlActionId,
+  actionId: AiActionId,
   value: SourceControlActionRecipe
 ): SourceControlAiActionDefaults {
   return {
@@ -249,7 +186,7 @@ export function setSourceControlActionDefault(
 
 export function setSourceControlActionAgentDefault(
   defaults: SourceControlAiActionDefaults | null | undefined,
-  actionId: SourceControlActionId,
+  actionId: AiActionId,
   agentId: TuiAgent | CustomAgentId | null
 ): SourceControlAiActionDefaults {
   return setSourceControlActionDefault(defaults, actionId, { agentId })
@@ -266,7 +203,7 @@ export function renderSourceControlActionCommandTemplate(
       // Why: placeholder names may start with letters or underscores.
       // Why: only own keys are real variables; inherited Object.prototype names
       // (e.g. `constructor`) must stay visible instead of rendering their value.
-      if (!Object.prototype.hasOwnProperty.call(variables, name)) {
+      if (!Object.hasOwn(variables, name)) {
         return match
       }
       const value = variables[name]

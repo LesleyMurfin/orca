@@ -10,6 +10,8 @@ function extname(filePath: string): string {
 const EXT_TO_LANGUAGE: Record<string, string> = {
   '.ts': 'typescript',
   '.tsx': 'typescript',
+  '.cts': 'typescript',
+  '.mts': 'typescript',
   '.js': 'javascript',
   '.jsx': 'javascript',
   '.mjs': 'javascript',
@@ -87,5 +89,10 @@ export function detectMobileFileLanguage(filePath: string, preferredLanguage?: s
     return exact
   }
 
-  return EXT_TO_LANGUAGE[extname(filename).toLowerCase()] ?? 'plaintext'
+  const lowerName = filename.toLowerCase()
+  // Scoped dotenv names fall back to INI only when no specific extension matches.
+  return (
+    EXT_TO_LANGUAGE[extname(filename).toLowerCase()] ??
+    (lowerName === '.env' || lowerName.startsWith('.env.') ? 'ini' : 'plaintext')
+  )
 }

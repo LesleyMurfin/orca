@@ -76,7 +76,16 @@ async function resolveSymbolicFullName(
       ['rev-parse', '--symbolic-full-name', '--end-of-options', ref],
       cwd
     )
-    return stdout.trim().split(/\r?\n/).find(Boolean) ?? null
+    // Why skip the marker: --verify swallows --end-of-options, but
+    // --symbolic-full-name deliberately echoes it, so the first line is the marker
+    // rather than the ref. Taking it made every branch and tag fall through
+    // gitHistoryRefFromFullName's prefix checks into the "commits" category.
+    return (
+      stdout
+        .trim()
+        .split(/\r?\n/)
+        .find((line) => line && line !== '--end-of-options') ?? null
+    )
   } catch {
     return null
   }
@@ -200,6 +209,8 @@ export async function loadGitHistoryFromExecutor(
   const { stdout } = await git(
     [
       'log',
+      '--no-show-signature',
+      '--no-color',
       `--format=${GIT_HISTORY_COMMIT_FORMAT}`,
       '-z',
       '--topo-order',

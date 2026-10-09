@@ -1,6 +1,6 @@
 import type { Automation, AutomationRun } from '../../shared/automations-types'
 import { buildAutomationWorkspaceProvenance } from '../../shared/automation-workspace-provenance'
-import type { Repo } from '../../shared/types'
+import type { Repo } from '../../shared/repo-types'
 import type { OrcaRuntimeService } from '../runtime/orca-runtime'
 
 type HeadlessAutomationRunForWorkspace = Pick<AutomationRun, 'id' | 'title' | 'scheduledFor'>
@@ -36,7 +36,7 @@ export function buildHeadlessAutomationWorktreeCreateArgs({
     repoSelector: repo.id,
     name: buildHeadlessAutomationWorkspaceName(run.title, run.scheduledFor),
     baseBranch: automation.baseBranch ?? undefined,
-    setupDecision: 'inherit',
+    setupDecision: automation.setupDecision ?? 'skip',
     activate: false,
     createdWithAgent: automation.agentId,
     startupAgent: automation.agentId,

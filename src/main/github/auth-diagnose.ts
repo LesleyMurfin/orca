@@ -12,7 +12,7 @@
  * uses stable field labels ("Token scopes:", "(GITHUB_TOKEN)", etc.).
  */
 import { ghExecFileAsync } from '../git/runner'
-import type { GhAuthDiagnostic, GhAuthAccount } from '../../shared/github-auth-types'
+import type { GhAuthDiagnostic, GhAuthAccount } from '../../shared/github/auth-types'
 
 // Required scopes for ProjectV2 GraphQL access in Orca. `project` is the
 // scope that gates ProjectV2 reads/writes; the others are needed for the
@@ -39,7 +39,7 @@ export function parseAuthStatus(text: string): GhAuthAccount[] {
     // (internal GHES like `github` or `ghe-internal`); we also recover the
     // host from the `Logged in to <host>` line below if this header was
     // missed, so a parser miss never silently drops every account.
-    const hostMatch = line.match(/^([a-z0-9][a-z0-9.-]*)\s*:?\s*$/i)
+    const hostMatch = line.match(/^([a-z0-9][a-z0-9.-]*(?::\d+)?)\s*:?\s*$/i)
     if (hostMatch && !/^logged\b/i.test(line)) {
       currentHost = hostMatch[1]
       continue
@@ -90,13 +90,21 @@ export function parseAuthStatus(text: string): GhAuthAccount[] {
   return accounts
 }
 
-export async function diagnoseGhAuth(): Promise<GhAuthDiagnostic> {
+export async function diagnoseGhAuth(
+  requiredHost?: string,
+  execOptions: { cwd?: string; wslDistro?: string } = {}
+): Promise<GhAuthDiagnostic> {
   let raw = ''
   let ghAvailable = true
   try {
     // `gh auth status` exits non-zero when no host is logged in but still
     // prints the same diagnostic text we want, so capture both streams.
-    const { stdout, stderr } = await ghExecFileAsync(['auth', 'status'])
+    // Why: auth is ambient (no Repo.ghAccount) but must still run on the
+    // repo's WSL/native execution host so inventory matches token resolution.
+    const { stdout, stderr } = await ghExecFileAsync(['auth', 'status'], {
+      ...(execOptions.cwd ? { cwd: execOptions.cwd } : {}),
+      ...(execOptions.wslDistro ? { wslDistro: execOptions.wslDistro } : {})
+    })
     raw = `${stdout}\n${stderr}`
   } catch (err) {
     const stderr =
@@ -118,7 +126,16 @@ export async function diagnoseGhAuth(): Promise<GhAuthDiagnostic> {
     }
   }
   const accounts = parseAuthStatus(raw)
-  const active = accounts.find((a) => a.active) ?? accounts[0] ?? null
+  // Why: when the caller names a host (a GHES origin), scope the diagnosis to
+  // that host's account — the github.com account's scopes are irrelevant to it.
+  const normalizedRequiredHost = requiredHost?.trim().toLowerCase() || null
+  const hostAccounts = normalizedRequiredHost
+    ? accounts.filter((a) => a.host.toLowerCase() === normalizedRequiredHost)
+    : accounts
+  const active =
+    hostAccounts.find((a) => a.active) ??
+    hostAccounts[0] ??
+    (normalizedRequiredHost ? null : (accounts.find((a) => a.active) ?? accounts[0] ?? null))
   const envTokenInProcess: 'GITHUB_TOKEN' | 'GH_TOKEN' | null = process.env.GH_TOKEN
     ? 'GH_TOKEN'
     : process.env.GITHUB_TOKEN
@@ -141,6 +158,8 @@ export async function diagnoseGhAuth(): Promise<GhAuthDiagnostic> {
     envTokenInProcess,
     missingScopes,
     requiredScopes: [...REQUIRED_SCOPES],
-    hasKeyringFallback: Boolean(keyringFallback && keyringFallback !== active)
+    hasKeyringFallback: Boolean(keyringFallback && keyringFallback !== active),
+    requiredHost: normalizedRequiredHost,
+    requiredHostAuthenticated: normalizedRequiredHost ? hostAccounts.length > 0 : null
   }
 }

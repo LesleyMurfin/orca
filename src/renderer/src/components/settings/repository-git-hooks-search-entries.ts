@@ -1,4 +1,4 @@
-import type { Repo } from '../../../../shared/types'
+import type { Repo } from '../../../../shared/repo-types'
 import type { SettingsSearchEntry } from './settings-search'
 import { translate } from '@/i18n/i18n'
 import { translateSearchKeyword } from './settings-search-keywords'
@@ -116,6 +116,10 @@ export function getRepositoryGitHooksSearchEntries(repo: Repo): SettingsSearchEn
         ...translateSearchKeyword(
           'auto.components.settings.repository.search.f9d84b7971',
           'setup run policy'
+        ),
+        ...translateSearchKeyword(
+          'auto.components.settings.repository.search.waitForSetupBeforeAgent',
+          'wait for setup before starting agent'
         ),
         ...translateSearchKeyword('auto.components.settings.repository.search.80c490b012', 'ask'),
         ...translateSearchKeyword(

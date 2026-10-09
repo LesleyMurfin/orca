@@ -1,11 +1,11 @@
 import type { DraftPasteReadySignal } from '../../../shared/tui-agent-config'
-import type { GlobalSettings } from '../../../shared/types'
+import type { GlobalSettings } from '../../../shared/global-settings-types'
 import { subscribeToPtyData } from '@/components/terminal-pane/pty-data-sidecar-subscriptions'
+import { replayPreHandlerPtyData } from '@/components/terminal-pane/pty-pre-handler-buffer'
 import { isRemoteRuntimePtyId } from '@/runtime/runtime-terminal-inspection'
 import { subscribeToRuntimeTerminalData } from '@/runtime/runtime-terminal-stream'
+import { createDraftPasteReadyScanner } from '../../../shared/draft-paste-ready-scanner'
 
-const DECSET_BRACKETED_PASTE = '\x1b[?2004h'
-const CODEX_COMPOSER_PROMPT = '›'
 const BRACKETED_PASTE_QUIET_MS = 1500
 
 /**
@@ -26,10 +26,9 @@ export function waitForAgentDraftInputReady(
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false
-    let recent = ''
-    let postHandshakeRecent = ''
-    let saw2004 = false
+    const scanner = createDraftPasteReadyScanner(readySignal)
     let quietTimer: number | null = null
+    let graceTimer: number | null = null
     let hardTimer: number | null = null
     let unsubscribe: (() => void) | null = null
 
@@ -44,6 +43,9 @@ export function waitForAgentDraftInputReady(
       if (quietTimer !== null) {
         window.clearTimeout(quietTimer)
       }
+      if (graceTimer !== null) {
+        window.clearTimeout(graceTimer)
+      }
       unsubscribe?.()
       resolve(value)
     }
@@ -56,41 +58,18 @@ export function waitForAgentDraftInputReady(
     }
 
     const observeData = (data: string): void => {
-      // Why: 512 bytes covers split escape sequences and Codex's styled prompt
-      // without retaining a large terminal scrollback copy.
-      const combined = recent + data
-      recent = combined.slice(-512)
-      if (!saw2004) {
-        const markerIndex = combined.indexOf(DECSET_BRACKETED_PASTE)
-        if (markerIndex === -1) {
-          return
-        }
-        saw2004 = true
-        const postHandshakeChunk = combined.slice(markerIndex + DECSET_BRACKETED_PASTE.length)
-        if (readySignal === 'codex-composer-prompt') {
-          if (postHandshakeChunk.includes(CODEX_COMPOSER_PROMPT)) {
-            finish(true)
-            return
-          }
-          postHandshakeRecent = postHandshakeChunk.slice(-512)
-          return
-        }
-        postHandshakeRecent = postHandshakeChunk.slice(-512)
-      } else {
-        if (
-          readySignal === 'codex-composer-prompt' &&
-          (data.includes(CODEX_COMPOSER_PROMPT) ||
-            (postHandshakeRecent + data).includes(CODEX_COMPOSER_PROMPT))
-        ) {
-          finish(true)
-          return
-        }
-        postHandshakeRecent = (postHandshakeRecent + data).slice(-512)
-      }
-      if (readySignal === 'codex-composer-prompt') {
+      const { ready, armQuietTimer: shouldArm, readyAfterMs } = scanner.observe(data)
+      if (ready) {
+        finish(true)
         return
       }
-      if (saw2004) {
+      if (readyAfterMs === null && graceTimer !== null) {
+        window.clearTimeout(graceTimer)
+        graceTimer = null
+      } else if (typeof readyAfterMs === 'number' && graceTimer === null) {
+        graceTimer = window.setTimeout(() => finish(true), readyAfterMs)
+      }
+      if (shouldArm) {
         armQuietTimer()
       }
     }
@@ -112,10 +91,14 @@ export function waitForAgentDraftInputReady(
         .catch(() => finish(false))
     } else {
       unsubscribe = subscribeToPtyData(ptyId, observeData)
+      // Why: spawn can resolve after the first Codex frame was buffered. Replay
+      // it to this observer without consuming the primary xterm handler's copy.
+      replayPreHandlerPtyData(ptyId, observeData)
     }
 
     if (!settled) {
-      hardTimer = window.setTimeout(() => finish(false), timeoutMs)
+      // A pending grace means the box was seen: take it, as the box rule would have.
+      hardTimer = window.setTimeout(() => finish(graceTimer !== null), timeoutMs)
     }
   })
 }

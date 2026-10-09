@@ -7,6 +7,10 @@ export const AGENT_HOOK_TARGETS = [
   'claude',
   'openclaude',
   'codex',
+  'qoder',
+  'qoder-cn',
+  'qwen-code',
+  'codebuddy',
   'gemini',
   'antigravity',
   'amp',
@@ -17,11 +21,21 @@ export const AGENT_HOOK_TARGETS = [
   'copilot',
   'hermes',
   'devin',
-  'kimi'
+  'kimi',
+  'muse',
+  'zcode',
+  'dsh',
+  'jcode'
 ] as const
 export type AgentHookTarget = (typeof AGENT_HOOK_TARGETS)[number]
 
-export type AgentHookInstallState = 'installed' | 'not_installed' | 'partial' | 'error'
+export type AgentHookInstallState = 'installed' | 'not_installed' | 'partial' | 'error' | 'skipped'
+
+export type AgentHookInstallSkipReason =
+  | 'agent_disabled'
+  | 'cli_not_found'
+  | 'cli_presence_unknown'
+  | 'hooks_disabled'
 
 export type AgentHookInstallStatus = {
   agent: AgentHookTarget
@@ -29,6 +43,7 @@ export type AgentHookInstallStatus = {
   configPath: string
   managedHooksPresent: boolean
   detail: string | null
+  skipReason?: AgentHookInstallSkipReason
 }
 
 // Why: bumped whenever the managed script's request shape changes. The
@@ -42,3 +57,6 @@ export type AgentHookInstallStatus = {
 // rewritten on every install() call so there is no durable on-disk v1 script
 // to inherit. Reserve the next bump for a real wire change.
 export const ORCA_HOOK_PROTOCOL_VERSION = '1' as const
+
+// Why: absence means the listener predates raw-JSON metadata headers, so managed scripts must keep using form posts.
+export const ORCA_HOOK_RAW_JSON_TRANSPORT = 'raw-json-v1' as const

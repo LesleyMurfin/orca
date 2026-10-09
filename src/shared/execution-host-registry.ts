@@ -1,7 +1,9 @@
+import type { RuntimeEnvironmentStatus } from './runtime-host-status'
 import {
   LOCAL_EXECUTION_HOST_ID,
   getLocalExecutionHostLabel,
   getSettingsFocusedExecutionHostId,
+  isRuntimeOwnedSshTargetId,
   parseExecutionHostId,
   toRuntimeExecutionHostId,
   toSshExecutionHostId,
@@ -12,7 +14,10 @@ import { evaluateRuntimeCompat, type RuntimeCompatVerdict } from './protocol-com
 import { MIN_COMPATIBLE_RUNTIME_SERVER_VERSION, RUNTIME_PROTOCOL_VERSION } from './protocol-version'
 import type { RuntimeStatus } from './runtime-types'
 import type { SshConnectionState, SshConnectionStatus } from './ssh-types'
-import type { GlobalSettings, Repo } from './types'
+import type { RuntimeEnvironmentSource } from './runtime-environments'
+import type { GlobalSettings } from './global-settings-types'
+import type { Repo } from './repo-types'
+import { annotateManagedOrcadExecutionHosts } from './managed-orcad-execution-host'
 
 export type ExecutionHostHealth =
   | 'local'
@@ -36,19 +41,22 @@ export type ExecutionHostRegistryEntry = {
   minCompatibleClientVersion?: number | null
   platform?: NodeJS.Platform | null
   remoteControlState?: RuntimeStatus['remoteControl']
+  source?: RuntimeEnvironmentSource
+  /** See managed-orcad-execution-host: pairs an SSH host with its managed server. */
+  aliasHostIds?: readonly ExecutionHostId[]
+  mergedIntoHostId?: ExecutionHostId
 }
 
 type RuntimeEnvironmentSummary = {
   id: string
   name?: string | null
+  source?: RuntimeEnvironmentSource
+  orcadDeployment?: { sshTargetId: string } | null
 }
 
-type RuntimeHostStatus = {
-  status?: RuntimeStatus | null
-  appVersion?: string | null
-}
+type RuntimeStatusByEnvironmentId = ReadonlyMap<string, RuntimeEnvironmentStatus>
 
-type RuntimeStatusByEnvironmentId = ReadonlyMap<string, RuntimeHostStatus>
+export type ExecutionHostSource = 'configured-only' | 'include-references'
 
 function normalizeHostPart(value: string | null | undefined): string | null {
   const trimmed = value?.trim()
@@ -72,13 +80,13 @@ function runtimeCompatibility(
 
 function runtimeHealth(
   status: RuntimeStatus | null | undefined,
-  compatibility: RuntimeCompatVerdict | null
+  compatibility: RuntimeCompatVerdict | null,
+  remoteControl: RuntimeStatus['remoteControl'] | null | undefined
 ): ExecutionHostHealth {
-  // Why: with no live status we have no evidence the Orca server is reachable, so
-  // it must read 'disconnected' (like SSH) rather than defaulting to 'available'.
-  // A configured-but-never-connected host was showing "Connected" otherwise.
+  // Why: with no live status we have no evidence the Orca server is reachable,
+  // unless a ready shared-control socket already proved the transport is up.
   if (!status) {
-    return 'disconnected'
+    return remoteControl?.state === 'ready' ? 'available' : 'disconnected'
   }
   if (!compatibility) {
     return 'available'
@@ -137,40 +145,59 @@ function setHost(
   // (named) registration is authoritative for the label — runtime envs are
   // seeded with a friendly name before the id-labeled status/focus/repo
   // fallbacks run, so keep the existing label on a health-only upgrade.
-  hosts.set(entry.id, { ...entry, label: existing.label })
+  hosts.set(entry.id, { ...entry, label: existing.label, source: existing.source ?? entry.source })
 }
 
 function addRuntimeHost(
   hosts: Map<ExecutionHostId, ExecutionHostRegistryEntry>,
   environmentId: string,
   label: string,
+  source: RuntimeEnvironmentSource | undefined,
   statusByEnvironmentId: RuntimeStatusByEnvironmentId | undefined
 ): void {
   const hostId = toRuntimeExecutionHostId(environmentId)
   const runtimeStatus = statusByEnvironmentId?.get(environmentId)
   const status = runtimeStatus?.status
-  const compatibility = runtimeCompatibility(status)
-  const controlHealth = runtimeControlHealth(status?.remoteControl)
+  const snapshot = runtimeStatus?.snapshot
+  const metadata = status ?? snapshot?.status
+  const compatibility = runtimeCompatibility(metadata)
+  const remoteControl = runtimeStatus?.remoteControl ?? status?.remoteControl
+  const controlHealth = snapshot?.retired
+    ? 'disconnected'
+    : snapshot?.verification === 'blocked'
+      ? 'blocked'
+      : !runtimeStatus ||
+          snapshot?.verification === 'checking' ||
+          snapshot?.transport === 'disconnected' ||
+          snapshot?.transport === 'connecting'
+        ? 'connecting'
+        : snapshot?.transport === 'ready'
+          ? compatibility?.kind === 'blocked'
+            ? 'blocked'
+            : 'available'
+          : runtimeControlHealth(remoteControl)
   setHost(hosts, {
     id: hostId,
     kind: 'runtime',
     label,
     detail: 'Orca server',
-    health: controlHealth ?? runtimeHealth(status, compatibility),
+    health: controlHealth ?? runtimeHealth(status, compatibility, remoteControl),
     compatibility: compatibility ?? undefined,
-    capabilities: status?.capabilities,
-    appVersion: runtimeStatus?.appVersion ?? null,
-    protocolVersion: status?.runtimeProtocolVersion ?? status?.protocolVersion ?? null,
+    capabilities: metadata?.capabilities,
+    appVersion: runtimeStatus?.appVersion ?? metadata?.appVersion ?? null,
+    protocolVersion: metadata?.runtimeProtocolVersion ?? metadata?.protocolVersion ?? null,
     minCompatibleClientVersion:
-      status?.minCompatibleRuntimeClientVersion ?? status?.minCompatibleMobileVersion ?? null,
-    platform: status?.hostPlatform ?? null,
-    remoteControlState: status?.remoteControl ?? null
+      metadata?.minCompatibleRuntimeClientVersion ?? metadata?.minCompatibleMobileVersion ?? null,
+    platform: metadata?.hostPlatform ?? null,
+    remoteControlState: remoteControl ?? null,
+    ...(source ? { source } : {})
   })
 }
 
 export function buildExecutionHostRegistry(args: {
   repos: readonly Pick<Repo, 'connectionId' | 'executionHostId'>[]
   settings: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined
+  hostSource?: ExecutionHostSource
   sshTargetLabels?: ReadonlyMap<string, string>
   sshConnectionStates?: ReadonlyMap<string, SshConnectionState>
   runtimeEnvironments?: readonly RuntimeEnvironmentSummary[]
@@ -197,49 +224,64 @@ export function buildExecutionHostRegistry(args: {
       hosts,
       environmentId,
       normalizeHostPart(environment.name) ?? environmentId,
+      environment.source,
       args.runtimeStatusByEnvironmentId
     )
   }
   for (const environmentId of args.runtimeStatusByEnvironmentId?.keys() ?? []) {
-    addRuntimeHost(hosts, environmentId, environmentId, args.runtimeStatusByEnvironmentId)
+    addRuntimeHost(
+      hosts,
+      environmentId,
+      environmentId,
+      undefined,
+      args.runtimeStatusByEnvironmentId
+    )
   }
 
   const focusedHost = getSettingsFocusedExecutionHostId(args.settings)
   const parsedFocusedHost = parseExecutionHostId(focusedHost)
-  if (parsedFocusedHost?.kind === 'runtime') {
+  if (parsedFocusedHost?.kind === 'runtime' && args.hostSource !== 'configured-only') {
     addRuntimeHost(
       hosts,
       parsedFocusedHost.environmentId,
       parsedFocusedHost.environmentId,
+      undefined,
       args.runtimeStatusByEnvironmentId
     )
   }
 
   const sshTargetIds = new Set<string>()
-  for (const repo of args.repos) {
-    const parsedHost = parseExecutionHostId(repo.executionHostId)
-    if (parsedHost?.kind === 'runtime') {
-      addRuntimeHost(
-        hosts,
-        parsedHost.environmentId,
-        parsedHost.environmentId,
-        args.runtimeStatusByEnvironmentId
-      )
-    }
-    if (parsedHost?.kind === 'ssh') {
-      sshTargetIds.add(parsedHost.targetId)
+  if (args.hostSource !== 'configured-only') {
+    for (const repo of args.repos) {
+      const parsedHost = parseExecutionHostId(repo.executionHostId)
+      if (parsedHost?.kind === 'runtime') {
+        addRuntimeHost(
+          hosts,
+          parsedHost.environmentId,
+          parsedHost.environmentId,
+          undefined,
+          args.runtimeStatusByEnvironmentId
+        )
+      }
+      // Why: a VM-backed repo's executionHostId is `ssh:runtime-ssh-<id>`. Runtime-owned
+      // targets are hidden, so they must not become visible SSH run-target hosts here.
+      if (parsedHost?.kind === 'ssh' && !isRuntimeOwnedSshTargetId(parsedHost.targetId)) {
+        sshTargetIds.add(parsedHost.targetId)
+      }
     }
   }
   for (const targetId of args.sshTargetLabels?.keys() ?? []) {
     const normalized = normalizeHostPart(targetId)
-    if (normalized) {
+    if (normalized && !isRuntimeOwnedSshTargetId(normalized)) {
       sshTargetIds.add(normalized)
     }
   }
-  for (const repo of args.repos) {
-    const targetId = normalizeHostPart(repo.connectionId)
-    if (targetId) {
-      sshTargetIds.add(targetId)
+  if (args.hostSource !== 'configured-only') {
+    for (const repo of args.repos) {
+      const targetId = normalizeHostPart(repo.connectionId)
+      if (targetId && !isRuntimeOwnedSshTargetId(targetId)) {
+        sshTargetIds.add(targetId)
+      }
     }
   }
 
@@ -255,12 +297,21 @@ export function buildExecutionHostRegistry(args: {
     })
   }
 
+  annotateManagedOrcadExecutionHosts({
+    hosts,
+    runtimeEnvironments: args.runtimeEnvironments ?? [],
+    sshConnectionStates: args.sshConnectionStates
+  })
+
   const overrides = args.hostLabelOverrides
   if (!overrides || overrides.size === 0) {
     return [...hosts.values()]
   }
   return [...hosts.values()].map((host) => {
-    const label = overrides.get(host.id)
+    // Why the alias fallback: a rename saved on the merged-away id still names the merged row.
+    const label =
+      overrides.get(host.id) ??
+      host.aliasHostIds?.map((aliasHostId) => overrides.get(aliasHostId)).find(Boolean)
     return label ? { ...host, label } : host
   })
 }

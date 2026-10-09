@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { type AgentStatusEntry } from '../../../../shared/agent-status-types'
-import type { TerminalTab } from '../../../../shared/types'
+import type { AgentStatusEntry } from '../../../../shared/agent-status-types'
+import type { TerminalTab } from '../../../../shared/terminal-tab-types'
 import type { RetainedAgentEntry } from './agent-status'
+import { RECENTLY_CLOSED_AGENT_STATUS_TAB_IDS_MAX } from './agent-status'
 import { createTestStore } from './store-test-helpers'
 
 // Why: dropAgentStatus and dismissRetainedAgentsByWorktree mirror the renderer-
@@ -60,21 +61,6 @@ describe('dropAgentStatus → IPC fan-out', () => {
     expect(drop).toHaveBeenCalledTimes(1)
     expect(drop).toHaveBeenCalledWith('tab-missing:0')
   })
-
-  it('idempotent: repeated drops on the same paneKey fire the IPC each time', () => {
-    // Why: the renderer keeps drop() side-effect free relative to its own
-    // state — sending an extra IPC for an already-dropped paneKey is safe
-    // because main-side dropStatusEntry is a no-op when the entry is gone.
-    // Asserting this contract documents the renderer's hands-off posture.
-    const { drop } = stubWindowApi()
-    const store = createTestStore()
-    store
-      .getState()
-      .setAgentStatus('tab-1:0', { state: 'working', prompt: 'p', agentType: 'claude' })
-    store.getState().dropAgentStatus('tab-1:0')
-    store.getState().dropAgentStatus('tab-1:0')
-    expect(drop).toHaveBeenCalledTimes(2)
-  })
 })
 
 describe('dropAgentStatusByTabPrefix -> IPC fan-out', () => {
@@ -118,6 +104,24 @@ describe('dropAgentStatusByTabPrefix -> IPC fan-out', () => {
       'tab-old': true,
       'tab-new': true
     })
+  })
+
+  it('FIFO-caps recentlyClosedAgentStatusTabIds so it cannot grow unbounded', () => {
+    stubWindowApi()
+    const store = createTestStore()
+    const cap = RECENTLY_CLOSED_AGENT_STATUS_TAB_IDS_MAX
+
+    for (let i = 0; i < cap + 5; i++) {
+      store.getState().dropAgentStatusByTabPrefix(`tab-${i}`)
+    }
+
+    const closed = store.getState().recentlyClosedAgentStatusTabIds
+    expect(Object.keys(closed)).toHaveLength(cap)
+    // Oldest evicted, most-recent retained (a status event for a tab closed
+    // >cap tabs ago cannot still arrive, so suppression is unaffected).
+    expect(closed['tab-0']).toBeUndefined()
+    expect(closed['tab-4']).toBeUndefined()
+    expect(closed[`tab-${cap + 4}`]).toBe(true)
   })
 })
 

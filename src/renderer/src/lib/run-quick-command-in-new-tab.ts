@@ -1,16 +1,18 @@
 import { useAppStore } from '@/store'
 import { reconcileTabOrder } from '@/components/tab-bar/reconcile-order'
 import { launchAgentInNewTab } from '@/lib/launch-agent-in-new-tab'
+import { newAgentLaunchRequestId } from '@/lib/agent-launch-request-id'
 import {
   flattenTerminalQuickCommand,
   isTerminalAgentQuickCommand,
   supportsTerminalAgentQuickCommand
 } from '../../../shared/terminal-quick-commands'
-import type { TerminalQuickCommand } from '../../../shared/types'
+import type { TerminalQuickCommand } from '../../../shared/terminal-quick-command-types'
 
 export type RunQuickCommandInNewTabArgs = {
   command: TerminalQuickCommand
   worktreeId: string
+  historyId?: string
   /** Tab group the user clicked from. Keeps the spawned terminal in the
    *  pane the user initiated from when available. */
   groupId?: string | null
@@ -32,6 +34,13 @@ function resolveQuickCommandGroupId(
   )
 }
 
+function resolveQuickCommandLaunchGroupId(
+  worktreeId: string,
+  requestedGroupId: string | null | undefined
+): string | null {
+  return requestedGroupId ?? useAppStore.getState().activeGroupIdByWorktree[worktreeId] ?? null
+}
+
 /**
  * Spawn a fresh terminal tab in the given group and queue the quick-command
  * text as the startup command. The PTY connection layer writes the command
@@ -42,12 +51,14 @@ function resolveQuickCommandGroupId(
  * Terminal-command quick commands always append Enter — the split-button is
  * a "run" affordance, distinct from the right-click "Insert" mode where
  * `appendEnter: false` is honored. Agent-prompt quick commands use the
- * agent's normal prompt launch command instead of post-launch TUI paste.
+ * agent's prompt launch path; OpenCode2 submits through the ready-state TUI
+ * delivery path because its `--prompt` startup can leave text unsent.
  */
 export function runQuickCommandInNewTab({
   command,
   worktreeId,
-  groupId
+  groupId,
+  historyId = command.id
 }: RunQuickCommandInNewTabArgs): { tabId: string } | null {
   const targetGroupId = groupId ?? undefined
   if (isTerminalAgentQuickCommand(command)) {
@@ -55,19 +66,29 @@ export function runQuickCommandInNewTab({
       return null
     }
     const result = launchAgentInNewTab({
+      requestId: newAgentLaunchRequestId(),
       agent: command.agent,
       prompt: command.prompt,
       worktreeId,
       groupId: targetGroupId,
+      ...(command.agent === 'opencode' || command.agent === 'opencode2'
+        ? { promptDelivery: 'submit-after-ready' as const }
+        : {}),
       launchSource: 'quick_command',
       quickCommandLabel: command.label
     })
-    if (result?.tabId) {
-      const launchedGroupId = resolveQuickCommandGroupId(worktreeId, result.tabId, groupId)
+    if (result?.surface.kind === 'local-terminal') {
+      const launchedGroupId = resolveQuickCommandGroupId(worktreeId, result.surface.tabId, groupId)
       if (launchedGroupId) {
-        useAppStore.getState().setRecentQuickCommandForGroup(launchedGroupId, command.id)
+        useAppStore.getState().setRecentQuickCommandForGroup(launchedGroupId, historyId)
       }
-      return { tabId: result.tabId }
+      return { tabId: result.surface.tabId }
+    }
+    if (result?.surface.kind === 'host-published') {
+      const launchedGroupId = resolveQuickCommandLaunchGroupId(worktreeId, groupId)
+      if (launchedGroupId) {
+        useAppStore.getState().setRecentQuickCommandForGroup(launchedGroupId, historyId)
+      }
     }
     if (result) {
       return null
@@ -92,7 +113,7 @@ export function runQuickCommandInNewTab({
   // Why: match `+` button's createNewTerminalTab — without this, a worktree
   // currently showing an editor file keeps rendering the editor and the new
   // terminal tab stays invisible.
-  store.setActiveTabType('terminal')
+  store.setActiveTabType('terminal', worktreeId)
 
   // Why: persist tab-bar order with the new terminal appended. Without this,
   // reconcileTabOrder falls back to terminals-first when the stored order is
@@ -113,7 +134,7 @@ export function runQuickCommandInNewTab({
 
   const launchedGroupId = resolveQuickCommandGroupId(worktreeId, tab.id, groupId)
   if (launchedGroupId) {
-    fresh.setRecentQuickCommandForGroup(launchedGroupId, command.id)
+    fresh.setRecentQuickCommandForGroup(launchedGroupId, historyId)
   }
 
   return { tabId: tab.id }

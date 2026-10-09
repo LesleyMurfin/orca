@@ -15,6 +15,8 @@ import {
 } from './project-header-drag-contract'
 import { createProjectHeaderDragSession } from './project-header-drag-start'
 import { getWorktreeSidebarDragAutoscroll } from './worktree-sidebar-drag-autoscroll'
+import { hasPointerBeenReleased } from './header-drag-pointer-release'
+import { swallowNextClickOnDragHandle } from './header-drag-click-swallow'
 
 // Why pointer events instead of HTML5 DnD: rows are absolutely-positioned by
 // react-virtual and unmount/remount as scroll changes, so DnD enter/leave fire
@@ -72,14 +74,31 @@ export function useRepoHeaderDrag({
       if (!session || !container) {
         return null
       }
-      const containerRect = container.getBoundingClientRect()
       return computeProjectHeaderDropPreview({
         pointerY,
-        containerTop: containerRect.top,
+        containerTop: container.getBoundingClientRect().top,
         scrollTop: container.scrollTop,
         rects: session.headerRects,
-        sidebarRepoHeaderIds: session.sidebarRepoHeaderIds
+        sidebarRepoHeaderIds: session.sidebarRepoHeaderIds,
+        contentBottom: container.scrollHeight
       })
+    },
+    []
+  )
+
+  const applyDrop = useCallback(
+    (repoId: string, drop: { dropIndex: number; dropIndicatorY: number } | null) => {
+      latestDropIndexRef.current = drop?.dropIndex ?? null
+      const nextState: RepoDragState = drop
+        ? { draggingRepoId: repoId, ...drop }
+        : { draggingRepoId: repoId, dropIndex: null, dropIndicatorY: null }
+      setState((prev) =>
+        prev.draggingRepoId === nextState.draggingRepoId &&
+        prev.dropIndex === nextState.dropIndex &&
+        prev.dropIndicatorY === nextState.dropIndicatorY
+          ? prev
+          : nextState
+      )
     },
     []
   )
@@ -107,20 +126,7 @@ export function useRepoHeaderDrag({
         // capture may already be released (pointercancel, element unmounted)
       }
       if (session.promoted) {
-        const handleEl = session.handleEl
-        const swallow = (e: MouseEvent): void => {
-          const target = e.target as Node | null
-          if (target && handleEl.contains(target)) {
-            e.stopPropagation()
-            e.preventDefault()
-          }
-          window.removeEventListener('click', swallow, true)
-        }
-        window.addEventListener('click', swallow, true)
-        clickSwallowTimeoutRef.current = setTimeout(() => {
-          window.removeEventListener('click', swallow, true)
-          clickSwallowTimeoutRef.current = null
-        }, 0)
+        clickSwallowTimeoutRef.current = swallowNextClickOnDragHandle(session.handleEl)
       }
       const sidebarDropIndex =
         commit && session.promoted && latestDropIndexRef.current !== null
@@ -171,18 +177,11 @@ export function useRepoHeaderDrag({
         refreshHeaderRects()
       }
 
-      const drop = computeDrop(session.latestPointerY)
-      if (drop) {
-        setState((prev) =>
-          prev.dropIndex === drop.dropIndex && prev.dropIndicatorY === drop.dropIndicatorY
-            ? prev
-            : { draggingRepoId: session.repoId, ...drop }
-        )
-      }
+      applyDrop(session.repoId, computeDrop(session.latestPointerY))
 
       autoscrollFrameIdRef.current = window.requestAnimationFrame(runAutoscrollFrame)
     },
-    [cancelAutoscroll, computeDrop, refreshHeaderRects]
+    [applyDrop, cancelAutoscroll, computeDrop, refreshHeaderRects]
   )
 
   const ensureAutoscroll = useCallback(() => {
@@ -200,6 +199,10 @@ export function useRepoHeaderDrag({
     const onPointerMove = (e: PointerEvent): void => {
       const session = dragSessionRef.current
       if (!session || e.pointerId !== session.pointerId) {
+        return
+      }
+      if (hasPointerBeenReleased(e)) {
+        endDrag(false)
         return
       }
       session.latestPointerY = e.clientY
@@ -227,14 +230,7 @@ export function useRepoHeaderDrag({
         setState({ draggingRepoId: session.repoId, dropIndex: null, dropIndicatorY: null })
       }
       refreshHeaderRects()
-      const drop = computeDrop(e.clientY)
-      if (drop) {
-        setState((prev) =>
-          prev.dropIndex === drop.dropIndex && prev.dropIndicatorY === drop.dropIndicatorY
-            ? prev
-            : { draggingRepoId: session.repoId, ...drop }
-        )
-      }
+      applyDrop(session.repoId, computeDrop(e.clientY))
       ensureAutoscroll()
     }
     const onPointerUp = (e: PointerEvent): void => {
@@ -275,7 +271,15 @@ export function useRepoHeaderDrag({
         clickSwallowTimeoutRef.current = null
       }
     }
-  }, [cancelAutoscroll, computeDrop, endDrag, ensureAutoscroll, refreshHeaderRects, sessionArmed])
+  }, [
+    applyDrop,
+    cancelAutoscroll,
+    computeDrop,
+    endDrag,
+    ensureAutoscroll,
+    refreshHeaderRects,
+    sessionArmed
+  ])
 
   useEffect(() => {
     if (state.draggingRepoId === null) {

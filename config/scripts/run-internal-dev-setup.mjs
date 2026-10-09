@@ -2,7 +2,6 @@
 import { accessSync, constants, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 function isExecutable(filePath, platform, access = accessSync) {
   if (platform === 'win32') {
@@ -21,11 +20,27 @@ function quoteWindowsArg(value) {
   return `"${value.replace(/"/g, '""')}"`
 }
 
+// Why: under a Git Bash setup runner, Orca exports ORCA_WORKTREE_PATH in MSYS form (/c/...), which
+// cmd.exe cannot resolve. This is the migration pattern for any setup script feeding a native exe.
+function posixShellPathToNativeWindowsPath(value) {
+  const driveMatch = value.match(/^\/([A-Za-z])\/(.*)$/)
+  if (driveMatch) {
+    return `${driveMatch[1].toUpperCase()}:\\${driveMatch[2].replace(/\//g, '\\')}`
+  }
+  return value
+}
+
 function spawnOptionalSetup(spawn, setupPath, worktreePath, platform, env) {
   if (platform === 'win32') {
+    const nativeWorktreePath = posixShellPathToNativeWindowsPath(worktreePath)
     spawn(
       env.ComSpec || 'cmd.exe',
-      ['/d', '/s', '/c', `call ${quoteWindowsArg(setupPath)} ${quoteWindowsArg(worktreePath)}`],
+      [
+        '/d',
+        '/s',
+        '/c',
+        `call ${quoteWindowsArg(setupPath)} ${quoteWindowsArg(nativeWorktreePath)}`
+      ],
       {
         stdio: 'inherit',
         windowsVerbatimArguments: true
@@ -59,6 +74,6 @@ export function runInternalDevSetup({
   return 0
 }
 
-if (process.argv[1] && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1])) {
+if (process.argv[1] && resolve(import.meta.filename) === resolve(process.argv[1])) {
   process.exit(runInternalDevSetup())
 }

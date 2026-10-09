@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { __resetShellStartupEnvCache } from '../main/pty/shell-startup-env'
 import { resolveOpenCodeSourceConfigDir, resolvePiSourceAgentDir } from './plugin-overlay-env'
@@ -78,4 +78,57 @@ describe('plugin overlay env source resolution', () => {
       )
     ).toBe('/remote/original-opencode')
   })
+
+  it.skipIf(process.platform === 'win32')('resolves Prime from its independent env keys', () => {
+    writeFileSync(
+      join(homeDir, '.zshrc'),
+      'export PRIME_AGENT_CODING_AGENT_DIR="$HOME/company-prime"\n'
+    )
+
+    expect(
+      resolvePiSourceAgentDir(
+        { HOME: homeDir, PRIME_AGENT_CODING_AGENT_DIR: '/tmp/inherited-prime' },
+        '/bin/zsh',
+        'prime-agent'
+      )
+    ).toBe(join(homeDir, 'company-prime'))
+    expect(
+      resolvePiSourceAgentDir(
+        {
+          HOME: homeDir,
+          ORCA_PRIME_AGENT_SOURCE_AGENT_DIR: '/remote/original-prime',
+          PRIME_AGENT_CODING_AGENT_DIR: '/tmp/inherited-prime'
+        },
+        '/bin/zsh',
+        'prime-agent'
+      )
+    ).toBe('/remote/original-prime')
+  })
+
+  // Why: the session env is the only place a fish user's XDG_CONFIG_HOME shows up
+  // (config.fish exports it, so no GUI-launched process inherits it). Dropping it
+  // here would scan ~/.config and disagree with the same lookup on the main side.
+  it.skipIf(process.platform === 'win32')(
+    'reads fish config under the session XDG_CONFIG_HOME',
+    () => {
+      const configHome = join(homeDir, 'xdg')
+      mkdirSync(join(configHome, 'fish'), { recursive: true })
+      writeFileSync(
+        join(configHome, 'fish', 'config.fish'),
+        'set -gx OPENCODE_CONFIG_DIR "$HOME/company-opencode"\n'
+      )
+      mkdirSync(join(homeDir, '.config', 'fish'), { recursive: true })
+      writeFileSync(
+        join(homeDir, '.config', 'fish', 'config.fish'),
+        'set -gx OPENCODE_CONFIG_DIR /wrong-default-config-home\n'
+      )
+
+      expect(
+        resolveOpenCodeSourceConfigDir(
+          { HOME: homeDir, XDG_CONFIG_HOME: configHome },
+          '/opt/homebrew/bin/fish'
+        )
+      ).toBe(join(homeDir, 'company-opencode'))
+    }
+  )
 })

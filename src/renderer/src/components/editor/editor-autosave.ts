@@ -1,5 +1,7 @@
 import { joinPath } from '@/lib/path'
 import type { OpenFile } from '@/store/slices/editor'
+import { areLocalWindowsWslPathAliases } from '../../../../shared/cross-platform-path'
+import { isLocalWindowsDesktopClient } from '@/lib/desktop-window-chrome'
 import {
   DEFAULT_EDITOR_AUTO_SAVE_DELAY_MS,
   MAX_EDITOR_AUTO_SAVE_DELAY_MS,
@@ -20,6 +22,10 @@ export type EditorPathMutationTarget = {
   worktreePath: string
   relativePath: string
   runtimeEnvironmentId?: string | null
+  allowLocalWindowsWslAliases?: true
+  indexedOpenFiles?: {
+    matches: (openFiles: OpenFile[]) => OpenFile[]
+  }
 }
 
 export type EditorSaveQuiesceTarget = { fileId: string } | EditorPathMutationTarget
@@ -47,6 +53,12 @@ export type EditorFileSavedDetail = {
 
 export type EditorRequestFileCloseDetail = {
   fileId: string
+  /** Runs once the file actually closes — after save or discard, never on cancel. */
+  onClosed?: () => void
+}
+
+export type EditorRequestCmdSaveDetail = {
+  fileId: string
 }
 
 export function isExternalReloadableEditorTab(file: OpenFile): boolean {
@@ -57,12 +69,50 @@ export function isExternalReloadableEditorTab(file: OpenFile): boolean {
   )
 }
 
+// Why: combined "Changes"/"All Changes" tabs render working-tree diffs but
+// match no single path (their relativePath is a label, filePath the worktree
+// root). The fs watcher must still notify them so terminal/agent edits reload
+// the affected section. Branch/commit combined diffs compare committed refs, so
+// working-tree changes don't affect them and are intentionally excluded.
+export function isWorkingTreeCombinedDiffTab(file: OpenFile): boolean {
+  return (
+    file.mode === 'diff' &&
+    (file.diffSource === 'combined-uncommitted' || file.diffSource === 'combined-all')
+  )
+}
+
 export function canAutoSaveOpenFile(file: OpenFile): boolean {
+  // Why: read-only tabs (AI Vault View Log) must never autosave — writing an
+  // agent-owned transcript can corrupt the provider's resume history.
+  if (file.readOnly === true || file.csvPreviewOnly === true) {
+    return false
+  }
   // Why: single-file editors and one-file unstaged diffs have an unambiguous
   // write target. Combined diff and conflict-review tabs can represent multiple
   // paths, so autosave must stay out of those surfaces until they have their
   // own save coordination instead of guessing which file should be written.
   return file.mode === 'edit' || (file.mode === 'diff' && file.diffSource === 'unstaged')
+}
+
+// Why: autosave must not resolve a changed-on-disk conflict by overwriting
+// the newer external content, nor write over a restored tab whose disk
+// baseline is still unverified (the conflict may simply not be marked YET).
+// One predicate so the save-queue gate and the timer scheduler cannot drift.
+export function isAutosaveSuspendedForFile(
+  file: Pick<
+    OpenFile,
+    | 'externalMutation'
+    | 'pendingDiskBaselineVerification'
+    | 'pendingLiveDiskVerification'
+    | 'pendingOwnerMigration'
+  >
+): boolean {
+  return (
+    file.externalMutation === 'changed' ||
+    file.pendingDiskBaselineVerification === true ||
+    file.pendingLiveDiskVerification === true ||
+    file.pendingOwnerMigration === true
+  )
 }
 
 export function normalizeAutoSaveDelayMs(value: unknown): number {
@@ -82,8 +132,11 @@ export function getOpenFilesForExternalFileChange(
   openFiles: OpenFile[],
   target: EditorPathMutationTarget
 ): OpenFile[] {
+  if (target.indexedOpenFiles) {
+    return target.indexedOpenFiles.matches(openFiles)
+  }
   const absolutePath = joinPath(target.worktreePath, target.relativePath)
-  const hasRuntimeOwnerFilter = Object.prototype.hasOwnProperty.call(target, 'runtimeEnvironmentId')
+  const hasRuntimeOwnerFilter = Object.hasOwn(target, 'runtimeEnvironmentId')
   const targetRuntimeOwner = target.runtimeEnvironmentId?.trim() || null
   return openFiles.filter((file) => {
     if (file.worktreeId !== target.worktreeId) {
@@ -96,7 +149,12 @@ export function getOpenFilesForExternalFileChange(
       return false
     }
     if (file.mode === 'edit' || file.mode === 'markdown-preview') {
-      return file.filePath === absolutePath
+      return (
+        file.filePath === absolutePath ||
+        (target.allowLocalWindowsWslAliases === true &&
+          isLocalWindowsDesktopClient() &&
+          areLocalWindowsWslPathAliases(file.filePath, absolutePath))
+      )
     }
     if (file.mode === 'diff') {
       return (
@@ -156,14 +214,20 @@ export async function requestEditorFileSave(target: EditorSaveFileTarget): Promi
   })
 }
 
-export function requestEditorFileClose(fileId: string): void {
+export function requestEditorFileClose(
+  fileId: string,
+  options?: Pick<EditorRequestFileCloseDetail, 'onClosed'>
+): void {
   window.dispatchEvent(
     new CustomEvent<EditorRequestFileCloseDetail>(ORCA_EDITOR_REQUEST_FILE_CLOSE_EVENT, {
-      detail: { fileId }
+      detail: { fileId, ...options }
     })
   )
 }
 
+// CONTRACT: this event fires even when some tabs of the path are dirty —
+// every consumer MUST skip dirty files per-file. Reloading a dirty tab's
+// content destroys its unsaved draft (the data-loss half of issue #7265).
 export function notifyEditorExternalFileChange(target: EditorPathMutationTarget): void {
   window.dispatchEvent(
     new CustomEvent<EditorPathMutationTarget>(ORCA_EDITOR_EXTERNAL_FILE_CHANGE_EVENT, {

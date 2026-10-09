@@ -1,21 +1,32 @@
-/* eslint-disable max-lines -- Why: Agents pane settings interactions share
-   store-backed queue fixtures that are easier to audit beside the UI helper coverage. */
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getDefaultSettings } from '../../../../shared/constants'
-import type { GlobalSettings, TuiAgent } from '../../../../shared/types'
+import type { GlobalSettings } from '../../../../shared/global-settings-types'
+import type { TuiAgent } from '../../../../shared/tui-agent'
 import { AGENT_CATALOG } from '@/lib/agent-catalog'
 import { useAppStore } from '../../store'
 import { getAgentGeneratedTabTitlesTitle } from './agent-generated-tab-title-copy'
 import { getAgentStatusHooksTitle } from './agent-status-hooks-copy'
-import { getAgentAwakeDescription, getAgentAwakeTitle } from './agent-awake-copy'
+import {
+  getAgentWorkspaceTrustDescription,
+  getAgentWorkspaceTrustTitle
+} from './agent-workspace-trust-copy'
+import {
+  getAgentAwakeDescription,
+  getAgentAwakeLidNote,
+  getAgentAwakeTitle
+} from './agent-awake-copy'
+import { getCodexTerminalServerIsolationTitle } from './codex-terminal-server-isolation-copy'
 import { AgentAwakeSetting } from './AgentAwakeSetting'
+import { AgentRuntimeSetting } from './AgentRuntimeSetting'
+import type * as AgentRuntimeSettingModule from './AgentRuntimeSetting'
 import {
   AgentAvailabilityControl,
   AgentPermissionsSetting,
   AgentGeneratedTabTitlesSetting,
   AgentStatusHooksSetting,
+  AgentWorkspaceTrustSetting,
   AgentsPane,
   getAgentsPaneSearchEntries,
   buildAgentAvailabilitySettingsUpdate,
@@ -26,17 +37,38 @@ import { TooltipProvider } from '../ui/tooltip'
 
 const detectedAgentsMock = vi.hoisted(() => ({
   detectedIds: ['claude'] as TuiAgent[] | null,
-  refresh: vi.fn()
+  isLoading: false,
+  detectionFailed: false,
+  refresh: vi.fn(),
+  lastTarget: undefined as unknown
+}))
+const agentRuntimeSettingMock = vi.hoisted(() => ({
+  lastRefresh: null as (() => Promise<unknown>) | null
 }))
 
 vi.mock('@/hooks/useDetectedAgents', () => ({
-  useDetectedAgents: () => ({
-    detectedIds: detectedAgentsMock.detectedIds,
-    isLoading: detectedAgentsMock.detectedIds === null,
-    isRefreshing: false,
-    refresh: detectedAgentsMock.refresh
-  })
+  useDetectedAgents: (target: unknown) => {
+    detectedAgentsMock.lastTarget = target
+    return {
+      detectedIds: detectedAgentsMock.detectedIds,
+      isLoading: detectedAgentsMock.isLoading,
+      detectionFailed: detectedAgentsMock.detectionFailed,
+      isRefreshing: false,
+      refresh: detectedAgentsMock.refresh
+    }
+  }
 }))
+
+vi.mock('./AgentRuntimeSetting', async (importOriginal) => {
+  const actual = await importOriginal<typeof AgentRuntimeSettingModule>()
+  return {
+    ...actual,
+    AgentRuntimeSetting: (props: React.ComponentProps<typeof actual.AgentRuntimeSetting>) => {
+      agentRuntimeSettingMock.lastRefresh = props.refresh
+      return actual.AgentRuntimeSetting(props)
+    }
+  }
+})
 
 type ReactElementLike = {
   type: unknown
@@ -91,19 +123,9 @@ function visit(node: unknown, cb: (node: ReactElementLike) => void): void {
   if (element.props?.children) {
     visit(element.props.children, cb)
   }
-}
-
-function findSwitch(node: unknown, ariaLabel: string): ReactElementLike {
-  let found: ReactElementLike | null = null
-  visit(node, (entry) => {
-    if (entry.props.role === 'switch' && entry.props['aria-label'] === ariaLabel) {
-      found = entry
-    }
-  })
-  if (!found) {
-    throw new Error('switch not found')
+  if (element.props?.control) {
+    visit(element.props.control, cb)
   }
-  return found
 }
 
 function findSwitchRow(node: unknown, ariaLabel: string): ReactElementLike {
@@ -123,42 +145,173 @@ function findSwitchRow(node: unknown, ariaLabel: string): ReactElementLike {
   return found
 }
 
+function findSegmentedControl(node: unknown, ariaLabel: string): ReactElementLike {
+  let found: ReactElementLike | null = null
+  visit(node, (entry) => {
+    if (entry.props.ariaLabel === ariaLabel && typeof entry.props.onChange === 'function') {
+      found = entry
+    }
+  })
+  if (!found) {
+    throw new Error('segmented control not found')
+  }
+  return found
+}
+
 describe('AgentsPane', () => {
   beforeEach(() => {
     detectedAgentsMock.detectedIds = ['claude']
+    detectedAgentsMock.isLoading = false
+    detectedAgentsMock.detectionFailed = false
     detectedAgentsMock.refresh.mockReset()
+    detectedAgentsMock.lastTarget = undefined
+    agentRuntimeSettingMock.lastRefresh = null
     useAppStore.setState({
       settingsSearchQuery: '',
       detectedAgentIds: ['claude'],
       isDetectingAgents: false,
-      isRefreshingAgents: false
-    })
+      isRefreshingAgents: false,
+      runtimeEnvironments: []
+    } as never)
   })
 
-  it('renders the keep-awake toggle from settings', () => {
+  it('detects agents locally when no active remote server is set', () => {
+    renderPane(getDefaultSettings('/tmp'))
+
+    expect(detectedAgentsMock.lastTarget).toEqual({ kind: 'local' })
+  })
+
+  it('scopes agent detection to the active remote server', () => {
+    // Repro for the "Remote Server lists local agents" bug: with an Active
+    // Server selected, the Installed list must probe that server's PATH.
+    // Why the mutation: renderToStaticMarkup makes useSyncExternalStore read
+    // the zustand SERVER snapshot (getInitialState), so setState is invisible
+    // here — patch the initial-state object itself and restore it after.
+    const initialState = useAppStore.getInitialState() as unknown as {
+      runtimeEnvironments: unknown
+    }
+    const priorRuntimeEnvironments = initialState.runtimeEnvironments
+    initialState.runtimeEnvironments = [{ id: 'env-1', name: 'Coder' }]
+
+    try {
+      const markup = renderPane({
+        ...getDefaultSettings('/tmp'),
+        activeRuntimeEnvironmentId: 'env-1'
+      })
+
+      expect(detectedAgentsMock.lastTarget).toEqual({ kind: 'runtime', environmentId: 'env-1' })
+      expect(markup).toContain('on Coder')
+    } finally {
+      initialState.runtimeEnvironments = priorRuntimeEnvironments
+    }
+  })
+
+  it('shows a retryable error when initial remote detection fails', () => {
+    detectedAgentsMock.detectedIds = null
+    detectedAgentsMock.isLoading = false
+    detectedAgentsMock.detectionFailed = true
+
+    const markup = renderPane({
+      ...getDefaultSettings('/tmp'),
+      activeRuntimeEnvironmentId: 'env-1'
+    })
+
+    expect(markup).toContain('Couldn’t detect installed agents')
+    expect(markup).toContain('Retry')
+    expect(markup).not.toContain('Detecting installed agents…')
+  })
+
+  it('does not flash a failure before the initial detection effect starts', () => {
+    detectedAgentsMock.detectedIds = null
+    detectedAgentsMock.isLoading = false
+    detectedAgentsMock.detectionFailed = false
+
+    const markup = renderPane(getDefaultSettings('/tmp'))
+
+    expect(markup).toContain('Detecting installed agents…')
+    expect(markup).not.toContain('Couldn’t detect installed agents')
+  })
+
+  it('keeps Windows runtime changes scoped to the local agent refresh', () => {
+    renderPane(
+      {
+        ...getDefaultSettings('/tmp'),
+        activeRuntimeEnvironmentId: 'env-1'
+      },
+      { wslSupportedPlatform: true, wslAvailable: true, wslDistros: ['Ubuntu'] }
+    )
+
+    expect(agentRuntimeSettingMock.lastRefresh).toBe(
+      useAppStore.getInitialState().refreshDetectedAgents
+    )
+    expect(agentRuntimeSettingMock.lastRefresh).not.toBe(detectedAgentsMock.refresh)
+  })
+
+  it('renders the keep-awake modes from settings', () => {
     const markup = renderPane(getDefaultSettings('/tmp'))
 
     expect(markup).not.toContain('Agent location')
-    expect(markup).not.toContain('aria-label="Agent location"')
-    expect(markup).toContain('Keep computer awake while agents are working')
+    expect(markup).not.toContain('Agent runtime')
+    expect(markup).not.toContain('aria-label="Agent runtime"')
+    expect(markup).toContain('Keep computer awake')
     expect(markup).toContain(
-      'Keeps this computer and display awake while agents are working. Orca also asks this device to stay awake when the lid is closed, subject to its power policy.'
+      'Choose On, Agent, or Off. Agent mode stays awake while agents are working. Orca also asks this device to stay awake when the lid is closed, subject to its power policy.'
     )
-    expect(markup).toContain('aria-checked="false"')
+    expect(markup).toContain('role="radiogroup"')
+    expect(markup).toContain('>Agent<')
   })
 
-  it('does not render the legacy agent location control on Windows', () => {
+  it('hides desktop-only awake modes in paired web clients', () => {
+    ;(globalThis as { __ORCA_WEB_CLIENT__?: boolean }).__ORCA_WEB_CLIENT__ = true
+    try {
+      expect(renderPane(getDefaultSettings('/tmp'))).not.toContain('Keep computer awake')
+      expect(
+        matchesSettingsSearch('awake', getAgentsPaneSearchEntries({ includeAgentAwake: false }))
+      ).toBe(false)
+    } finally {
+      delete (globalThis as { __ORCA_WEB_CLIENT__?: boolean }).__ORCA_WEB_CLIENT__
+    }
+  })
+
+  it('keeps the host-only folder trust row out of paired web clients and their search', () => {
+    Reflect.set(globalThis, '__ORCA_WEB_CLIENT__', true)
+    try {
+      expect(renderPane(getDefaultSettings('/tmp'))).not.toContain(getAgentWorkspaceTrustTitle())
+      expect(
+        matchesSettingsSearch(
+          'trust',
+          getAgentsPaneSearchEntries({ includeAgentWorkspaceTrust: false })
+        )
+      ).toBe(false)
+    } finally {
+      Reflect.deleteProperty(globalThis, '__ORCA_WEB_CLIENT__')
+    }
+  })
+
+  it('keeps the host-only Codex server row out of paired web clients', () => {
+    Reflect.set(globalThis, '__ORCA_WEB_CLIENT__', true)
+    try {
+      expect(renderPane(getDefaultSettings('/tmp'))).not.toContain(
+        getCodexTerminalServerIsolationTitle()
+      )
+    } finally {
+      Reflect.deleteProperty(globalThis, '__ORCA_WEB_CLIENT__')
+    }
+  })
+
+  it('renders the agent runtime control on Windows-class hosts', () => {
     const markup = renderPane(
       {
         ...getDefaultSettings('/tmp'),
-        terminalWindowsShell: 'wsl.exe'
+        localWindowsRuntimeDefault: { kind: 'wsl', distro: 'Ubuntu' }
       },
-      { wslSupportedPlatform: true, wslCapabilitiesLoading: true }
+      { wslSupportedPlatform: true, wslAvailable: true, wslDistros: ['Ubuntu'] }
     )
 
     expect(markup).not.toContain('Agent location')
-    expect(markup).not.toContain('aria-label="Agent location"')
-    expect(markup).not.toContain('Show installed agents from WSL default.')
+    expect(markup).toContain('Agent runtime')
+    expect(markup).toContain('aria-label="Agent runtime"')
+    expect(markup).toContain('Detect and launch agents in Ubuntu via WSL')
   })
 
   it('hides the WSL agent location controls on platforms without WSL support', () => {
@@ -170,16 +323,59 @@ describe('AgentsPane', () => {
 
     expect(markup).not.toContain('Agent location')
     expect(markup).not.toContain('aria-label="Agent location"')
+    expect(markup).not.toContain('Agent runtime')
+    expect(markup).not.toContain('aria-label="Agent runtime"')
     expect(markup).not.toContain('WSL is not available on this machine.')
+  })
+
+  it('updates the global project runtime when changing agent runtime', async () => {
+    const updateSettings = vi.fn()
+    const element = AgentRuntimeSetting({
+      settings: getDefaultSettings('/tmp'),
+      updateSettings,
+      refresh: detectedAgentsMock.refresh,
+      wslSupportedPlatform: true,
+      wslAvailable: true,
+      wslDistros: ['Ubuntu'],
+      wslCapabilitiesLoading: false
+    })
+    const control = findSegmentedControl(element, 'Agent runtime')
+    const onChange = control.props.onChange as (value: 'windows-host' | 'wsl') => void
+
+    onChange('wsl')
+    await flushPromiseQueue()
+
+    expect(updateSettings).toHaveBeenCalledWith({
+      localWindowsRuntimeDefault: { kind: 'wsl', distro: 'Ubuntu' }
+    })
+    expect(detectedAgentsMock.refresh).toHaveBeenCalledTimes(1)
   })
 
   it('describes Windows lid behavior according to the device', () => {
     expect(getAgentAwakeDescription('Windows')).toBe(
-      "Keeps this computer and display awake while agents are working. Lid-close behavior follows this device's power settings."
+      "Choose On, Agent, or Off. Agent mode stays awake while agents are working; lid-close behavior follows this device's power settings."
     )
   })
 
-  it('toggles the keep-awake setting with the next value', () => {
+  it('describes macOS lid behavior without promising lid-closed wake', () => {
+    expect(getAgentAwakeDescription('Macintosh')).toBe(
+      'Choose On, Agent, or Off. Agent mode prevents idle sleep while agents work, so long runs finish with the lid open. Closing the lid still puts this Mac to sleep.'
+    )
+  })
+
+  it('picks the lid note for each platform', () => {
+    expect(getAgentAwakeLidNote('Macintosh')).toBe(
+      'Prevents idle sleep with the lid open; closing the lid still puts this Mac to sleep.'
+    )
+    expect(getAgentAwakeLidNote('Windows')).toBe(
+      "Lid-close behavior follows this device's power settings."
+    )
+    expect(getAgentAwakeLidNote('X11; Linux x86_64')).toBe(
+      'Orca also asks this device to stay awake when the lid is closed, subject to its power policy.'
+    )
+  })
+
+  it('updates the keep-awake mode with its legacy fallback', () => {
     const updateSettings = vi.fn()
     const element = AgentAwakeSetting({
       settings: {
@@ -190,14 +386,14 @@ describe('AgentsPane', () => {
     })
 
     const keepAwakeTitle = getAgentAwakeTitle()
-    const keepAwakeSwitch = findSwitch(element, keepAwakeTitle)
-    expect(keepAwakeSwitch.props['aria-label']).toBe(keepAwakeTitle)
-    expect(keepAwakeSwitch.props['aria-checked']).toBe(false)
+    const keepAwakeControl = findSegmentedControl(element, keepAwakeTitle)
+    expect(keepAwakeControl.props.value).toBe('off')
 
-    const onClick = keepAwakeSwitch.props.onClick as () => void
-    onClick()
+    const onChange = keepAwakeControl.props.onChange as (mode: 'auto') => void
+    onChange('auto')
 
     expect(updateSettings).toHaveBeenCalledWith({
+      computerAwakeMode: 'auto',
       keepComputerAwakeWhileAgentsRun: true
     })
   })
@@ -221,6 +417,28 @@ describe('AgentsPane', () => {
     expect(updateSettings).toHaveBeenCalledWith({
       agentStatusHooksEnabled: false
     })
+  })
+
+  it('defaults agent folder trust on and toggles it off', () => {
+    const updateSettings = vi.fn()
+    const element = AgentWorkspaceTrustSetting({
+      settings: getDefaultSettings('/tmp'),
+      updateSettings
+    })
+
+    const trustSwitch = findSwitchRow(element, getAgentWorkspaceTrustTitle())
+    expect(trustSwitch.props.checked).toBe(true)
+    expect(getAgentWorkspaceTrustDescription()).toContain('hooks')
+    expect(getAgentWorkspaceTrustDescription()).toContain('already trusted stay trusted')
+    expect(getAgentWorkspaceTrustDescription()).toContain('without you watching')
+
+    const onChange: unknown = trustSwitch.props.onChange
+    expect(typeof onChange).toBe('function')
+    if (typeof onChange === 'function') {
+      onChange()
+    }
+
+    expect(updateSettings).toHaveBeenCalledWith({ agentWorkspaceTrustEnabled: false })
   })
 
   it('toggles generated tab titles with the next value', () => {
@@ -375,10 +593,11 @@ describe('AgentsPane', () => {
     })
   })
 
-  it('does not include legacy agent location search metadata', () => {
-    expect(matchesSettingsSearch('agent location', getAgentsPaneSearchEntries())).toBe(false)
+  it('includes agent runtime search metadata', () => {
+    expect(matchesSettingsSearch('agent runtime', getAgentsPaneSearchEntries())).toBe(true)
+    expect(matchesSettingsSearch('agent location', getAgentsPaneSearchEntries())).toBe(true)
     expect(matchesSettingsSearch('installed agents in wsl', getAgentsPaneSearchEntries())).toBe(
-      false
+      true
     )
   })
 
@@ -485,5 +704,52 @@ describe('AgentsPane', () => {
 
     writes[1].resolve()
     await secondWrite
+  })
+})
+
+describe('empty agent detection must not cost the saved default (#15256)', () => {
+  const withEmptyDetection = <T,>(run: () => T): T => {
+    const previous = detectedAgentsMock.detectedIds
+    detectedAgentsMock.detectedIds = []
+    try {
+      return run()
+    } finally {
+      detectedAgentsMock.detectedIds = previous
+    }
+  }
+
+  /** The rendered `<button>` whose label contains `label`. */
+  const pillMarkup = (markup: string, label: string): string => {
+    const chunk = markup.split('<button').find((part) => part.includes(label))
+    expect(chunk, `no pill labelled ${label}`).toBeDefined()
+    return String(chunk)
+  }
+
+  it('does not present Auto as the active choice while an agent is stored', () => {
+    // The Auto pill's handler writes null. Rendering it pressed while
+    // `defaultTuiAgent: "claude"` is stored made the already-selected pill
+    // destructive: one click erased the setting, and later successful
+    // detection did not bring it back.
+    const markup = withEmptyDetection(() =>
+      renderPane({ ...getDefaultSettings('/tmp'), defaultTuiAgent: 'claude' })
+    )
+    expect(pillMarkup(markup, 'Auto')).toContain('aria-pressed="false"')
+  })
+
+  it('still offers the stored agent so the choice can be kept', () => {
+    // With zero detected there were no agent pills at all, so the stored value
+    // was invisible and unrecoverable through the UI.
+    const markup = withEmptyDetection(() =>
+      renderPane({ ...getDefaultSettings('/tmp'), defaultTuiAgent: 'claude' })
+    )
+    expect(markup).toContain('Saved as your default, but not detected right now')
+  })
+
+  it('keeps a Refresh control reachable when nothing is detected', () => {
+    // Refresh lived inside the Installed section, which only renders when at
+    // least one agent was found -- gone in exactly the state needing a retry.
+    const markup = withEmptyDetection(() => renderPane(getDefaultSettings('/tmp')))
+    expect(markup).toContain('No agents detected')
+    expect(markup).toContain('Refresh')
   })
 })

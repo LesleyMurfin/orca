@@ -1,3 +1,5 @@
+import type { ExecutionHostId } from '../../shared/execution-host'
+import { hostedReviewSshConnectionId } from '../source-control/hosted-review-execution-host'
 import type { CreateHostedReviewInput, CreateHostedReviewResult } from '../../shared/hosted-review'
 import {
   normalizeHostedReviewBaseRef,
@@ -8,7 +10,7 @@ import {
   requestHostedReviewJson
 } from '../source-control/hosted-review-api-request'
 import { readHostedPullRequestTemplate } from '../source-control/pull-request-template'
-import { getGiteaPullRequestForBranch } from './client'
+import { getGiteaPullRequestForBranch, invalidateGiteaPullRequestScanForRepo } from './client'
 import { mapGiteaPullRequest, type RawGiteaPullRequest } from './pull-request-mappers'
 import { getGiteaRepoRef, type GiteaRepoRef } from './repository-ref'
 
@@ -105,6 +107,12 @@ async function findExistingPullRequest(
   head: string,
   connectionId?: string | null
 ): Promise<{ number: number; url: string } | null> {
+  // Why: only called after a create attempt, which may have just mutated the
+  // remote — a cached /pulls scan from before the POST would miss the new PR.
+  const repo = await getGiteaRepoRef(repoPath, connectionId)
+  if (repo) {
+    invalidateGiteaPullRequestScanForRepo(repo)
+  }
   const existing = await getGiteaPullRequestForBranch(repoPath, head, null, connectionId)
   return existing ? { number: existing.number, url: existing.url } : null
 }
@@ -112,7 +120,7 @@ async function findExistingPullRequest(
 export async function createGiteaPullRequest(
   repoPath: string,
   input: CreateHostedReviewInput,
-  connectionId?: string | null
+  executionHostId: ExecutionHostId
 ): Promise<CreateHostedReviewResult> {
   if (input.provider !== 'gitea') {
     return {
@@ -121,6 +129,9 @@ export async function createGiteaPullRequest(
       error: 'Creating reviews for this provider is not supported yet.'
     }
   }
+
+  // The Gitea REST calls run on this client; only the git reads under them are routed.
+  const connectionId = hostedReviewSshConnectionId(executionHostId)
 
   const repo = await getGiteaRepoRef(repoPath, connectionId)
   if (!repo) {
@@ -177,6 +188,7 @@ export async function createGiteaPullRequest(
     )
     const created = mapGiteaPullRequest(raw, 'neutral')
     if (created) {
+      invalidateGiteaPullRequestScanForRepo(repo)
       return { ok: true, number: created.number, url: created.url }
     }
     const found = await findExistingPullRequest(repoPath, head, connectionId).catch(() => null)

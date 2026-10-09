@@ -1,6 +1,8 @@
 import { Suspense } from 'react'
 import { lazyWithRetry as lazy } from '@/lib/lazy-with-retry'
 import type { ActiveRightSidebarTab } from '@/store/slices/editor'
+import type { RightSidebarVisualState } from '@/store/slices/editor/actions/right-sidebar-state'
+import { isPluginPanelTabKey } from '../../../../shared/plugins/plugin-manifest'
 
 const FileExplorer = lazy(() => import('./FileExplorer'))
 const SourceControl = lazy(() => import('./SourceControl'))
@@ -9,16 +11,33 @@ const PortsPanel = lazy(() => import('./PortsPanel'))
 const AiVaultPanel = lazy(() => import('./AiVaultPanel'))
 const FolderWorkspaceWorktreesPanel = lazy(() => import('./FolderWorkspaceWorktreesPanel'))
 const FolderWorkspacePrChecksPanel = lazy(() => import('./FolderWorkspacePrChecksPanel'))
+const PluginPanel = lazy(() => import('./PluginPanel'))
+const NativeChatVisualPanel = lazy(() => import('../native-chat/NativeChatVisualPanel'))
 
 type RightSidebarPanelContentProps = {
   effectiveTab: ActiveRightSidebarTab
   rightSidebarOpen: boolean
+  visual: RightSidebarVisualState | null
 }
 
 export function RightSidebarPanelContent({
   effectiveTab,
-  rightSidebarOpen
+  rightSidebarOpen,
+  visual
 }: RightSidebarPanelContentProps): React.JSX.Element {
+  if (visual) {
+    // Why key: a different visual is a different frame, never a reused one.
+    return (
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <Suspense fallback={null}>
+          <NativeChatVisualPanel
+            key={`${visual.sessionId}:${visual.messageId}:${visual.file}`}
+            route={visual}
+          />
+        </Suspense>
+      </div>
+    )
+  }
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <Suspense fallback={null}>
@@ -37,6 +56,14 @@ export function RightSidebarPanelContent({
           <FolderWorkspacePrChecksPanel
             isVisible={rightSidebarOpen && effectiveTab === 'pr-checks'}
           />
+        )}
+        {/* Plugin-contributed tabs route by key prefix; the panel itself
+            handles plugins that have since been uninstalled or disabled.
+            Why key: switching plugin tabs must remount the sandboxed iframe —
+            a reused frame could keep posting messages while the bridge is
+            rebound under the next plugin's identity. */}
+        {isPluginPanelTabKey(effectiveTab) && (
+          <PluginPanel key={effectiveTab} tabKey={effectiveTab} />
         )}
       </Suspense>
     </div>

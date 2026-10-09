@@ -38,6 +38,11 @@ export type GitUncommittedEntry = {
   conflictStatus?: GitConflictResolutionStatus
   conflictStatusSource?: GitConflictStatusSource
   submodule?: GitSubmoduleStatus
+  // Set on entries that live INSIDE a submodule (lazily loaded when the user
+  // expands a dirty submodule row). Holds the submodule's path relative to the
+  // parent worktree. Drives diff routing into the submodule and read-only
+  // gating — submodule-internal changes are never stageable from the parent.
+  submoduleRoot?: string
   // Working-tree line counts for this entry's staging area (staged vs unstaged
   // diffs are reported separately). Untracked files count their full contents
   // as additions. Undefined for binary files and when the diff is unavailable.
@@ -46,6 +51,19 @@ export type GitUncommittedEntry = {
 }
 
 export type GitStatusEntry = GitUncommittedEntry
+
+// `mergeBase(base, HEAD) → working tree`, deduplicated, so committing doesn't move it.
+// Matches the per-file rows rather than git: binary and >2MB untracked count zero.
+// `mergeBase` is echoed so a renderer can drop a moved fork point.
+export type GitBranchLineTotal = {
+  added: number
+  removed: number
+  mergeBase: string
+  // Path-heuristic buckets of added/removed; generated wins on overlap. Optional
+  // for pre-split hosts (absent = unknown, not zero).
+  test?: { added: number; removed: number }
+  generated?: { added: number; removed: number }
+}
 
 export type GitStatusResult = {
   entries: GitStatusEntry[]
@@ -64,6 +82,9 @@ export type GitStatusResult = {
   // "too many changes" state.
   didHitLimit?: boolean
   statusLength?: number
+  // Only computed when the request carried a merge-base OID (the renderer's
+  // visibility gate), and omitted — never zeroed — whenever it cannot be trusted.
+  branchLineTotal?: GitBranchLineTotal
 }
 
 // Why: when hasUpstream is false, ahead/behind are placeholder zeros, not a

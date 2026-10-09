@@ -2,7 +2,8 @@ import React, { type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { SourceControlAgentActionDialogForm } from './SourceControlAgentActionDialogForm'
-import type { GlobalSettings, Repo } from '../../../../shared/types'
+import type { GlobalSettings } from '../../../../shared/global-settings-types'
+import type { Repo } from '../../../../shared/repo-types'
 
 vi.mock('@/components/agent/AgentCombobox', () => ({
   default: ({ value }: { value: string | null }) =>
@@ -43,12 +44,14 @@ function renderForm(
     React.createElement(SourceControlAgentActionDialogForm, {
       actionId: 'resolveConflicts',
       baseCommandInput: 'Resolve the merge conflicts reported for this pull request.',
+      agentScopeNote: null,
       agentOptions: [],
       selectedAgent: 'codex',
       hasEnabledAgents: true,
       detecting: false,
       statusCopy: null,
       agentArgs: '',
+      agentArgsApply: true,
       commandTemplate: '{basePrompt}',
       savedCommandInputTemplate: '{basePrompt}',
       saveLaunchRecipe: true,
@@ -132,5 +135,47 @@ describe('SourceControlAgentActionDialogForm', () => {
     expect(globalMarkup).not.toContain('Save &amp; start agent')
     expect(repoMarkup).not.toContain('Launch recipe already saved')
     expect(repoMarkup).toContain('Save &amp; start agent')
+  })
+
+  it('surfaces a diverging repo override alongside the save controls', () => {
+    const markup = renderForm({
+      agentScopeNote: { effectiveAgentLabel: 'Codex', globalAgentLabel: 'Claude' }
+    })
+
+    expect(markup).toContain('overrides your global default (Claude)')
+    expect(markup).toContain('currently runs Codex')
+  })
+
+  it('omits the scope note when there is no diverging repo override', () => {
+    const markup = renderForm({ agentScopeNote: null })
+
+    expect(markup).not.toContain('overrides your global default')
+  })
+
+  it('omits the scope note when the save controls are hidden', () => {
+    const markup = renderForm({
+      agentScopeNote: { effectiveAgentLabel: 'Codex', globalAgentLabel: 'Claude' },
+      canSaveAgentDefault: false
+    })
+
+    expect(markup).not.toContain('overrides your global default')
+  })
+})
+
+describe('CLI arguments field applicability', () => {
+  it('offers the field when the launch would apply the arguments', () => {
+    const markup = renderForm({ agentArgsApply: true })
+
+    expect(markup).toContain('source-control-agent-cli-args')
+    expect(markup).toContain('CLI arguments')
+  })
+
+  // Why: absent, not disabled — a structured native chat session reads no CLI arguments,
+  // so the dialog must not show a control that launch would drop.
+  it('leaves the field out entirely when they would not apply', () => {
+    const markup = renderForm({ agentArgsApply: false })
+
+    expect(markup).not.toContain('source-control-agent-cli-args')
+    expect(markup).not.toContain('CLI arguments')
   })
 })

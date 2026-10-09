@@ -1,19 +1,26 @@
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { ScrollView, StyleSheet, Text, View } from 'react-native'
 import { WebView } from 'react-native-webview'
 import { colors, radii, spacing, typography } from '../../theme/mobile-theme'
+import { MERMAID_DIAGRAM_CONFIG } from './mermaid-diagram-config'
+import { MERMAID_ENGINE_JS } from './mermaid-webview-engine.generated'
+import { encodeJsonForScript } from '../inline-script-json'
 
-type Props = {
+export type MermaidDiagramProps = {
   source: string
   base: number
 }
 
 // Renders a ```mermaid fence as a diagram via a sandboxed WebView (mermaid has no
-// native RN renderer). Mermaid is loaded from a CDN inside the WebView HTML, the
-// SVG is themed dark to match the sidebar, and the WebView posts back its rendered
-// height so we can size to content. On any failure (no network, parse error,
-// render error) we fall back to the raw source in a labeled mono code box.
-export function MermaidDiagram({ source, base }: Props) {
+// native RN renderer). Mermaid ships inside the app as a generated bundle embedded
+// in the WebView HTML — no network — the SVG is themed dark to match the sidebar,
+// and the WebView posts back its rendered height so we can size to content. On any
+// failure (parse error, render error) we fall back to the raw source in a labeled
+// mono code box.
+// memo: both props are primitives; without it every mounted diagram re-renders
+// per frame during pinch-to-zoom (textScale updates), marshalling the full HTML
+// string across the Fabric boundary each time.
+export const MermaidDiagram = memo(function MermaidDiagram({ source, base }: MermaidDiagramProps) {
   const [height, setHeight] = useState(0)
   const [failed, setFailed] = useState(false)
   const html = useMemo(() => buildHtml(source), [source])
@@ -58,9 +65,9 @@ export function MermaidDiagram({ source, base }: Props) {
       />
     </View>
   )
-}
+})
 
-function MermaidFallback({ source, base }: Props) {
+function MermaidFallback({ source, base }: MermaidDiagramProps) {
   return (
     <View style={styles.frame}>
       <View style={styles.label}>
@@ -73,21 +80,32 @@ function MermaidFallback({ source, base }: Props) {
   )
 }
 
-// Self-contained HTML: load mermaid from CDN, render the graph, post the body
-// height (or "error") back to RN. Theme variables match the dark sidebar palette.
-function buildHtml(source: string): string {
-  // JSON.stringify safely escapes the user's diagram source for embedding.
-  const encoded = JSON.stringify(source)
+// Diagram source is untrusted: agent output, PR and chat content.
+function encodeSourceForScript(source: string): string {
+  return encodeJsonForScript(JSON.stringify(source))
+}
+
+// The config is not untrusted, but it is not a closed set of hex colours either: a
+// themeCSS or a font stack is free text, and it goes into the same script element.
+function encodeConfigForScript(): string {
+  return encodeJsonForScript(JSON.stringify(MERMAID_DIAGRAM_CONFIG))
+}
+
+// Self-contained HTML: embedded mermaid bundle, render the graph, post the body
+// height (or "error") back to RN. The configuration is the one the page runs too.
+export function buildHtml(source: string): string {
+  const encoded = encodeSourceForScript(source)
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; base-uri 'none'; form-action 'none'" />
 <style>
   html, body { margin: 0; padding: 0; background: ${colors.bgRaised}; }
   #c { padding: 8px; }
   #c svg { max-width: 100%; height: auto; }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>${MERMAID_ENGINE_JS}</script>
 </head>
 <body>
 <div id="c"><pre class="mermaid"></pre></div>
@@ -100,21 +118,9 @@ function buildHtml(source: string): string {
   }
   try {
     document.querySelector('.mermaid').textContent = ${encoded};
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: 'dark',
-      securityLevel: 'strict',
-      darkMode: true,
-      themeVariables: {
-        background: '${colors.bgRaised}',
-        primaryColor: '${colors.bgPanel}',
-        primaryTextColor: '${colors.textPrimary}',
-        lineColor: '${colors.textSecondary}',
-        textColor: '${colors.textPrimary}'
-      }
-    });
+    mermaid.initialize(${encodeConfigForScript()});
     mermaid.run({ querySelector: '.mermaid' })
-      .then(reportHeight)
+      .then(function () { reportHeight(); })
       .catch(function () { post('error'); });
   } catch (e) {
     post('error');

@@ -1,13 +1,16 @@
 import { TUI_AGENT_CONFIG } from './tui-agent-config'
-import type { TuiAgent } from './types'
+import type { TuiAgent } from './tui-agent'
 
 export type AgentPermissionMode = 'yolo' | 'manual' | 'mixed'
 
 export const YOLO_TUI_AGENT_ARGS: Partial<Record<TuiAgent, string>> = {
   claude: '--dangerously-skip-permissions',
+  codebuddy: '--dangerously-skip-permissions',
   'claude-agent-teams': '--dangerously-skip-permissions',
   openclaude: '--dangerously-skip-permissions',
   codex: '--dangerously-bypass-approvals-and-sandbox',
+  qoder: '--dangerously-skip-permissions',
+  'qoder-cn': '--dangerously-skip-permissions',
   gemini: '--yolo',
   antigravity: '--dangerously-skip-permissions',
   aider: '--yes-always',
@@ -20,14 +23,19 @@ export const YOLO_TUI_AGENT_ARGS: Partial<Record<TuiAgent, string>> = {
   continue: '--allow "*"',
   cursor: '--yolo',
   kimi: '--yolo',
+  muse: '--yolo',
+  // Why: ZCode gates tools by collaboration mode; `yolo` is its bypass-everything mode.
+  zcode: '--mode yolo',
   'mistral-vibe': '--agent auto-approve',
   'qwen-code': '--approval-mode yolo',
   rovo: '--yolo',
   hermes: '--yolo',
   copilot: '--yolo',
   grok: '--permission-mode bypassPermissions',
-  devin: '--permission-mode bypass',
-  ante: '--yolo'
+  devin: '--permission-mode bypass --respect-workspace-trust false',
+  ante: '--yolo',
+  trae: '--yolo',
+  droid: '--auto high'
 }
 
 export const YOLO_TUI_AGENT_ENV: Partial<Record<TuiAgent, Record<string, string>>> = {
@@ -71,37 +79,18 @@ function resolveAgentEnvPermissionMode(
   return sameEnv(env, yoloEnv) ? 'yolo' : 'mixed'
 }
 
-export function resolveAgentPermissionModeSummary(args: {
-  agentDefaultArgs?: Partial<Record<TuiAgent, string>> | null
-  agentDefaultEnv?: Partial<Record<TuiAgent, Record<string, string>>> | null
-}): AgentPermissionMode {
+function combinePermissionModes(modes: AgentPermissionMode[]): AgentPermissionMode {
   let sawYolo = false
   let sawManual = false
   let sawMixed = false
 
-  for (const agent of PERMISSION_AGENT_IDS) {
-    const modes: AgentPermissionMode[] = []
-    if (agent in YOLO_TUI_AGENT_ARGS) {
-      modes.push(
-        resolveAgentPermissionMode(
-          normalizeArgs(args.agentDefaultArgs?.[agent]),
-          YOLO_TUI_AGENT_ARGS[agent] ?? ''
-        )
-      )
-    }
-    if (agent in YOLO_TUI_AGENT_ENV) {
-      modes.push(
-        resolveAgentEnvPermissionMode(args.agentDefaultEnv?.[agent], YOLO_TUI_AGENT_ENV[agent])
-      )
-    }
-    for (const mode of modes) {
-      if (mode === 'yolo') {
-        sawYolo = true
-      } else if (mode === 'manual') {
-        sawManual = true
-      } else {
-        sawMixed = true
-      }
+  for (const mode of modes) {
+    if (mode === 'yolo') {
+      sawYolo = true
+    } else if (mode === 'manual') {
+      sawManual = true
+    } else {
+      sawMixed = true
     }
   }
 
@@ -109,6 +98,46 @@ export function resolveAgentPermissionModeSummary(args: {
     return 'mixed'
   }
   return sawYolo ? 'yolo' : 'manual'
+}
+
+export function resolveTuiAgentPermissionMode(args: {
+  agent: TuiAgent
+  agentArgs?: string | null
+  agentEnv?: Record<string, string> | null
+}): AgentPermissionMode {
+  const modes: AgentPermissionMode[] = []
+  if (args.agent in YOLO_TUI_AGENT_ARGS) {
+    modes.push(
+      resolveAgentPermissionMode(
+        normalizeArgs(args.agentArgs),
+        YOLO_TUI_AGENT_ARGS[args.agent] ?? ''
+      )
+    )
+  }
+  if (args.agent in YOLO_TUI_AGENT_ENV) {
+    modes.push(resolveAgentEnvPermissionMode(args.agentEnv, YOLO_TUI_AGENT_ENV[args.agent]))
+  }
+
+  return combinePermissionModes(modes)
+}
+
+export function resolveAgentPermissionModeSummary(args: {
+  agentDefaultArgs?: Partial<Record<TuiAgent, string>> | null
+  agentDefaultEnv?: Partial<Record<TuiAgent, Record<string, string>>> | null
+}): AgentPermissionMode {
+  const modes: AgentPermissionMode[] = []
+
+  for (const agent of PERMISSION_AGENT_IDS) {
+    modes.push(
+      resolveTuiAgentPermissionMode({
+        agent,
+        agentArgs: args.agentDefaultArgs?.[agent],
+        agentEnv: args.agentDefaultEnv?.[agent]
+      })
+    )
+  }
+
+  return combinePermissionModes(modes)
 }
 
 export function applyAgentPermissionMode(args: {

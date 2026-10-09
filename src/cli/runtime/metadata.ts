@@ -1,6 +1,6 @@
-import { homedir } from 'os'
-import { join } from 'path'
-import { readFileSync } from 'fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { readFileSync } from 'node:fs'
 import {
   findTransport,
   getRuntimeMetadataPath,
@@ -50,6 +50,14 @@ export function getDefaultUserDataPath(
   if (process.env.ORCA_USER_DATA_PATH) {
     return process.env.ORCA_USER_DATA_PATH
   }
+  return getPlatformUserDataPath(platform, homeDir)
+}
+
+/** The packaged app's own default profile, ignoring any CLI override. */
+export function getPlatformUserDataPath(
+  platform: NodeJS.Platform = process.platform,
+  homeDir = homedir()
+): string {
   if (platform === 'darwin') {
     return join(homeDir, 'Library', 'Application Support', 'orca')
   }

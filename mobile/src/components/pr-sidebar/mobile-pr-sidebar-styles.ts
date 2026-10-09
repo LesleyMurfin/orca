@@ -1,5 +1,6 @@
 import { StyleSheet } from 'react-native'
 import { colors, radii, spacing, typography } from '../../theme/mobile-theme'
+import { TEXT_INPUT_FONT_SIZE } from '../../platform/text-input-font-size'
 
 // Fixed inline-dock width (KTD2/U4): leaves the diff >= ~380px within the 700px
 // breakpoint where docking engages.
@@ -25,8 +26,7 @@ export const mobilePrSidebarStyles = StyleSheet.create({
   section: {
     backgroundColor: colors.bgPanel,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.borderSubtle,
-    overflow: 'hidden'
+    borderBottomColor: colors.borderSubtle
   },
   // Section header row: title + optional trailing control, divided from the body
   // by a hairline border (desktop `h-10 border-b px-3`).
@@ -55,7 +55,25 @@ export const mobilePrSidebarStyles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600'
   },
-  // Header section: state badge, title, author, base<-head branches.
+  // Identity + actions share one section card (hub redesign): no per-block chrome.
+  identityBlock: {
+    gap: spacing.sm
+  },
+  // State badge + #number + author on one row; open-on-web flush right when shown.
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm
+  },
+  metaLeft: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: spacing.xs
+  },
   badge: {
     alignSelf: 'flex-start',
     paddingHorizontal: spacing.sm,
@@ -69,6 +87,7 @@ export const mobilePrSidebarStyles = StyleSheet.create({
     fontWeight: '700'
   },
   prTitle: {
+    flex: 1,
     color: colors.textPrimary,
     fontSize: typography.titleSize,
     fontWeight: '700',
@@ -77,6 +96,12 @@ export const mobilePrSidebarStyles = StyleSheet.create({
   prMeta: {
     color: colors.textSecondary,
     fontSize: typography.metaSize
+  },
+  // #number in the meta row — stronger than author so the identity scans first.
+  prMetaStrong: {
+    color: colors.textPrimary,
+    fontSize: typography.metaSize,
+    fontWeight: '600'
   },
   // Title row: tappable area pairing the title with a trailing edit affordance.
   titleRow: {
@@ -97,10 +122,11 @@ export const mobilePrSidebarStyles = StyleSheet.create({
     gap: spacing.xs
   },
   branchPill: {
+    flexShrink: 1,
     color: colors.textPrimary,
     fontSize: typography.metaSize,
     fontFamily: typography.monoFamily,
-    backgroundColor: colors.bgPanel,
+    backgroundColor: colors.bgRaised,
     paddingHorizontal: spacing.xs,
     paddingVertical: 2,
     borderRadius: radii.button
@@ -138,6 +164,13 @@ export const mobilePrSidebarStyles = StyleSheet.create({
   emptyText: {
     color: colors.textSecondary,
     fontSize: typography.metaSize
+  },
+  // Loading / empty status row inside Reviewers (and similar) section bodies.
+  reviewersStatus: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm
   },
   summaryLabel: {
     fontSize: typography.bodySize,
@@ -264,11 +297,13 @@ export const mobilePrSidebarStyles = StyleSheet.create({
     backgroundColor: colors.bgPanel,
     color: colors.textPrimary,
     paddingHorizontal: spacing.md,
-    fontSize: typography.bodySize,
+    fontSize: TEXT_INPUT_FONT_SIZE,
     marginBottom: spacing.sm
   },
+  // No maxHeight / FlatList: the parent BottomDrawer scrolls this block so we
+  // never nest a VirtualizedList inside the PR page ScrollView.
   pickerList: {
-    maxHeight: 320
+    gap: 0
   },
   pickerRow: {
     minHeight: 44,

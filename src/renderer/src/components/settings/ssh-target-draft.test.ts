@@ -3,8 +3,13 @@ import {
   EMPTY_FORM,
   applyParsedSshHostInput,
   getEditingTargetForSshTarget,
+  getEditingTargetFromSshConfigHost,
   getSshTargetDraftConnectionFields,
-  parseSshHostInput
+  hasAdvancedConnectionValues,
+  isSshTargetFormDirty,
+  parseRelayGracePeriodSeconds,
+  parseSshHostInput,
+  type EditingTarget
 } from './ssh-target-draft'
 
 describe('parseSshHostInput', () => {
@@ -154,6 +159,12 @@ describe('getSshTargetDraftConnectionFields', () => {
 })
 
 describe('getEditingTargetForSshTarget', () => {
+  it('defaults new SSH targets to keep terminals alive until reset', () => {
+    expect(EMPTY_FORM.relayKeepAliveUntilReset).toBe(true)
+    expect(EMPTY_FORM.relayGracePeriodSeconds).toBe('86400')
+    expect(parseRelayGracePeriodSeconds(EMPTY_FORM)).toBe(0)
+  })
+
   it('recomputes implicit configHost when a manual target host is edited', () => {
     const draft = getEditingTargetForSshTarget({
       id: 'ssh-1',
@@ -194,5 +205,140 @@ describe('getEditingTargetForSshTarget', () => {
       username: 'deploy',
       port: 22
     })
+  })
+
+  it('preserves explicit system SSH connection reuse opt-outs while editing', () => {
+    const draft = getEditingTargetForSshTarget({
+      id: 'ssh-1',
+      label: 'Restricted appliance',
+      host: 'appliance.example.com',
+      port: 22,
+      username: 'admin',
+      systemSshConnectionReuse: false
+    })
+
+    expect(draft.systemSshConnectionReuse).toBe(false)
+  })
+
+  it('maps the stored runtime onto the Auto / Orca-managed / Host Node choice', () => {
+    const base = { id: 'ssh-1', label: 'S', host: 's.example.com', port: 22, username: 'u' }
+    expect(getEditingTargetForSshTarget(base).remoteRuntime).toBe('auto')
+    const pinned = getEditingTargetForSshTarget({ ...base, remoteRuntime: 'pinned-node' })
+    expect(pinned.remoteRuntime).toBe('pinned-node')
+    expect(getEditingTargetForSshTarget({ ...base, remoteRuntime: 'legacy' }).remoteRuntime).toBe(
+      'legacy'
+    )
+    expect(hasAdvancedConnectionValues(pinned)).toBe(true)
+    expect(isSshTargetFormDirty(pinned, getEditingTargetForSshTarget(base))).toBe(true)
+  })
+
+  it('uses the default persistence for targets without an explicit grace period', () => {
+    const draft = getEditingTargetForSshTarget({
+      id: 'ssh-1',
+      label: 'Server',
+      host: 'server.example.com',
+      port: 22,
+      username: 'deploy'
+    })
+
+    expect(draft.relayKeepAliveUntilReset).toBe(true)
+    expect(draft.relayGracePeriodSeconds).toBe('86400')
+    expect(parseRelayGracePeriodSeconds(draft)).toBe(0)
+  })
+
+  it('preserves explicit bounded relay grace periods when editing', () => {
+    const draft = getEditingTargetForSshTarget({
+      id: 'ssh-1',
+      label: 'Bounded server',
+      host: 'server.example.com',
+      port: 22,
+      username: 'deploy',
+      relayGracePeriodSeconds: 600
+    })
+
+    expect(draft.relayKeepAliveUntilReset).toBe(false)
+    expect(draft.relayGracePeriodSeconds).toBe('600')
+  })
+})
+
+describe('getEditingTargetFromSshConfigHost', () => {
+  it('prefills connection fields from a config summary', () => {
+    const draft = getEditingTargetFromSshConfigHost({
+      alias: 'prod-bastion',
+      hostname: 'bastion.prod.example',
+      port: 2222,
+      username: 'ops',
+      identityFiles: ['~/.ssh/prod', '~/.ssh/fallback'],
+      identitiesOnly: true,
+      forwardAgent: false,
+      gssapiAuthentication: true,
+      proxyUseFdpass: false,
+      jumpHost: 'edge'
+    })
+
+    expect(draft).toMatchObject({
+      label: 'prod-bastion',
+      configHost: 'prod-bastion',
+      host: 'bastion.prod.example',
+      port: '2222',
+      username: 'ops',
+      identityFile: '',
+      gssapiAuthentication: true,
+      jumpHost: 'edge'
+    })
+    expect(getSshTargetDraftConnectionFields(draft)).toEqual({
+      host: 'bastion.prod.example',
+      configHost: 'prod-bastion',
+      username: 'ops',
+      port: 2222
+    })
+    expect(hasAdvancedConnectionValues(draft)).toBe(true)
+  })
+
+  it('keeps alias as host when HostName is omitted', () => {
+    const draft = getEditingTargetFromSshConfigHost({
+      alias: 'gpu-lab',
+      hostname: 'gpu-lab',
+      port: 22,
+      username: 'jinjing',
+      identityFiles: [],
+      identitiesOnly: false,
+      forwardAgent: false,
+      proxyUseFdpass: false
+    })
+
+    expect(draft.configHost).toBe('')
+    expect(draft.host).toBe('gpu-lab')
+    expect(getSshTargetDraftConnectionFields(draft)).toEqual({
+      host: 'gpu-lab',
+      configHost: 'gpu-lab',
+      username: 'jinjing',
+      port: 22
+    })
+  })
+})
+
+describe('isSshTargetFormDirty', () => {
+  it('is clean when the draft matches the baseline', () => {
+    expect(isSshTargetFormDirty(EMPTY_FORM, EMPTY_FORM)).toBe(false)
+  })
+
+  // Why: a dropped field comparison silently discards unsaved edits on outside
+  // click, so every editable field must be covered.
+  it.each<Partial<EditingTarget>>([
+    { label: 'box' },
+    { configHost: 'alias' },
+    { host: 'box' },
+    { port: '2222' },
+    { username: 'deploy' },
+    { identityFile: '~/.ssh/id_ed25519' },
+    { gssapiAuthentication: true },
+    { proxyCommand: 'nc %h %p' },
+    { jumpHost: 'bastion' },
+    { systemSshConnectionReuse: false },
+    { relayGracePeriodSeconds: '600' },
+    { relayKeepAliveUntilReset: false }
+  ])('detects %o against the open-session baseline', (change) => {
+    expect(isSshTargetFormDirty({ ...EMPTY_FORM, ...change }, EMPTY_FORM)).toBe(true)
   })
 })

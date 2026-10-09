@@ -4,13 +4,21 @@ import {
 } from '../../../../shared/agent-status-types'
 import {
   AGENT_INTERRUPT_SETTLE_MS,
+  isNavigationEscapeIntent,
+  requiresDoubleEscapeInterrupt,
+  shouldIgnoreInterruptIntent,
   type AgentInterruptInferenceRequest,
   type AgentInterruptInputIntent
 } from '../../../../shared/agent-interrupt-intent'
+import { isAskUserQuestionTool } from '../../../../shared/agent-question-answered-intent'
 import { isExplicitAgentStatusFresh } from '@/lib/agent-status'
 
 export type AgentInterruptInference = {
-  observeInputIntent(intent: AgentInterruptInputIntent): void
+  observeInputIntent(
+    intent: AgentInterruptInputIntent,
+    entry?: AgentStatusEntry | null,
+    baselineSequence?: number
+  ): boolean | Promise<boolean> | undefined
   flushPending(): boolean | Promise<boolean>
   dispose(): void
 }
@@ -33,27 +41,33 @@ type CapturedInterruptBaseline = {
   inputCount?: number
 }
 
-function requiresDoubleEscapeForAgent(
-  agentType: AgentStatusEntry['agentType'],
-  intent: AgentInterruptInputIntent
-): boolean {
-  return (agentType === 'opencode' || agentType === 'copilot') && intent === 'plain-escape'
-}
-
 function shouldFlushInterruptImmediately(
   baseline: Pick<CapturedInterruptBaseline, 'agentType' | 'intent'>
 ): boolean {
   return (
-    requiresDoubleEscapeForAgent(baseline.agentType, baseline.intent) ||
+    requiresDoubleEscapeInterrupt(baseline.agentType, baseline.intent) ||
     baseline.agentType === 'gemini'
   )
 }
 
-function shouldIgnoreInterruptIntent(
+/** Why: skip a round-trip main will refuse anyway. Scoped to 'working' so Claude's
+ *  AskUserQuestion dismissal — a 'waiting' row — still reaches inferQuestionAnswered. */
+function isIgnorableNavigationEscape(
   agentType: AgentStatusEntry['agentType'],
-  intent: AgentInterruptInputIntent
+  intent: AgentInterruptInputIntent,
+  state: AgentStatusEntry['state']
 ): boolean {
-  return agentType === 'droid' && intent === 'ctrl-c'
+  return state === 'working' && isNavigationEscapeIntent(agentType, intent)
+}
+
+function canInferInterrupt(entry: AgentStatusEntry, intent: AgentInterruptInputIntent): boolean {
+  return (
+    entry.state === 'working' ||
+    (intent === 'plain-escape' &&
+      entry.state === 'waiting' &&
+      entry.agentType === 'claude' &&
+      isAskUserQuestionTool(entry.toolName))
+  )
 }
 
 function isSameTurnBaseline(
@@ -101,10 +115,12 @@ export function createAgentInterruptInference({
   setTimer = (callback, ms) => setTimeout(callback, ms),
   clearTimer = (timer) => clearTimeout(timer)
 }: AgentInterruptInferenceDeps): AgentInterruptInference {
+  let disposed = false
   let pendingTimer: ReturnType<typeof setTimeout> | null = null
   let pendingBaseline: CapturedInterruptBaseline | null = null
   let doubleEscapeBaseline: CapturedInterruptBaseline | null = null
   let doubleEscapeTimer: ReturnType<typeof setTimeout> | null = null
+  let latestBaselineSequence = 0
 
   const clearPendingTimer = (): void => {
     if (pendingTimer !== null) {
@@ -133,7 +149,7 @@ export function createAgentInterruptInference({
   ): CapturedInterruptBaseline | null => {
     const agentType = entry.agentType
     if (
-      entry.state !== 'working' ||
+      !canInferInterrupt(entry, intent) ||
       !isExplicitAgentStatusFresh(entry, now(), AGENT_STATUS_STALE_AFTER_MS)
     ) {
       return null
@@ -148,6 +164,9 @@ export function createAgentInterruptInference({
   }
 
   const flushPending = (): boolean | Promise<boolean> => {
+    if (disposed) {
+      return false
+    }
     const baseline = pendingBaseline
     pendingTimer = null
     pendingBaseline = null
@@ -158,7 +177,7 @@ export function createAgentInterruptInference({
     const entry = getStatusEntry()
     if (
       entry &&
-      (entry.state !== 'working' ||
+      (!canInferInterrupt(entry, baseline.intent) ||
         entry.agentType !== baseline.agentType ||
         entry.prompt !== baseline.prompt ||
         entry.updatedAt !== baseline.updatedAt ||
@@ -188,8 +207,22 @@ export function createAgentInterruptInference({
   }
 
   return {
-    observeInputIntent(intent) {
-      const entry = getStatusEntry()
+    observeInputIntent(intent, capturedEntry, baselineSequence) {
+      if (disposed) {
+        return
+      }
+      if (baselineSequence !== undefined) {
+        if (baselineSequence < latestBaselineSequence) {
+          return
+        }
+        latestBaselineSequence = baselineSequence
+      }
+      const currentEntry = getStatusEntry()
+      // Why: an older acknowledged write must not replace a newer turn's pending inference.
+      if (capturedEntry !== undefined && currentEntry && currentEntry !== capturedEntry) {
+        return
+      }
+      const entry = capturedEntry === undefined ? currentEntry : capturedEntry
       if (!entry) {
         clearPending()
         return
@@ -203,7 +236,12 @@ export function createAgentInterruptInference({
         clearPending()
         return
       }
-      if (requiresDoubleEscapeForAgent(baseline.agentType, intent)) {
+      // Why: this keypress proves nothing, but it must not revoke a Ctrl+C already waiting to
+      // settle — the user really did ask to interrupt, and Escape does not take that back.
+      if (isIgnorableNavigationEscape(baseline.agentType, intent, entry.state)) {
+        return
+      }
+      if (requiresDoubleEscapeInterrupt(baseline.agentType, intent)) {
         const isSecondEscape =
           doubleEscapeBaseline !== null && isSameTurnBaseline(doubleEscapeBaseline, baseline)
         doubleEscapeBaseline = baseline
@@ -227,15 +265,16 @@ export function createAgentInterruptInference({
       }
       pendingBaseline = baseline
       if (shouldFlushInterruptImmediately(baseline)) {
-        // Why: these agents can emit their idle/done hook immediately after an
-        // accepted interrupt. Flush before that hook overwrites the working baseline.
-        void flushPending()
-        return
+        // Why: these interrupts can emit an idle/done hook before the settle timer,
+        // overwriting the working baseline and losing the interrupted outcome.
+        return flushPending()
       }
       pendingTimer = setTimer(flushPendingFromTimer, AGENT_INTERRUPT_SETTLE_MS)
+      return undefined
     },
     flushPending,
     dispose() {
+      disposed = true
       clearPending()
     }
   }

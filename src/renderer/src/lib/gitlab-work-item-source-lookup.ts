@@ -1,4 +1,4 @@
-import type { GitLabWorkItem, ListMergeRequestsResult } from '../../../shared/types'
+import type { GitLabWorkItem, ListMergeRequestsResult } from '../../../shared/gitlab-types'
 import type { TaskSourceContext } from '../../../shared/task-source-context'
 import { getTaskSourceRuntimeSettings } from '../../../shared/task-source-context'
 import { callRuntimeRpc, getActiveRuntimeTarget } from '@/runtime/runtime-rpc-client'
@@ -20,6 +20,7 @@ type GitLabMRListLookupArgs = GitLabSourceLookupArgs & {
   state?: 'opened' | 'merged' | 'closed' | 'all'
   page?: number
   perPage?: number
+  query?: string
 }
 
 function runtimeRepoId(args: Pick<GitLabSourceLookupArgs, 'repoId' | 'sourceContext'>): string {
@@ -73,7 +74,8 @@ export async function listGitLabMRsForSource(
             repo: runtimeRepoId(args),
             state: args.state,
             page: args.page,
-            perPage: args.perPage
+            perPage: args.perPage,
+            query: args.query
           },
           { timeoutMs: 30_000 }
         )
@@ -83,7 +85,8 @@ export async function listGitLabMRsForSource(
           sourceContext: args.sourceContext,
           state: args.state,
           page: args.page,
-          perPage: args.perPage
+          perPage: args.perPage,
+          query: args.query
         })) as ListMergeRequestsResult)
   return {
     ...result,

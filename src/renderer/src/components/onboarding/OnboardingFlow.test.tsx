@@ -2,7 +2,8 @@ import type { ComponentProps } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { getDefaultOnboardingState, getDefaultSettings } from '../../../../shared/constants'
+import { getDefaultSettings } from '../../../../shared/constants'
+import { getDefaultOnboardingState } from '../../../../shared/onboarding-defaults'
 import { useAppStore } from '@/store'
 import OnboardingFlow from './OnboardingFlow'
 import { ONBOARDING_SKIP_CONFIRMATION_COPY } from './OnboardingSkipConfirmationDialog'
@@ -129,7 +130,7 @@ describe('OnboardingFlow', () => {
     expect(html).toContain('4 of 5')
   })
 
-  it('keeps Windows terminal defaults in the fourth progress slot when integrations are skipped', () => {
+  it('drops the skipped integrations step from the stepper on Windows', () => {
     vi.stubGlobal('navigator', { userAgent: 'Windows' })
     useAppStore.setState({
       preflightStatus: {
@@ -148,8 +149,12 @@ describe('OnboardingFlow', () => {
     })
 
     expect(html).toContain('Set Windows terminal defaults')
-    expect(html).toContain('4 of 5')
+    // Why: integrations is skipped (gh already installed), so it is not a
+    // stepper dot at all — the four real steps are agent, theme, Windows
+    // terminal, notifications, and Windows terminal is the third of four.
+    expect(html).toContain('3 of 4')
     expect(html).not.toContain('Set up GitHub tasks')
+    expect(html).not.toContain('Integrations')
   })
 
   it('skips GitHub task setup when the GitHub CLI is already detected', () => {
@@ -174,6 +179,10 @@ describe('OnboardingFlow', () => {
     expect(html).not.toContain('Set up GitHub tasks')
     expect(html).not.toContain('Connect your task sources')
     expect(html).not.toContain('Point Orca at some code')
+    // Why: with both integrations (gh installed) and Windows terminal (Mac)
+    // skipped, the stepper shows only the three real steps — no dead dots.
+    expect(html).toContain('3 of 3')
+    expect(html).not.toContain('Integrations')
   })
 
   it('shows only GitHub on the task setup page when the GitHub CLI is missing', () => {

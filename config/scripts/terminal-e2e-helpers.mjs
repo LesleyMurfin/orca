@@ -23,7 +23,7 @@
  *   node config/scripts/terminal-e2e-helpers.mjs --port 9444 --command 'echo hello'
  */
 
-import { execFileSync } from 'child_process'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -222,8 +222,8 @@ if (process.argv[1]?.endsWith('terminal-e2e-helpers.mjs')) {
   const args = process.argv.slice(2)
   const portIdx = args.indexOf('--port')
   const cmdIdx = args.indexOf('--command')
-  const port = portIdx >= 0 ? Number(args[portIdx + 1]) : 9444
-  const command = cmdIdx >= 0 ? args[cmdIdx + 1] : null
+  const port = portIdx !== -1 ? Number(args[portIdx + 1]) : 9444
+  const command = cmdIdx !== -1 ? args[cmdIdx + 1] : null
 
   const term = new OrcaTerminal(port)
   console.log('Connecting to Orca on CDP port', port, '...')

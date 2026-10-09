@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { LogicalClientCutoverError } from '../transport/stable-logical-rpc-client'
 import type { RpcClient } from '../transport/rpc-client'
 import type { RpcFailure, RpcResponse, RpcSuccess } from '../transport/types'
 import {
@@ -61,10 +62,40 @@ describe('isDictationSetupRequiredError', () => {
 
 describe('rpc wrappers', () => {
   it('fetches setup', async () => {
-    const setup: MobileSpeechSetup = { enabled: false, selectedModelId: '', models: [] }
+    const setup: MobileSpeechSetup = {
+      enabled: false,
+      selectedModelId: '',
+      dictationMode: 'toggle',
+      models: []
+    }
     const client = clientWith([ok(setup)])
     await expect(fetchDictationSetup(client)).resolves.toEqual(setup)
     expect(client.calls[0]).toEqual({ method: 'speech.models.list', params: null })
+  })
+
+  it('retries the idempotent setup read once after logical-client cutover', async () => {
+    const setup: MobileSpeechSetup = {
+      enabled: false,
+      selectedModelId: '',
+      dictationMode: 'toggle',
+      models: []
+    }
+    const sendRequest = vi
+      .fn()
+      .mockRejectedValueOnce(new LogicalClientCutoverError())
+      .mockResolvedValueOnce(ok(setup))
+
+    await expect(fetchDictationSetup({ sendRequest })).resolves.toEqual(setup)
+    expect(sendRequest).toHaveBeenCalledTimes(2)
+    expect(sendRequest).toHaveBeenNthCalledWith(1, 'speech.models.list', null)
+    expect(sendRequest).toHaveBeenNthCalledWith(2, 'speech.models.list', null)
+  })
+
+  it('does not retry unrelated setup-read failures', async () => {
+    const sendRequest = vi.fn().mockRejectedValue(new Error('offline'))
+
+    await expect(fetchDictationSetup({ sendRequest })).rejects.toThrow('offline')
+    expect(sendRequest).toHaveBeenCalledOnce()
   })
 
   it('starts a download', async () => {
@@ -74,14 +105,24 @@ describe('rpc wrappers', () => {
   })
 
   it('deletes a model and returns refreshed setup', async () => {
-    const setup: MobileSpeechSetup = { enabled: true, selectedModelId: '', models: [] }
+    const setup: MobileSpeechSetup = {
+      enabled: true,
+      selectedModelId: '',
+      dictationMode: 'toggle',
+      models: []
+    }
     const client = clientWith([ok(setup)])
     await expect(deleteDictationModel(client, 'm1')).resolves.toEqual(setup)
     expect(client.calls[0]).toEqual({ method: 'speech.models.delete', params: { modelId: 'm1' } })
   })
 
   it('sets config', async () => {
-    const setup: MobileSpeechSetup = { enabled: true, selectedModelId: 'm1', models: [] }
+    const setup: MobileSpeechSetup = {
+      enabled: true,
+      selectedModelId: 'm1',
+      dictationMode: 'hold',
+      models: []
+    }
     const client = clientWith([ok(setup)])
     await expect(setDictationConfig(client, { enabled: true, modelId: 'm1' })).resolves.toEqual(
       setup
@@ -160,6 +201,7 @@ describe('state helpers', () => {
       isDictationReady({
         enabled: true,
         selectedModelId: 'm1',
+        dictationMode: 'toggle',
         models: [model({ status: 'ready' })]
       })
     ).toBe(true)
@@ -167,6 +209,7 @@ describe('state helpers', () => {
       isDictationReady({
         enabled: false,
         selectedModelId: 'm1',
+        dictationMode: 'toggle',
         models: [model({ status: 'ready' })]
       })
     ).toBe(false)
@@ -174,9 +217,17 @@ describe('state helpers', () => {
       isDictationReady({
         enabled: true,
         selectedModelId: 'm1',
+        dictationMode: 'toggle',
         models: [model({ status: 'not-downloaded' })]
       })
     ).toBe(false)
-    expect(isDictationReady({ enabled: true, selectedModelId: '', models: [] })).toBe(false)
+    expect(
+      isDictationReady({
+        enabled: true,
+        selectedModelId: '',
+        dictationMode: 'toggle',
+        models: []
+      })
+    ).toBe(false)
   })
 })

@@ -1,4 +1,20 @@
 import type { Terminal } from '@xterm/xterm'
+import type { WindowsInputRecordNewline } from './terminal-paste-model'
+import {
+  BRACKETED_PASTE_END,
+  BRACKETED_PASTE_START,
+  normalizeTerminalPasteLineEndings,
+  sanitizeBracketedPasteText,
+  wrapTerminalBracketedPasteText
+} from '../../../../shared/terminal-bracketed-paste-text'
+
+export {
+  BRACKETED_PASTE_END,
+  BRACKETED_PASTE_START,
+  normalizeTerminalPasteLineEndings,
+  sanitizeBracketedPasteText,
+  wrapTerminalBracketedPasteText
+}
 
 type BracketedPasteTerminal = {
   modes: {
@@ -14,13 +30,12 @@ type PasteTerminal = BracketedPasteTerminal & {
 
 type PasteTerminalTextOptions = {
   forceBracketedPaste?: boolean
+  windowsInputRecordNewline?: WindowsInputRecordNewline
 }
 
 const interruptedBracketedPasteTerminals = new WeakSet<object>()
 const bracketedPasteModeOutputTail = new WeakMap<object, string>()
 const ESCAPE = '\u001b'
-export const BRACKETED_PASTE_START = `${ESCAPE}[200~`
-export const BRACKETED_PASTE_END = `${ESCAPE}[201~`
 const BRACKETED_PASTE_MODE_SEQUENCE_RE = /^\[\?(?:\d+;)*2004(?:;\d+)*[hl]/
 const BRACKETED_PASTE_MODE_TAIL_MAX = 128
 const BRACKETED_PASTE_MODE_SEQUENCE_SCAN_MAX = BRACKETED_PASTE_MODE_TAIL_MAX
@@ -44,11 +59,29 @@ function hasBracketedPasteModeSequence(data: string): boolean {
 }
 
 export function sanitizeTerminalPasteText(text: string): string {
-  return text.includes(ESCAPE) ? text.replaceAll(ESCAPE, '\u241b') : text
+  return sanitizeBracketedPasteText(text)
 }
 
-export function wrapTerminalBracketedPasteText(text: string): string {
-  return `${BRACKETED_PASTE_START}${sanitizeTerminalPasteText(text)}${BRACKETED_PASTE_END}`
+export function encodeWindowsInputRecordPasteText(
+  text: string,
+  newline: WindowsInputRecordNewline
+): string {
+  const newlineSequence = newline === 'csi-u' ? '\x1b[13;2u' : '\x1b\r'
+  let encoded = ''
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (char === '\r') {
+      encoded += newlineSequence
+      if (text[index + 1] === '\n') {
+        index += 1
+      }
+    } else if (char === '\n') {
+      encoded += newlineSequence
+    } else {
+      encoded += char === ESCAPE ? '\u241b' : char
+    }
+  }
+  return encoded
 }
 
 function forceBracketedPaste(terminal: PasteTerminal, text: string): void {
@@ -84,6 +117,12 @@ export function pasteTerminalText(
   text: string,
   options?: PasteTerminalTextOptions
 ): void {
+  if (options?.windowsInputRecordNewline) {
+    // Why: input-record TUIs see bracket markers as keys; modified Enter preserves
+    // pasted newlines without turning the first one into submit.
+    terminal.input(encodeWindowsInputRecordPasteText(text, options.windowsInputRecordNewline))
+    return
+  }
   if (options?.forceBracketedPaste) {
     // Why: generated image paths are paste payloads, even when they are a
     // single line, so they must bypass stale Ctrl+C plain-text suppression.

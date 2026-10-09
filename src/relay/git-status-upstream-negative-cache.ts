@@ -1,6 +1,6 @@
 import { getEffectiveGitUpstreamStatus } from '../shared/git-effective-upstream'
 import type { GitCommandRunner } from '../shared/git-effective-upstream'
-import type { GitUpstreamStatus } from '../shared/types'
+import type { GitUpstreamStatus } from '../shared/git-status-types'
 
 const NO_EFFECTIVE_UPSTREAM_CACHE_TTL_MS = 5 * 60_000
 const MAX_NO_EFFECTIVE_UPSTREAM_CACHE_ENTRIES = 512

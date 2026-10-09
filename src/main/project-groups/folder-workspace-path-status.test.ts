@@ -1,14 +1,16 @@
-import { mkdtemp, rm, writeFile } from 'fs/promises'
-import { randomUUID } from 'crypto'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  getFolderWorkspacePathStatus,
   getFolderWorkspacePathStatusForPath,
   inferFolderWorkspacePathConnection
 } from './folder-workspace-path-status'
 import type { IFilesystemProvider } from '../providers/types'
-import type { ProjectGroup, Repo } from '../../shared/types'
+import type { ProjectGroup } from '../../shared/project-group-types'
+import type { Repo } from '../../shared/repo-types'
 
 function makeGroup(overrides: Partial<ProjectGroup> = {}): ProjectGroup {
   return {
@@ -183,6 +185,25 @@ describe('folder workspace path status', () => {
         ]
       })
     ).toEqual({ kind: 'ambiguous' })
+  })
+
+  it('supports direct path scope without a persisted project group', async () => {
+    const provider = {
+      stat: vi.fn().mockResolvedValue({ size: 0, type: 'directory', mtime: 1 })
+    } as unknown as IFilesystemProvider
+
+    await expect(
+      getFolderWorkspacePathStatus(
+        {
+          getRepos: () => [makeRepo({ connectionId: 'ssh-1' })],
+          getProjectGroups: () => [],
+          getFolderWorkspaces: () => []
+        },
+        { scope: 'path', path: '/workspace/platform', connectionId: 'ssh-1' },
+        { getSshFilesystemProvider: () => provider }
+      )
+    ).resolves.toEqual({ path: '/workspace/platform', exists: true })
+    expect(provider.stat).toHaveBeenCalledWith('/workspace/platform')
   })
 
   it('keeps explicit SSH scopes isolated from unrelated same-path SSH repos', async () => {

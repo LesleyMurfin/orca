@@ -1,4 +1,6 @@
-import type { PersistedTrustedOrcaHooks } from '../../../src/shared/types'
+import type { PersistedTrustedOrcaHooks } from '../../../src/shared/orca-yaml-hook-types'
+import type { RpcClient } from '../transport/rpc-client'
+import { taskUiStateWrite } from './mobile-task-runtime-operations'
 
 export type SetupHookTrust = {
   contentHash: string
@@ -36,11 +38,30 @@ export function trustedOrcaHooksWithSetupApproval(args: {
   return { ...args.trust, [args.repoId]: nextRepo }
 }
 
+export async function persistSetupHookTrustApproval(args: {
+  client: RpcClient
+  trust: PersistedTrustedOrcaHooks
+  repoId: string
+  contentHash: string
+  alwaysTrust: boolean
+}): Promise<PersistedTrustedOrcaHooks> {
+  const next = trustedOrcaHooksWithSetupApproval(args)
+  taskUiStateWrite.interpret(
+    await taskUiStateWrite.request(args.client, { trustedOrcaHooks: next })
+  )
+  return next
+}
+
+// Takes a partial record because a checked `repo.hooks` reader requires neither member: the
+// recorded reply carries a hooks payload with no setupTrust at all, so the pair is proven here
+// rather than declared upstream. The spread keeps whatever else the host sent on the record.
 export function normalizeSetupHookTrust(
-  setupTrust: SetupHookTrust | null | undefined
+  setupTrust: { contentHash?: string; scriptContent?: string } | null | undefined
 ): SetupHookTrust | null {
-  if (!setupTrust?.contentHash || !setupTrust.scriptContent) {
+  const contentHash = setupTrust?.contentHash
+  const scriptContent = setupTrust?.scriptContent
+  if (!contentHash || !scriptContent) {
     return null
   }
-  return setupTrust
+  return { ...setupTrust, contentHash, scriptContent }
 }

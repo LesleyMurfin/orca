@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
-import { homedir } from 'os'
-import { dirname, join } from 'path'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import type { RelayDispatcher } from './dispatcher'
+import { publishWorkspaceSnapshotChange } from './workspace-snapshot-publication'
 
 type RemoteWorkspaceSnapshot = {
   namespace: string
@@ -151,11 +152,15 @@ export class WorkspaceSessionHandler {
       session: patch.session as Record<string, unknown>
     }
     this.write(snapshot)
-    this.dispatcher.notify('workspace.changed', {
-      namespace,
-      snapshot,
-      sourceClientId: typeof params.clientId === 'string' ? params.clientId : undefined
-    })
+    publishWorkspaceSnapshotChange(
+      this.dispatcher,
+      {
+        namespace,
+        snapshot,
+        sourceClientId: typeof params.clientId === 'string' ? params.clientId : undefined
+      },
+      namespace
+    )
     return { ok: true, snapshot }
   }
 

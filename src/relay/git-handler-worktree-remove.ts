@@ -1,37 +1,11 @@
-import * as path from 'path'
-import type { RemoveWorktreeResult } from '../shared/types'
+import * as path from 'node:path'
+import type { RemoveWorktreeResult } from '../shared/worktree/create-types'
+import { isBranchCheckedOutInWorktreeError } from '../shared/git-branch-delete-refusal'
+import { assertWorktreeUnlockedForRemoval } from '../shared/worktree/removal'
 import { deleteAlreadyMergedRelayBranchAfterSafeDeleteFailure } from './git-handler-branch-cleanup'
 import type { GitExec } from './git-handler-ops'
-import { isUnsupportedWorktreeListZError, parseWorktreeList } from './git-handler-utils'
-
-type RelayWorktreeInfo = {
-  path: string
-  branch?: string
-  head?: string
-}
-
-function getErrorText(error: unknown): string {
-  if (typeof error === 'object' && error !== null) {
-    const parts: string[] = []
-    if ('message' in error && typeof error.message === 'string') {
-      parts.push(error.message)
-    }
-    if ('stderr' in error && typeof error.stderr === 'string') {
-      parts.push(error.stderr)
-    }
-    if ('stdout' in error && typeof error.stdout === 'string') {
-      parts.push(error.stdout)
-    }
-    return parts.join('\n')
-  }
-  return String(error)
-}
-
-function isBranchCheckedOutInWorktreeError(error: unknown): boolean {
-  return /cannot delete branch .*(?:used by worktree|checked out)|branch .*is checked out/i.test(
-    getErrorText(error)
-  )
-}
+import type { GitCapabilityCache } from '../shared/git-capability-cache'
+import { readRelayWorktreeList } from './git-handler-worktree-list'
 
 function normalizeLocalBranchRef(branch: string): string {
   return branch.replace(/^refs\/heads\//, '')
@@ -74,34 +48,13 @@ function areRelayWorktreePathsEqual(leftPath: string, rightPath: string): boolea
   return compareCaseInsensitive ? left.toLowerCase() === right.toLowerCase() : left === right
 }
 
-function normalizeRelayWorktrees(worktrees: Record<string, unknown>[]): RelayWorktreeInfo[] {
-  return worktrees
-    .map((worktree) => ({
-      path: typeof worktree.path === 'string' ? worktree.path : '',
-      head: typeof worktree.head === 'string' ? worktree.head : undefined,
-      branch: typeof worktree.branch === 'string' ? worktree.branch : undefined
-    }))
-    .filter((worktree) => worktree.path.length > 0)
-}
-
-async function readRelayWorktreeList(git: GitExec, repoPath: string): Promise<RelayWorktreeInfo[]> {
+async function listRelayWorktreesForRemoval(
+  git: GitExec,
+  repoPath: string,
+  capabilities: GitCapabilityCache
+) {
   try {
-    const { stdout } = await git(['worktree', 'list', '--porcelain', '-z'], repoPath)
-    return normalizeRelayWorktrees(parseWorktreeList(stdout, { nulDelimited: true }))
-  } catch (error) {
-    if (!isUnsupportedWorktreeListZError(error)) {
-      throw error
-    }
-  }
-
-  // Why: `-z` preserves newlines; fallback keeps Git <2.36 compatible.
-  const { stdout } = await git(['worktree', 'list', '--porcelain'], repoPath)
-  return normalizeRelayWorktrees(parseWorktreeList(stdout))
-}
-
-async function listRelayWorktreesForRemoval(git: GitExec, repoPath: string) {
-  try {
-    return await readRelayWorktreeList(git, repoPath)
+    return await readRelayWorktreeList(git, repoPath, capabilities)
   } catch {
     return []
   }
@@ -148,7 +101,8 @@ async function deleteRelayBranchAfterWorktreeRemoval(
 
 export async function removeWorktreeOp(
   git: GitExec,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  capabilities: GitCapabilityCache
 ): Promise<RemoveWorktreeResult> {
   const worktreePath = params.worktreePath as string
   const force = params.force as boolean | undefined
@@ -166,12 +120,14 @@ export async function removeWorktreeOp(
     // fall through with worktreePath as repo
   }
 
-  const worktreesBeforeRemoval = await listRelayWorktreesForRemoval(git, repoPath)
+  const worktreesBeforeRemoval = await listRelayWorktreesForRemoval(git, repoPath, capabilities)
   const removedWorktree = worktreesBeforeRemoval.find((worktree) =>
     areRelayWorktreePathsEqual(worktree.path, worktreePath)
   )
   const branchName = normalizeLocalBranchRef(removedWorktree?.branch ?? '')
   const branchHead = removedWorktree?.head ?? ''
+
+  assertWorktreeUnlockedForRemoval(removedWorktree)
 
   const args = ['worktree', 'remove']
   if (force) {
@@ -210,7 +166,8 @@ export async function removeWorktreeOp(
             git,
             repoPath,
             branchName,
-            branchHead
+            branchHead,
+            capabilities
           )
         ) {
           return {}

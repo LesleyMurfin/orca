@@ -85,6 +85,9 @@ describe('buildExcludePathPrefixes', () => {
     expect(buildExcludePathPrefixes('C:\\repo', ['C:\\repo\\packages\\app'])).toEqual([
       'packages/app'
     ])
+    expect(
+      buildExcludePathPrefixes('//Server/Share/Repo', ['//server/share/repo/packages/app'])
+    ).toEqual(['packages/app'])
   })
 
   it('strips trailing slashes', () => {
@@ -99,6 +102,43 @@ describe('buildExcludePathPrefixes', () => {
 })
 
 describe('shouldExcludeQuickOpenRelPath', () => {
+  it('matches the original filter across boundary and Unicode path combinations', () => {
+    const paths = [
+      '',
+      '/',
+      'a',
+      'a/',
+      'a//',
+      'ab',
+      'a/b',
+      'a\\b',
+      'A/b',
+      '界/😀',
+      '界/😀x',
+      'a[1]/x',
+      'a./x'
+    ]
+    for (const prefix of paths) {
+      for (const relPath of paths) {
+        const expected =
+          relPath === prefix || (relPath.length > prefix.length && relPath.startsWith(`${prefix}/`))
+        expect(shouldExcludeQuickOpenRelPath(relPath, [prefix])).toBe(expected)
+      }
+    }
+  })
+
+  it('preserves normalized Windows and UNC exclusion boundaries', () => {
+    for (const [root, excluded] of [
+      ['C:\\Repo', 'C:\\Repo\\trees\\one'],
+      ['\\\\server\\share\\repo', '\\\\server\\share\\repo\\trees\\one']
+    ]) {
+      const prefixes = buildExcludePathPrefixes(root, [excluded])
+      expect(prefixes).toEqual(['trees/one'])
+      expect(shouldExcludeQuickOpenRelPath('trees/one/file.ts', prefixes)).toBe(true)
+      expect(shouldExcludeQuickOpenRelPath('trees/one-more/file.ts', prefixes)).toBe(false)
+    }
+  })
+
   it('matches exact and boundary paths only', () => {
     expect(shouldExcludeQuickOpenRelPath('packages/app', ['packages/app'])).toBe(true)
     expect(shouldExcludeQuickOpenRelPath('packages/app/x.ts', ['packages/app'])).toBe(true)
@@ -124,6 +164,19 @@ describe('buildHiddenDirExcludeGlobs', () => {
 })
 
 describe('buildRgArgsForQuickOpen', () => {
+  it.each([
+    { searchRoot: '.', excludePathPrefixes: [], forceSlashSeparator: false },
+    {
+      searchRoot: '/root',
+      excludePathPrefixes: ['packages/app', 'feature[1]'],
+      forceSlashSeparator: true
+    }
+  ])('broadens only VCS ignore handling for $searchRoot', (options) => {
+    const { primary, ignoredPass } = buildRgArgsForQuickOpen(options)
+    expect(ignoredPass).toContain('--no-ignore-vcs')
+    expect(ignoredPass.filter((arg) => arg !== '--no-ignore-vcs')).toEqual(primary)
+  })
+
   it('primary pass includes --files, --hidden, hidden-dir excludes, no --follow', () => {
     const { primary } = buildRgArgsForQuickOpen({
       searchRoot: '/root',
@@ -172,6 +225,18 @@ describe('buildRgArgsForQuickOpen', () => {
   })
 })
 
+it('pins both Quick Open passes to config-independent NUL output', () => {
+  const { primary, ignoredPass } = buildRgArgsForQuickOpen({
+    searchRoot: '.',
+    excludePathPrefixes: [],
+    forceSlashSeparator: true
+  })
+  for (const args of [primary, ignoredPass]) {
+    expect(args).toContain('--no-config')
+    expect(args).toContain('--null')
+  }
+})
+
 describe('normalizeQuickOpenRgLine', () => {
   it('strips absolute root prefix', () => {
     expect(
@@ -213,9 +278,9 @@ describe('normalizeQuickOpenRgLine', () => {
     expect(normalizeQuickOpenRgLine('..', { kind: 'cwd-relative' })).toBeNull()
   })
 
-  it('strips CRLF', () => {
+  it('preserves a trailing carriage return in a NUL-delimited filename', () => {
     expect(normalizeQuickOpenRgLine('/root/a.ts\r', { kind: 'absolute', rootPath: '/root' })).toBe(
-      'a.ts'
+      'a.ts\r'
     )
   })
 
@@ -239,14 +304,38 @@ describe('normalizeQuickOpenRgLine', () => {
 describe('buildGitLsFilesArgsForQuickOpen', () => {
   it('primary pass is --cached --others --exclude-standard', () => {
     const { primary } = buildGitLsFilesArgsForQuickOpen()
-    expect(primary).toEqual(['-z', '--cached', '--others', '--exclude-standard'])
+    expect(primary).toEqual([
+      '-z',
+      '-s',
+      '--cached',
+      '--others',
+      '--exclude-standard',
+      '--directory',
+      '--no-empty-directory'
+    ])
   })
 
   it('ignored pass surfaces ignored files without .env* pathspec whitelist', () => {
     const { ignoredPass } = buildGitLsFilesArgsForQuickOpen()
-    expect(ignoredPass).toEqual(['-z', '--others', '--ignored', '--exclude-standard'])
+    expect(ignoredPass).toEqual([
+      '-z',
+      '-s',
+      '--others',
+      '--ignored',
+      '--exclude-standard',
+      '--directory',
+      '--no-empty-directory'
+    ])
     expect(ignoredPass).not.toContain('.env*')
     expect(ignoredPass).not.toContain(':(glob)**/.env*')
+  })
+
+  it('collapses untracked directories in both passes without generated pathspec churn', () => {
+    const { primary, ignoredPass } = buildGitLsFilesArgsForQuickOpen()
+    expect(primary).toContain('--directory')
+    expect(ignoredPass).toContain('--directory')
+    expect(ignoredPass).toContain('--no-empty-directory')
+    expect([...primary, ...ignoredPass]).not.toContain(':(exclude,glob)**/node_modules/**')
   })
 
   it('exclude prefixes prepend positive "." pathspec', () => {

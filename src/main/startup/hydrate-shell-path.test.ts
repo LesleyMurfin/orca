@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { EventEmitter } from 'events'
+import { EventEmitter } from 'node:events'
 import { delimiter } from 'node:path'
-import type { ChildProcessWithoutNullStreams } from 'child_process'
+import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import {
   _resetHydrateShellPathCache,
   hydrateShellPath,
   mergePathSegments,
+  _setLaunchPathForTests,
   type HydrationResult
 } from './hydrate-shell-path'
 
@@ -39,6 +40,7 @@ describe('hydrateShellPath', () => {
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     if (originalPath === undefined) {
       delete process.env.PATH
     } else {
@@ -91,6 +93,26 @@ describe('hydrateShellPath', () => {
     await hydrateShellPath({ shellOverride: '/bin/zsh', spawner, force: true })
 
     expect(spawnCount).toBe(2)
+  })
+
+  it('continues the probe queue after a rejected hydration', async () => {
+    const rejectedSpawner = vi.fn<HydrationSpawner>(async () => {
+      throw new Error('profile failed')
+    })
+    const successfulSpawner = vi.fn<HydrationSpawner>(async () => ({
+      segments: ['/current'],
+      ok: true,
+      failureReason: 'none'
+    }))
+
+    await expect(
+      hydrateShellPath({ shellOverride: '/bin/zsh', spawner: rejectedSpawner, force: true })
+    ).rejects.toThrow('profile failed')
+    await expect(
+      hydrateShellPath({ shellOverride: '/bin/bash', spawner: successfulSpawner, force: true })
+    ).resolves.toEqual({ segments: ['/current'], ok: true, failureReason: 'none' })
+
+    expect(successfulSpawner).toHaveBeenCalledWith('/bin/bash')
   })
 
   it('returns failureReason:no_shell when no shell is available (Windows path)', async () => {
@@ -146,7 +168,7 @@ describe('hydrateShellPath', () => {
         failureReason: 'timeout'
       })
 
-      await vi.advanceTimersByTimeAsync(5000)
+      await vi.advanceTimersByTimeAsync(10_000)
 
       await assertion
       expect(proc.kill).toHaveBeenCalledWith('SIGKILL')
@@ -157,10 +179,111 @@ describe('hydrateShellPath', () => {
       vi.useRealTimers()
     }
   })
+
+  async function captureProbeEnv(shell = '/bin/bash'): Promise<NodeJS.ProcessEnv> {
+    const proc = createMockShellProcess()
+    spawnMock.mockReturnValue(proc)
+    const resultPromise = hydrateShellPath({ shellOverride: shell, force: true })
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+    proc.emit('close', 0)
+    await resultPromise
+    return spawnMock.mock.calls[0][2].env
+  }
+
+  it('probes with the launch PATH so seeded fallbacks cannot pin nvm', async () => {
+    process.env.PATH = `/home/u/.nvm/versions/node/v26.7.0/bin${delimiter}/usr/bin`
+    _setLaunchPathForTests('/usr/bin')
+
+    expect((await captureProbeEnv()).PATH).toBe('/usr/bin')
+  })
+
+  it('uses the PATH captured at module load, not a later mutation of process.env', async () => {
+    // Why: this is the anti-regression guard. patchPackagedProcessPath mutates
+    // process.env.PATH after this module is evaluated; the probe must not see it.
+    const seeded = `/seeded/newest-nvm/bin${delimiter}/usr/bin`
+    process.env.PATH = seeded
+
+    expect((await captureProbeEnv()).PATH).not.toBe(seeded)
+  })
+
+  it('sets a probe marker so rc files can take a fast path', async () => {
+    expect((await captureProbeEnv()).ORCA_SHELL_PATH_PROBE).toBe('1')
+  })
+
+  // Why: on Windows the probe is PowerShell or Git Bash, so these argv are never produced.
+  it.skipIf(process.platform === 'win32').each(['/bin/bash', '/bin/zsh'])(
+    'keeps the POSIX login probe for %s',
+    async (shell) => {
+      await captureProbeEnv(shell)
+
+      expect(spawnMock.mock.calls[0][1]).toEqual([
+        '-ilc',
+        `printf '%s' '__ORCA_SHELL_PATH__'; printf '%s' "$PATH"; printf '%s' '__ORCA_SHELL_PATH__'`
+      ])
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'reads Nushell PATH while preserving interactive login configuration',
+    async () => {
+      const proc = createMockShellProcess()
+      spawnMock.mockReturnValue(proc)
+      const resultPromise = hydrateShellPath({
+        shellOverride: '/run/current-system/sw/bin/nu',
+        force: true
+      })
+      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+
+      expect(spawnMock.mock.calls[0][1]).toEqual([
+        '-ilc',
+        [
+          "print -n '__ORCA_SHELL_PATH__';",
+          'print -n ($env.PATH | str join (char esep));',
+          "print -n '__ORCA_SHELL_PATH__'"
+        ].join(' ')
+      ])
+      proc.stdout.emit(
+        'data',
+        Buffer.from('__ORCA_SHELL_PATH__/etc/profiles/per-user/me/bin:/usr/bin__ORCA_SHELL_PATH__')
+      )
+      proc.emit('close', 0)
+
+      await expect(resultPromise).resolves.toEqual({
+        segments: ['/etc/profiles/per-user/me/bin', '/usr/bin'],
+        ok: true,
+        failureReason: 'none'
+      })
+    }
+  )
+
+  it('overwrites the captured key in place so Windows never carries both Path and PATH', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    const originalWindowsPath = process.env.Path
+    delete process.env.PATH
+    process.env.PATH = 'C:\\Users\\u\\.nvm\\versions\\node\\v22.9.0\\bin;C:\\Windows'
+    process.env.Path = 'C:\\Users\\u\\.nvm\\versions\\node\\v22.9.0\\bin;C:\\Windows'
+    _setLaunchPathForTests('C:\\Windows', 'Path')
+
+    try {
+      const env = await captureProbeEnv('C:/Git/bin/bash.exe')
+      expect(env.Path).toBe('C:\\Windows')
+      expect(env.PATH).toBeUndefined()
+    } finally {
+      if (originalWindowsPath === undefined) {
+        delete process.env.Path
+      } else {
+        process.env.Path = originalWindowsPath
+      }
+    }
+  })
 })
 
 describe('mergePathSegments', () => {
   const originalPath = process.env.PATH
+
+  beforeEach(() => {
+    _resetHydrateShellPathCache()
+  })
 
   afterEach(() => {
     if (originalPath === undefined) {

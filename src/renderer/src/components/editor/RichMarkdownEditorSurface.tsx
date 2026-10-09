@@ -11,6 +11,7 @@ import { MarkdownTableOfContentsPanel } from './MarkdownTableOfContentsPanel'
 import { RichMarkdownAnnotationOverlay } from './RichMarkdownAnnotationOverlay'
 import { RichMarkdownReviewNoteLayer } from './RichMarkdownReviewNoteLayer'
 import { RichMarkdownReviewRailActions } from './RichMarkdownReviewRailActions'
+import { RichMarkdownTableControls } from './RichMarkdownTableControls'
 import type { DocLinkMenuRow, DocLinkMenuState } from './rich-markdown-commands'
 import type { SlashCommand, SlashMenuState } from './rich-markdown-slash-commands'
 import type { MarkdownTocItem } from './markdown-table-of-contents'
@@ -18,7 +19,8 @@ import type { NotesSendMenuScope } from './NotesSendMenu'
 import type { MarkdownReviewNote } from '@/lib/markdown-review-notes'
 import type { RichMarkdownAnnotationTarget } from './rich-markdown-review-annotations'
 import type { RichMarkdownReviewNotePosition } from './rich-markdown-review-note-layout'
-import type { DiffComment } from '../../../../shared/types'
+import type { DiffComment } from '../../../../shared/diff-comment-types'
+import { focusRichMarkdownEditorFromSearch } from './rich-markdown-search-focus'
 
 function shouldFocusEmptyEditorFromSurfaceClick(
   event: React.MouseEvent<HTMLDivElement>,
@@ -37,6 +39,7 @@ function shouldFocusEmptyEditorFromSurfaceClick(
 type RichMarkdownEditorSurfaceProps = {
   editor: Editor | null
   editorFontZoomLevel: number
+  rootElement: HTMLDivElement | null
   rootRef: (node: HTMLDivElement | null) => void
   scrollContainerRef: React.RefObject<HTMLDivElement | null>
   headerSlot?: React.ReactNode
@@ -70,21 +73,36 @@ type RichMarkdownEditorSurfaceProps = {
   showTableOfContents: boolean
   searchState: {
     activeMatchIndex: number
+    isReplaceMode: boolean
     isSearchOpen: boolean
+    matchCase: boolean
     matchCount: number
+    replaceQuery: string
+    replaceDisabled: boolean
     searchQuery: string
     searchInputRef: React.RefObject<HTMLInputElement | null>
+    wholeWord: boolean
   }
   searchActions: {
     closeSearch: () => void
     moveToMatch: (direction: 1 | -1) => void
+    replaceAllMatches: () => void
+    replaceCurrentMatch: () => void
+    setReplaceQuery: (query: string) => void
     setSearchQuery: (query: string) => void
+    toggleMatchCase: () => void
+    toggleReplaceMode: () => void
+    toggleWholeWord: () => void
   }
+  citationStatus: string
+  linkBubbleOwnerId: string
   linkBubbleActions: {
+    dismissLinkBubble: () => void
     handleLinkSave: (href: string) => void
     handleLinkRemove: () => void
     handleLinkEditCancel: () => void
     handleLinkOpen: () => void
+    handleLinkCopy: () => void
     setIsEditingLink: (editing: boolean) => void
   }
   onToggleLink: () => void
@@ -109,6 +127,7 @@ type RichMarkdownEditorSurfaceProps = {
 export function RichMarkdownEditorSurface({
   editor,
   editorFontZoomLevel,
+  rootElement,
   rootRef,
   scrollContainerRef,
   headerSlot,
@@ -142,6 +161,8 @@ export function RichMarkdownEditorSurface({
   showTableOfContents,
   searchState,
   searchActions,
+  citationStatus,
+  linkBubbleOwnerId,
   linkBubbleActions,
   onToggleLink,
   onImagePick,
@@ -186,8 +207,10 @@ export function RichMarkdownEditorSurface({
         <div className="relative min-h-0 flex-1">
           <div
             ref={scrollContainerRef}
-            className="relative h-full overflow-auto scrollbar-editor"
+            // Image layout must not anchor-scroll over the restored tab position.
+            className="relative h-full overflow-auto scrollbar-editor [overflow-anchor:none]"
             onMouseDown={(event) => {
+              focusRichMarkdownEditorFromSearch(event.nativeEvent, editor?.view ?? null)
               if (!shouldFocusEmptyEditorFromSurfaceClick(event, editor)) {
                 return
               }
@@ -198,6 +221,7 @@ export function RichMarkdownEditorSurface({
             }}
           >
             <EditorContent editor={editor} />
+            <RichMarkdownTableControls editor={editor} scrollContainerRef={scrollContainerRef} />
             {reviewRailVisible && notePositions.length > 0 ? (
               <RichMarkdownReviewNoteLayer
                 positions={notePositions}
@@ -219,25 +243,44 @@ export function RichMarkdownEditorSurface({
           <RichMarkdownSearchBar
             activeMatchIndex={searchState.activeMatchIndex}
             isOpen={searchState.isSearchOpen}
+            isReplaceMode={searchState.isReplaceMode}
+            matchCase={searchState.matchCase}
             matchCount={searchState.matchCount}
+            query={searchState.searchQuery}
+            replaceQuery={searchState.replaceQuery}
+            replaceDisabled={searchState.replaceDisabled}
+            searchInputRef={searchState.searchInputRef}
+            wholeWord={searchState.wholeWord}
             onClose={searchActions.closeSearch}
             onMoveToMatch={searchActions.moveToMatch}
             onQueryChange={searchActions.setSearchQuery}
-            query={searchState.searchQuery}
-            searchInputRef={searchState.searchInputRef}
+            onReplaceAll={searchActions.replaceAllMatches}
+            onReplaceCurrent={searchActions.replaceCurrentMatch}
+            onReplaceQueryChange={searchActions.setReplaceQuery}
+            onToggleMatchCase={searchActions.toggleMatchCase}
+            onToggleReplaceMode={searchActions.toggleReplaceMode}
+            onToggleWholeWord={searchActions.toggleWholeWord}
           />
         </div>
         {linkBubble ? (
           <RichMarkdownLinkBubble
+            anchorElement={rootElement}
             linkBubble={linkBubble}
             isEditing={isEditingLink}
+            onDismiss={linkBubbleActions.dismissLinkBubble}
+            portalToDocument
             onSave={linkBubbleActions.handleLinkSave}
             onRemove={linkBubbleActions.handleLinkRemove}
             onEditStart={() => linkBubbleActions.setIsEditingLink(true)}
             onEditCancel={linkBubbleActions.handleLinkEditCancel}
             onOpen={linkBubbleActions.handleLinkOpen}
+            onCopy={linkBubbleActions.handleLinkCopy}
+            ownerId={linkBubbleOwnerId}
           />
         ) : null}
+        <span className="sr-only" role="status" aria-live="polite">
+          {citationStatus}
+        </span>
         {slashMenu ? (
           <RichMarkdownSlashMenu
             editor={editor}

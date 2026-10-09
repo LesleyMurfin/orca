@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { getDefaultOnboardingState, getDefaultSettings } from '../../../../shared/constants'
+import { getDefaultSettings } from '../../../../shared/constants'
+import { getDefaultOnboardingState } from '../../../../shared/onboarding-defaults'
 import {
   buildDismissedOnboardingFolderAgentStartup,
   buildOnboardingFolderAgentStartup,
@@ -22,6 +23,7 @@ describe('buildOnboardingFolderAgentStartup', () => {
         agentArgs: '--dangerously-bypass-approvals-and-sandbox',
         agentEnv: {}
       },
+      sessionOptions: undefined,
       telemetry: {
         agent_kind: 'codex',
         launch_source: 'onboarding',
@@ -38,6 +40,27 @@ describe('buildOnboardingFolderAgentStartup', () => {
 
     expect(startup).toBeUndefined()
   })
+
+  it.each([false, true])(
+    'keeps Chat UI model preferences out of the terminal folder launch (Chat UI %s)',
+    (experimentalNativeChat) => {
+      const startup = buildOnboardingFolderAgentStartup({
+        ...getDefaultSettings('/tmp/orca-workspaces'),
+        defaultTuiAgent: 'codex',
+        experimentalNativeChat,
+        nativeChatSessionOptions: {
+          codex: {
+            model: 'gpt-5.2-codex',
+            valuesByModel: { 'gpt-5.2-codex': { effort: 'medium' } }
+          }
+        }
+      })
+
+      expect(startup?.command).not.toContain("'-m'")
+      expect(startup?.command).not.toContain('model_reasoning_effort=')
+      expect(startup).not.toHaveProperty('sessionOptions')
+    }
+  )
 
   it('does not infer an agent from auto mode', () => {
     const startup = buildOnboardingFolderAgentStartup({
@@ -105,6 +128,7 @@ describe('buildOnboardingFolderAgentStartup', () => {
         agentArgs: '--dangerously-bypass-approvals-and-sandbox',
         agentEnv: {}
       },
+      sessionOptions: undefined,
       telemetry: {
         agent_kind: 'codex',
         launch_source: 'onboarding',

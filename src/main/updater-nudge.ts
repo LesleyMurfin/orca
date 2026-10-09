@@ -1,5 +1,6 @@
 import { net } from 'electron'
 import { compareVersions, isValidVersion } from './updater-fallback'
+import { parseRolloutConfig, recordRolloutConfig } from './updater/rollout-flags'
 
 export type NudgeConfig = {
   id: string
@@ -8,18 +9,17 @@ export type NudgeConfig = {
 }
 
 export async function fetchNudge(): Promise<NudgeConfig | null> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 5000)
-
   try {
     const res = await net.fetch('https://onorca.dev/whats-new/nudge.json', {
-      signal: controller.signal
+      signal: AbortSignal.timeout(5000)
     })
     if (!res.ok) {
       return null
     }
 
     const json: unknown = await res.json()
+    // Why here: the rollout block rides on this same request; older builds ignore the key.
+    recordRolloutConfig(parseRolloutConfig(json))
     if (!json || typeof json !== 'object' || Array.isArray(json)) {
       return null
     }
@@ -60,8 +60,6 @@ export async function fetchNudge(): Promise<NudgeConfig | null> {
     }
   } catch {
     return null
-  } finally {
-    clearTimeout(timeout)
   }
 }
 

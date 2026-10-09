@@ -32,6 +32,7 @@ export function MobileDiffReviewScreenView({ controller, onBack }: Props) {
   // Inline-dock the sidebar only when wide and the repo is GitHub; otherwise it
   // lives in the RightDrawer overlay toggled by showPRSidebar.
   const showInlineDock = presentationMode === 'inline' && controller.prSidebarIsGithubRepo
+  const gitStatus = controller.screenState.kind === 'ready' ? controller.screenState.status : null
 
   // The docked sidebar has no trigger to tap, so load its PR data once it becomes
   // visible (the overlay loads on trigger press instead).
@@ -60,7 +61,7 @@ export function MobileDiffReviewScreenView({ controller, onBack }: Props) {
         unsentCount={controller.unsentComments.length}
         worktreeLabel={controller.worktreeLabel}
         onBack={onBack}
-        onOpenActions={() => controller.setShowOverflow(true)}
+        onOpenActions={() => controller.openSheet({ kind: 'actions' })}
         onOpenPRSidebar={controller.openPRSidebar}
         onSelectFilter={controller.selectFilter}
       />
@@ -96,14 +97,14 @@ export function MobileDiffReviewScreenView({ controller, onBack }: Props) {
             staleCommentIds={controller.staleCommentIds}
             onAddNote={controller.openComposer}
             onEditNote={controller.openEditComposer}
-            onRetry={controller.retryAction}
+            onRetry={controller.retryAction ?? undefined}
           />
           {controller.currentItem ? (
             <MobileDiffReviewFooter
               busyAction={controller.busyAction}
               item={controller.currentItem}
               onAddFileNote={() => controller.openComposer(0)}
-              onDiscard={controller.setDiscardTarget}
+              onDiscard={(target) => controller.openSheet({ kind: 'discard', target })}
               onGitMutation={(method, item) => void controller.runGitMutation(method, item)}
               onMarkReviewed={() => void controller.markReviewed()}
               onMoveFile={controller.moveFile}
@@ -120,8 +121,10 @@ export function MobileDiffReviewScreenView({ controller, onBack }: Props) {
               connState={controller.connState}
               worktreeId={controller.worktreeId}
               gitBranch={controller.prSidebarBranch}
+              gitStatus={gitStatus}
               headSha={controller.prSidebarHeadSha}
               bottomInset={insets.bottom}
+              workspaceLabel={controller.worktreeLabel}
             />
           </View>
         ) : null}
@@ -140,7 +143,9 @@ export function MobileDiffReviewScreenView({ controller, onBack }: Props) {
             connState={controller.connState}
             worktreeId={controller.worktreeId}
             gitBranch={controller.prSidebarBranch}
+            gitStatus={gitStatus}
             headSha={controller.prSidebarHeadSha}
+            workspaceLabel={controller.worktreeLabel}
           />
         </RightDrawer>
       ) : null}

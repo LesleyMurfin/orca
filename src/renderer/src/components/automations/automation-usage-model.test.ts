@@ -18,6 +18,8 @@ function makeRun(overrides: Partial<AutomationRun>): AutomationRun {
     sessionKind: 'terminal',
     chatSessionId: null,
     terminalSessionId: 'tab-1',
+    terminalPaneKey: 'tab-1:11111111-1111-4111-8111-111111111111',
+    terminalPtyId: 'pty-1',
     outputSnapshot: null,
     precheckResult: null,
     usage: null,
@@ -83,7 +85,9 @@ describe('automation usage model', () => {
       cacheTokens: 400,
       reasoningOutputTokens: 50,
       totalTokens: 1350,
-      estimatedCostUsd: 0.0042
+      estimatedCostUsd: 0.0042,
+      lastRunStatus: 'completed',
+      lastRunAt: 1
     })
   })
 

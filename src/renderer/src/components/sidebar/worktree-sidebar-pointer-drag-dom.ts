@@ -17,7 +17,15 @@ const INTERACTIVE_DRAG_BLOCKER_SELECTOR = [
 ].join(',')
 
 export function isSidebarPointerDragBlocked(target: EventTarget | null, row: HTMLElement): boolean {
-  if (!(target instanceof HTMLElement)) {
+  if (!(target instanceof Node)) {
+    return false
+  }
+  // Why: Radix hover cards portal outside the row, but React still bubbles their
+  // pointer events through row handlers; text selection there must not drag rows.
+  if (!row.contains(target)) {
+    return true
+  }
+  if (!(target instanceof Element)) {
     return false
   }
   const blocker = target.closest(INTERACTIVE_DRAG_BLOCKER_SELECTOR)
@@ -51,8 +59,10 @@ export function updateSidebarDragPreviewPosition(args: {
   offsetX: number
   offsetY: number
 }): void {
-  const x = args.pointerX - args.offsetX
-  const y = args.pointerY - args.offsetY
+  const nesting = args.preview.hasAttribute('data-worktree-sidebar-nesting')
+  // Keep the destination title visible while the pointer rests inside it.
+  const x = nesting ? args.pointerX + 16 : args.pointerX - args.offsetX
+  const y = nesting ? args.pointerY + 16 : args.pointerY - args.offsetY
   args.preview.style.transform = `translate3d(${x}px, ${y}px, 0) scale(1.015)`
 }
 
@@ -61,7 +71,7 @@ export function createSidebarDragPreview(args: {
   pointerX: number
   pointerY: number
   draggedCount: number
-}): { preview: HTMLElement; offsetX: number; offsetY: number } {
+}): { preview: HTMLElement; offsetX: number; offsetY: number; height: number } {
   const rect = args.sourceRow.getBoundingClientRect()
   const preview = document.createElement('div')
   const clone = args.sourceRow.cloneNode(true) as HTMLElement
@@ -95,5 +105,5 @@ export function createSidebarDragPreview(args: {
     offsetY
   })
   document.body.appendChild(preview)
-  return { preview, offsetX, offsetY }
+  return { preview, offsetX, offsetY, height: rect.height }
 }

@@ -1,4 +1,3 @@
-/* eslint-disable max-lines -- Scheduler E2E coverage shares one booted Electron app and debug API. */
 /**
  * E2E repro for terminal output bursts from many background tabs.
  *
@@ -27,6 +26,7 @@ type SchedulerDebugSnapshot = {
   flushWriteCount: number
   scheduledDrainCount: number
   drainWrites: number[]
+  drainHighPriority: boolean[]
 }
 
 type SchedulerDebugWindow = Window & {
@@ -66,11 +66,20 @@ async function createTerminalTab(page: Page): Promise<string> {
   const tabsBefore = await countRenderedTabs(page)
   const activeBefore = await getActiveTabId(page)
 
-  await page.getByRole('button', { name: 'New tab' }).click()
-  await page
-    .getByRole('menuitem', { name: /New Terminal/i })
-    .first()
-    .click()
+  const createdTabId = await page.evaluate(() => {
+    const store = window.__store
+    if (!store) {
+      throw new Error('window.__store is not available')
+    }
+    const state = store.getState()
+    const worktreeId = state.activeWorktreeId
+    if (!worktreeId) {
+      throw new Error('createTerminalTab: active worktree id was unavailable')
+    }
+    // Why: this scheduler spec cares about mounted PTYs, not the tab menu.
+    // Store creation avoids hiding xterm regressions behind menu hit-testing flakes.
+    return state.createTab(worktreeId).id
+  })
 
   await expect
     .poll(() => countRenderedTabs(page), {
@@ -84,7 +93,7 @@ async function createTerminalTab(page: Page): Promise<string> {
     .poll(
       async () => {
         tabId = await getActiveTabId(page)
-        return Boolean(tabId && tabId !== activeBefore)
+        return tabId === createdTabId && tabId !== activeBefore
       },
       {
         timeout: 5_000,
@@ -150,7 +159,7 @@ async function sendPtyCommands(
 ): Promise<void> {
   await page.evaluate((items) => {
     for (const item of items) {
-      window.api.pty.write(item.ptyId, `${item.command}\r`)
+      window.api.pty.write(item.ptyId, `${item.command}\r`, 'driving')
     }
   }, commands)
 }
@@ -270,8 +279,9 @@ test.describe('Terminal output scheduler', () => {
 
     const debug = await getSchedulerDebug(orcaPage)
     expect(debug.foregroundWriteCount).toBeGreaterThan(0)
-    if (debug.drainWrites.length > 0) {
-      expect(Math.max(...debug.drainWrites)).toBeLessThanOrEqual(2)
+    expect(debug.drainHighPriority).toHaveLength(debug.drainWrites.length)
+    for (const [index, writes] of debug.drainWrites.entries()) {
+      expect(writes).toBeLessThanOrEqual(debug.drainHighPriority[index] ? 8 : 2)
     }
 
     const firstBackground = backgroundCommands[0]

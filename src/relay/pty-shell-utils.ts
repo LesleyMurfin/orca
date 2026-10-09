@@ -1,16 +1,22 @@
-import { execFile as execFileCb } from 'child_process'
-import { existsSync, readFileSync } from 'fs'
-import { homedir } from 'os'
-import { win32 as pathWin32 } from 'path'
-import { promisify } from 'util'
+import { execFile as execFileCb, execFileSync } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { win32 as pathWin32 } from 'node:path'
+import { promisify } from 'node:util'
 import {
   isAgentForegroundWrapperProcess,
   isExpectedAgentProcess,
-  recognizeAgentProcess,
-  recognizeAgentProcessFromCommandLine
+  recognizeAgentProcess
 } from '../shared/agent-process-recognition'
 import { getFirstCommandToken } from '../shared/command-token-scanner'
-import { isShellProcess } from '../shared/shell-process-detection'
+import { getProcessTableIndex, type ProcessTableIndex } from '../shared/process-table-index'
+import { PS_MAX_BUFFER_BYTES, type ProcessTableRow } from '../shared/process-table-snapshot'
+import { getProcessTableSnapshot } from '../shared/process-table-snapshot-reader'
+import { selectForegroundProcessCandidate } from '../shared/foreground-process-selection'
+import {
+  resolveOuterWrapperForegroundProcess,
+  shouldInspectOuterWrapperForegroundProcess
+} from '../shared/foreground-wrapper-agent'
 import {
   resolveWindowsAgentForegroundProcess,
   shouldInspectWindowsAgentForeground
@@ -18,20 +24,42 @@ import {
 
 const execFile = promisify(execFileCb)
 
-type ProcessRow = {
-  pid: number
-  ppid: number
-  stat: string
-  command: string
+const OPENSSH_REGISTRY_KEY = 'HKLM\\SOFTWARE\\OpenSSH'
+let openSshDefaultShell: string | undefined
+
+export function readOpenSshDefaultShell(): string {
+  if (openSshDefaultShell !== undefined) {
+    return openSshDefaultShell
+  }
+
+  try {
+    const output = execFileSync('reg.exe', ['query', OPENSSH_REGISTRY_KEY, '/v', 'DefaultShell'], {
+      encoding: 'utf8',
+      timeout: 3000,
+      windowsHide: true
+    })
+    const match = output.match(/^\s*DefaultShell\s+REG_\w+\s+(.+?)\s*$/im)
+    openSshDefaultShell = match?.[1] ?? ''
+  } catch {
+    openSshDefaultShell = ''
+  }
+
+  return openSshDefaultShell
 }
 
 export function resolveWindowsDefaultShell(
   env: NodeJS.ProcessEnv = process.env,
-  existsPath: (path: string) => boolean = existsSync
+  existsPath: (path: string) => boolean = existsSync,
+  readDefaultShell: () => string = readOpenSshDefaultShell
 ): string {
   const envShell = env.SHELL
   if (envShell && existsPath(envShell)) {
     return envShell
+  }
+
+  const configuredShell = readDefaultShell()
+  if (configuredShell && existsPath(configuredShell)) {
+    return configuredShell
   }
 
   const systemRoot = env.SystemRoot || env.WINDIR || env.windir || 'C:\\Windows'
@@ -98,7 +126,7 @@ export async function resolveProcessCwd(pid: number, fallbackCwd: string): Promi
   // check+read pair races a concurrent exit anyway, and the catch already
   // falls through to lsof.
   try {
-    const { readlinkSync } = await import('fs')
+    const { readlinkSync } = await import('node:fs')
     return readlinkSync(`/proc/${pid}/cwd`)
   } catch {
     // Fall through
@@ -138,71 +166,39 @@ export async function resolveProcessCwd(pid: number, fallbackCwd: string): Promi
   return fallbackCwd
 }
 
-/**
- * Check whether a process has child processes (via pgrep).
- */
-export async function processHasChildren(pid: number): Promise<boolean> {
+// Why: signal 0 probes existence without delivering a signal. Only ESRCH ("no
+// such process") proves the pid is gone; EPERM means it exists but is
+// unsignalable, so treat every non-ESRCH outcome as alive. Kept conservative so
+// a liveness check can only ever declare a *provably* dead process dead.
+export function isProcessAlive(pid: number): boolean {
   try {
-    const { stdout } = await execFile('pgrep', ['-P', String(pid)], {
-      encoding: 'utf-8',
-      timeout: 3000
-    })
-    return stdout.trim().length > 0
-  } catch {
-    return false
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'ESRCH'
   }
-}
-
-function parsePsRows(stdout: string): ProcessRow[] {
-  const rows: ProcessRow[] = []
-  for (const line of stdout.split(/\r?\n/)) {
-    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/)
-    if (!match) {
-      continue
-    }
-    rows.push({
-      pid: Number(match[1]),
-      ppid: Number(match[2]),
-      stat: match[3],
-      command: match[4]
-    })
-  }
-  return rows
 }
 
 function collectDescendants(
-  rows: ProcessRow[],
+  index: ProcessTableIndex,
   rootPid: number
-): (ProcessRow & { depth: number })[] {
-  const childrenByParent = new Map<number, ProcessRow[]>()
-  for (const row of rows) {
-    const children = childrenByParent.get(row.ppid) ?? []
-    children.push(row)
-    childrenByParent.set(row.ppid, children)
-  }
-
-  const descendants: (ProcessRow & { depth: number })[] = []
-  const stack = (childrenByParent.get(rootPid) ?? []).map((row) => ({ row, depth: 1 }))
+): (ProcessTableRow & { depth: number })[] {
+  const descendants: (ProcessTableRow & { depth: number })[] = []
+  const seen = new Set<number>([rootPid])
+  const stack = (index.childrenByPpid.get(rootPid) ?? []).map((row) => ({ row, depth: 1 }))
   while (stack.length > 0) {
     const { row, depth } = stack.pop()!
+    // Process snapshots can contain duplicate PIDs or cycles during reparenting.
+    if (seen.has(row.pid)) {
+      continue
+    }
+    seen.add(row.pid)
     descendants.push({ ...row, depth })
-    for (const child of childrenByParent.get(row.pid) ?? []) {
+    for (const child of index.childrenByPpid.get(row.pid) ?? []) {
       stack.push({ row: child, depth: depth + 1 })
     }
   }
   return descendants
-}
-
-function candidateScore(row: ProcessRow & { depth: number }): number {
-  return (row.stat.includes('+') ? 10_000 : 0) + row.depth
-}
-
-function processCommandToken(command: string): string {
-  return getFirstCommandToken(command)
-}
-
-function candidateMatchesFallbackWrapper(candidate: ProcessRow, fallbackProcess: string): boolean {
-  return isExpectedAgentProcess(processCommandToken(candidate.command), fallbackProcess)
 }
 
 async function getRecognizedForegroundDescendant(
@@ -210,44 +206,54 @@ async function getRecognizedForegroundDescendant(
   fallbackProcess?: string | null
 ): Promise<string | null> {
   try {
-    const { stdout } = await execFile('ps', ['-axo', 'pid=,ppid=,stat=,command='], {
-      encoding: 'utf-8',
-      timeout: 3000
-    })
-    const rows = parsePsRows(stdout)
-    const root = rows.find((row) => row.pid === pid)
-    const candidates = collectDescendants(rows, pid).sort(
-      (a, b) => candidateScore(b) - candidateScore(a)
-    )
-    // Why: SSH relays do not have the daemon's async wrapper cache. Inspect the
-    // remote process tree so node/python agent entrypoints become real agents.
-    const foregroundIsKnown =
-      root?.stat.includes('+') === true ||
-      candidates.some((candidate) => candidate.stat.includes('+'))
-    const foregroundCandidates = foregroundIsKnown
-      ? candidates.filter((candidate) => candidate.stat.includes('+'))
-      : candidates
-    const inspectionCandidates =
-      fallbackProcess && isAgentForegroundWrapperProcess(fallbackProcess)
-        ? foregroundCandidates.filter((candidate) =>
-            candidateMatchesFallbackWrapper(candidate, fallbackProcess)
-          )
-        : foregroundCandidates
-    if (
-      fallbackProcess &&
-      isAgentForegroundWrapperProcess(fallbackProcess) &&
-      inspectionCandidates.length !== 1
-    ) {
-      return null
-    }
-    for (const candidate of inspectionCandidates) {
-      const recognized = recognizeAgentProcessFromCommandLine(candidate.command)
-      if (recognized) {
-        return recognized.processName
-      }
-    }
+    const rows = await getProcessTableSnapshot()
+    return getForegroundProcessNameFromProcessTable(rows, pid, fallbackProcess)
   } catch {
     // Fall through to node-pty's process name or the root command name.
+  }
+  return null
+}
+
+// Why: returns null (never the fallback) so `getForegroundProcessName` keeps
+// owning the fallback ladder — its wrapper branch answers with the RECOGNIZED
+// process name, which is normalized where node-pty's raw name is not.
+function getForegroundProcessNameFromProcessTable(
+  rows: ProcessTableRow[],
+  pid: number,
+  fallbackProcess?: string | null
+): string | null {
+  // Why: one memoized index per capture, so N panes sharing the TTL-cached
+  // snapshot no longer each rebuild the parent/child map over every row.
+  const index = getProcessTableIndex(rows)
+  const root = index.byPid.get(pid)
+  const candidates = collectDescendants(index, pid)
+  // Why: SSH relays do not have the daemon's async wrapper cache. Inspect the
+  // remote process tree so node/python agent entrypoints become real agents.
+  const foregroundIsKnown =
+    root?.stat.includes('+') === true ||
+    candidates.some((candidate) => candidate.stat.includes('+'))
+  const foregroundCandidates = foregroundIsKnown
+    ? candidates.filter((candidate) => candidate.stat.includes('+'))
+    : candidates
+  const inspectionCandidates =
+    fallbackProcess && isAgentForegroundWrapperProcess(fallbackProcess)
+      ? foregroundCandidates.filter((candidate) =>
+          isExpectedAgentProcess(getFirstCommandToken(candidate.command), fallbackProcess)
+        )
+      : foregroundCandidates
+  if (
+    fallbackProcess &&
+    isAgentForegroundWrapperProcess(fallbackProcess) &&
+    inspectionCandidates.length !== 1
+  ) {
+    return null
+  }
+  const ancestryCandidates = root ? [{ ...root, depth: 0 }, ...candidates] : candidates
+  const selected = selectForegroundProcessCandidate(inspectionCandidates, ancestryCandidates)
+  if (selected) {
+    // Why: return the outer wrapper (omp) rather than a deeper recognized helper
+    // in the same process lineage.
+    return resolveOuterWrapperForegroundProcess(selected.recognized, selected.candidate, candidates)
   }
   return null
 }
@@ -262,6 +268,20 @@ export async function getForegroundProcessName(
   if (fallbackProcess) {
     const fallbackRecognition = recognizeAgentProcess(fallbackProcess)
     if (fallbackRecognition) {
+      // Why: node-pty can report OMP's wrapped Pi; enrich only that ambiguous
+      // fallback so authoritative OMP reads keep the zero-subprocess fast path.
+      if (shouldInspectOuterWrapperForegroundProcess(fallbackRecognition)) {
+        if (process.platform === 'win32') {
+          return (
+            (await resolveWindowsAgentForegroundProcess(pid, fallbackProcess, {})) ??
+            fallbackRecognition.processName
+          )
+        }
+        return (
+          (await getRecognizedForegroundDescendant(pid, fallbackProcess)) ??
+          fallbackRecognition.processName
+        )
+      }
       return fallbackRecognition.processName
     }
     if (process.platform === 'win32') {
@@ -272,10 +292,11 @@ export async function getForegroundProcessName(
         (await resolveWindowsAgentForegroundProcess(pid, fallbackProcess, {})) ?? fallbackProcess
       )
     }
-    if (!isShellProcess(fallbackProcess) && !isAgentForegroundWrapperProcess(fallbackProcess)) {
-      return fallbackProcess
-    }
   }
+  // Why: an unrecognized name is not proof of a non-agent foreground -- macOS p_comm truncates
+  // to the executable basename, which for the native Claude install is its version directory
+  // (`2.1.258`). The TTL-cached table read resolves the real command line; a foreground that
+  // is genuinely not an agent still answers with its own name below.
   const recognized = await getRecognizedForegroundDescendant(pid, fallbackProcess)
   if (recognized) {
     return recognized
@@ -286,7 +307,8 @@ export async function getForegroundProcessName(
   try {
     const { stdout } = await execFile('ps', ['-o', 'comm=', '-p', String(pid)], {
       encoding: 'utf-8',
-      timeout: 3000
+      timeout: 3000,
+      maxBuffer: PS_MAX_BUFFER_BYTES
     })
     return stdout.trim() || null
   } catch {
@@ -294,9 +316,6 @@ export async function getForegroundProcessName(
   }
 }
 
-/**
- * List available shell profiles from /etc/shells (or known fallbacks).
- */
 export function listShellProfiles(): { name: string; path: string }[] {
   const profiles: { name: string; path: string }[] = []
   const seen = new Set<string>()

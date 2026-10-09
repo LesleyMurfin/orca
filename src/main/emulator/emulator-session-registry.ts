@@ -1,4 +1,4 @@
-import type { EmulatorSessionInfo } from './emulator-types'
+import type { EmulatorBackendKind, EmulatorSessionInfo } from './emulator-types'
 import type { EmulatorSessionState } from './emulator-bridge-types'
 
 export class EmulatorSessionRegistry {
@@ -8,7 +8,7 @@ export class EmulatorSessionRegistry {
   registerActive(
     worktreeId: string,
     info: EmulatorSessionInfo,
-    options: { managed?: boolean } = {}
+    options: { managed?: boolean; backend?: EmulatorBackendKind } = {}
   ): void {
     const key = info.deviceUdid
     this.sessions.set(key, {
@@ -18,7 +18,11 @@ export class EmulatorSessionRegistry {
       axUrl: info.axUrl,
       pid: info.helperPid,
       managed: options.managed === true,
-      initialized: true
+      initialized: true,
+      // Why: default to the iOS/serve-sim contract so existing callers that
+      // predate multi-backend keep their prior behavior.
+      backend: info.backend ?? options.backend ?? 'ios',
+      streamCodec: info.streamCodec ?? 'mjpeg'
     })
     this.activeByWorktree.set(worktreeId, key)
   }
@@ -47,6 +51,14 @@ export class EmulatorSessionRegistry {
     return this.sessions.get(key)
   }
 
+  toSessionInfo(session: EmulatorSessionState): EmulatorSessionInfo {
+    return toSessionInfo(session)
+  }
+
+  hasActiveWorktreeForSession(key: string): boolean {
+    return [...this.activeByWorktree.values()].some((activeKey) => activeKey === key)
+  }
+
   listSessions(): EmulatorSessionState[] {
     return [...this.sessions.values()]
   }
@@ -72,6 +84,7 @@ function toSessionInfo(session: EmulatorSessionState): EmulatorSessionInfo {
     wsUrl: session.wsUrl,
     streamUrl: session.streamUrl,
     axUrl: session.axUrl,
-    helperPid: session.pid
+    helperPid: session.pid,
+    streamCodec: session.streamCodec
   }
 }

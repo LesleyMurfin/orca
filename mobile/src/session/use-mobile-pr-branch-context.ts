@@ -5,11 +5,12 @@ import type { MobileGitBranchCompareResult } from '../source-control/mobile-bran
 import type { MobileGitStatusResult } from '../source-control/mobile-git-status'
 import { resolveMobileBranchCompareBaseRef } from '../source-control/mobile-branch-base-ref'
 import { fetchGithubRepoSlug } from './github-pr-rpc'
-import { readMobileBranchCompareResult, readMobileGitStatusResult } from './mobile-diff-review-rpc'
+import { branchContextCompareRead, branchContextStatusRead } from './mobile-diff-review-operations'
 
 export type MobilePrBranchContext = {
   branch: string | null
   headSha: string | null
+  status: MobileGitStatusResult | null
   isGithubRepo: boolean
   repoLoaded: boolean
   loaded: boolean
@@ -22,25 +23,31 @@ export type MobilePrBranchContext = {
 export function deriveMobilePrBranchContext(
   status: MobileGitStatusResult | null,
   branchCompare: MobileGitBranchCompareResult | null
-): { branch: string | null; headSha: string | null } {
+): { branch: string | null; headSha: string | null; status: MobileGitStatusResult | null } {
   return {
     branch: status?.branch ?? null,
-    headSha: status?.head ?? branchCompare?.summary.headOid ?? null
+    headSha: status?.head ?? branchCompare?.summary.headOid ?? null,
+    status
   }
 }
 
 // Loads repo eligibility independently from branch/SHA. The header PR icon only
 // needs the cheap GitHub probe; the panel can keep loading branch context after
 // the entry point is already stable in the top bar.
+//
+// `includeBranchIdentity: false` skips git.status + branchCompare — use when the
+// caller only gates a PR entry on hosted-repo eligibility (session dock icon).
 export function useMobilePrBranchContext(input: {
   client: RpcClient | null
   connState: ConnectionState
   worktreeId: string
+  includeBranchIdentity?: boolean
 }): MobilePrBranchContext {
-  const { client, connState, worktreeId } = input
+  const { client, connState, worktreeId, includeBranchIdentity = true } = input
   const [context, setContext] = useState<MobilePrBranchContext>({
     branch: null,
     headSha: null,
+    status: null,
     isGithubRepo: false,
     repoLoaded: false,
     loaded: false
@@ -54,18 +61,21 @@ export function useMobilePrBranchContext(input: {
       setContext({
         branch: null,
         headSha: null,
+        status: null,
         isGithubRepo: false,
         repoLoaded: false,
-        loaded: false
+        loaded: !includeBranchIdentity
       })
       return
     }
     setContext({
       branch: null,
       headSha: null,
+      status: null,
       isGithubRepo: false,
       repoLoaded: false,
-      loaded: false
+      // Repo-only mode is "loaded" for branch fields immediately (they stay null).
+      loaded: !includeBranchIdentity
     })
 
     void loadMobilePrRepoContext(client, worktreeId)
@@ -90,6 +100,12 @@ export function useMobilePrBranchContext(input: {
         }
       })
 
+    if (!includeBranchIdentity) {
+      return () => {
+        cancelled = true
+      }
+    }
+
     void loadMobilePrBranchIdentity(client, worktreeId)
       .then((next) => {
         if (!cancelled) {
@@ -108,6 +124,7 @@ export function useMobilePrBranchContext(input: {
             ...prev,
             branch: null,
             headSha: null,
+            status: null,
             loaded: true
           }))
         }
@@ -115,7 +132,7 @@ export function useMobilePrBranchContext(input: {
     return () => {
       cancelled = true
     }
-  }, [ready, client, worktreeId])
+  }, [ready, client, worktreeId, includeBranchIdentity])
 
   return context
 }
@@ -142,7 +159,7 @@ export async function loadMobilePrRepoContext(
 export async function loadMobilePrBranchIdentity(
   client: RpcClient,
   worktreeId: string
-): Promise<Pick<MobilePrBranchContext, 'branch' | 'headSha'>> {
+): Promise<Pick<MobilePrBranchContext, 'branch' | 'headSha' | 'status'>> {
   const [status, branchCompare] = await Promise.all([
     readGitStatus(client, worktreeId),
     // Why: the standalone PR entry point only needs branchCompare as a head-SHA
@@ -156,8 +173,9 @@ async function readGitStatus(
   client: RpcClient,
   worktreeId: string
 ): Promise<MobileGitStatusResult | null> {
-  const response = await client.sendRequest('git.status', { worktree: `id:${worktreeId}` })
-  return response.ok ? readMobileGitStatusResult(response.result) : null
+  const reply = await branchContextStatusRead.request(client, { worktree: `id:${worktreeId}` })
+  const status = branchContextStatusRead.interpret(reply)
+  return status.accepted ? status.value : null
 }
 
 async function readBranchCompare(
@@ -170,9 +188,10 @@ async function readBranchCompare(
   if (!baseRef) {
     return null
   }
-  const response = await client.sendRequest('git.branchCompare', {
+  const reply = await branchContextCompareRead.request(client, {
     worktree: `id:${worktreeId}`,
     baseRef
   })
-  return response.ok ? readMobileBranchCompareResult(response.result) : null
+  const compared = branchContextCompareRead.interpret(reply)
+  return compared.accepted ? compared.value : null
 }

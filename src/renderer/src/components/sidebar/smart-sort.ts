@@ -1,10 +1,18 @@
-import type { Worktree, Repo, TerminalLayoutSnapshot, TerminalTab } from '../../../../shared/types'
+import type { Repo } from '../../../../shared/repo-types'
+import type { TerminalLayoutSnapshot, TerminalTab } from '../../../../shared/terminal-tab-types'
+import type { Worktree } from '../../../../shared/worktree/types'
 import type {
   AgentStatusEntry,
   MigrationUnsupportedPtyEntry
 } from '../../../../shared/agent-status-types'
 import { tabHasLivePty } from '@/lib/tab-has-live-pty'
-import { IDLE, buildAttentionByWorktree, type WorktreeAttention } from './smart-attention'
+import { basename } from '@/lib/path'
+import {
+  IDLE,
+  buildAttentionByWorktree,
+  hasFreshAttributedAgentStatus,
+  type WorktreeAttention
+} from './smart-attention'
 
 export type SortBy = 'name' | 'smart' | 'recent' | 'repo' | 'manual'
 
@@ -40,37 +48,82 @@ export function effectiveRecentActivity(worktree: Worktree, now: number): number
   return Math.max(lastActivityAt, createdAt + CREATE_GRACE_MS)
 }
 
+export type WorktreeSortLabelInput = Pick<Worktree, 'displayName' | 'path' | 'id'>
+
+export function getWorktreeSortLabel(worktree: WorktreeSortLabelInput): string {
+  const displayName = typeof worktree.displayName === 'string' ? worktree.displayName.trim() : ''
+  if (displayName) {
+    return displayName
+  }
+
+  // Why: persisted or remote worktree state can briefly omit displayName after
+  // a custom workspace name is removed; sorting must stay render-safe.
+  const pathLabel = typeof worktree.path === 'string' ? basename(worktree.path).trim() : ''
+  return pathLabel || worktree.id
+}
+
+/**
+ * Sort labels precomputed once per sort, so the O(N log N) comparator does O(1)
+ * lookups instead of re-deriving both labels on every comparison.
+ *
+ * Why keyed on the row and not its id: a two-host id collision (STA-4343) puts
+ * two rows with different paths under one id, and an id key would hand one of
+ * them the other's label.
+ */
+export type WorktreeSortLabels = ReadonlyMap<WorktreeSortLabelInput, string>
+
+export function buildWorktreeSortLabels<T extends WorktreeSortLabelInput>(
+  worktrees: readonly T[]
+): Map<WorktreeSortLabelInput, string> {
+  const labels = new Map<WorktreeSortLabelInput, string>()
+  for (const worktree of worktrees) {
+    labels.set(worktree, getWorktreeSortLabel(worktree))
+  }
+  return labels
+}
+
+export function compareWorktreeSortLabel(
+  a: WorktreeSortLabelInput,
+  b: WorktreeSortLabelInput,
+  labels?: WorktreeSortLabels
+): number {
+  return (labels?.get(a) ?? getWorktreeSortLabel(a)).localeCompare(
+    labels?.get(b) ?? getWorktreeSortLabel(b)
+  )
+}
+
 /**
  * Build a comparator for sorting worktrees based on the current sort mode.
  *
  * Smart mode requires `attentionByWorktree` — a per-worktree class +
  * timestamp map built once before sorting (see `buildAttentionByWorktree`).
  * Why non-optional: a forgotten caller would silently regress every worktree
- * to Class 4 (idle) and degrade the comparator to recent-activity ordering;
+ * to Class 5 (idle) and degrade the comparator to recent-activity ordering;
  * making the param required surfaces the omission as a typecheck error.
  */
 export function buildWorktreeComparator(
   sortBy: SortBy,
   repoMap: Map<string, Repo>,
   now: number,
-  attentionByWorktree: Map<string, WorktreeAttention>
+  attentionByWorktree: Map<string, WorktreeAttention>,
+  labels?: WorktreeSortLabels
 ): (a: Worktree, b: Worktree) => number {
   return (a, b) => {
     switch (sortBy) {
       case 'name':
-        return a.displayName.localeCompare(b.displayName)
+        return compareWorktreeSortLabel(a, b, labels)
       case 'smart': {
         const aw = attentionByWorktree.get(a.id) ?? IDLE
         const bw = attentionByWorktree.get(b.id) ?? IDLE
         return (
-          // Why: 1 < 2 < 3 < 4 — lower class outranks higher.
+          // Why: 1 < 2 < 3 < 4 < 5 — lower class outranks higher.
           aw.cls - bw.cls ||
           // Why: within a class, the more recent attention event ranks first.
           bw.attentionTimestamp - aw.attentionTimestamp ||
           // Why: idle worktrees fall through to recency (and the create-grace
           // floor for brand-new worktrees) before alphabetical.
           effectiveRecentActivity(b, now) - effectiveRecentActivity(a, now) ||
-          a.displayName.localeCompare(b.displayName)
+          compareWorktreeSortLabel(a, b, labels)
         )
       }
       case 'recent':
@@ -87,13 +140,13 @@ export function buildWorktreeComparator(
         // events) and by meaningful meta edits (comment, isUnread).
         return (
           effectiveRecentActivity(b, now) - effectiveRecentActivity(a, now) ||
-          a.displayName.localeCompare(b.displayName)
+          compareWorktreeSortLabel(a, b, labels)
         )
       case 'repo': {
         const ra = repoMap.get(a.repoId)?.displayName ?? ''
         const rb = repoMap.get(b.repoId)?.displayName ?? ''
         const cmp = ra.localeCompare(rb)
-        return cmp !== 0 ? cmp : a.displayName.localeCompare(b.displayName)
+        return cmp !== 0 ? cmp : compareWorktreeSortLabel(a, b, labels)
       }
       case 'manual':
         // Why fallback to sortOrder: existing users have a persisted smart-sort
@@ -101,7 +154,7 @@ export function buildWorktreeComparator(
         // restored order instead of alphabetizing every legacy workspace.
         return (
           (b.manualOrder ?? b.sortOrder) - (a.manualOrder ?? a.sortOrder) ||
-          a.displayName.localeCompare(b.displayName)
+          compareWorktreeSortLabel(a, b, labels)
         )
     }
   }
@@ -119,7 +172,7 @@ export function buildWorktreeComparator(
  * `agentStatusByPaneKey` carries the primary signal; `runtimePaneTitlesByTabId`
  * and `ptyIdsByTabId` enable the title-heuristic fallback for hookless agents
  * (Edge case 9 in the design doc). Why all three are non-optional: a forgotten
- * caller would silently regress every worktree to Class 4 or quietly disable
+ * caller would silently regress every worktree to Class 5 or quietly disable
  * the hookless-fallback path.
  */
 export function sortWorktreesSmart(
@@ -135,19 +188,20 @@ export function sortWorktreesSmart(
   // Why: `tabHasLivePty` (over `ptyIdsByTabId`) is the source of truth for
   // liveness — slept terminals retain `tab.ptyId` as a wake hint, so reading
   // it directly would falsely keep cold-start ordering off after restart.
-  const hasAnyLivePty = Object.values(tabsByWorktree)
-    .flat()
-    .some((tab) => tabHasLivePty(ptyIdsByTabId, tab.id))
+  const hasAnyLivePty = Object.values(tabsByWorktree).some((tabs) =>
+    tabs.some((tab) => tabHasLivePty(ptyIdsByTabId, tab.id))
+  )
 
-  if (!hasAnyLivePty) {
+  const now = Date.now()
+  const labels = buildWorktreeSortLabels(worktrees)
+  if (!hasAnyLivePty && !hasFreshAttributedAgentStatus(agentStatusByPaneKey, now, tabsByWorktree)) {
     // Cold start: use persisted sortOrder snapshot until the agent-status
     // snapshot lands and a warm sort runs.
     return [...worktrees].sort(
-      (a, b) => b.sortOrder - a.sortOrder || a.displayName.localeCompare(b.displayName)
+      (a, b) => b.sortOrder - a.sortOrder || compareWorktreeSortLabel(a, b, labels)
     )
   }
 
-  const now = Date.now()
   const attentionByWorktree = buildAttentionByWorktree(
     worktrees,
     tabsByWorktree,
@@ -159,5 +213,7 @@ export function sortWorktreesSmart(
     terminalLayoutsByTabId
   )
 
-  return [...worktrees].sort(buildWorktreeComparator('smart', repoMap, now, attentionByWorktree))
+  return [...worktrees].sort(
+    buildWorktreeComparator('smart', repoMap, now, attentionByWorktree, labels)
+  )
 }

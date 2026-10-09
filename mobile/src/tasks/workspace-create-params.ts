@@ -1,19 +1,17 @@
-import type { TuiAgent } from '../../../src/shared/types'
+import type { TuiAgent } from '../../../src/shared/tui-agent'
+import type {
+  CreateSparseCheckoutRequest,
+  SetupDecision
+} from '../../../src/shared/worktree/create-types'
+import type { GitPushTarget } from '../../../src/shared/worktree/types'
+import type { RpcSendParams } from '../transport/rpc-params-contract'
+import { getWorkspaceSourceName } from '../../../src/shared/new-workspace/workspace-source'
 import { resolveMobileWorkspaceCreateName } from './mobile-workspace-name'
 import type { WorkspaceAgentChoice } from './workspace-agent-selection'
 
-export type WorkspaceCreateSetupDecision = 'inherit' | 'run' | 'skip'
-
-export type WorkspaceCreateSparseCheckout = {
-  directories: string[]
-  presetId?: string
-}
-
-export type WorkspaceCreateGitPushTarget = {
-  remoteName: string
-  branchName: string
-  remoteUrl?: string
-}
+export type WorkspaceCreateSetupDecision = SetupDecision
+export type WorkspaceCreateSparseCheckout = CreateSparseCheckoutRequest
+export type WorkspaceCreateGitPushTarget = GitPushTarget
 
 export type WorkspaceCreateHostedStartPoint = {
   baseBranch: string
@@ -48,6 +46,8 @@ type WorkspaceCreateLinearItem = {
     identifier: string
     title: string
     url: string
+    workspaceId?: string
+    organizationUrlKey?: string
   }
 }
 
@@ -56,7 +56,26 @@ export type WorkspaceCreateTaskItem =
   | WorkspaceCreateGitLabItem
   | WorkspaceCreateLinearItem
 
-export type WorkspaceCreateParams = Record<string, unknown>
+/** The outgoing worktree.create params, so the builder and the operation agree by type. */
+export type WorkspaceCreateParams = RpcSendParams<'worktree.create'>
+
+/**
+ * `worktree.create` fields that create the worktree agent-first, so its startup terminal is the
+ * agent. Send the agent id rather than a command so the host resolves launch args (permission
+ * flags) and host-shell quoting, matching the "+" new-tab and CLI paths.
+ *
+ * These stay on every create: when the host routes through `agent.launch` it strips them and picks
+ * the surface itself, and when it cannot, they are still what makes the agent start.
+ */
+export function startupAgentCreateFields(agentId: TuiAgent | undefined): {
+  startupAgent?: TuiAgent
+  createdWithAgent?: TuiAgent
+} {
+  if (!agentId) {
+    return {}
+  }
+  return { startupAgent: agentId, createdWithAgent: agentId }
+}
 
 export function buildTaskWorkspaceCreateParams(args: {
   item: WorkspaceCreateTaskItem
@@ -66,9 +85,12 @@ export function buildTaskWorkspaceCreateParams(args: {
   workspaceName?: string
   note?: string
   baseBranch?: string
+  compareBaseRef?: string
   branchNameOverride?: string
+  pushTarget?: WorkspaceCreateGitPushTarget
   sparseCheckout?: WorkspaceCreateSparseCheckout
   hostedStartPoint?: WorkspaceCreateHostedStartPoint
+  nameIsAutoManaged?: boolean
 }): WorkspaceCreateParams {
   const {
     item,
@@ -78,22 +100,44 @@ export function buildTaskWorkspaceCreateParams(args: {
     workspaceName,
     note,
     baseBranch,
+    compareBaseRef,
     branchNameOverride,
+    pushTarget,
     sparseCheckout,
-    hostedStartPoint
+    hostedStartPoint,
+    nameIsAutoManaged = true
   } = args
   const shouldLaunchAgent = agent !== 'blank'
   const createdWithAgent = shouldLaunchAgent ? (agent as TuiAgent) : undefined
   const comment = note?.trim()
   const selectedBaseBranch = baseBranch || hostedStartPoint?.baseBranch
+  const selectedPushTarget = pushTarget ?? hostedStartPoint?.pushTarget
+  // Preserve provenance so the host can distinguish an intentional label from a generated title.
+  const sourceName =
+    item.provider === 'linear'
+      ? getWorkspaceSourceName({
+          provider: 'linear',
+          type: 'issue',
+          number: 0,
+          title: item.source.title,
+          url: item.source.url,
+          linearIdentifier: item.source.identifier
+        })
+      : getWorkspaceSourceName({ provider: item.provider, ...item.source })
+  const displayName = nameIsAutoManaged
+    ? { displayName: sourceName.displayName, displayNameKind: 'generated' as const }
+    : workspaceName?.trim()
+      ? { displayName: workspaceName, displayNameKind: 'user' as const }
+      : {}
   const common = {
     setupDecision,
     activate: true,
     ...(shouldLaunchAgent ? { startupDraft: item.source.url } : {}),
     ...(createdWithAgent ? { createdWithAgent } : {}),
     ...(selectedBaseBranch ? { baseBranch: selectedBaseBranch } : {}),
+    ...(compareBaseRef ? { compareBaseRef } : {}),
     ...(branchNameOverride ? { branchNameOverride } : {}),
-    ...(hostedStartPoint?.pushTarget ? { pushTarget: hostedStartPoint.pushTarget } : {}),
+    ...(selectedPushTarget ? { pushTarget: selectedPushTarget } : {}),
     ...(sparseCheckout ? { sparseCheckout } : {}),
     ...(comment ? { comment } : {})
   }
@@ -103,7 +147,7 @@ export function buildTaskWorkspaceCreateParams(args: {
     return {
       repo: `id:${item.source.repoId}`,
       name: resolveMobileWorkspaceCreateName({ draft: workspaceName, fallback }),
-      displayName: item.source.title,
+      ...displayName,
       ...common,
       ...(item.source.type === 'issue'
         ? { linkedIssue: item.source.number }
@@ -116,7 +160,7 @@ export function buildTaskWorkspaceCreateParams(args: {
     return {
       repo: `id:${item.source.repoId}`,
       name: resolveMobileWorkspaceCreateName({ draft: workspaceName, fallback }),
-      displayName: item.source.title,
+      ...displayName,
       ...common,
       ...(item.source.type === 'issue'
         ? { linkedGitLabIssue: item.source.number }
@@ -130,8 +174,12 @@ export function buildTaskWorkspaceCreateParams(args: {
       draft: workspaceName,
       fallback: item.source.identifier.toLowerCase()
     }),
-    displayName: item.source.title,
+    ...displayName,
     linkedLinearIssue: item.source.identifier,
+    ...(item.source.workspaceId ? { linkedLinearIssueWorkspaceId: item.source.workspaceId } : {}),
+    ...(item.source.organizationUrlKey
+      ? { linkedLinearIssueOrganizationUrlKey: item.source.organizationUrlKey }
+      : {}),
     ...common
   }
 }

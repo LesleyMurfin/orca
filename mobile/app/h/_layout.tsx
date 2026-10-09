@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { View, StyleSheet, PanResponder } from 'react-native'
-import { Stack, useGlobalSearchParams, usePathname } from 'expo-router'
+import { useGlobalSearchParams, usePathname } from 'expo-router'
 import { colors } from '../../src/theme/mobile-theme'
 import { useResponsiveLayout } from '../../src/layout/responsive-layout'
 import {
@@ -10,7 +10,9 @@ import {
   loadHostSidebarWidth,
   saveHostSidebarWidth
 } from '../../src/storage/preferences'
-import { HostScreen } from './[hostId]/index'
+import { HostProtocolGate } from '../../src/components/HostProtocolGate'
+import { HostScreen } from '../../src/host-screen/HostScreen'
+import { HostStack } from '../../src/navigation/host-stack'
 
 // Keep at least this much room for the detail pane when resizing the sidebar.
 const MIN_DETAIL_WIDTH = 320
@@ -24,32 +26,6 @@ function clampSidebarToWindow(width: number, windowWidth: number): number {
     Math.min(HOST_SIDEBAR_MAX_WIDTH, windowWidth - MIN_DETAIL_WIDTH)
   )
   return Math.min(hardMax, Math.max(HOST_SIDEBAR_MIN_WIDTH, Math.round(width)))
-}
-
-function HostStack({ animation }: { animation: 'none' | 'default' }) {
-  return (
-    <Stack
-      screenOptions={{
-        headerShown: false,
-        contentStyle: { backgroundColor: colors.bgBase },
-        // In the tablet split view the detail pane should swap instantly like
-        // a desktop master-detail; the default slide animates the outgoing
-        // screen and briefly reveals the one beneath it. Phones keep the slide.
-        animation
-      }}
-    >
-      <Stack.Screen name="[hostId]/index" options={{ title: 'Host' }} />
-      <Stack.Screen name="[hostId]/accounts" options={{ title: 'Accounts' }} />
-      <Stack.Screen name="[hostId]/tasks" options={{ title: 'Tasks' }} />
-      <Stack.Screen name="[hostId]/session/[worktreeId]" options={{ title: 'Terminal' }} />
-      <Stack.Screen
-        name="[hostId]/source-control/[worktreeId]"
-        options={{ title: 'Source Control' }}
-      />
-      <Stack.Screen name="[hostId]/review/[worktreeId]" options={{ title: 'Review Changes' }} />
-      <Stack.Screen name="[hostId]/pr/[worktreeId]" options={{ title: 'Pull Request' }} />
-    </Stack>
-  )
 }
 
 export default function HostGroupLayout() {
@@ -133,23 +109,25 @@ export default function HostGroupLayout() {
   // changes so a fold/rotation doesn't remount the navigator and reset the
   // navigation stack — only the sidebar pane toggles in and out.
   return (
-    <View style={styles.row}>
-      {showSidebar && sidebarOpen ? (
-        <View style={[styles.sidebar, { width: sidebarWidth }]}>
-          <HostScreen
-            embedded
-            hostId={hostId}
-            action={action}
-            onHideSidebar={canCollapseSidebar ? hideSidebar : undefined}
-          />
-          {/* Dedicated drag handle straddling the right border — see resizer note. */}
-          <View style={styles.resizeHandle} {...resizer.panHandlers} />
+    <HostProtocolGate hostId={hostId}>
+      <View style={styles.row}>
+        {showSidebar && sidebarOpen ? (
+          <View style={[styles.sidebar, { width: sidebarWidth }]}>
+            <HostScreen
+              embedded
+              hostId={hostId}
+              action={action}
+              onHideSidebar={canCollapseSidebar ? hideSidebar : undefined}
+            />
+            {/* Dedicated drag handle straddling the right border — see resizer note. */}
+            <View style={styles.resizeHandle} {...resizer.panHandlers} />
+          </View>
+        ) : null}
+        <View style={styles.detail}>
+          <HostStack animation={showSidebar ? 'none' : 'default'} />
         </View>
-      ) : null}
-      <View style={styles.detail}>
-        <HostStack animation={showSidebar ? 'none' : 'default'} />
       </View>
-    </View>
+    </HostProtocolGate>
   )
 }
 

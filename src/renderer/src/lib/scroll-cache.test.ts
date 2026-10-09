@@ -1,11 +1,5 @@
-import { describe, expect, it, beforeEach } from 'vitest'
-import { cursorPositionCache, diffViewStateCache, setWithLRU, scrollTopCache } from './scroll-cache'
-
-beforeEach(() => {
-  scrollTopCache.clear()
-  cursorPositionCache.clear()
-  diffViewStateCache.clear()
-})
+import { describe, expect, it } from 'vitest'
+import { setWithLRU } from './scroll-cache'
 
 describe('setWithLRU', () => {
   it('inserts a new entry into the map', () => {
@@ -93,48 +87,5 @@ describe('setWithLRU', () => {
     expect(map.size).toBe(5)
     expect(map.has('key-0')).toBe(false)
     expect(map.has('new')).toBe(true)
-  })
-})
-
-describe('scrollTopCache', () => {
-  it('is an empty Map on import', () => {
-    expect(scrollTopCache).toBeInstanceOf(Map)
-    expect(scrollTopCache.size).toBe(0)
-  })
-
-  it('works with setWithLRU for mode-scoped keys', () => {
-    setWithLRU(scrollTopCache, '/path/to/file.ts', 100)
-    setWithLRU(scrollTopCache, '/path/to/file.ts:preview', 200)
-    setWithLRU(scrollTopCache, '/path/to/file.ts:rich', 300)
-    expect(scrollTopCache.get('/path/to/file.ts')).toBe(100)
-    expect(scrollTopCache.get('/path/to/file.ts:preview')).toBe(200)
-    expect(scrollTopCache.get('/path/to/file.ts:rich')).toBe(300)
-    expect(scrollTopCache.size).toBe(3)
-  })
-})
-
-describe('diffViewStateCache', () => {
-  it('is an empty Map on import', () => {
-    expect(diffViewStateCache).toBeInstanceOf(Map)
-    expect(diffViewStateCache.size).toBe(0)
-  })
-
-  it('works with setWithLRU for diff-tab keys', () => {
-    const diffState = {
-      original: {
-        cursorState: [],
-        viewState: { scrollTop: 10, scrollTopWithoutViewZones: 10, scrollLeft: 0 }
-      },
-      modified: {
-        cursorState: [],
-        viewState: { scrollTop: 20, scrollTopWithoutViewZones: 20, scrollLeft: 0 }
-      },
-      modelState: { unchangedRegions: [] }
-    } as unknown as typeof diffViewStateCache extends Map<string, infer T> ? T : never
-
-    setWithLRU(diffViewStateCache, 'diff-tab', diffState)
-
-    expect(diffViewStateCache.get('diff-tab')).toBe(diffState)
-    expect(diffViewStateCache.size).toBe(1)
   })
 })

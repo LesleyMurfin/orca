@@ -57,6 +57,61 @@ describe('execution host registry', () => {
     ])
   })
 
+  it('excludes repository references from configured-only registries', () => {
+    const hosts = buildExecutionHostRegistry({
+      repos: [
+        { connectionId: 'removed-ssh' },
+        { connectionId: null, executionHostId: 'runtime:removed-runtime' }
+      ],
+      settings: { activeRuntimeEnvironmentId: 'removed-focused-runtime' },
+      hostSource: 'configured-only',
+      sshTargetLabels: new Map([['saved-ssh', 'Saved SSH']]),
+      runtimeEnvironments: [{ id: 'saved-runtime', name: 'Saved Runtime' }]
+    })
+
+    expect(hosts.map((host) => host.id)).toEqual([
+      'local',
+      'runtime:saved-runtime',
+      'ssh:saved-ssh'
+    ])
+  })
+
+  it('keeps repository references in the default reference-inclusive registry', () => {
+    const hosts = buildExecutionHostRegistry({
+      repos: [
+        { connectionId: 'removed-ssh' },
+        { connectionId: null, executionHostId: 'runtime:removed-runtime' }
+      ],
+      settings: { activeRuntimeEnvironmentId: null }
+    })
+
+    expect(hosts.map((host) => host.id)).toEqual([
+      'local',
+      'runtime:removed-runtime',
+      'ssh:removed-ssh'
+    ])
+  })
+
+  it('hides runtime-owned (ephemeral VM) SSH targets from repo-derived hosts', () => {
+    const hosts = buildExecutionHostRegistry({
+      // A VM-backed repo carries the hidden runtime-owned target on both fields.
+      repos: [
+        {
+          connectionId: 'runtime-ssh-orca-instance-1',
+          executionHostId: 'ssh:runtime-ssh-orca-instance-1'
+        },
+        { connectionId: 'repo-ssh' }
+      ],
+      settings: { activeRuntimeEnvironmentId: null },
+      // Even if a stale label leaked in, it must still be filtered out.
+      sshTargetLabels: new Map([['runtime-ssh-orca-instance-1', 'Hidden VM']])
+    })
+
+    expect(hosts.some((h) => h.id.includes('runtime-ssh-orca-instance-1'))).toBe(false)
+    // The ordinary repo SSH host is still present.
+    expect(hosts.some((h) => h.id === 'ssh:repo-ssh')).toBe(true)
+  })
+
   it('adds saved runtime environments and preserves compatibility state per host', () => {
     const hosts = buildExecutionHostRegistry({
       repos: [],
@@ -66,6 +121,7 @@ describe('execution host registry', () => {
         [
           'builder',
           {
+            checkedAt: 0,
             appVersion: '1.8.0',
             status: {
               runtimeId: 'runtime-builder',
@@ -84,6 +140,7 @@ describe('execution host registry', () => {
         [
           'old-server',
           {
+            checkedAt: 0,
             appVersion: '1.6.0',
             status: {
               runtimeId: 'runtime-old',
@@ -132,6 +189,7 @@ describe('execution host registry', () => {
         [
           'dev-box',
           {
+            checkedAt: 0,
             status: {
               runtimeId: 'runtime-dev',
               rendererGraphEpoch: 1,
@@ -165,6 +223,77 @@ describe('execution host registry', () => {
     ])
   })
 
+  it('treats ready shared-control diagnostics without a status payload as available', () => {
+    const hosts = buildExecutionHostRegistry({
+      repos: [],
+      settings: { activeRuntimeEnvironmentId: null },
+      runtimeEnvironments: [{ id: 'dev-box', name: 'Dev Box' }],
+      runtimeStatusByEnvironmentId: new Map([
+        [
+          'dev-box',
+          {
+            checkedAt: 0,
+            status: null,
+            remoteControl: {
+              state: 'ready',
+              pendingRequestCount: 0,
+              subscriptionCount: 1,
+              reconnectAttempt: 0,
+              lastConnectedAt: 123,
+              lastClose: null,
+              lastError: null
+            }
+          }
+        ]
+      ])
+    })
+
+    expect(hosts).toMatchObject([
+      { id: 'local', health: 'local' },
+      {
+        id: 'runtime:dev-box',
+        label: 'Dev Box',
+        health: 'available',
+        remoteControlState: { state: 'ready' }
+      }
+    ])
+  })
+
+  it('preserves runtime environment source on runtime hosts', () => {
+    const hosts = buildExecutionHostRegistry({
+      repos: [],
+      settings: { activeRuntimeEnvironmentId: null },
+      runtimeEnvironments: [{ id: 'vm-runtime', name: 'VM Runtime', source: 'ephemeral-vm' }],
+      runtimeStatusByEnvironmentId: new Map([
+        [
+          'vm-runtime',
+          {
+            checkedAt: 0,
+            status: {
+              runtimeId: 'runtime-vm',
+              rendererGraphEpoch: 1,
+              graphStatus: 'ready',
+              authoritativeWindowId: 1,
+              liveTabCount: 0,
+              liveLeafCount: 0,
+              runtimeProtocolVersion: RUNTIME_PROTOCOL_VERSION,
+              minCompatibleRuntimeClientVersion: 1,
+              capabilities: ['project-host-setup.v1']
+            }
+          }
+        ]
+      ])
+    })
+
+    expect(hosts).toContainEqual(
+      expect.objectContaining({
+        id: 'runtime:vm-runtime',
+        kind: 'runtime',
+        source: 'ephemeral-vm'
+      })
+    )
+  })
+
   it('applies per-host display-label overrides to derived labels', () => {
     const hosts = buildExecutionHostRegistry({
       repos: [{ connectionId: 'repo-ssh' }],
@@ -196,17 +325,15 @@ describe('execution host registry', () => {
     ])
   })
 
-  it('includes runtime hosts from repo ownership but marks them disconnected without live status', () => {
+  it('keeps runtime hosts checking before their first status result', () => {
     const hosts = buildExecutionHostRegistry({
       repos: [{ connectionId: null, executionHostId: 'runtime:env-2' }],
       settings: { activeRuntimeEnvironmentId: null }
     })
 
-    // No live status means no evidence the Orca server is reachable, so it must
-    // read 'disconnected' rather than defaulting to 'available'/"Connected".
     expect(hosts).toMatchObject([
       { id: 'local', health: 'local' },
-      { id: 'runtime:env-2', kind: 'runtime', label: 'env-2', health: 'disconnected' }
+      { id: 'runtime:env-2', kind: 'runtime', label: 'env-2', health: 'connecting' }
     ])
   })
 
@@ -218,6 +345,7 @@ describe('execution host registry', () => {
         [
           'gpu',
           {
+            checkedAt: 0,
             appVersion: '1.8.0',
             status: {
               runtimeId: 'runtime-gpu',
@@ -248,4 +376,31 @@ describe('execution host registry', () => {
       }
     ])
   })
+})
+
+it('keeps an initial unknown-transport verification connecting', () => {
+  const hosts = buildExecutionHostRegistry({
+    repos: [],
+    settings: null,
+    runtimeEnvironments: [{ id: 'host', name: 'Host' }],
+    runtimeStatusByEnvironmentId: new Map([
+      [
+        'host',
+        {
+          checkedAt: 0,
+          status: null,
+          snapshot: {
+            environmentId: 'host',
+            pairingRevision: 1,
+            sequence: 1,
+            checkedAt: 0,
+            status: null,
+            verification: 'checking',
+            transport: 'unknown'
+          }
+        }
+      ]
+    ])
+  })
+  expect(hosts.find((host) => host.id === 'runtime:host')?.health).toBe('connecting')
 })

@@ -1,12 +1,13 @@
-import { ipcMain, BrowserWindow, systemPreferences, app } from 'electron'
-import { join } from 'path'
-import { writeFile, unlink } from 'fs/promises'
-import { createHash } from 'crypto'
+import { ipcMain, BrowserWindow, systemPreferences } from 'electron'
+import { join } from 'node:path'
+import { writeFile, unlink } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { SPEECH_MODEL_CATALOG } from '../speech/model-catalog'
 import { deleteLocalSpeechModel } from '../speech/speech-model-deletion'
 import { getSpeechModelManager, getSpeechSttService } from '../speech/speech-runtime-service'
 import {
   clearOpenAiSpeechApiKey,
+  getOpenAiSpeechApiKeyProtection,
   hasOpenAiSpeechApiKey,
   saveOpenAiSpeechApiKey
 } from '../speech/openai-api-key-store'
@@ -22,17 +23,17 @@ export function registerSpeechHandlers(store: Store): void {
   })
 
   ipcMain.handle('speech:getOpenAiApiKeyStatus', async () => {
-    return { configured: hasOpenAiSpeechApiKey() }
+    return { configured: hasOpenAiSpeechApiKey(), protection: getOpenAiSpeechApiKeyProtection() }
   })
 
   ipcMain.handle('speech:saveOpenAiApiKey', async (_event, apiKey: string) => {
     saveOpenAiSpeechApiKey(apiKey)
-    return { configured: true }
+    return { configured: true, protection: getOpenAiSpeechApiKeyProtection() }
   })
 
   ipcMain.handle('speech:clearOpenAiApiKey', async () => {
     clearOpenAiSpeechApiKey()
-    return { configured: false }
+    return { configured: false, protection: null }
   })
 
   ipcMain.handle('speech:downloadModel', async (event, modelId: string) => {
@@ -80,7 +81,9 @@ export function registerSpeechHandlers(store: Store): void {
 
   const getHotwordsFilePath = (content: string): string => {
     const digest = createHash('sha256').update(content).digest('hex').slice(0, 12)
-    return join(app.getPath('userData'), `speech-hotwords-${digest}.txt`)
+    // Why: sherpa-onnx cannot read non-ASCII Windows paths, so co-locate the
+    // hotwords file with the ASCII-safe model cache instead of userData.
+    return join(getSpeechModelManager(store).getModelsDir(), `speech-hotwords-${digest}.txt`)
   }
 
   const getDesktopOwner = (senderId: number, sessionId: string): string =>

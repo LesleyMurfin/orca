@@ -70,22 +70,56 @@ export const getGitPaneSearchEntries = createLocalizedCatalog(() => [
       ...translateSearchKeyword('auto.components.settings.git.search.gitChanges', 'git changes')
     ]
   },
-  ...getAutoRenameBranchSearchEntries(),
   {
-    title: translate('auto.components.settings.git.search.bc7d9f69ce', 'Orca Attribution'),
+    title: translate(
+      'auto.components.settings.git.search.compareAgainstUpstreamTitle',
+      'Default Compare Base'
+    ),
     description: translate(
-      'auto.components.settings.git.search.118c23484b',
-      'Add Orca attribution to commits, PRs, and issues.'
+      'auto.components.settings.git.search.compareAgainstUpstreamDescription',
+      "Choose which base Source Control uses by default for committed-change comparisons. Branch upstream follows the current branch automatically and falls back to the repository default branch when no upstream exists. You can still change the compare base per worktree from that worktree's Git panel. Pull Request and rebase targets don't change."
     ),
     keywords: [
-      ...translateSearchKeyword('auto.components.settings.git.search.d088806071', 'github'),
-      ...translateSearchKeyword('auto.components.settings.git.search.16f53f7323', 'gh'),
-      ...translateSearchKeyword('auto.components.settings.git.search.6bdea421bb', 'pr'),
-      ...translateSearchKeyword('auto.components.settings.git.search.af0a144bfb', 'issue'),
-      ...translateSearchKeyword('auto.components.settings.git.search.61f9f5d1fc', 'co-author'),
-      ...translateSearchKeyword('auto.components.settings.git.search.8461c908ae', 'coauthored'),
-      ...translateSearchKeyword('auto.components.settings.git.search.1b93c1143c', 'attribution'),
-      ...translateSearchKeyword('auto.components.settings.git.search.61eab13403', 'orca')
+      ...translateSearchKeyword('auto.components.settings.git.search.compareBase', 'compare base'),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.defaultCompareBase',
+        'default compare base'
+      ),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.defaultBranch',
+        'default branch'
+      ),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.repositoryDefault',
+        'repository default'
+      ),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.branchUpstream',
+        'branch upstream'
+      ),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.currentBranch',
+        'current branch'
+      ),
+      ...translateSearchKeyword('auto.components.settings.git.search.upstream', 'upstream'),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.localChanges',
+        'local changes'
+      ),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.originMaster',
+        'origin/master'
+      ),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.committedChanges',
+        'committed changes'
+      ),
+      ...translateSearchKeyword('auto.components.settings.git.search.diffBase', 'diff base'),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.sourceControl',
+        'source control'
+      )
     ]
-  }
+  },
+  ...getAutoRenameBranchSearchEntries()
 ])

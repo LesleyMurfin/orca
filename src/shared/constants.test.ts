@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import { DEFAULT_TERMINAL_INACTIVE_PANE_OPACITY, getDefaultSettings } from './constants'
+import { getDefaultNotificationSettings } from './notification-settings-defaults'
 import {
-  getDefaultNotificationSettings,
   getDefaultPrimarySelectionMiddleClickPaste,
-  getDefaultSettings
-} from './constants'
+  getDefaultTerminalRightClickToPaste
+} from './terminal-platform-defaults'
 
 describe('getDefaultSettings', () => {
   it('uses platform-consistent separators for the default workspace directory', () => {
@@ -25,6 +26,11 @@ describe('getDefaultSettings', () => {
     expect(getDefaultSettings('/tmp').sourceControlGroupOrder).toBe('changes-first')
   })
 
+  it('defaults mobile pairing to discovered network addresses', () => {
+    expect(getDefaultSettings('/tmp').mobilePairingCustomAddress).toBeNull()
+    expect(getDefaultSettings('/tmp').mobilePairingCustomAddresses).toEqual([])
+  })
+
   it('keeps first-work branch auto-renaming on by default for new settings', () => {
     expect(getDefaultSettings('/tmp').autoRenameBranchFromWork).toBe(true)
     expect(getDefaultSettings('/tmp').autoRenameBranchFromWorkDefaultedOn).toBe(true)
@@ -35,8 +41,19 @@ describe('getDefaultSettings', () => {
     expect(getDefaultSettings('/tmp').terminalCursorStyleDefaultedToBlock).toBe(true)
   })
 
+  it('allows OSC 52 clipboard writes by default for new settings', () => {
+    expect(getDefaultSettings('/tmp').terminalAllowOsc52Clipboard).toBe(true)
+    expect(getDefaultSettings('/tmp').terminalAllowOsc52ClipboardDefaultedOnForAllUsers).toBe(true)
+  })
+
   it('enables separate light terminal theme by default', () => {
     expect(getDefaultSettings('/tmp').terminalUseSeparateLightTheme).toBe(true)
+  })
+
+  it('keeps inactive terminal panes readable by default', () => {
+    expect(getDefaultSettings('/tmp').terminalInactivePaneOpacity).toBe(
+      DEFAULT_TERMINAL_INACTIVE_PANE_OPACITY
+    )
   })
 
   it('asks before closing terminals with running processes by default', () => {
@@ -47,8 +64,24 @@ describe('getDefaultSettings', () => {
     expect(getDefaultSettings('/tmp').uiLanguage).toBe('system')
   })
 
+  it('defaults the menu bar icon on so the value round-trips across platforms', () => {
+    expect(getDefaultSettings('/tmp').showMenuBarIcon).toBe(true)
+  })
+
+  it('shows terminal link actions by default', () => {
+    expect(getDefaultSettings('/tmp').terminalLinkActionPopoverEnabled).toBe(true)
+  })
+
   it('confirms before closing pinned tabs by default', () => {
     expect(getDefaultSettings('/tmp').confirmClosePinnedTab).toBe(true)
+  })
+
+  it('keeps file-editor word wrapping enabled by default', () => {
+    expect(getDefaultSettings('/tmp').editorWordWrap).toBe(true)
+  })
+
+  it('keeps rich Markdown spellcheck enabled by default', () => {
+    expect(getDefaultSettings('/tmp').richMarkdownSpellcheckEnabled).toBe(true)
   })
 
   it('enables Source Control AI by default without pinning a separate agent', () => {
@@ -73,6 +106,15 @@ describe('getDefaultSettings', () => {
     expect(getDefaultSettings('/tmp').compactWorktreeCards).toBe(false)
   })
 
+  it('keeps per-workspace environments disabled by default', () => {
+    expect(getDefaultSettings('/tmp').experimentalEphemeralVms).toBe(false)
+  })
+
+  it('keeps the agent dashboard popout disabled by default', () => {
+    expect(getDefaultSettings('/tmp').experimentalAgentDashboardPopout).toBeUndefined()
+    expect(getDefaultSettings('/tmp').experimentalAgentDashboardShowIdle).toBeUndefined()
+  })
+
   it('defaults local Windows projects to the host runtime', () => {
     expect(getDefaultSettings('/tmp').localWindowsRuntimeDefault).toEqual({
       kind: 'windows-host'
@@ -92,6 +134,7 @@ describe('getDefaultSettings', () => {
       codex: '--dangerously-bypass-approvals-and-sandbox',
       gemini: '--yolo',
       cursor: '--yolo',
+      muse: '--yolo',
       copilot: '--yolo',
       grok: '--permission-mode bypassPermissions'
     })
@@ -115,5 +158,30 @@ describe('getDefaultPrimarySelectionMiddleClickPaste', () => {
 
   it('leaves primary selection paste opt-in on Windows', () => {
     expect(getDefaultPrimarySelectionMiddleClickPaste('win32')).toBe(false)
+  })
+})
+
+describe('getDefaultTerminalRightClickToPaste', () => {
+  it('defaults on only for Windows', () => {
+    expect(getDefaultTerminalRightClickToPaste('win32')).toBe(true)
+    expect(getDefaultTerminalRightClickToPaste('darwin')).toBe(false)
+    expect(getDefaultTerminalRightClickToPaste('linux')).toBe(false)
+  })
+})
+
+describe('MiniMax defaults', () => {
+  it('starts MiniMax with empty group id and the canonical default model', () => {
+    const settings = getDefaultSettings('/tmp')
+    // Why: the fetcher reads these defaults on first launch. An empty
+    // group id is the signal that the fetcher must pull the value from
+    // the cookie itself, and "general" matches the model name the
+    // MiniMax usage endpoint exposes by default.
+    expect(settings.minimaxGroupId).toBe('')
+    expect(settings.minimaxUsageModels).toBe('general')
+  })
+
+  it('defaults the MiniMax endpoint to overseas', () => {
+    const settings = getDefaultSettings('/tmp')
+    expect(settings.minimaxEndpoint).toBe('overseas')
   })
 })

@@ -1,4 +1,3 @@
-/* eslint-disable max-lines -- Why: this file groups every CLI browser-command test (page targeting, profiles, waits, viewport) so test-fixture imports and the runtime-client mock stay shared in one place. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const callMock = vi.fn()
@@ -184,6 +183,27 @@ describe('orca cli browser page targeting', () => {
     )
   })
 
+  it('opens browser-launch URLs on the client hosting the current worktree', async () => {
+    queueFixtures(
+      callMock,
+      worktreeListFixture([buildWorktree('/tmp/repo/feature', 'feature/foo')]),
+      okFixture('req_open_url', { browserPageId: 'page-local' })
+    )
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await main(['open-url', '--url', 'https://example.com/login', '--json'], '/tmp/repo/feature')
+
+    expect(callMock).toHaveBeenNthCalledWith(
+      2,
+      'browser.openUrl',
+      {
+        url: 'https://example.com/login',
+        worktree: 'id:repo::/tmp/repo/feature'
+      },
+      { timeoutMs: 60_000 }
+    )
+  })
+
   it('passes tab profile updates through by page id', async () => {
     queueFixtures(
       callMock,
@@ -294,7 +314,77 @@ describe('orca cli browser page targeting', () => {
   })
 })
 
-describe('orca cli browser tab profiles', () => {
+describe('orca cli browser identity', () => {
+  beforeEach(() => {
+    callMock.mockReset()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('gets the host identity only after capability negotiation', async () => {
+    queueFixtures(
+      callMock,
+      okFixture('status', { capabilities: ['browser.identity.v1'] }),
+      okFixture('identity', {
+        identity: {
+          state: 'valid',
+          appliedMode: 'clean',
+          configuredMode: 'native',
+          explicitSelection: true,
+          migrationNoticePending: false,
+          restartRequired: true
+        },
+        migrationNotice: null
+      })
+    )
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await main(['browser', 'identity', 'get', '--json'], '/tmp/not-an-orca-worktree')
+
+    expect(callMock).toHaveBeenNthCalledWith(1, 'status.get')
+    expect(callMock).toHaveBeenNthCalledWith(2, 'browser.identity.get')
+  })
+
+  it('sets the host identity through the runtime writer', async () => {
+    queueFixtures(
+      callMock,
+      okFixture('status', { capabilities: ['browser.identity.v1'] }),
+      okFixture('identity', {
+        ok: true,
+        identity: {
+          state: 'valid',
+          appliedMode: 'clean',
+          configuredMode: 'native',
+          explicitSelection: true,
+          migrationNoticePending: false,
+          restartRequired: true
+        }
+      })
+    )
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await main(
+      ['browser', 'identity', 'set', '--mode', 'native', '--json'],
+      '/tmp/not-an-orca-worktree'
+    )
+
+    expect(callMock).toHaveBeenNthCalledWith(2, 'browser.identity.set', { mode: 'native' })
+  })
+
+  it('refuses an older runtime instead of guessing at identity support', async () => {
+    queueFixtures(callMock, okFixture('status', { capabilities: [] }))
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await main(['browser', 'identity', 'get'], '/tmp/not-an-orca-worktree')
+
+    expect(callMock).toHaveBeenCalledTimes(1)
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('Update or restart Orca'))
+  })
+})
+
+describe('orca cli browser profile management', () => {
   beforeEach(() => {
     callMock.mockReset()
   })
@@ -379,29 +469,6 @@ describe('orca cli browser tab profiles', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
-  })
-
-  it('lists browser tab profiles', async () => {
-    queueFixtures(
-      callMock,
-      okFixture('req_profiles', {
-        profiles: [
-          { id: 'default', scope: 'default', label: 'Default', partition: 'persist:orca-browser' },
-          {
-            id: 'work',
-            scope: 'isolated',
-            label: 'Work',
-            partition: 'persist:orca-browser-session-work'
-          }
-        ]
-      })
-    )
-    vi.spyOn(console, 'log').mockImplementation(() => {})
-
-    await main(['tab', 'profile', 'list', '--json'], '/tmp/not-an-orca-worktree')
-
-    expect(callMock).toHaveBeenCalledTimes(1)
-    expect(callMock).toHaveBeenCalledWith('browser.profileList')
   })
 
   it('reports an empty browser tab profile list with a friendly message', async () => {

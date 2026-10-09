@@ -3,8 +3,13 @@ import { Loader2 } from 'lucide-react'
 import TerminalPane from '@/components/terminal-pane/TerminalPane'
 import { PASTE_TERMINAL_TEXT_EVENT, type PasteTerminalTextDetail } from '@/constants/terminal'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
+import {
+  ORCA_TERMINAL_COMMAND_FINISHED_EVENT,
+  type TerminalCommandFinishedEventDetail
+} from '@/hooks/terminal-command-finished-event'
 import { useAppStore } from '@/store'
 import { translate } from '@/i18n/i18n'
+import { brandEphemeralSetupTerminalWorktreeId } from '../../../../shared/ephemeral-setup-terminal-worktree-id'
 
 const ONBOARDING_INLINE_TERMINAL_WORKTREE_ID = 'onboarding-inline-terminal'
 const AUTO_INSERT_DELAY_MS = 250
@@ -16,6 +21,7 @@ const PTY_TEXT_FALLBACK_MS = 750
 
 type OnboardingInlineCommandTerminalProps = {
   command: string
+  prepareCommandForShell?: (command: string, shellOverride: string | undefined) => string
   title: string
   description?: string
   ariaLabel: string
@@ -25,13 +31,21 @@ type OnboardingInlineCommandTerminalProps = {
   autoScrollIntoView?: boolean
   worktreeId?: string
   shellOverride?: string
+  forceHostRuntime?: boolean
   onOpened?: () => void
   onInteracted?: (method: 'keyboard' | 'pointer', event?: KeyboardEvent<HTMLElement>) => void
   onTerminalExit?: () => void
+  // OSC 133;D reports the command outcome while the shell remains alive.
+  onCommandFinished?: (bestEffortExitCode: number | null) => void
 }
 
+/**
+ * Inline pane that runs a one-off setup command (skill install, feature tip) in an
+ * ephemeral floating-scoped terminal, auto-inserting the command once the PTY is ready.
+ */
 export function OnboardingInlineCommandTerminal({
   command,
+  prepareCommandForShell,
   title,
   description,
   ariaLabel,
@@ -39,12 +53,20 @@ export function OnboardingInlineCommandTerminal({
   terminalTopMarginPx = 20,
   descriptionPaddingClassName = 'px-4 py-3',
   autoScrollIntoView = true,
-  worktreeId = ONBOARDING_INLINE_TERMINAL_WORKTREE_ID,
+  worktreeId: worktreeIdProp = ONBOARDING_INLINE_TERMINAL_WORKTREE_ID,
   shellOverride,
+  forceHostRuntime = false,
   onOpened,
   onInteracted,
-  onTerminalExit
+  onTerminalExit,
+  onCommandFinished
 }: OnboardingInlineCommandTerminalProps): React.JSX.Element {
+  // Why: brand the id so a remote runtime scopes this ephemeral terminal to the
+  // floating terminal instead of rejecting the synthetic id.
+  const worktreeId = useMemo(
+    () => brandEphemeralSetupTerminalWorktreeId(worktreeIdProp),
+    [worktreeIdProp]
+  )
   const createTab = useAppStore((s) => s.createTab)
   const closeTab = useAppStore((s) => s.closeTab)
   const setActiveTabForWorktree = useAppStore((s) => s.setActiveTabForWorktree)
@@ -57,17 +79,39 @@ export function OnboardingInlineCommandTerminal({
     []
   )
   const [cwd, setCwd] = useState<string | null>(null)
-  const [tabId, setTabId] = useState<string | null>(null)
+  const [createdTab, setCreatedTab] = useState<{
+    id: string
+    shellOverride: string | undefined
+  } | null>(null)
+  const tabId = createdTab?.id ?? null
   // Why: starts at `prefersReducedMotion` so users opted out of motion never
   // see the slide-in frame; otherwise we flip to true after first paint so the
   // CSS transition has a starting state to interpolate from.
   const [entered, setEntered] = useState(prefersReducedMotion)
   const terminalSectionRef = useRef<HTMLElement>(null)
-  const autoInsertedRef = useRef<string | null>(null)
+  const autoInsertedRef = useRef<{ tabId: string; command: string } | null>(null)
 
   useEffect(() => {
     onOpened?.()
   }, [onOpened])
+
+  // Why: the branded id isolates command outcomes to this inline terminal.
+  useEffect(() => {
+    if (!onCommandFinished) {
+      return
+    }
+    const handleCommandFinished = (event: Event): void => {
+      const detail = (event as CustomEvent<TerminalCommandFinishedEventDetail>).detail
+      if (detail?.worktreeId !== worktreeId) {
+        return
+      }
+      onCommandFinished(detail.exitCode)
+    }
+    window.addEventListener(ORCA_TERMINAL_COMMAND_FINISHED_EVENT, handleCommandFinished)
+    return () => {
+      window.removeEventListener(ORCA_TERMINAL_COMMAND_FINISHED_EVENT, handleCommandFinished)
+    }
+  }, [onCommandFinished, worktreeId])
 
   useEffect(() => {
     let cancelled = false
@@ -84,19 +128,21 @@ export function OnboardingInlineCommandTerminal({
   useEffect(() => {
     const tab = createTab(worktreeId, undefined, shellOverride, {
       activate: false,
-      recordInteraction: false
+      recordInteraction: false,
+      forceHostRuntime
     })
     setActiveTabForWorktree(worktreeId, tab.id)
     setTabCustomTitle(tab.id, title, { recordInteraction: false })
-    setTabId(tab.id)
+    setCreatedTab({ id: tab.id, shellOverride: tab.shellOverride })
     return () => {
       // Why: inline setup panels can disappear after detection succeeds; close
       // the backing tab so installer shells do not keep running invisibly.
-      closeTab(tab.id, { recordInteraction: false })
+      closeTab(tab.id, { recordInteraction: false, reason: 'cleanup' })
     }
   }, [
     closeTab,
     createTab,
+    forceHostRuntime,
     setActiveTabForWorktree,
     setTabCustomTitle,
     shellOverride,
@@ -165,9 +211,17 @@ export function OnboardingInlineCommandTerminal({
   }, [autoScrollIntoView, entered, prefersReducedMotion])
 
   const insertCommand = useCallback(() => {
-    if (!tabId) {
+    if (!createdTab) {
       return
     }
+    const terminalCommand = prepareCommandForShell?.(command, createdTab.shellOverride) ?? command
+    if (
+      autoInsertedRef.current?.tabId === createdTab.id &&
+      autoInsertedRef.current.command === terminalCommand
+    ) {
+      return
+    }
+    autoInsertedRef.current = { tabId: createdTab.id, command: terminalCommand }
     if (autoScrollIntoView) {
       terminalSectionRef.current?.scrollIntoView({
         behavior: 'auto',
@@ -177,16 +231,16 @@ export function OnboardingInlineCommandTerminal({
     window.dispatchEvent(
       new CustomEvent<PasteTerminalTextDetail>(PASTE_TERMINAL_TEXT_EVENT, {
         detail: {
-          tabId,
-          text: command.trim()
+          tabId: createdTab.id,
+          text: terminalCommand.trim()
         }
       })
     )
-    focusTerminalTabSurface(tabId)
-  }, [autoScrollIntoView, command, tabId])
+    focusTerminalTabSurface(createdTab.id)
+  }, [autoScrollIntoView, command, createdTab, prepareCommandForShell])
 
   useEffect(() => {
-    if (!tabId || !cwd || autoInsertedRef.current === command) {
+    if (!tabId || !cwd) {
       return
     }
     let canceled = false
@@ -200,7 +254,6 @@ export function OnboardingInlineCommandTerminal({
       }
       insertionTimer = window.setTimeout(() => {
         if (!canceled) {
-          autoInsertedRef.current = command
           insertCommand()
         }
       }, AUTO_INSERT_DELAY_MS)
@@ -244,7 +297,7 @@ export function OnboardingInlineCommandTerminal({
         window.clearTimeout(insertionTimer)
       }
     }
-  }, [command, cwd, insertCommand, tabId])
+  }, [cwd, insertCommand, tabId])
 
   // Why: grid 0fr → 1fr animates to the child's natural height without a
   // hardcoded max-height, so we don't leave dead space if the terminal
@@ -283,11 +336,12 @@ export function OnboardingInlineCommandTerminal({
               cwd={cwd}
               isActive
               isVisible
+              showSplitButton={false}
               onPtyExit={() => {
                 onTerminalExit?.()
-                closeTab(tabId, { recordInteraction: false })
+                closeTab(tabId, { recordInteraction: false, reason: 'pty-exit' })
               }}
-              onCloseTab={() => closeTab(tabId, { recordInteraction: false })}
+              onCloseTab={() => closeTab(tabId, { recordInteraction: false, reason: 'cleanup' })}
             />
           ) : (
             <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">

@@ -7,14 +7,20 @@ import type { IDisposable } from '@xterm/xterm'
 
 export type SerializeOpts = {
   scrollbackRows?: number
-  altScreenForcesZeroRows?: boolean
 }
 
 export type SerializedBuffer = {
   data: string
   cols: number
   rows: number
+  seq?: number
   lastTitle?: string
+  /** Kitty flags this pane's mirror could PROVE at `seq`. Published only from
+   *  the tracker's snapshotFlags, so an old host's unknown state is never
+   *  republished as a known `0`. */
+  kittyKeyboardFlags?: number
+  /** Trailing incomplete escape to replay after snapshot reset bytes. */
+  pendingEscapeTailAnsi?: string
 }
 
 export type SerializeFn = (
@@ -28,6 +34,7 @@ export type SerializeFn = (
 type SerializerEntry = {
   fn: SerializeFn
   clear?: () => void
+  resetInputModes?: () => void
   owner: symbol
 }
 
@@ -44,10 +51,10 @@ let listenerAttached = false
 export function registerPtySerializer(
   ptyId: string,
   serialize: SerializeFn,
-  clear?: () => void
+  actions: Pick<SerializerEntry, 'clear' | 'resetInputModes'> = {}
 ): () => void {
   const owner = Symbol(ptyId)
-  serializersByPtyId.set(ptyId, { fn: serialize, clear, owner })
+  serializersByPtyId.set(ptyId, { fn: serialize, ...actions, owner })
   ensureSerializerListener()
   return () => {
     const current = serializersByPtyId.get(ptyId)
@@ -110,6 +117,11 @@ export function registerPtyTitleSource(
   }
 }
 
+/** Grounds the pane's own records only; the host grounds its models on its own request. */
+export function resetPtyRendererInputModes(ptyId: string): void {
+  serializersByPtyId.get(ptyId)?.resetInputModes?.()
+}
+
 export function hasPtySerializer(ptyId: string): boolean {
   return serializersByPtyId.has(ptyId)
 }
@@ -127,10 +139,18 @@ function ensureSerializerListener(): void {
     serializersByPtyId.get(request.ptyId)?.clear?.()
   })
 
+  window.api.pty.onResetInputModesRequest((request) => resetPtyRendererInputModes(request.ptyId))
+
   window.api.pty.onSerializeBufferRequest((request) => {
     const entry = serializersByPtyId.get(request.ptyId)
     void Promise.resolve(entry?.fn(request.opts) ?? null)
       .then((result) => {
+        // Why: cold parking and remounts can replace the serializer while its
+        // parse wait is in flight; never publish a fossil from the old xterm.
+        if (serializersByPtyId.get(request.ptyId) !== entry) {
+          window.api.pty.sendSerializedBuffer(request.requestId, null)
+          return
+        }
         if (!result) {
           window.api.pty.sendSerializedBuffer(request.requestId, null)
           return
@@ -141,6 +161,17 @@ function ensureSerializerListener(): void {
           data: result.data,
           cols: result.cols,
           rows: result.rows
+        }
+        if (result.seq !== undefined) {
+          payload.seq = result.seq
+        }
+        // Why gated on seq: flags describe a boundary, and an unsequenced
+        // snapshot has none for a consumer to reconcile live bytes against.
+        if (result.seq !== undefined && result.kittyKeyboardFlags !== undefined) {
+          payload.kittyKeyboardFlags = result.kittyKeyboardFlags
+        }
+        if (result.pendingEscapeTailAnsi !== undefined) {
+          payload.pendingEscapeTailAnsi = result.pendingEscapeTailAnsi
         }
         if (lastTitle !== undefined) {
           payload.lastTitle = lastTitle

@@ -1,11 +1,13 @@
-import { stat as statLocalPath } from 'fs/promises'
+import { stat as statLocalPath } from 'node:fs/promises'
 import { isPathInsideOrEqual } from '../../shared/cross-platform-path'
 import type {
   FolderWorkspacePathStatus,
   FolderWorkspacePathStatusRequest
 } from '../../shared/folder-workspace-path-status'
 import { getProjectGroupSubtreeIds } from '../../shared/project-groups'
-import type { FolderWorkspace, ProjectGroup, Repo } from '../../shared/types'
+import type { FolderWorkspace } from '../../shared/folder-workspace-types'
+import type { ProjectGroup } from '../../shared/project-group-types'
+import type { Repo } from '../../shared/repo-types'
 import type { IFilesystemProvider } from '../providers/types'
 
 type FolderWorkspacePathStatusStore = {
@@ -25,18 +27,22 @@ type FolderWorkspacePathStatusDeps = {
 
 function getFolderScopeCandidateRepos(args: {
   folderPath: string
-  projectGroupId: string
+  projectGroupId?: string | null
   connectionId?: string | null
   projectGroups: readonly ProjectGroup[]
   repos: readonly Repo[]
 }): Repo[] {
-  const groupIds = getProjectGroupSubtreeIds(args.projectGroups, args.projectGroupId)
-  const groupRepos = args.repos.filter(
-    (repo) => typeof repo.projectGroupId === 'string' && groupIds.has(repo.projectGroupId)
-  )
+  const groupIds = args.projectGroupId
+    ? getProjectGroupSubtreeIds(args.projectGroups, args.projectGroupId)
+    : null
+  const groupRepos = groupIds
+    ? args.repos.filter(
+        (repo) => typeof repo.projectGroupId === 'string' && groupIds.has(repo.projectGroupId)
+      )
+    : []
   const pathRepos = args.repos.filter(
     (repo) =>
-      !(typeof repo.projectGroupId === 'string' && groupIds.has(repo.projectGroupId)) &&
+      !(groupIds && typeof repo.projectGroupId === 'string' && groupIds.has(repo.projectGroupId)) &&
       isPathInsideOrEqual(args.folderPath, repo.path)
   )
   if (args.connectionId) {
@@ -57,7 +63,7 @@ function getFolderScopeCandidateRepos(args: {
 
 export function inferFolderWorkspacePathConnection(args: {
   folderPath: string
-  projectGroupId: string
+  projectGroupId?: string | null
   connectionId?: string | null
   projectGroups: readonly ProjectGroup[]
   repos: readonly Repo[]
@@ -134,7 +140,7 @@ async function statFolderPath(
 export async function getFolderWorkspacePathStatusForPath(
   args: {
     folderPath: string
-    projectGroupId: string
+    projectGroupId?: string | null
     connectionId?: string | null
     projectGroups: readonly ProjectGroup[]
     repos: readonly Repo[]
@@ -148,7 +154,7 @@ export async function getFolderWorkspacePathStatusForPath(
 export function resolveFolderWorkspaceStatusPath(args: {
   store: FolderWorkspacePathStatusStore
   request: FolderWorkspacePathStatusRequest
-}): { folderPath: string; projectGroupId: string; connectionId?: string | null } {
+}): { folderPath: string; projectGroupId: string | null; connectionId?: string | null } {
   const { request } = args
   if (request.scope === 'project-group') {
     const group = args.store
@@ -161,6 +167,14 @@ export function resolveFolderWorkspaceStatusPath(args: {
       folderPath: group.parentPath,
       projectGroupId: group.id,
       connectionId: group.connectionId ?? null
+    }
+  }
+
+  if (request.scope === 'path') {
+    return {
+      folderPath: request.path,
+      projectGroupId: null,
+      connectionId: request.connectionId ?? null
     }
   }
 

@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react'
 import { AgentSkillSetupPanel } from './AgentSkillSetupPanel'
-import { StepBadge } from './BrowserUseStepBadge'
+import type { LocalAgentRuntime } from './CliSkillRuntimeSetup'
+import { StepBadge } from './SetupStepBadge'
 import { translate } from '@/i18n/i18n'
 
 type Props = {
@@ -11,8 +11,7 @@ type Props = {
   skillError: string | null
   disabled?: boolean
   terminalShellOverride?: string
-  preInstallNotice?: ReactNode
-  getPrerequisiteStatus?: () => Promise<Awaited<ReturnType<typeof window.api.cli.getInstallStatus>>>
+  terminalRuntime?: LocalAgentRuntime
   onBeforeOpenTerminal?: () => void | Promise<void>
   onRecheck: () => void | Promise<unknown>
 }
@@ -25,8 +24,7 @@ export function BrowserUseSkillStep({
   skillError,
   disabled = false,
   terminalShellOverride,
-  preInstallNotice,
-  getPrerequisiteStatus,
+  terminalRuntime,
   onBeforeOpenTerminal,
   onRecheck
 }: Props): React.JSX.Element {
@@ -47,13 +45,12 @@ export function BrowserUseSkillStep({
       terminalAriaLabel="Browser Use skill install terminal"
       terminalWorktreeId="settings-browser-use-skill-terminal"
       terminalShellOverride={terminalShellOverride}
+      terminalRuntime={terminalRuntime}
       installed={skillDetected}
       loading={skillLoading}
       error={skillError}
       installDisabled={disabled}
-      leading={<StepBadge index={2} state={skillDetected ? 'done' : 'pending'} />}
-      preInstallNotice={preInstallNotice}
-      getPrerequisiteStatus={getPrerequisiteStatus}
+      leading={<StepBadge index={1} state={skillDetected ? 'done' : 'pending'} />}
       onBeforeOpenTerminal={onBeforeOpenTerminal}
       onRecheck={onRecheck}
     />

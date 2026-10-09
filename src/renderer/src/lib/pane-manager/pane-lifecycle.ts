@@ -1,10 +1,3 @@
-// Upstream packaging bug: @xterm/addon-ligatures declares `"main":
-// "lib/addon-ligatures.js"` but ships only the `.mjs` entry, so Vite fails to
-// resolve the bare import. Fixed locally via config/patches/@xterm__addon-ligatures*.
-// Tracking upstream: https://github.com/xtermjs/xterm.js/issues/5822 and
-// https://github.com/xtermjs/xterm.js/pull/5828 — drop the patch once that lands.
-import { LigaturesAddon } from '@xterm/addon-ligatures'
-
 import type { ManagedPaneInternal } from './pane-manager-types'
 import { safeFit } from './pane-tree-ops'
 import {
@@ -12,11 +5,24 @@ import {
   detachPaneFitResizeObserver
 } from './pane-fit-resize-observer'
 import { clearPendingSplitScrollRestore } from './pane-split-scroll'
-import { activateOrcaTerminalUnicodeProvider } from './pane-terminal-unicode-provider'
+import { cancelDeferredScrollRestore } from './pane-scroll'
+import { activateOrcaTerminalUnicodeProvider } from '../../../../shared/terminal-unicode-provider'
 import { attachTerminalMouseWheelMultiplier } from './pane-terminal-mouse-wheel'
-import { attachTerminalScrollIntentTracking } from './terminal-scroll-intent'
+import { attachTerminalScrollIntentTracking } from './terminal-scroll-intent-dom-tracking'
+import {
+  installTerminalLinkifierHoverResetOnMouseLeave,
+  installTerminalLinkifierHoverResetOnWindowBlur
+} from './terminal-linkifier-hover-reset-on-mouseleave'
+import { installTerminalLinkifierHoverResetOnWrite } from './terminal-linkifier-hover-reset-on-write'
 import { attachDomRendererFocusClassSync } from './pane-dom-focus-class-sync'
+import { attachDomBlockFill } from './terminal-dom-block-fill'
 import { attachWebgl, cancelPendingWebglRefresh, disposeWebgl } from './pane-webgl-renderer'
+import { rebuildAttachedWebgl } from './pane-webgl-reattach'
+import { configureLazyArabicShapingJoiner } from './terminal-arabic-shaping-joiner'
+import { TerminalLigaturesAddon } from './terminal-ligatures-addon'
+import { attachInlineImages, detachInlineImages } from './pane-inline-images'
+import { installTerminalImeCandidateAnchor } from './terminal-ime-candidate-anchor'
+import { cancelPendingTerminalViewportPresents } from './pane-viewport-present'
 
 // ---------------------------------------------------------------------------
 // Pane creation, terminal open/close, addon management
@@ -25,9 +31,14 @@ import { attachWebgl, cancelPendingWebglRefresh, disposeWebgl } from './pane-web
 export { createPaneDOM } from './pane-dom-creation'
 
 /** Open terminal into its container and load addons. Must be called after the container is in the DOM. */
-export function openTerminal(pane: ManagedPaneInternal): void {
+export function openTerminal(
+  pane: ManagedPaneInternal,
+  // Named rather than positional: two adjacent optional booleans swap silently.
+  { ligatures = false, inlineImages = false }: { ligatures?: boolean; inlineImages?: boolean } = {}
+): void {
   const {
     terminal,
+    container,
     xtermContainer,
     linkTooltip,
     terminalTuiScrollSensitivity,
@@ -40,8 +51,9 @@ export function openTerminal(pane: ManagedPaneInternal): void {
 
   // Open terminal into DOM
   terminal.open(xtermContainer)
-  const linkTooltipContainer = terminal.element ?? xtermContainer
-  linkTooltipContainer.appendChild(linkTooltip)
+  // Why: terminal.element sits under the padded xterm container. Pane-level
+  // placement keeps the hover URL on the true bottom-left window corner.
+  container.appendChild(linkTooltip)
 
   // Load addons (order matters: WebGL must be after open())
   terminal.loadAddon(fitAddon)
@@ -57,6 +69,19 @@ export function openTerminal(pane: ManagedPaneInternal): void {
     xtermContainer,
     pane.leafId
   )
+  // Why: a link streamed into a visible pane under a stationary pointer would
+  // otherwise stay un-underlined/un-clickable until the mouse crosses to a new
+  // line; invalidate the linkifier hover cache when output lands so the next
+  // pointer move re-linkifies it.
+  pane.linkifierHoverResetDisposable = installTerminalLinkifierHoverResetOnWrite(terminal)
+  pane.linkifierMouseLeaveResetDisposable = installTerminalLinkifierHoverResetOnMouseLeave(
+    terminal,
+    linkTooltip
+  )
+  pane.linkifierWindowBlurResetDisposable = installTerminalLinkifierHoverResetOnWindowBlur(
+    terminal,
+    linkTooltip
+  )
 
   // Activate Orca's Unicode 11 width shim *before* any caller-driven write. CJK / emoji /
   // ZWJ codepoints get baked into the buffer at the active unicode version on
@@ -69,42 +94,28 @@ export function openTerminal(pane: ManagedPaneInternal): void {
   // so the activation must stay at this position.
   activateOrcaTerminalUnicodeProvider(terminal)
 
-  // Why: the OS reads the focused textarea's screen rect at compositionstart to
-  // decide where to display the IME candidate window. xterm.js only repositions
-  // the textarea on compositionupdate (via updateCompositionElements), not on
-  // compositionstart, so the window can appear at a stale cursor position. We
-  // force-sync the textarea position in a capture-phase listener so the OS sees
-  // the correct location before it opens the candidate window.
-  //
-  // Cell dimensions are derived from the public .xterm-screen element's bounds
-  // (xterm sizes that element to cols*cellWidth × rows*cellHeight) rather than
-  // poking `_core._renderService.dimensions` — keeps us on the public API
-  // surface so upgrades don't silently regress the fix.
-  if (terminal.element && terminal.textarea) {
-    const screenElement = terminal.element.querySelector<HTMLElement>('.xterm-screen')
-    const textarea = terminal.textarea
-    const handler = (): void => {
-      if (!screenElement) {
-        return
-      }
-      const rect = screenElement.getBoundingClientRect()
-      const cellWidth = rect.width / terminal.cols
-      const cellHeight = rect.height / terminal.rows
-      if (!(cellWidth > 0) || !(cellHeight > 0)) {
-        return
-      }
-      const buf = terminal.buffer.active
-      const x = Math.min(buf.cursorX, terminal.cols - 1)
-      textarea.style.top = `${buf.cursorY * cellHeight}px`
-      textarea.style.left = `${x * cellWidth}px`
-    }
-    terminal.element.addEventListener('compositionstart', handler, true)
-    // Store so disposePane() can remove it and avoid a memory leak.
-    pane.compositionHandler = handler
-  }
+  // Why: any xterm character joiner makes every repaint scan the whole grid.
+  // Defer registration until the first RTL write; replay and live paths both
+  // ensure it before parsing, so restored Arabic still shapes immediately.
+  pane.arabicShapingJoinerCleanup = configureLazyArabicShapingJoiner(
+    terminal,
+    () => pane.webglAddon != null
+  )
+
+  // Store so disposePane() can remove it and avoid a memory leak.
+  pane.compositionHandler = installTerminalImeCandidateAnchor(terminal)
 
   pane.focusClassSyncCleanup = attachDomRendererFocusClassSync(terminal.element)
+  pane.domBlockFillCleanup = attachDomBlockFill(terminal)
 
+  // Configure the first atlas with ligatures instead of immediately rebuilding it.
+  if (ligatures) {
+    attachLigatures(pane)
+  }
+  // Deferred attachment restores Orca's DA1 handler after the addon registers its own.
+  if (inlineImages) {
+    attachInlineImages(pane)
+  }
   if (pane.gpuRenderingEnabled) {
     attachWebgl(pane)
   }
@@ -137,21 +148,20 @@ export function attachLigatures(pane: ManagedPaneInternal): void {
     return
   }
   try {
-    const ligaturesAddon = new LigaturesAddon()
+    const ligaturesAddon = new TerminalLigaturesAddon()
     pane.terminal.loadAddon(ligaturesAddon)
     pane.ligaturesAddon = ligaturesAddon
     // Why: ligatures can be enabled after rows already rendered, especially
     // from Settings. Force existing glyph runs to be recomputed immediately.
-    pane.terminal.refresh(0, pane.terminal.rows - 1)
+    if (!pane.webglAttachmentDeferred) {
+      pane.terminal.refresh(0, pane.terminal.rows - 1)
+    }
     // Why: the WebGL renderer builds its glyph texture atlas at activation
     // time, so `font-feature-settings` applied after WebGL loaded won't
     // reach the GPU-rendered cells until the atlas is rebuilt. The upstream
     // docs call this out explicitly — reactivating WebGL after ligatures
     // forces a fresh atlas that includes the ligated glyphs.
-    if (pane.webglAddon) {
-      disposeWebgl(pane)
-      attachWebgl(pane)
-    }
+    rebuildAttachedWebgl(pane)
   } catch (err) {
     console.warn('[terminal] ligatures addon failed to attach for pane', pane.id, err)
     pane.ligaturesAddon = null
@@ -168,10 +178,7 @@ export function setLigaturesEnabled(pane: ManagedPaneInternal, enabled: boolean)
     // Why: ligatures lived inside the WebGL atlas, so after disposing the
     // addon the atlas still holds the ligated glyphs. Rebuild it so text
     // renders as the non-ligated fallback immediately.
-    if (pane.webglAddon) {
-      disposeWebgl(pane)
-      attachWebgl(pane)
-    }
+    rebuildAttachedWebgl(pane)
   }
 }
 
@@ -179,6 +186,7 @@ export function disposePane(
   pane: ManagedPaneInternal,
   panes: Map<number, ManagedPaneInternal>
 ): void {
+  cancelPendingTerminalViewportPresents(pane.terminal)
   if (pane.pendingInitialFitRafId != null) {
     cancelAnimationFrame(pane.pendingInitialFitRafId)
     pane.pendingInitialFitRafId = null
@@ -197,10 +205,28 @@ export function disposePane(
   pane.paneDragCleanup = null
   pane.focusClassSyncCleanup?.()
   pane.focusClassSyncCleanup = null
+  pane.domBlockFillCleanup?.()
+  pane.domBlockFillCleanup = null
   pane.terminalScrollIntentDisposable?.dispose()
   pane.terminalScrollIntentDisposable = null
+  pane.mouseEncodingTrackerDisposable?.dispose()
+  pane.mouseEncodingTrackerDisposable = null
+  pane.linkifierHoverResetDisposable?.dispose()
+  pane.linkifierHoverResetDisposable = null
+  pane.linkifierMouseLeaveResetDisposable?.dispose()
+  pane.linkifierMouseLeaveResetDisposable = null
+  pane.linkifierWindowBlurResetDisposable?.dispose()
+  pane.linkifierWindowBlurResetDisposable = null
+  // Deregister the RTL shaping joiner: terminal.dispose() below does not.
+  try {
+    pane.arabicShapingJoinerCleanup?.()
+  } catch {
+    /* ignore */
+  }
+  pane.arabicShapingJoinerCleanup = null
   if (pane.compositionHandler) {
-    pane.terminal.element?.removeEventListener('compositionstart', pane.compositionHandler, true)
+    pane.terminal.element?.removeEventListener('compositionstart', pane.compositionHandler)
+    pane.terminal.element?.removeEventListener('compositionupdate', pane.compositionHandler)
     pane.compositionHandler = null
   }
   try {
@@ -209,15 +235,21 @@ export function disposePane(
     /* ignore */
   }
   try {
-    pane.ligaturesAddon?.dispose()
+    // Why: fit retries own xterm markers and frame callbacks independently of
+    // split restoration; both must be released before terminal disposal.
+    cancelDeferredScrollRestore(pane.terminal)
   } catch {
     /* ignore */
   }
   try {
-    pane.webglAddon?.dispose()
+    pane.ligaturesAddon?.dispose()
   } catch {
     /* ignore */
   }
+  // Detach removes the pane from the deferred-attach set and disposes the addon
+  // (canvas layers + parser handlers) before the terminal surface goes away.
+  detachInlineImages(pane)
+  disposeWebgl(pane)
   try {
     pane.searchAddon.dispose()
   } catch {
@@ -240,6 +272,12 @@ export function disposePane(
   }
   try {
     pane.fitAddon.dispose()
+  } catch {
+    /* ignore */
+  }
+  try {
+    // Drop renderer selection state before a recovery remount replaces the surface.
+    pane.terminal.clearSelection()
   } catch {
     /* ignore */
   }

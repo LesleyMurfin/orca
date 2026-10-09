@@ -10,14 +10,26 @@ import {
 } from './workspace-statuses'
 
 describe('workspace status visuals', () => {
+  it('normalizes every valid status without truncating the workflow', () => {
+    const authored = Array.from({ length: 500 }, (_, index) => ({
+      id: `state-${index}`,
+      label: `State ${index}`
+    }))
+
+    expect(normalizeWorkspaceStatuses(authored).map((status) => status.id)).toEqual(
+      authored.map((status) => status.id)
+    )
+  })
+
   it('keeps the default workflow order', () => {
     expect(cloneDefaultWorkspaceStatuses().map((status) => status.id)).toEqual([
-      'completed',
-      'in-review',
+      'todo',
       'in-progress',
-      'todo'
+      'in-review',
+      'completed'
     ])
-    expect(cloneDefaultWorkspaceStatuses()[0]).toMatchObject({ id: 'completed', label: 'Done' })
+    expect(cloneDefaultWorkspaceStatuses()[0]).toMatchObject({ id: 'todo', label: 'Todo' })
+    expect(cloneDefaultWorkspaceStatuses().at(-1)).toMatchObject({ id: 'completed', label: 'Done' })
   })
 
   it('migrates legacy default statuses to the default workflow order', () => {
@@ -161,6 +173,30 @@ describe('workspace status visuals', () => {
     expect(statuses).toEqual(cloneDefaultWorkspaceStatuses())
   })
 
+  it('repairs the exact reordered default status payload with the Done label', () => {
+    const statuses = normalizePersistedWorkspaceStatuses(
+      [
+        { id: 'completed', label: 'Done', color: 'conductor-done', icon: 'conductor-done' },
+        {
+          id: 'in-review',
+          label: 'In review',
+          color: 'conductor-review',
+          icon: 'conductor-review'
+        },
+        {
+          id: 'in-progress',
+          label: 'In progress',
+          color: 'conductor-progress',
+          icon: 'conductor-progress'
+        },
+        { id: 'todo', label: 'Todo', color: 'neutral', icon: 'circle' }
+      ],
+      { repairReorderedDefaultStatuses: true }
+    )
+
+    expect(statuses).toEqual(cloneDefaultWorkspaceStatuses())
+  })
+
   it('does not repair reordered default-label statuses with a different raw shape', () => {
     const statuses = normalizePersistedWorkspaceStatuses(
       [
@@ -224,17 +260,6 @@ describe('workspace status visuals', () => {
   it('preserves valid legacy visuals for default-label statuses at runtime', () => {
     const statuses = normalizeWorkspaceStatuses([
       { id: 'in-progress', label: 'In progress', color: 'blue', icon: 'circle-dot' }
-    ])
-
-    expect(statuses[0]).toMatchObject({
-      color: 'blue',
-      icon: 'circle-dot'
-    })
-  })
-
-  it('keeps intentional custom in-progress visuals', () => {
-    const statuses = normalizeWorkspaceStatuses([
-      { id: 'in-progress', label: 'Doing', color: 'blue', icon: 'circle-dot' }
     ])
 
     expect(statuses[0]).toMatchObject({

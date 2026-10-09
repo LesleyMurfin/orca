@@ -1,105 +1,42 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { getRepoExecutionHostId } from '../../../../shared/execution-host'
 import { createTestStore, makeWorktree } from './store-test-helpers'
-import { workItemsCacheKey } from './github'
-import type { Project, ProjectHostSetup, Repo } from '../../../../shared/types'
+import { workItemsCacheKey } from '../github/cache-identity'
+import type { Project, ProjectHostSetup } from '../../../../shared/project-types'
+import type { Repo } from '../../../../shared/repo-types'
+import { toast } from 'sonner'
 import {
-  createCompatibleRuntimeStatusResponseIfNeeded,
-  type RuntimeEnvironmentCallRequest
-} from '../../runtime/runtime-compatibility-test-fixture'
-import { clearRuntimeCompatibilityCacheForTests } from '../../runtime/runtime-rpc-client'
+  installReposRuntimeRoutingHarness,
+  localRepo,
+  orcaProfileFindProjectProfiles,
+  projectGroupsMoveProject,
+  projectsSetupExistingFolder,
+  ptyKill,
+  remoteRepo,
+  reposAdd,
+  reposClone,
+  reposCloneRemote,
+  reposList,
+  reposPickFolder,
+  reposRemoveForHost,
+  reposReorder,
+  reposUpdate,
+  runtimeEnvironmentCall,
+  sshRepo
+} from './repos-runtime-routing-fixture'
 
-const localRepo: Repo = {
-  id: 'local-repo',
-  path: '/local',
-  displayName: 'Local',
-  badgeColor: '#000',
-  addedAt: 1
-}
+vi.mock('sonner', () => ({
+  toast: {
+    error: vi.fn(),
+    info: vi.fn(),
+    success: vi.fn(),
+    warning: vi.fn()
+  }
+}))
 
-const remoteRepo: Repo = {
-  id: 'remote-repo',
-  path: '/remote',
-  displayName: 'Remote',
-  badgeColor: '#111',
-  addedAt: 2
-}
+installReposRuntimeRoutingHarness()
 
-const sshRepo: Repo = {
-  id: 'ssh-repo',
-  path: '/home/orca/project',
-  displayName: 'SSH',
-  badgeColor: '#222',
-  addedAt: 3,
-  connectionId: 'ssh-1'
-}
-
-const reposList = vi.fn()
-const reposAdd = vi.fn()
-const reposPickFolder = vi.fn()
-const reposClone = vi.fn()
-const reposCloneRemote = vi.fn()
-const reposRemove = vi.fn()
-const reposUpdate = vi.fn()
-const reposReorder = vi.fn()
-const projectsCreateHostSetup = vi.fn()
-const projectsSetupExistingFolder = vi.fn()
-const projectsUpdateHostSetup = vi.fn()
-const projectsDeleteHostSetup = vi.fn()
-const projectsUpdate = vi.fn()
-const projectGroupsMoveProject = vi.fn()
-const ptyKill = vi.fn()
-const runtimeEnvironmentCall = vi.fn()
-const runtimeEnvironmentTransportCall = vi.fn()
-
-beforeEach(() => {
-  clearRuntimeCompatibilityCacheForTests()
-  reposList.mockReset()
-  reposAdd.mockReset()
-  reposPickFolder.mockReset()
-  reposClone.mockReset()
-  reposCloneRemote.mockReset()
-  reposRemove.mockReset()
-  reposUpdate.mockReset()
-  reposReorder.mockReset()
-  projectsCreateHostSetup.mockReset()
-  projectsSetupExistingFolder.mockReset()
-  projectsUpdateHostSetup.mockReset()
-  projectsDeleteHostSetup.mockReset()
-  projectsUpdate.mockReset()
-  projectGroupsMoveProject.mockReset()
-  ptyKill.mockReset()
-  runtimeEnvironmentCall.mockReset()
-  runtimeEnvironmentTransportCall.mockReset()
-  runtimeEnvironmentTransportCall.mockImplementation((args: RuntimeEnvironmentCallRequest) => {
-    return createCompatibleRuntimeStatusResponseIfNeeded(args) ?? runtimeEnvironmentCall(args)
-  })
-  vi.stubGlobal('window', {
-    api: {
-      repos: {
-        list: reposList,
-        add: reposAdd,
-        clone: reposClone,
-        cloneRemote: reposCloneRemote,
-        pickFolder: reposPickFolder,
-        remove: reposRemove,
-        update: reposUpdate,
-        reorder: reposReorder
-      },
-      projects: {
-        update: projectsUpdate,
-        createHostSetup: projectsCreateHostSetup,
-        setupExistingFolder: projectsSetupExistingFolder,
-        updateHostSetup: projectsUpdateHostSetup,
-        deleteHostSetup: projectsDeleteHostSetup
-      },
-      projectGroups: {
-        moveProject: projectGroupsMoveProject
-      },
-      pty: { kill: ptyKill },
-      runtimeEnvironments: { call: runtimeEnvironmentTransportCall }
-    }
-  })
-})
+const ownerOf = (repo: Repo) => ({ hostId: getRepoExecutionHostId(repo) })
 
 describe('repo slice runtime routing', () => {
   it('fetches repos from local IPC when no remote environment is active', async () => {
@@ -117,6 +54,46 @@ describe('repo slice runtime routing', () => {
     ])
     expect(reposList).toHaveBeenCalled()
     expect(runtimeEnvironmentCall).not.toHaveBeenCalled()
+  })
+
+  it('keeps the repos array identity across a refetch that changes nothing', async () => {
+    // Why: main rebuilds nested records (hookSettings et al) per list and IPC clones them, so a
+    // production-shaped repo — not a scalar-only fixture — is what proves reconciliation works.
+    const hydrated = (): Repo => ({
+      ...localRepo,
+      kind: 'git',
+      gitUsername: 'octocat',
+      hookSettings: { mode: 'auto', scripts: { setup: 'echo hi', archive: '' } },
+      gitRemoteIdentity: {
+        canonicalKey: 'github.com/octocat/local',
+        remoteName: 'origin',
+        remoteUrl: 'git@github.com:octocat/local.git'
+      },
+      importedExternalWorktreePaths: ['/local/wt']
+    })
+    reposList.mockImplementation(async () => [hydrated()])
+    const store = createTestStore()
+    await store.getState().fetchRepos()
+    const reposRef = store.getState().repos
+
+    await store.getState().fetchRepos()
+
+    // Why: identity-keyed renderer memos (repo lookup index, selectors) rebuild on a new array.
+    expect(store.getState().repos).toBe(reposRef)
+    expect(store.getState().repos[0]).toBe(reposRef[0])
+  })
+
+  it('replaces the repos array identity when a refetch adds a repo', async () => {
+    reposList.mockResolvedValue([localRepo])
+    const store = createTestStore()
+    await store.getState().fetchRepos()
+    const reposRef = store.getState().repos
+    reposList.mockResolvedValue([localRepo, { ...localRepo, id: 'second', path: '/second' }])
+
+    await store.getState().fetchRepos()
+
+    expect(store.getState().repos).not.toBe(reposRef)
+    expect(store.getState().repos).toHaveLength(2)
   })
 
   it('fetches repos from the active remote runtime environment', async () => {
@@ -208,6 +185,7 @@ describe('repo slice runtime routing', () => {
 
     expect(store.getState().repos[0]?.displayName).toBe('SSH Renamed')
     expect(reposUpdate).toHaveBeenCalledWith({
+      hostId: 'ssh:ssh-1',
       repoId: sshRepo.id,
       updates: { displayName: 'SSH Renamed' }
     })
@@ -240,13 +218,47 @@ describe('repo slice runtime routing', () => {
     })
     expect(reposAdd).not.toHaveBeenCalled()
     expect(reposPickFolder).not.toHaveBeenCalled()
+    expect(orcaProfileFindProjectProfiles).not.toHaveBeenCalled()
+  })
+
+  it('warns when a local project is already present in another profile', async () => {
+    reposAdd.mockResolvedValue({ repo: localRepo })
+    orcaProfileFindProjectProfiles.mockResolvedValue({
+      projects: [
+        {
+          profileId: 'work',
+          profileName: 'Work',
+          profileKind: 'local',
+          repoId: 'work-repo',
+          repoName: 'Local'
+        }
+      ]
+    })
+    const store = createTestStore()
+    store.setState({ activeOrcaProfileId: 'local-default' })
+
+    await expect(store.getState().addRepoPath('/local')).resolves.toEqual({
+      ...localRepo,
+      executionHostId: 'local'
+    })
+
+    expect(orcaProfileFindProjectProfiles).toHaveBeenCalledWith({
+      path: '/local',
+      connectionId: null,
+      executionHostId: 'local',
+      excludeProfileId: 'local-default'
+    })
+    expect(toast.warning).toHaveBeenCalledWith('Project also exists in another profile', {
+      description: 'Work'
+    })
   })
 
   it('sets up a project on a local host through the project setup API', async () => {
     const project: Project = {
-      id: 'project-1',
+      id: 'github:stablyai/orca',
       displayName: 'Project',
       badgeColor: '#000',
+      providerIdentity: { provider: 'github', owner: 'stablyai', repo: 'orca' },
       sourceRepoIds: ['local-repo'],
       createdAt: 1,
       updatedAt: 1
@@ -265,6 +277,7 @@ describe('repo slice runtime routing', () => {
     }
     projectsSetupExistingFolder.mockResolvedValue({ project, setup, repo: localRepo })
     const store = createTestStore()
+    store.setState({ projects: [project] })
 
     await expect(
       store.getState().setupProjectExistingFolder({
@@ -284,6 +297,7 @@ describe('repo slice runtime routing', () => {
     expect(store.getState().projectHostSetups).toEqual([setup])
     expect(projectsSetupExistingFolder).toHaveBeenCalledWith({
       projectId: project.id,
+      projectProviderIdentity: { provider: 'github', owner: 'stablyai', repo: 'orca' },
       hostId: 'local',
       path: '/local',
       kind: 'git'
@@ -329,7 +343,13 @@ describe('repo slice runtime routing', () => {
       })
     ).resolves.toEqual({
       project,
-      setup: { ...setup, hostId: 'runtime:env-1', executionHostId: 'runtime:env-1' },
+      setup: {
+        ...setup,
+        hostId: 'runtime:env-1',
+        executionHostId: 'runtime:env-1',
+        runtimeOwnerEnvironmentId: 'env-1',
+        connectionId: null
+      },
       repo: { ...remoteRepo, executionHostId: 'runtime:env-1' }
     })
 
@@ -499,7 +519,13 @@ describe('repo slice runtime routing', () => {
       })
     ).resolves.toEqual({
       project,
-      setup: { ...setup, hostId: 'runtime:env-1', executionHostId: 'runtime:env-1' },
+      setup: {
+        ...setup,
+        hostId: 'runtime:env-1',
+        executionHostId: 'runtime:env-1',
+        runtimeOwnerEnvironmentId: 'env-1',
+        connectionId: null
+      },
       repo: { ...clonedRepo, executionHostId: 'runtime:env-1' }
     })
 
@@ -635,7 +661,7 @@ describe('repo slice runtime routing', () => {
       activeRepoId: remoteRepo.id
     })
 
-    await store.getState().removeProject(remoteRepo.id)
+    await store.getState().removeProject(remoteRepo.id, ownerOf(remoteRepo))
 
     expect(store.getState().repos).toEqual([])
     expect(store.getState().activeRepoId).toBeNull()
@@ -645,7 +671,7 @@ describe('repo slice runtime routing', () => {
       params: { repo: remoteRepo.id },
       timeoutMs: 15_000
     })
-    expect(reposRemove).not.toHaveBeenCalled()
+    expect(reposRemoveForHost).not.toHaveBeenCalled()
   })
 
   it('removes SSH-owned repos through local IPC even when a runtime is focused', async () => {
@@ -660,11 +686,11 @@ describe('repo slice runtime routing', () => {
       }
     })
 
-    await store.getState().removeProject(sshRepo.id)
+    await store.getState().removeProject(sshRepo.id, ownerOf(sshRepo))
 
     expect(store.getState().repos).toEqual([])
     expect(store.getState().activeRepoId).toBeNull()
-    expect(reposRemove).toHaveBeenCalledWith({ repoId: sshRepo.id })
+    expect(reposRemoveForHost).toHaveBeenCalledWith({ repoId: sshRepo.id, hostId: 'ssh:ssh-1' })
     expect(runtimeEnvironmentCall).not.toHaveBeenCalled()
   })
 
@@ -681,11 +707,11 @@ describe('repo slice runtime routing', () => {
       }
     })
 
-    await store.getState().removeProject(sshRepo.id)
+    await store.getState().removeProject(sshRepo.id, ownerOf(sshRepo))
 
     expect(store.getState().repos).toEqual([localRepo])
     expect(store.getState().lastVisitedAtByWorktreeId).toEqual({ [localWorktreeId]: 200 })
-    expect(reposRemove).toHaveBeenCalledWith({ repoId: sshRepo.id })
+    expect(reposRemoveForHost).toHaveBeenCalledWith({ repoId: sshRepo.id, hostId: 'ssh:ssh-1' })
   })
 
   it('drops persisted visit timestamps for removed unhydrated runtime repos', async () => {
@@ -708,7 +734,7 @@ describe('repo slice runtime routing', () => {
       }
     })
 
-    await store.getState().removeProject(remoteRepo.id)
+    await store.getState().removeProject(remoteRepo.id, ownerOf(remoteRepo))
 
     expect(store.getState().repos).toEqual([localRepo])
     expect(store.getState().lastVisitedAtByWorktreeId).toEqual({ [localWorktreeId]: 200 })
@@ -718,7 +744,7 @@ describe('repo slice runtime routing', () => {
       params: { repo: remoteRepo.id },
       timeoutMs: 15_000
     })
-    expect(reposRemove).not.toHaveBeenCalled()
+    expect(reposRemoveForHost).not.toHaveBeenCalled()
   })
 
   it('evicts GitHub caches for removed repos using repo id and legacy path keys', async () => {
@@ -738,7 +764,7 @@ describe('repo slice runtime routing', () => {
       }
     })
 
-    await store.getState().removeProject(localRepo.id)
+    await store.getState().removeProject(localRepo.id, ownerOf(localRepo))
 
     expect(Object.keys(store.getState().workItemsCache)).toEqual([
       workItemsCacheKey('other-repo', 20, '')
@@ -770,7 +796,7 @@ describe('repo slice runtime routing', () => {
       }
     })
 
-    await store.getState().removeProject(remoteRepo.id)
+    await store.getState().removeProject(remoteRepo.id, ownerOf(remoteRepo))
 
     expect(runtimeEnvironmentCall).toHaveBeenCalledWith({
       selector: 'env-1',
@@ -816,7 +842,7 @@ describe('repo slice runtime routing', () => {
       activeWorktreeId: hiddenWorktree.id
     })
 
-    await store.getState().removeProject(localRepo.id)
+    await store.getState().removeProject(localRepo.id, ownerOf(localRepo))
 
     expect(store.getState().detectedWorktreesByRepo[localRepo.id]).toBeUndefined()
     expect(store.getState().tabsByWorktree[hiddenWorktree.id]).toBeUndefined()

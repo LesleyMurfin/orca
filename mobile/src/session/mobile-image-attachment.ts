@@ -1,12 +1,15 @@
-import type { RpcClient } from '../transport/rpc-client'
+import { separateImagePasteFromFollowingText } from '../../../src/shared/image-paste-following-text'
 import {
   buildMobileImagePastePayload,
   saveMobileClipboardImageAsTempFile
 } from './mobile-clipboard-image'
 import type { MobileImageSource, PickedMobileImage } from './mobile-image-source-picker'
+import { nativeChatTerminalWrite } from './mobile-session-write-operations'
+import type { MobileClipboardImageRpcSender } from './mobile-clipboard-image-operations'
 
 export type AttachMobileImageDeps = {
-  readonly client: Pick<RpcClient, 'sendRequest'>
+  readonly agent?: string | null
+  readonly client: MobileClipboardImageRpcSender
   readonly terminal: string
   readonly deviceToken: string | null
   readonly getConnectionId: () => Promise<string | null>
@@ -16,6 +19,7 @@ export type AttachMobileImageDeps = {
   // start — lets the UI show a sending spinner only for the transfer, not the
   // (potentially long) time the picker is open.
   readonly onUploadStart?: () => void
+  readonly beforeTerminalSend?: (terminal: string) => Promise<boolean>
 }
 
 // Uploads a picked image to the host and pastes the resulting file path into the
@@ -26,11 +30,13 @@ export async function attachMobileImageToTerminal(
   source: MobileImageSource,
   {
     client,
+    agent,
     terminal,
     deviceToken,
     getConnectionId,
     pickImage,
-    onUploadStart
+    onUploadStart,
+    beforeTerminalSend
   }: AttachMobileImageDeps
 ): Promise<boolean> {
   const picked = await pickImage(source)
@@ -44,12 +50,21 @@ export async function attachMobileImageToTerminal(
   })
   // Why: a generated image path is terminal image injection, so it's always
   // bracketed (matching desktop paste) regardless of terminal mode.
-  const payload = buildMobileImagePastePayload(imagePath)
-  await client.sendRequest('terminal.send', {
+  // Always separated: attach-then-type is the whole interaction here, so the user's
+  // next keystroke would otherwise glue onto the path (`…pngadd`). Unlike native
+  // chat there is no batch to look ahead in, and a trailing space is inert.
+  const payload = separateImagePasteFromFollowingText(
+    buildMobileImagePastePayload(imagePath, agent),
+    true
+  )
+  if (beforeTerminalSend && !(await beforeTerminalSend(terminal))) {
+    return false
+  }
+  const response = await nativeChatTerminalWrite.request(client, {
     terminal,
     text: payload,
     enter: false,
     ...(deviceToken ? { client: { id: deviceToken, type: 'mobile' as const } } : {})
   })
-  return true
+  return nativeChatTerminalWrite.interpret(response) === true
 }

@@ -15,7 +15,17 @@
   font-display: swap;
 }
 
-@custom-variant dark (&:is(.dark *));
+@font-face {
+  font-family: 'Orca Nerd Font Symbols';
+  src: url('./fonts/SymbolsNerdFontMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+E000-F8FF, U+F0000-FFFFD, U+100000-10FFFD;
+}
+
+/* A matching chat can use a different scheme from the document; portaled menus stay outside it. */
+@custom-variant dark (&:is(.dark *:not(:where([data-native-chat-scheme='light'], [data-native-chat-scheme='light'] *)), [data-native-chat-scheme='dark'], [data-native-chat-scheme='dark'] *));
 
 /* Why: hover-reveal controls (sidebar/row action buttons) hide with `opacity-0`
    and fade in via `group-hover`. Touch devices have no hover, so those controls
@@ -34,6 +44,19 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-chat-canvas: var(--chat-canvas);
+  --color-chat-foreground: var(--chat-foreground);
+  --color-chat-foreground-strong: var(--chat-foreground-strong);
+  --color-chat-foreground-faint: var(--chat-foreground-faint);
+  --color-chat-user-surface: var(--chat-user-surface);
+  --color-chat-user-border: var(--chat-user-border);
+  --color-chat-code-foreground: var(--chat-code-foreground);
+  --color-chat-code-surface: var(--chat-code-surface);
+  --color-chat-code-border: var(--chat-code-border);
+  --color-chat-inline-code-surface: var(--chat-inline-code-surface);
+  --color-chat-inline-code-border: var(--chat-inline-code-border);
+  --color-chat-composer-surface: var(--chat-composer-surface);
+  --color-chat-composer-border: var(--chat-composer-border);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
@@ -51,6 +74,9 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-editor-surface: var(--editor-surface);
+  --color-agent-question: var(--agent-question);
+  --color-agent-question-text: var(--agent-question-text);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
@@ -92,6 +118,16 @@
   --color-status-success: var(--status-success);
   --color-status-success-background: var(--status-success-background);
   --color-status-success-border: var(--status-success-border);
+  --color-status-warning: var(--status-warning);
+  --color-status-warning-background: var(--status-warning-background);
+  --color-status-warning-border: var(--status-warning-border);
+  --color-callout-note: var(--callout-note);
+  --color-callout-important: var(--callout-important);
+  --color-workspace-status-done: var(--workspace-status-done);
+  --color-workspace-status-review: var(--workspace-status-review);
+  --color-workspace-status-progress: var(--workspace-status-progress);
+  --color-tab-group-split-divider: var(--tab-group-split-divider);
+  --color-tab-group-split-divider-strong: var(--tab-group-split-divider-strong);
   --color-git-graph-ref: var(--git-graph-ref);
   --color-git-graph-remote-ref: var(--git-graph-remote-ref);
   --color-git-graph-base-ref: var(--git-graph-base-ref);
@@ -101,6 +137,7 @@
   --color-git-graph-lane-4: var(--git-graph-lane-4);
   --color-git-graph-lane-5: var(--git-graph-lane-5);
   --color-annotation-highlight: var(--annotation-highlight);
+  --shadow-floating: 0 10px 24px rgb(0 0 0 / 0.18);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -119,9 +156,41 @@
     'SF Mono', SFMono-Regular, ui-monospace, 'Cascadia Code', Menlo, Consolas, 'Liberation Mono',
     monospace;
   --radius: 0.625rem;
+  --orca-security-background: #fff;
+  --orca-security-foreground: #0a0a0a;
+  --orca-security-card: #fff;
+  --orca-security-card-foreground: #0a0a0a;
+  --orca-security-popover: #fff;
+  --orca-security-popover-foreground: #0a0a0a;
+  --orca-security-primary: #171717;
+  --orca-security-primary-foreground: #fafafa;
+  --orca-security-secondary: #f5f5f5;
+  --orca-security-secondary-foreground: #171717;
+  --orca-security-muted: #f5f5f5;
+  --orca-security-muted-foreground: #737373;
+  --orca-security-accent: #f5f5f5;
+  --orca-security-accent-foreground: #171717;
+  --orca-security-border: #e5e5e5;
+  --orca-security-input: #e5e5e5;
+  --orca-security-ring: #a1a1a1;
   --background: #fff;
   --editor-surface: #ffffff;
   --foreground: #0a0a0a;
+  --chat-canvas-mix: 0%;
+  --chat-foreground-mix: 82%;
+  --chat-strong-mix: 92%;
+  --chat-faint-mix: 100%;
+  --chat-user-mix: 4%;
+  --chat-user-border-mix: 7%;
+  --chat-code-mix: 2%;
+  --chat-code-base: var(--chat-canvas);
+  --chat-inline-code-mix: 4%;
+  --chat-inline-code-base: var(--chat-canvas);
+  --chat-inline-code-border-mix: 9%;
+  --chat-composer-mix: 0%;
+  --chat-composer-base: var(--chat-canvas);
+  --chat-composer-border-mix: 11%;
+  --chat-content-max-width: 46rem;
   --card: #fff;
   --card-foreground: #0a0a0a;
   --popover: #fff;
@@ -134,16 +203,22 @@
   --muted-foreground: #737373;
   --accent: #f5f5f5;
   --accent-foreground: #171717;
-  --destructive: #e40014;
-  --destructive-foreground: #fcf3f3;
   --border: #e5e5e5;
   --input: #e5e5e5;
   --ring: #a1a1a1;
   --terminal-pane-locate: var(--color-blue-600);
   --ai-action-accent: var(--color-violet-500);
-  --status-success: #15803d;
-  --status-success-background: color-mix(in srgb, var(--status-success) 10%, transparent);
-  --status-success-border: color-mix(in srgb, var(--status-success) 25%, transparent);
+  /* "An agent is asking you something" — one hue for every surface that shows
+     it (sidebar, tabs, dashboard, kanban). Orange, not amber: it has to stay
+     separable from working-yellow at a glance. */
+  --agent-question: var(--color-orange-600);
+  /* Legible weight for text/glyphs on a tinted --agent-question surface. */
+  --agent-question-text: var(--color-orange-700);
+  /* Workspace PR-state tones: same hue in both themes so a status keeps its
+     identity when the theme flips. */
+  --workspace-status-done: #c7a594;
+  --workspace-status-review: #16a34a;
+  --workspace-status-progress: #d4a300;
   --chart-1: var(--color-blue-300);
   --chart-2: var(--color-blue-500);
   --chart-3: var(--color-blue-600);
@@ -177,13 +252,6 @@
   --terminal-pane-title-on-light-button-hover-fg: rgb(24 24 27);
   --terminal-pane-title-on-light-input-bg: rgb(24 24 27 / 0.05);
   --terminal-pane-title-on-light-separator: rgb(24 24 27 / 0.1);
-  --git-decoration-added: #587c0c;
-  --git-decoration-modified: #895503;
-  --git-decoration-deleted: #ad0707;
-  --git-decoration-renamed: #007acc;
-  --git-decoration-untracked: #007100;
-  --git-decoration-copied: #007acc;
-  --git-decoration-ignored: #8c8c8c;
   --git-graph-ref: #007acc;
   --git-graph-remote-ref: #b66dff;
   --git-graph-base-ref: #ea5c00;
@@ -193,14 +261,53 @@
   --git-graph-lane-4: #40b0a6;
   --git-graph-lane-5: #b66dff;
   --annotation-highlight: #f59e0b;
+  --markdown-search-match: #facc15;
+  --markdown-search-match-active: #fb923c;
+  /* Why: tab-group splits use a dedicated divider — `--border` is too faint on
+     card/editor surfaces when panes are side-by-side or stacked. Default must
+     meet >=3:1 against `--card`, not only the hover/drag strong state. */
+  --tab-group-split-divider: #868690;
+  --tab-group-split-divider-strong: #71717a;
 }
 
 /* ── Dark Mode ───────────────────────────────────────── */
 
 .dark {
+  --orca-security-background: #0a0a0a;
+  --orca-security-foreground: #fafafa;
+  --orca-security-card: #171717;
+  --orca-security-card-foreground: #fafafa;
+  --orca-security-popover: #171717;
+  --orca-security-popover-foreground: #fafafa;
+  --orca-security-primary: #e5e5e5;
+  --orca-security-primary-foreground: #171717;
+  --orca-security-secondary: #262626;
+  --orca-security-secondary-foreground: #fafafa;
+  --orca-security-muted: #262626;
+  --orca-security-muted-foreground: #a1a1a1;
+  --orca-security-accent: #404040;
+  --orca-security-accent-foreground: #fafafa;
+  --orca-security-border: rgb(255 255 255 / 0.07);
+  --orca-security-input: rgb(255 255 255 / 0.15);
+  --orca-security-ring: #737373;
   --background: #0a0a0a;
   --editor-surface: #1e1e1e;
   --foreground: #fafafa;
+  --chat-canvas-mix: 5%;
+  --chat-foreground-mix: 78%;
+  --chat-strong-mix: 90%;
+  --chat-faint-mix: 83%;
+  --chat-user-mix: 7%;
+  --chat-user-border-mix: 6%;
+  --chat-code-mix: 3.5%;
+  --chat-code-base: transparent;
+  --chat-inline-code-mix: 6%;
+  --chat-inline-code-base: transparent;
+  --chat-inline-code-border-mix: 8%;
+  --chat-composer-mix: 4%;
+  --chat-composer-base: transparent;
+  --chat-composer-border-mix: 9%;
+  --chat-content-max-width: 46rem;
   --card: #171717;
   --card-foreground: #fafafa;
   --popover: #171717;
@@ -213,16 +320,16 @@
   --muted-foreground: #a1a1a1;
   --accent: #404040;
   --accent-foreground: #fafafa;
-  --destructive: #ff6568;
-  --destructive-foreground: #df2225;
   --border: rgb(255 255 255 / 0.07);
   --input: rgb(255 255 255 / 0.15);
   --ring: #737373;
   --terminal-pane-locate: var(--color-blue-400);
   --ai-action-accent: var(--color-violet-400);
-  --status-success: #86efac;
-  --status-success-background: color-mix(in srgb, var(--status-success) 10%, transparent);
-  --status-success-border: color-mix(in srgb, var(--status-success) 25%, transparent);
+  --agent-question: var(--color-orange-500);
+  --agent-question-text: var(--color-orange-300);
+  --workspace-status-done: #c7a594;
+  --workspace-status-review: #16a34a;
+  --workspace-status-progress: #d4a300;
   --chart-1: var(--color-blue-300);
   --chart-2: var(--color-blue-500);
   --chart-3: var(--color-blue-600);
@@ -260,13 +367,6 @@
   --terminal-pane-title-on-light-button-hover-fg: rgb(24 24 27);
   --terminal-pane-title-on-light-input-bg: rgb(24 24 27 / 0.05);
   --terminal-pane-title-on-light-separator: rgb(24 24 27 / 0.1);
-  --git-decoration-added: #81b88b;
-  --git-decoration-modified: #e2c08d;
-  --git-decoration-deleted: #c74e39;
-  --git-decoration-renamed: #73c991;
-  --git-decoration-untracked: #73c991;
-  --git-decoration-copied: #73c991;
-  --git-decoration-ignored: #6e6e6e;
   --git-graph-ref: #3794ff;
   --git-graph-remote-ref: #b66dff;
   --git-graph-base-ref: #ea5c00;
@@ -276,6 +376,86 @@
   --git-graph-lane-4: #40b0a6;
   --git-graph-lane-5: #b66dff;
   --annotation-highlight: #fbbf24;
+  --markdown-search-match: #facc15;
+  --markdown-search-match-active: #fb923c;
+  /* Brighter than terminal defaults so the always-visible line clears 3:1 on `--card`. */
+  --tab-group-split-divider: #71717a;
+  --tab-group-split-divider-strong: #a1a1aa;
+}
+
+/* Status and diff colors follow the chat scheme without copying the app palette. */
+:root,
+.native-chat-appearance[data-native-chat-scheme='light'] {
+  --destructive: #e40014;
+  --destructive-foreground: #fcf3f3;
+  --status-success: #15803d;
+  --status-success-background: color-mix(in srgb, var(--status-success) 10%, transparent);
+  --status-success-border: color-mix(in srgb, var(--status-success) 25%, transparent);
+  /* Needs-attention states use yellow, separate from errors and working states. */
+  --status-warning: #ca8a04;
+  --status-warning-background: color-mix(in srgb, var(--status-warning) 10%, transparent);
+  --status-warning-border: color-mix(in srgb, var(--status-warning) 25%, transparent);
+  /* GitHub's own hues for the two callout kinds no status token covers. */
+  --callout-note: #0969da;
+  --callout-important: #8250df;
+  --git-decoration-added: #587c0c;
+  --git-decoration-modified: #895503;
+  --git-decoration-deleted: #ad0707;
+  --git-decoration-renamed: #007acc;
+  --git-decoration-untracked: #007100;
+  --git-decoration-copied: #007acc;
+  --git-decoration-ignored: #8c8c8c;
+  --diff-added-ground: color-mix(in srgb, var(--git-decoration-added) 13%, transparent);
+  --diff-added-gutter: color-mix(in srgb, var(--git-decoration-added) 26%, transparent);
+  --diff-removed-ground: color-mix(in srgb, var(--git-decoration-deleted) 11%, transparent);
+  --diff-removed-gutter: color-mix(in srgb, var(--git-decoration-deleted) 22%, transparent);
+}
+
+.dark,
+.native-chat-appearance[data-native-chat-scheme='dark'] {
+  --destructive: #ff6568;
+  --destructive-foreground: #df2225;
+  --status-success: #86efac;
+  --status-success-background: color-mix(in srgb, var(--status-success) 10%, transparent);
+  --status-success-border: color-mix(in srgb, var(--status-success) 25%, transparent);
+  --status-warning: #eab308;
+  --status-warning-background: color-mix(in srgb, var(--status-warning) 10%, transparent);
+  --status-warning-border: color-mix(in srgb, var(--status-warning) 25%, transparent);
+  --callout-note: #4493f8;
+  --callout-important: #ab7df8;
+  --git-decoration-added: #81b88b;
+  --git-decoration-modified: #e2c08d;
+  --git-decoration-deleted: #c74e39;
+  --git-decoration-renamed: #73c991;
+  --git-decoration-untracked: #73c991;
+  --git-decoration-copied: #73c991;
+  --git-decoration-ignored: #6e6e6e;
+  --diff-added-ground: color-mix(in srgb, var(--git-decoration-added) 16%, transparent);
+  --diff-added-gutter: color-mix(in srgb, var(--git-decoration-added) 30%, transparent);
+  --diff-removed-ground: color-mix(in srgb, var(--git-decoration-deleted) 18%, transparent);
+  --diff-removed-gutter: color-mix(in srgb, var(--git-decoration-deleted) 32%, transparent);
+}
+
+.plugin-security-chrome {
+  /* Why: plugin themes may style the app, but provenance and consent must
+     retain host-owned contrast so a pack cannot disguise a trust decision. */
+  --background: var(--orca-security-background);
+  --foreground: var(--orca-security-foreground);
+  --card: var(--orca-security-card);
+  --card-foreground: var(--orca-security-card-foreground);
+  --popover: var(--orca-security-popover);
+  --popover-foreground: var(--orca-security-popover-foreground);
+  --primary: var(--orca-security-primary);
+  --primary-foreground: var(--orca-security-primary-foreground);
+  --secondary: var(--orca-security-secondary);
+  --secondary-foreground: var(--orca-security-secondary-foreground);
+  --muted: var(--orca-security-muted);
+  --muted-foreground: var(--orca-security-muted-foreground);
+  --accent: var(--orca-security-accent);
+  --accent-foreground: var(--orca-security-accent-foreground);
+  --border: var(--orca-security-border);
+  --input: var(--orca-security-input);
+  --ring: var(--orca-security-ring);
 }
 
 .linear-priority-bars {
@@ -284,6 +464,60 @@
 
 .dark .linear-priority-bars {
   --linear-priority-bar-inactive-fill: color-mix(in srgb, lch(39.576 1.25 282) 62%, transparent);
+}
+
+[data-sonner-toaster] {
+  font-family: var(--font-sans);
+  z-index: var(--toaster-z-index, 40) !important;
+}
+
+/* Keep errors above standard modal backdrops at the existing popover tier.
+   Why: overlays portal straight into body, and `>` plus a :has() on body alone (not in the toaster's
+   selector) keeps unrelated DOM changes from rescanning the page; the old form froze large diffs. */
+body:has(> [data-slot='dialog-overlay'], > [data-slot='sheet-overlay']) {
+  --toaster-z-index: 60;
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px 16px;
+  box-shadow: var(--shadow-floating);
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-icon] {
+  margin-top: 2px;
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-content] {
+  min-width: 0;
+  flex: 1 1 calc(100% - 30px);
+  gap: 6px;
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-button] {
+  /* Why: Sonner's native action slots otherwise share the copy row and squeeze
+     long notices; indent the wrapped footer to align with text after the icon. */
+  margin-top: 2px;
+  margin-left: 26px;
+  margin-right: 0;
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-button] ~ [data-button] {
+  margin-left: 0;
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-title] {
+  line-height: 1.35;
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-description] {
+  /* Why: match the 80% body-copy opacity used by the custom-React toast bodies
+     (delete-worktree-failure, local-base-ref-suggestion) so string and JSX
+     descriptions read at the same weight. */
+  color: color-mix(in srgb, var(--popover-foreground) 80%, transparent);
+  line-height: 1.45;
 }
 
 [data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-close-button] {
@@ -313,6 +547,72 @@
 
 /* ── Base Layer ──────────────────────────────────────── */
 
+/* Re-evaluate chat colors where the appearance producer supplies their source colors. */
+:root,
+.dark,
+.native-chat-appearance {
+  --chat-source-background: var(--background);
+  --chat-source-foreground: var(--foreground);
+  --chat-source-muted-foreground: var(--muted-foreground);
+  --chat-canvas: color-mix(
+    in srgb,
+    var(--chat-source-foreground) var(--chat-canvas-mix),
+    var(--chat-source-background)
+  );
+  --chat-foreground: color-mix(
+    in srgb,
+    var(--chat-source-foreground) var(--chat-foreground-mix),
+    var(--chat-canvas)
+  );
+  --chat-foreground-strong: color-mix(
+    in srgb,
+    var(--chat-source-foreground) var(--chat-strong-mix),
+    var(--chat-canvas)
+  );
+  --chat-foreground-faint: color-mix(
+    in srgb,
+    var(--chat-source-muted-foreground) var(--chat-faint-mix),
+    var(--chat-canvas)
+  );
+  --chat-user-surface: color-mix(
+    in srgb,
+    var(--chat-source-foreground) var(--chat-user-mix),
+    var(--chat-canvas)
+  );
+  --chat-user-border: color-mix(
+    in srgb,
+    var(--chat-source-foreground) var(--chat-user-border-mix),
+    transparent
+  );
+  --chat-code-foreground: color-mix(in srgb, var(--chat-source-foreground) 85%, var(--chat-canvas));
+  --chat-code-surface: color-mix(
+    in srgb,
+    var(--chat-source-foreground) var(--chat-code-mix),
+    var(--chat-code-base)
+  );
+  --chat-code-border: color-mix(in srgb, var(--chat-source-foreground) 7%, transparent);
+  --chat-inline-code-surface: color-mix(
+    in srgb,
+    var(--chat-source-foreground) var(--chat-inline-code-mix),
+    var(--chat-inline-code-base)
+  );
+  --chat-inline-code-border: color-mix(
+    in srgb,
+    var(--chat-source-foreground) var(--chat-inline-code-border-mix),
+    transparent
+  );
+  --chat-composer-surface: color-mix(
+    in srgb,
+    var(--chat-source-foreground) var(--chat-composer-mix),
+    var(--chat-composer-base)
+  );
+  --chat-composer-border: color-mix(
+    in srgb,
+    var(--chat-source-foreground) var(--chat-composer-border-mix),
+    transparent
+  );
+}
+
 @layer base {
   *,
   *::before,
@@ -325,10 +625,7 @@
     margin: 0;
     padding: 0;
     overflow: hidden;
-    /* Why: dvh tracks the visible viewport so the web app shell isn't taller
-       than the screen when a mobile browser's URL bar is shown (100vh = the
-       large viewport, which forces a ~40-100px scroll). In Electron there is
-       no browser chrome, so dvh resolves identically to the window height. */
+    /* Why: mobile browser chrome changes the visible viewport while open. */
     height: 100dvh;
     font-family: var(
       --app-font-family,
@@ -353,6 +650,18 @@
 
   :where(button:disabled) {
     cursor: default;
+  }
+}
+
+/* Why @utility, not a plain class: this is a Tailwind-shaped name, so it has to be
+   one Tailwind generates or `scrollbar-none` silently produces no CSS. */
+@utility scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    width: 0;
+    height: 0;
   }
 }
 
@@ -408,12 +717,12 @@
   scrollbar-color: color-mix(in srgb, var(--muted-foreground, #737373) 48%, transparent) transparent;
 }
 
-/* Keep the sidebar gutter reserved; only the thumb fades in on hover. */
+/* Why: no reserved `scrollbar-gutter` — paired with `overflow-y: auto`, a list
+   that fits shows no scrollbar (and no Windows scrollbar arrow buttons), so its
+   rows stay flush with the fixed header controls, matching macOS. The gutter is
+   only taken while actually scrolling. Thumb still fades in on hover. */
 .worktree-sidebar-scrollbar {
-  /* Why: the scrollbar gutter is paint-only in Chromium; this keeps card
-     surfaces clear of Orca's resize handle and right-edge sidebar chrome. */
   padding-right: 4px;
-  scrollbar-gutter: stable;
   scrollbar-color: transparent transparent;
 }
 
@@ -423,7 +732,9 @@
 
 .worktree-sidebar-scrollbar::-webkit-scrollbar-thumb {
   background-color: transparent;
-  border-width: 3px 3px 3px 0;
+  /* Why: no right inset — a 3px transparent right border left a visible strip
+     beside the sidebar resize seam that read like a gap in the drag handle. */
+  border-width: 3px 0 3px 0;
 }
 
 .scrollbar-sleek-parent:hover .worktree-sidebar-scrollbar,
@@ -462,27 +773,32 @@
 
 /* ── Editor-style scrollbar (matches Monaco) ────────── */
 
-.scrollbar-editor {
+.scrollbar-editor,
+.xterm .xterm-viewport {
   scrollbar-width: thin;
   scrollbar-color: rgba(121, 121, 121, 0.4) transparent;
 }
 
-.scrollbar-editor::-webkit-scrollbar {
+.scrollbar-editor::-webkit-scrollbar,
+.xterm .xterm-viewport::-webkit-scrollbar {
   width: 14px;
 }
 
-.scrollbar-editor::-webkit-scrollbar-track {
+.scrollbar-editor::-webkit-scrollbar-track,
+.xterm .xterm-viewport::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.scrollbar-editor::-webkit-scrollbar-thumb {
+.scrollbar-editor::-webkit-scrollbar-thumb,
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
   background: rgba(121, 121, 121, 0.4);
   border: 3px solid transparent;
   border-radius: 7px;
   background-clip: padding-box;
 }
 
-.scrollbar-editor::-webkit-scrollbar-thumb:hover {
+.scrollbar-editor::-webkit-scrollbar-thumb:hover,
+.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background: rgba(121, 121, 121, 0.7);
   border: 3px solid transparent;
   background-clip: padding-box;
@@ -535,9 +851,22 @@
   mask-image: linear-gradient(to right, transparent, #000 1.5rem, #000 100%);
 }
 
-.terminal-tab-strip--fade-end:not(.terminal-tab-strip--fade-start) {
+/* Why: the status bar's usage cluster reuses the end fade so a clipped cluster never cuts a glyph. */
+.terminal-tab-strip--fade-end:not(.terminal-tab-strip--fade-start),
+.status-bar-usage-cluster[data-overflowing='true'] {
   -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 1.5rem), transparent);
   mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 1.5rem), transparent);
+}
+
+/* Why: tabs only draw a right border, so a tab docked at the end has no seam against the tab it covers. */
+.terminal-tab-strip[data-active-tab-docked='end'] > [data-active-tab-dock]::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 1px;
+  background: var(--border);
+  z-index: 30;
 }
 
 /* Tab activity affordance (amber wash) is rendered as a React DOM child in
@@ -559,6 +888,60 @@
   height: 100dvh;
   width: 100vw;
   overflow: hidden;
+}
+
+/* Why: native windows have a stable content box and need no wake-time viewport reflow. */
+html.native-shell,
+html.native-shell body,
+html.native-shell #root,
+html.native-shell .app-layout {
+  height: 100%;
+}
+
+/* Tab-group split resize handle — wide hit area, visible center line. */
+.tab-group-split-resize-handle {
+  flex-shrink: 0;
+  position: relative;
+  background: transparent;
+}
+
+.tab-group-split-resize-handle.is-vertical {
+  width: 6px;
+  cursor: col-resize;
+}
+
+.tab-group-split-resize-handle.is-horizontal {
+  height: 6px;
+  cursor: row-resize;
+}
+
+.tab-group-split-resize-handle::after {
+  content: '';
+  position: absolute;
+  border-radius: 1px;
+  background: var(--tab-group-split-divider);
+  transition: background 100ms ease;
+}
+
+.tab-group-split-resize-handle.is-vertical::after {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 3px;
+  transform: translateX(-50%);
+}
+
+.tab-group-split-resize-handle.is-horizontal::after {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 3px;
+  transform: translateY(-50%);
+}
+
+.tab-group-split-resize-handle:hover::after,
+.tab-group-split-resize-handle.is-dragging::after {
+  background: var(--tab-group-split-divider-strong);
 }
 
 /* ── Titlebar ────────────────────────────────────────── */
@@ -627,6 +1010,14 @@
 .titlebar-traffic-light-pad {
   width: calc(80px / var(--ui-zoom-factor, 1));
   flex-shrink: 0;
+}
+
+/* Why: a viewport preset is a window-DIP size that CDP emulates on the guest, but
+   UI zoom redefines this renderer's CSS px. Dividing by the live zoom factor keeps
+   the host box exactly as wide as the emulated page (STA-7568). */
+.browser-page-preset-viewport {
+  width: calc(var(--browser-page-viewport-width) / var(--ui-zoom-factor, 1));
+  height: calc(var(--browser-page-viewport-height) / var(--ui-zoom-factor, 1));
 }
 
 /* Why: small identity anchor on desktop custom titlebars where native window
@@ -847,7 +1238,8 @@
 .editor-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  /* Keep adjacent actions aligned with the app's compact toolbar spacing. */
+  gap: 4px;
   min-height: 36px;
   padding: 6px 14px;
   background: var(--editor-surface);
@@ -858,14 +1250,18 @@
 .editor-header-text {
   min-width: 0;
   flex: 1;
+  overflow: hidden;
 }
 
 .editor-header-path {
-  display: block;
+  display: flex;
+  align-items: center;
   min-width: 0;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   padding: 0;
   max-width: 100%;
+  width: 100%;
+  overflow: hidden;
   border: none;
   background: transparent;
   color: var(--muted-foreground);
@@ -880,9 +1276,21 @@
     Consolas,
     monospace;
   white-space: nowrap;
+  text-align: left;
+}
+
+.path-display-prefix,
+.editor-header-path-prefix {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-align: left;
+  white-space: nowrap;
+}
+
+.path-display-file,
+.editor-header-path-file {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .editor-header-path:hover,
@@ -904,6 +1312,7 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .editor-header-copy-toast {
@@ -935,6 +1344,38 @@
   flex-direction: row;
   flex: 1;
   overflow: hidden;
+}
+
+/* ── Jump palette (Cmd+J) ─────────────────────────────── */
+
+/* Why the extra qualifier: CommandItem also sets data-[selected=true]:bg-accent;
+   this selector must beat that utility so light-mode selection is actually visible.
+   The role='option' arm covers virtualized rows that render outside cmdk. */
+[data-slot='command-item'].jump-palette-item[data-selected='true'],
+[role='option'].jump-palette-item[data-selected='true'],
+.jump-palette-command [data-slot='command-item'][data-selected='true'],
+.jump-palette-command [role='option'][data-selected='true'] {
+  /* Why: flat --accent (#f5f5f5) on the palette surface (#fff) is nearly invisible
+     in light mode — the keyboard cursor has to read as a solid selected row.
+     Mix foreground into background and draw an inset ring; expose the surface
+     as a var so status-pip cutouts can match without hardcoding. */
+  --jump-palette-selection-surface: color-mix(in srgb, var(--foreground) 13%, var(--background));
+  background: var(--jump-palette-selection-surface);
+  border-color: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 19%, transparent);
+  color: var(--foreground);
+}
+
+.dark [data-slot='command-item'].jump-palette-item[data-selected='true'],
+.dark [role='option'].jump-palette-item[data-selected='true'],
+.dark .jump-palette-command [data-slot='command-item'][data-selected='true'],
+.dark .jump-palette-command [role='option'][data-selected='true'] {
+  /* Why accent, not the light-mode mix: --accent (#404040) already reads clearly on
+     dark surfaces; a low-%% foreground mix was a visible step down from the old row. */
+  --jump-palette-selection-surface: var(--accent);
+  background: var(--jump-palette-selection-surface);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 16%, transparent);
+  color: var(--accent-foreground);
 }
 
 /* ── Sidebar ─────────────────────────────────────────── */
@@ -980,26 +1421,65 @@
   background: color-mix(in srgb, var(--sidebar-accent) 40%, transparent);
 }
 
+/* Why: one multi-selected look for every list on the card surface (workspaces and
+   agents); after the hover rules so it wins, and never on the active/open row. */
+[data-worktree-card-surface][data-worktree-card-selected]:not([data-worktree-card-active]) {
+  border-color: color-mix(in oklab, var(--worktree-sidebar-ring) 35%, transparent);
+  background-color: color-mix(in oklab, var(--worktree-sidebar-accent) 70%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--worktree-sidebar-ring) 30%, transparent);
+}
+
+/* Why: the brighter border carries the selected state; a translucent wash keeps
+   card text legible instead of lifting the surface toward the foreground color. */
 [data-worktree-card-surface][data-worktree-card-active='primary'] {
-  border-color: color-mix(in srgb, var(--sidebar-border) 40%, transparent);
-  background: color-mix(in srgb, var(--sidebar-foreground) 8%, transparent);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--sidebar-foreground) 4%, transparent);
+  border-color: color-mix(in srgb, var(--worktree-sidebar-border) 40%, transparent);
+  background: color-mix(in srgb, var(--worktree-sidebar-foreground) 8%, transparent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--worktree-sidebar-foreground) 4%, transparent);
 }
 
 .dark [data-worktree-card-surface][data-worktree-card-active='primary'] {
-  background: color-mix(in srgb, var(--sidebar-foreground) 10%, transparent);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--sidebar-foreground) 3%, transparent);
+  border-color: color-mix(
+    in srgb,
+    var(--worktree-sidebar-foreground) 18%,
+    var(--worktree-sidebar-border)
+  );
+  background: color-mix(in srgb, var(--worktree-sidebar-foreground) 10%, transparent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--worktree-sidebar-foreground) 3%, transparent);
 }
 
 [data-worktree-card-surface][data-worktree-card-active='secondary'] {
   border-color: color-mix(in srgb, var(--sidebar-ring) 25%, transparent);
   background: color-mix(in srgb, var(--sidebar-accent) 45%, transparent);
-  box-shadow: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sidebar-ring) 15%, transparent);
 }
 
 .dark [data-worktree-card-surface][data-worktree-card-active='secondary'] {
   border-color: color-mix(in srgb, var(--sidebar-ring) 28%, transparent);
   background: color-mix(in srgb, var(--sidebar-accent) 34%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sidebar-ring) 18%, transparent);
+}
+
+/* Why: a sleeping card dims by mixing the theme's own text tokens toward the
+   sidebar surface in oklab, not by painting opacity over whatever is behind it.
+   An opacity step shrinks as the surface lightens, so the cue faded on lighter
+   themes and custom tints; an oklab mix is a fixed perceptual step, keeps themed
+   hues instead of greying them, and reaches every descendant through the tokens
+   they already use (#19624). The amber unread badge sits outside this family and
+   stays full-bright. */
+[data-worktree-sleeping-dim] {
+  color: color-mix(in oklab, var(--worktree-sidebar-foreground) 52%, var(--worktree-sidebar));
+  --foreground: color-mix(
+    in oklab,
+    var(--worktree-sidebar-foreground) 52%,
+    var(--worktree-sidebar)
+  );
+  --muted-foreground: color-mix(
+    in oklab,
+    var(--worktree-sidebar-foreground) 34%,
+    var(--worktree-sidebar)
+  );
+  --muted: color-mix(in oklab, var(--worktree-sidebar-foreground) 5%, var(--worktree-sidebar));
+  --border: color-mix(in oklab, var(--worktree-sidebar-foreground) 5%, var(--worktree-sidebar));
 }
 
 .worktree-agent-row-hover:hover {
@@ -1019,16 +1499,6 @@
 
 .dark .worktree-agent-row-hover[data-focused-agent-pane='true'] {
   background: color-mix(in srgb, var(--accent) 70%, transparent);
-}
-
-/* Why: sidebar-accent sits too close to sidebar for this persistent prompt;
-   a foreground mix creates the requested light/dark separation without a new token. */
-.setup-script-prompt-card {
-  background: color-mix(in srgb, var(--sidebar-foreground) 5%, var(--sidebar));
-}
-
-.dark .setup-script-prompt-card {
-  background: color-mix(in srgb, var(--sidebar-foreground) 12%, var(--sidebar));
 }
 
 /* Why: one-shot sidebar education cards need stronger separation than
@@ -1084,6 +1554,31 @@
     var(--worktree-sidebar-border)
   );
   background: color-mix(in srgb, var(--worktree-sidebar-foreground) 14%, var(--worktree-sidebar));
+}
+
+/* Why: one-shot status-bar callout is portaled fixed above the meters.
+   Opaque popover surface (not glass) so titlebar/terminal chrome cannot
+   bleed through; use design tokens + the documented floating elevation. */
+.status-bar-change-notice-card {
+  border: 1px solid var(--border);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  /* STYLEGUIDE: floating elevation for popovers that escape the editor surface. */
+  box-shadow: var(--shadow-floating);
+}
+
+/* Why: caret points down at the usage meters this notice explains. */
+.status-bar-change-notice-card::after {
+  content: '';
+  position: absolute;
+  left: 1.25rem;
+  bottom: -6px;
+  width: 12px;
+  height: 12px;
+  transform: rotate(45deg);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--popover);
 }
 
 /* Why: the first-run Mobile Emulator intro sits directly under that menu row;
@@ -1243,6 +1738,24 @@
   grid-template-rows: 1fr;
 }
 
+/* Keep rotation on the compositor: JS style writes caused typing stalls (#12359). */
+/* One day per iteration avoids per-second React animation events; still 12 steps/second. */
+@keyframes agent-spinner-rotate {
+  to {
+    transform: rotate(86400turn);
+  }
+}
+
+.agent-working-spinner {
+  animation: agent-spinner-rotate 86400s steps(1036800, end) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-working-spinner {
+    animation: none;
+  }
+}
+
 /* Why: keyframes run when the content mounts already in its final state. */
 @keyframes compact-agent-expansion-reveal {
   from {
@@ -1257,6 +1770,31 @@
 
 .compact-agent-expansion-grid-expanded .compact-agent-expansion-content {
   animation: compact-agent-expansion-reveal 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Keep the disclosure in the timestamp slot without moving adjacent content. */
+.agent-child-disclosure-time {
+  visibility: hidden;
+}
+
+@media (hover: hover) {
+  .agent-child-disclosure[data-expanded='false'] .agent-child-disclosure-time {
+    visibility: visible;
+  }
+
+  .agent-child-disclosure[data-expanded='false'] [data-agent-child-disclosure-button] {
+    opacity: 0;
+  }
+
+  .agent-disclosure-row:hover .agent-child-disclosure-time,
+  .agent-disclosure-row:focus-within .agent-child-disclosure-time {
+    visibility: hidden;
+  }
+
+  .agent-disclosure-row:hover [data-agent-child-disclosure-button],
+  .agent-disclosure-row:focus-within [data-agent-child-disclosure-button] {
+    opacity: 1;
+  }
 }
 
 /* Why: the collapsed summary still uses pill spacing, while expanded compact
@@ -1416,6 +1954,30 @@
   animation: settings-shell-enter 180ms ease-out;
 }
 
+.repo-icon-emoji-picker .EmojiPickerReact {
+  --epr-bg-color: var(--card);
+  --epr-category-label-bg-color: var(--card);
+  --epr-text-color: var(--card-foreground);
+  --epr-search-input-bg-color: var(--input);
+  --epr-search-input-bg-color-active: var(--input);
+  --epr-search-border-color: var(--border);
+  --epr-search-border-color-active: var(--ring);
+  --epr-hover-bg-color: var(--accent);
+  --epr-highlight-color: var(--ring);
+  --epr-picker-border-color: var(--border);
+  border: none;
+}
+
+/* The library sets `font-family: sans-serif` on every descendant, so inheriting from the root never lands. */
+.repo-icon-emoji-picker .EmojiPickerReact * {
+  font-family: var(--font-sans);
+}
+
+.repo-icon-emoji-picker .epr-body {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground, #737373) 34%, transparent) transparent;
+}
+
 .collapsible-height-content {
   overflow: hidden;
 }
@@ -1426,6 +1988,13 @@
 
 .collapsible-height-content[data-state='closed'] {
   animation: collapsible-up 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .collapsible-height-content[data-state='open'],
+  .collapsible-height-content[data-state='closed'] {
+    animation: none;
+  }
 }
 
 @keyframes collapsible-down {
@@ -1604,7 +2173,8 @@
   overflow: visible;
   border-radius: var(--radius);
   opacity: 0.96;
-  filter: drop-shadow(0 10px 24px color-mix(in srgb, var(--foreground) 18%, transparent));
+  background: var(--worktree-sidebar);
+  box-shadow: var(--shadow-floating);
   will-change: transform;
 }
 
@@ -1642,7 +2212,9 @@
     transform 120ms cubic-bezier(0.2, 0.8, 0.2, 1),
     width 120ms cubic-bezier(0.2, 0.8, 0.2, 1),
     opacity 80ms ease-out;
-  will-change: transform, width, opacity;
+  /* Why no `width`: it is not compositable, so hinting it only pins a layer that
+     has to be re-rastered every frame of the transition anyway. */
+  will-change: transform, opacity;
 }
 
 [data-workspace-board-card-drop-indicator='true']::before,
@@ -1814,10 +2386,15 @@
   transition: none !important;
 }
 
-/* Specifically for the expand/collapse button icon which is often a nested 'i' or '::before' */
-.monaco-editor .find-widget .button.expand {
-  width: 16px !important;
-  height: 16px !important;
+/* Why: the expand/collapse toggle (the chevron on the far left) is positioned
+   absolutely and relies on Monaco's default height:100% to vertically center
+   its icon over the find row. The generic .button override above forces a fixed
+   20px height, which pins the chevron to the top. Restore Monaco's full-height
+   18px toggle so the chevron centers like the stock find widget. */
+.monaco-editor .find-widget .button.toggle {
+  width: 18px !important;
+  height: 100% !important;
+  top: 0 !important;
 }
 
 .monaco-editor .find-widget .button > .codicon,
@@ -1827,6 +2404,18 @@
   justify-content: center !important;
   width: 100% !important;
   height: 100% !important;
+}
+
+/* Why: notebook cells paint their own code surface; Monaco's theme background would cover it. */
+.ipynb-code-surface .monaco-editor,
+.ipynb-code-surface .monaco-editor-background,
+.ipynb-code-surface .monaco-editor .margin {
+  background-color: transparent;
+}
+
+/* Why: bracket-pair colouring is a global Monaco model option; notebook cells neutralise it locally to match their preview. */
+.ipynb-code-surface .monaco-editor [class*='bracket-highlighting-'] {
+  color: inherit;
 }
 
 .monaco-editor .monaco-search-result-highlight {
@@ -1840,6 +2429,27 @@
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
   text-underline-offset: 2px;
+}
+
+/* Why: Monaco's faded scrollbar uses the class `invisible`, which collides with
+   Tailwind's `.invisible` utility (visibility: hidden) — so also restore visibility. */
+.monaco-editor
+  .reference-zone-widget
+  .monaco-scrollable-element
+  > .scrollbar.vertical.invisible.fade {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+/* Why: Monaco leaves the peek preview container `inline-block` and only sizes the
+   editor child, so the container shrink-wraps the child in BOTH axes while the
+   inherited automaticLayout ResizeObserver measures the container — a feedback
+   loop that ratchets the preview to blank at fractional zoom/DPI (issue #7405).
+   Pinning both dimensions to the splitview slot severs the loop. */
+.monaco-editor .reference-zone-widget .preview.inline {
+  height: 100%;
+  width: 100%;
 }
 
 /* ── Git conflict decorations ───────────────────────────────────── */
@@ -1947,6 +2557,17 @@
 
 .animate-update-card-enter {
   animation: update-card-enter 200ms ease-out both;
+}
+
+/* Why: `skills update` reports no parseable progress, so the skill-update bar is
+   deliberately indeterminate rather than a faked percentage. */
+@keyframes skill-update-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(365%);
+  }
 }
 
 .animate-update-card-exit {
@@ -2284,7 +2905,7 @@
 }
 
 /* Brief one-shot pulse when the Codex limits popover swaps accounts and the
-   "100% left" label flashes from red to green. */
+   "0% used" label flashes from red to green. */
 @keyframes feature-wall-meta-pulse {
   0% {
     color: rgb(220 38 38);
@@ -2304,106 +2925,6 @@
   color: rgb(22 163 74);
   font-weight: 600;
   animation: feature-wall-meta-pulse 1100ms ease-out 1;
-}
-
-/* Onboarding step 5: the compact "Take the tour" intro expands into the
-   full tour shell, so animate the browser snapshots to avoid a hard jump. */
-html.onboarding-tour-start-transition::view-transition-old(root),
-html.onboarding-tour-start-transition::view-transition-new(root) {
-  animation-duration: 760ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-  animation-fill-mode: both;
-  mix-blend-mode: normal;
-}
-
-html.onboarding-tour-start-transition::view-transition-old(root) {
-  animation-name: onboarding-tour-start-old;
-}
-
-html.onboarding-tour-start-transition::view-transition-new(root) {
-  animation-name: onboarding-tour-start-new;
-}
-
-@keyframes onboarding-tour-start-old {
-  0% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-  28% {
-    opacity: 0.9;
-    transform: translateY(-2px) scale(0.998);
-  }
-  42% {
-    opacity: 0;
-    transform: translateY(-12px) scale(0.99);
-  }
-  100% {
-    opacity: 0;
-    transform: translateY(-12px) scale(0.99);
-  }
-}
-
-@keyframes onboarding-tour-start-new {
-  0% {
-    opacity: 0;
-    transform: translateY(18px) scale(0.992);
-  }
-  34% {
-    opacity: 0;
-    transform: translateY(18px) scale(0.992);
-  }
-  100% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-/* ── Feature tour nudge: cycling preview ─────────────────────────── */
-
-/* Why: the bottom-right nudge cycles through 4 silhouette frames
-   (Workspace → Orchestration → Tasks → Terminal). Each frame is visible for
-   1/4 of the cycle. Holding fade-out late (24%–25%) gives the user dwell
-   time on the resolved state before swapping. Uses CSS-driven timing rather
-   than React state so we stay cheap when the popup is mounted but idle. */
-:root {
-  --feature-tour-cycle: 16s;
-}
-
-.feature-tour-frame {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  animation: feature-tour-frame-fade var(--feature-tour-cycle) linear infinite both;
-}
-.feature-tour-frame[data-frame='1'] {
-  animation-delay: 0s;
-}
-.feature-tour-frame[data-frame='2'] {
-  animation-delay: 4s;
-}
-.feature-tour-frame[data-frame='3'] {
-  animation-delay: 8s;
-}
-.feature-tour-frame[data-frame='4'] {
-  animation-delay: 12s;
-}
-
-@keyframes feature-tour-frame-fade {
-  0% {
-    opacity: 0;
-  }
-  1.5% {
-    opacity: 1;
-  }
-  24% {
-    opacity: 1;
-  }
-  25% {
-    opacity: 0;
-  }
-  100% {
-    opacity: 0;
-  }
 }
 
 .orca-contextual-tour-target-rings {
@@ -2440,520 +2961,6 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
     animation: none;
     opacity: 0.72;
     transform: scale(1.28);
-  }
-}
-
-.feature-tour-copy-slide {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  opacity: 0;
-  animation: feature-tour-frame-fade var(--feature-tour-cycle) linear infinite both;
-}
-.feature-tour-copy-slide[data-frame='1'] {
-  animation-delay: 0s;
-}
-.feature-tour-copy-slide[data-frame='2'] {
-  animation-delay: 4s;
-}
-.feature-tour-copy-slide[data-frame='3'] {
-  animation-delay: 8s;
-}
-.feature-tour-copy-slide[data-frame='4'] {
-  animation-delay: 12s;
-}
-
-.feature-tour-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 9999px;
-  background: color-mix(in srgb, var(--foreground) 18%, transparent);
-  animation: feature-tour-dot-pulse var(--feature-tour-cycle) linear infinite;
-}
-.feature-tour-dot[data-frame='1'] {
-  animation-delay: 0s;
-}
-.feature-tour-dot[data-frame='2'] {
-  animation-delay: 4s;
-}
-.feature-tour-dot[data-frame='3'] {
-  animation-delay: 8s;
-}
-.feature-tour-dot[data-frame='4'] {
-  animation-delay: 12s;
-}
-@keyframes feature-tour-dot-pulse {
-  0%,
-  24% {
-    background: var(--primary);
-    transform: scale(1.05);
-  }
-  25%,
-  100% {
-    background: color-mix(in srgb, var(--foreground) 18%, transparent);
-    transform: scale(1);
-  }
-}
-
-/* Frame 1 — Workspace: agent-state dot pulses while a "fix login race"
-   workspace shows two agent rows working in parallel. */
-.feature-tour-ws-status {
-  animation: feature-tour-status-pulse 1.6s ease-in-out infinite;
-}
-@keyframes feature-tour-status-pulse {
-  0%,
-  100% {
-    opacity: 0.95;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.55;
-    transform: scale(0.85);
-  }
-}
-
-/* Frame 2 — Orchestration: child cards flash as bubbles land along the
-   dashed paths fanning down from the coordinator. */
-/* Why: bubbles use percent-based left/top so they always travel from the
-   root card's right edge (34%) to the child card's left edge (64%),
-   regardless of preview width. The previous offset-path used hardcoded
-   pixels and drifted off the dashed lines once the preview resized. */
-.feature-tour-orch-bubble {
-  position: absolute;
-  left: 34%;
-  top: 50%;
-  width: 12px;
-  height: 12px;
-  margin-left: -6px;
-  margin-top: -6px;
-  border-radius: 3px;
-  background: var(--primary);
-  color: var(--primary-foreground);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0;
-  z-index: 4;
-}
-.feature-tour-orch-bubble.top {
-  animation: feature-tour-orch-travel-top var(--feature-tour-cycle) cubic-bezier(0.4, 0, 0.2, 1)
-    infinite;
-  animation-delay: 4s;
-}
-.feature-tour-orch-bubble.mid {
-  animation: feature-tour-orch-travel-mid var(--feature-tour-cycle) cubic-bezier(0.4, 0, 0.2, 1)
-    infinite;
-  animation-delay: calc(4s + 0.2s);
-}
-.feature-tour-orch-bubble.bot {
-  animation: feature-tour-orch-travel-bot var(--feature-tour-cycle) cubic-bezier(0.4, 0, 0.2, 1)
-    infinite;
-  animation-delay: calc(4s + 0.4s);
-}
-@keyframes feature-tour-orch-travel-top {
-  0% {
-    left: 34%;
-    top: 50%;
-    opacity: 0;
-  }
-  2% {
-    opacity: 1;
-  }
-  3.5% {
-    left: 49%;
-    top: 50%;
-    opacity: 1;
-  }
-  6.5% {
-    left: 64%;
-    top: 18%;
-    opacity: 1;
-  }
-  7.5% {
-    left: 64%;
-    top: 18%;
-    opacity: 0;
-  }
-  25%,
-  100% {
-    left: 64%;
-    top: 18%;
-    opacity: 0;
-  }
-}
-@keyframes feature-tour-orch-travel-mid {
-  0% {
-    left: 34%;
-    top: 50%;
-    opacity: 0;
-  }
-  2% {
-    opacity: 1;
-  }
-  6.5% {
-    left: 64%;
-    top: 50%;
-    opacity: 1;
-  }
-  7.5% {
-    left: 64%;
-    top: 50%;
-    opacity: 0;
-  }
-  25%,
-  100% {
-    left: 64%;
-    top: 50%;
-    opacity: 0;
-  }
-}
-@keyframes feature-tour-orch-travel-bot {
-  0% {
-    left: 34%;
-    top: 50%;
-    opacity: 0;
-  }
-  2% {
-    opacity: 1;
-  }
-  3.5% {
-    left: 49%;
-    top: 50%;
-    opacity: 1;
-  }
-  6.5% {
-    left: 64%;
-    top: 82%;
-    opacity: 1;
-  }
-  7.5% {
-    left: 64%;
-    top: 82%;
-    opacity: 0;
-  }
-  25%,
-  100% {
-    left: 64%;
-    top: 82%;
-    opacity: 0;
-  }
-}
-
-.feature-tour-orch-child {
-  animation: feature-tour-orch-child-flash var(--feature-tour-cycle) linear infinite;
-}
-.feature-tour-orch-child.top {
-  animation-delay: 4s;
-}
-.feature-tour-orch-child.mid {
-  animation-delay: calc(4s + 0.2s);
-}
-.feature-tour-orch-child.bot {
-  animation-delay: calc(4s + 0.4s);
-}
-@keyframes feature-tour-orch-child-flash {
-  0%,
-  6% {
-    box-shadow: 0 0 0 0 transparent;
-    border-color: var(--border);
-  }
-  7% {
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--foreground) 12%, transparent);
-    border-color: color-mix(in srgb, var(--foreground) 38%, transparent);
-  }
-  9% {
-    box-shadow: 0 0 0 0 transparent;
-    border-color: var(--border);
-  }
-  25%,
-  100% {
-    box-shadow: 0 0 0 0 transparent;
-    border-color: var(--border);
-  }
-}
-
-/* Frame 3 — Tasks: cursor lands on the second row, the "Open" pill morphs
-   to a dark "Start workspace →" pill, then a workspace card slides in. */
-.feature-tour-tasks-cursor {
-  /* Why: anchored from the row's right edge so the cursor sits just past the
-     pill's right edge (12px row padding + ~6px past pill end) instead of
-     covering the label text. The arrow tip (top-left of the SVG) lands on the
-     dark pill's trailing edge with the body of the cursor extending right. */
-  position: absolute;
-  top: 50%;
-  right: 14px;
-  width: 14px;
-  height: 14px;
-  pointer-events: none;
-  z-index: 8;
-  transform: translate(120px, -30%);
-  opacity: 0;
-  animation: feature-tour-tasks-cursor var(--feature-tour-cycle) cubic-bezier(0.45, 0.05, 0.2, 1)
-    infinite;
-  animation-delay: 8s;
-}
-.feature-tour-tasks-cursor svg {
-  width: 14px;
-  height: 14px;
-  display: block;
-}
-@keyframes feature-tour-tasks-cursor {
-  0% {
-    transform: translate(160px, -10%);
-    opacity: 0;
-  }
-  2% {
-    opacity: 1;
-  }
-  5% {
-    transform: translate(60px, -30%);
-    opacity: 1;
-  }
-  8% {
-    transform: translate(0px, -30%);
-    opacity: 1;
-  }
-  9% {
-    transform: translate(0px, -10%);
-    opacity: 1;
-  }
-  10.5% {
-    transform: translate(0px, -30%);
-    opacity: 1;
-  }
-  23.5% {
-    transform: translate(0px, -30%);
-    opacity: 1;
-  }
-  24.5% {
-    opacity: 0;
-  }
-  25%,
-  100% {
-    transform: translate(0px, -30%);
-    opacity: 0;
-  }
-}
-
-.feature-tour-tasks-row {
-  animation: feature-tour-tasks-row-hover var(--feature-tour-cycle) linear infinite;
-  animation-delay: 8s;
-}
-@keyframes feature-tour-tasks-row-hover {
-  0%,
-  4% {
-    background: transparent;
-    box-shadow: none;
-  }
-  6% {
-    background: color-mix(in srgb, var(--foreground) 5%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 6%, transparent);
-  }
-  23.5% {
-    background: color-mix(in srgb, var(--foreground) 5%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 6%, transparent);
-  }
-  25%,
-  100% {
-    background: transparent;
-    box-shadow: none;
-  }
-}
-
-.feature-tour-tasks-pill {
-  animation: feature-tour-tasks-pill-morph var(--feature-tour-cycle) linear infinite;
-  animation-delay: 8s;
-}
-@keyframes feature-tour-tasks-pill-morph {
-  0%,
-  6% {
-    width: 28px;
-    background: rgb(34 197 94 / 0.14);
-    border-color: rgb(34 197 94 / 0.3);
-    box-shadow: none;
-  }
-  8% {
-    width: 78px;
-    background: var(--primary);
-    border-color: var(--primary);
-    box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
-  }
-  23.5% {
-    width: 78px;
-    background: var(--primary);
-    border-color: var(--primary);
-    box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
-  }
-  25%,
-  100% {
-    width: 28px;
-    background: rgb(34 197 94 / 0.14);
-    border-color: rgb(34 197 94 / 0.3);
-    box-shadow: none;
-  }
-}
-
-.feature-tour-tasks-pill-label {
-  opacity: 0;
-  animation: feature-tour-tasks-pill-label var(--feature-tour-cycle) linear infinite;
-  animation-delay: 8s;
-}
-@keyframes feature-tour-tasks-pill-label {
-  0%,
-  7% {
-    opacity: 0;
-  }
-  9% {
-    opacity: 1;
-  }
-  23.5% {
-    opacity: 1;
-  }
-  24.5% {
-    opacity: 0;
-  }
-  25%,
-  100% {
-    opacity: 0;
-  }
-}
-
-/* Click ring fires when the cursor "clicks" the morphed pill on the tasks
-   row. Positioned to overlay the right-side pill of the second task. */
-.feature-tour-tasks-click-ring {
-  /* Why: ring is centered on the cursor tip (right=28 from row's right edge)
-     so the click feedback lands where the cursor is, on the arrow icon — not
-     centered on the pill, which would visually disconnect from the cursor. */
-  position: absolute;
-  top: 50%;
-  right: 14px;
-  width: 28px;
-  height: 28px;
-  margin-top: -14px;
-  border-radius: 9999px;
-  border: 1.5px solid color-mix(in srgb, var(--foreground) 55%, transparent);
-  opacity: 0;
-  z-index: 7;
-  pointer-events: none;
-  animation: feature-tour-tasks-click-ring var(--feature-tour-cycle) linear infinite;
-  animation-delay: 8s;
-}
-@keyframes feature-tour-tasks-click-ring {
-  0%,
-  7% {
-    opacity: 0;
-    transform: scale(0.4);
-  }
-  8% {
-    opacity: 0.85;
-    transform: scale(0.6);
-  }
-  10% {
-    opacity: 0;
-    transform: scale(1.4);
-  }
-  25%,
-  100% {
-    opacity: 0;
-    transform: scale(1.4);
-  }
-}
-
-/* Newly-created workspace card slides in beneath the task row once the
-   user clicks "Start workspace" — sells the "task → workspace" jump. */
-.feature-tour-tasks-workspace {
-  opacity: 0;
-  transform: translateY(-6px);
-  animation: feature-tour-tasks-workspace var(--feature-tour-cycle) linear infinite;
-  animation-delay: 8s;
-}
-@keyframes feature-tour-tasks-workspace {
-  0%,
-  10% {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-  12% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  23.5% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  25%,
-  100% {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-}
-
-/* Frame 4 — Terminal: command stays anchored while the split panes stream
-   Playwright and Claude activity. */
-.feature-tour-terminal-line {
-  width: 23ch;
-}
-
-.feature-tour-terminal-output {
-  opacity: 0;
-  transform: translateY(2px);
-  animation: feature-tour-terminal-output var(--feature-tour-cycle) linear infinite;
-  animation-delay: 12s;
-}
-.feature-tour-terminal-output[data-line='1'] {
-  animation-delay: calc(12s + 0.05s);
-}
-.feature-tour-terminal-output[data-line='2'] {
-  animation-delay: calc(12s + 0.25s);
-}
-.feature-tour-terminal-output[data-line='3'] {
-  animation-delay: calc(12s + 0.45s);
-}
-@keyframes feature-tour-terminal-output {
-  0%,
-  10% {
-    opacity: 0;
-    transform: translateY(2px);
-  }
-  12% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  23.5% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  25%,
-  100% {
-    opacity: 0;
-    transform: translateY(2px);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .feature-tour-frame,
-  .feature-tour-copy-slide,
-  .feature-tour-dot,
-  .feature-tour-ws-status,
-  .feature-tour-orch-bubble,
-  .feature-tour-orch-child,
-  .feature-tour-tasks-cursor,
-  .feature-tour-tasks-row,
-  .feature-tour-tasks-pill,
-  .feature-tour-tasks-pill-label,
-  .feature-tour-tasks-click-ring,
-  .feature-tour-tasks-workspace,
-  .feature-tour-terminal-output {
-    animation: none !important;
-  }
-  .feature-tour-frame[data-frame='1'],
-  .feature-tour-copy-slide[data-frame='1'] {
-    opacity: 1;
-  }
-  .feature-tour-dot[data-frame='1'] {
-    background: var(--primary);
   }
 }
 
@@ -2999,12 +3006,22 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
   outline-offset: 1px;
 }
 
-.orca-diff-comment-range-highlight {
-  background: rgba(59, 130, 246, 0.14);
+/* Why: the band a gutter drag paints, and the band that stays lit under an open composer.
+   Mixed from --ring (the token for active selection) rather than an invented accent, and
+   carried mostly by the solid left bar so it still reads on top of the added/removed row
+   tints. Matches the .orca-conflict-* recipe above. */
+.monaco-editor .orca-diff-comment-range-highlight {
+  background: color-mix(in srgb, var(--ring) 38%, transparent);
+  border-left: 3px solid var(--ring);
 }
 
-.dark .orca-diff-comment-range-highlight {
-  background: rgba(96, 165, 250, 0.18);
+.monaco-editor .orca-diff-comment-range-margin {
+  background: color-mix(in srgb, var(--ring) 26%, transparent);
+}
+
+/* Why: while a drag is live the pane stops trying to select text under the sweeping pointer. */
+.orca-diff-comment-range-dragging {
+  user-select: none;
 }
 
 .orca-diff-comment-inline {
@@ -3017,6 +3034,39 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
 
 .orca-diff-comment-inline > .orca-diff-comment-card {
   max-width: 420px;
+}
+
+/* Why: embedded card in the diff flow, not a floating popup — use the
+   documented "subtle lift" tier (shadow-xs) rather than a hand-rolled shadow.
+   Restated under `.dark` (same value) so this still outranks the base
+   `.orca-diff-comment-popover` dark shadow at equal selector specificity. */
+.orca-diff-comment-inline > .orca-diff-comment-draft-card {
+  position: relative;
+  left: auto;
+  right: auto;
+  width: 100%;
+  max-width: 420px;
+  z-index: 1;
+  @apply shadow-xs;
+}
+
+.dark .orca-diff-comment-inline > .orca-diff-comment-draft-card {
+  @apply shadow-xs;
+}
+
+.orca-diff-comment-draft-margin {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.orca-diff-comment-draft-margin::after {
+  content: '';
+  width: 3px;
+  height: 100%;
+  background: var(--primary);
+  border-radius: 1px;
 }
 
 /* Why: the saved note used to blend into the editor background because it
@@ -3289,4 +3339,59 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
   box-shadow:
     inset 0 1px 0 0 color-mix(in srgb, var(--foreground) 5%, transparent),
     0 10px 24px rgba(0, 0, 0, 0.18);
+}
+
+.workspace-reference-stack {
+  isolation: isolate;
+  position: relative;
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+
+.workspace-reference-stack-front,
+.workspace-reference-stack-ghost {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.workspace-reference-stack-front {
+  z-index: 2;
+}
+
+.workspace-reference-stack-ghost[data-depth='1'] {
+  transform: translate(-1.5px, 2px);
+  opacity: 0.45;
+  z-index: 1;
+}
+
+.workspace-reference-stack-ghost[data-depth='2'] {
+  transform: translate(-3px, 4px);
+  opacity: 0.25;
+}
+
+.workspace-reference-stack svg {
+  width: 14px;
+  height: 14px;
+}
+
+.workspace-reference-stack-count {
+  position: absolute;
+  top: -8px;
+  right: -5px;
+  z-index: 3;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 11px;
+  color: var(--worktree-sidebar-foreground);
+  text-shadow: 0px 1px 1px var(--background);
+}
+
+.workspace-reference-stack-count[data-multiple-digits='true'] {
+  letter-spacing: -0.02em;
 }

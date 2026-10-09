@@ -1,6 +1,6 @@
 import type React from 'react'
 import { useState } from 'react'
-import type { GlobalSettings } from '../../../../shared/types'
+import type { GlobalSettings } from '../../../../shared/global-settings-types'
 import {
   DEFAULT_EDITOR_AUTO_SAVE_DELAY_MS,
   MAX_EDITOR_AUTO_SAVE_DELAY_MS,
@@ -10,57 +10,35 @@ import { clampNumber } from '@/lib/terminal-theme'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { SearchableSetting } from './SearchableSetting'
+import { CollapseUnchangedRegionsSetting } from './CollapseUnchangedRegionsSetting'
 import {
   SettingsSegmentedControl,
   SettingsSubsectionHeader,
   SettingsSwitchRow
 } from './SettingsFormControls'
 import { translate } from '@/i18n/i18n'
-
-export type AutoSaveDelayDraftState = {
-  sourceDelayMs: number
-  draft: string
-}
-
-export function createAutoSaveDelayDraftState(
-  editorAutoSaveDelayMs: number
-): AutoSaveDelayDraftState {
-  return {
-    sourceDelayMs: editorAutoSaveDelayMs,
-    draft: String(editorAutoSaveDelayMs)
-  }
-}
-
-function resolveAutoSaveDelayDraftState(
-  state: AutoSaveDelayDraftState,
-  editorAutoSaveDelayMs: number
-): AutoSaveDelayDraftState {
-  return state.sourceDelayMs === editorAutoSaveDelayMs
-    ? state
-    : createAutoSaveDelayDraftState(editorAutoSaveDelayMs)
-}
-
-export function updateAutoSaveDelayDraftState(
-  state: AutoSaveDelayDraftState,
-  editorAutoSaveDelayMs: number,
-  draft: string
-): AutoSaveDelayDraftState {
-  return {
-    // Why: settings persistence is async, so a committed draft must stay tied
-    // to the current source until the persisted value reloads.
-    ...resolveAutoSaveDelayDraftState(state, editorAutoSaveDelayMs),
-    draft
-  }
-}
+import { RichMarkdownSpellcheckSetting } from './RichMarkdownSpellcheckSetting'
+import { DiffShowWhitespaceSetting } from './DiffShowWhitespaceSetting'
+import { EditorWordWrapSetting } from './EditorWordWrapSetting'
+import { EditorFontFamilySetting } from './EditorFontFamilySetting'
+import {
+  createAutoSaveDelayDraftState,
+  resolveAutoSaveDelayDraftState,
+  updateAutoSaveDelayDraftState
+} from './auto-save-delay-draft'
 
 type GeneralEditorSettingsSectionProps = {
   settings: GlobalSettings
   updateSettings: (updates: Partial<GlobalSettings>) => void
+  fontSuggestions: string[]
+  onRequestFontSuggestions?: () => void
 }
 
 export function GeneralEditorSettingsSection({
   settings,
-  updateSettings
+  updateSettings,
+  fontSuggestions,
+  onRequestFontSuggestions
 }: GeneralEditorSettingsSectionProps): React.JSX.Element {
   const [autoSaveDelayDraftState, setAutoSaveDelayDraftState] = useState(() =>
     createAutoSaveDelayDraftState(settings.editorAutoSaveDelayMs)
@@ -168,7 +146,7 @@ export function GeneralEditorSettingsSection({
             {translate(
               'auto.components.settings.GeneralEditorSettingsSection.8112cd6dcf',
               'How long Orca waits after your last edit before saving automatically. First launch defaults to'
-            )}
+            )}{' '}
             {DEFAULT_EDITOR_AUTO_SAVE_DELAY_MS}{' '}
             {translate('auto.components.settings.GeneralEditorSettingsSection.fc5c5306ff', 'ms.')}
           </p>
@@ -246,6 +224,19 @@ export function GeneralEditorSettingsSection({
           ]}
         />
       </SearchableSetting>
+
+      <EditorFontFamilySetting
+        settings={settings}
+        updateSettings={updateSettings}
+        fontSuggestions={fontSuggestions}
+        onRequestFontSuggestions={onRequestFontSuggestions}
+      />
+
+      <EditorWordWrapSetting settings={settings} updateSettings={updateSettings} />
+
+      <DiffShowWhitespaceSetting settings={settings} updateSettings={updateSettings} />
+
+      <CollapseUnchangedRegionsSetting settings={settings} updateSettings={updateSettings} />
 
       <SearchableSetting
         title={translate(
@@ -378,6 +369,8 @@ export function GeneralEditorSettingsSection({
         />
       </SearchableSetting>
 
+      <RichMarkdownSpellcheckSetting settings={settings} updateSettings={updateSettings} />
+
       <SearchableSetting
         title={translate(
           'auto.components.settings.GeneralEditorSettingsSection.4edc104f0f',
@@ -385,7 +378,7 @@ export function GeneralEditorSettingsSection({
         )}
         description={translate(
           'auto.components.settings.GeneralEditorSettingsSection.5f02e6fb21',
-          'Show local markdown review note controls in rich editor mode.'
+          'Show local markdown review note controls in markdown files.'
         )}
         keywords={['markdown', 'review', 'notes', 'annotations', 'agents']}
       >
@@ -396,7 +389,7 @@ export function GeneralEditorSettingsSection({
           )}
           description={translate(
             'auto.components.settings.GeneralEditorSettingsSection.f80603d293',
-            'Show local markdown note controls in rich editor mode and agent handoff actions.'
+            'Show markdown note controls in every markdown view and include markdown notes in agent handoff actions.'
           )}
           checked={settings.markdownReviewToolsEnabled}
           onChange={() =>

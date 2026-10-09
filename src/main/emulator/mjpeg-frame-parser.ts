@@ -22,12 +22,17 @@ export function extractJpegFrames(
   chunk: Buffer<ArrayBufferLike>,
   maxPendingBytes = DEFAULT_MAX_PENDING_BYTES
 ): MjpegFrameParseResult {
-  let cursor = pending.length > 0 ? Buffer.concat([pending, chunk]) : Buffer.from(chunk)
+  // Why: when there are no leftover bytes the chunk already holds whole frames,
+  // so read it directly instead of copying — frames below are views consumed
+  // synchronously (the IPC layer copies into a transferable ArrayBuffer), and
+  // any retained `pending` is copied out via trimPendingBuffer, so no chunk
+  // memory is held across calls. At ~30fps this avoids a full-frame copy/frame.
+  let cursor = pending.length > 0 ? Buffer.concat([pending, chunk]) : chunk
   const frames: Buffer[] = []
 
   while (cursor.length > 0) {
     const frameStart = cursor.indexOf(JPEG_START)
-    if (frameStart < 0) {
+    if (frameStart === -1) {
       const keepLastByte = cursor.at(-1) === 0xff
       return { frames, pending: keepLastByte ? Buffer.from([0xff]) : Buffer.alloc(0) }
     }
@@ -36,12 +41,14 @@ export function extractJpegFrames(
     }
 
     const frameEnd = cursor.indexOf(JPEG_END, JPEG_START.length)
-    if (frameEnd < 0) {
+    if (frameEnd === -1) {
       return { frames, pending: trimPendingBuffer(cursor, maxPendingBytes) }
     }
 
     const nextOffset = frameEnd + JPEG_END.length
-    frames.push(Buffer.from(cursor.subarray(0, nextOffset)))
+    // A view, not a copy: the caller consumes each frame synchronously before
+    // the next chunk arrives, and `cursor` is only ever re-sliced (never mutated).
+    frames.push(cursor.subarray(0, nextOffset))
     cursor = cursor.subarray(nextOffset)
   }
 

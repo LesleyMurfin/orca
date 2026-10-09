@@ -5,16 +5,14 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { getAgentCatalog, AgentIcon } from '@/lib/agent-catalog'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
-import { CLIENT_PLATFORM } from '@/lib/new-workspace'
-import { buildAgentStartupPlan } from '@/lib/tui-agent-startup'
-import { tuiAgentToAgentKind } from '@/lib/telemetry'
+import { launchAgentInNewTab } from '@/lib/launch-agent-in-new-tab'
+import { newAgentLaunchRequestId } from '@/lib/agent-launch-request-id'
 import { useAppStore } from '@/store'
 import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../../shared/constants'
-import { isTuiAgentEnabled } from '../../../../shared/tui-agent-selection'
 import {
-  resolveTuiAgentLaunchArgs,
-  resolveTuiAgentLaunchEnv
-} from '../../../../shared/tui-agent-launch-defaults'
+  DEFAULT_DISABLED_TUI_AGENTS,
+  isTuiAgentEnabled
+} from '../../../../shared/tui-agent-selection'
 import { translate } from '@/i18n/i18n'
 import { useOptionalShortcutLabel } from '@/hooks/useShortcutLabel'
 
@@ -41,12 +39,14 @@ export function FloatingTerminalWindowControls({
   onMinimize
 }: FloatingTerminalWindowControlsProps): React.JSX.Element {
   const defaultTuiAgent = useAppStore((s) => s.settings?.defaultTuiAgent ?? null)
-  const createTab = useAppStore((s) => s.createTab)
   const setActiveTabForWorktree = useAppStore((s) => s.setActiveTabForWorktree)
+  const activateTab = useAppStore((s) => s.activateTab)
   const maximizeShortcutLabel = useOptionalShortcutLabel('floatingWorkspace.maximize')
   const minimizeShortcutLabel = useOptionalShortcutLabel('floatingWorkspace.minimize')
 
-  const disabledTuiAgents = useAppStore((s) => s.settings?.disabledTuiAgents ?? [])
+  const disabledTuiAgents = useAppStore(
+    (s) => s.settings?.disabledTuiAgents ?? DEFAULT_DISABLED_TUI_AGENTS
+  )
   const defaultAgent =
     defaultTuiAgent &&
     defaultTuiAgent !== 'blank' &&
@@ -65,17 +65,21 @@ export function FloatingTerminalWindowControls({
     if (!defaultAgent) {
       return
     }
-    const state = useAppStore.getState()
-    const startupPlan = buildAgentStartupPlan({
+    // Why: the shared launcher owns the startup plan, the route and the tab identity, so this
+    // button stays one more caller of it rather than a second copy of new-agent-tab startup.
+    // Floating resolves the terminal-backed lane: a chat view over a PTY when the chat default is
+    // on, never a structured session.
+    const result = launchAgentInNewTab({
+      requestId: newAgentLaunchRequestId(),
       agent: defaultAgent,
-      prompt: '',
-      cmdOverrides: state.settings?.agentCmdOverrides ?? {},
-      agentArgs: resolveTuiAgentLaunchArgs(defaultAgent, state.settings?.agentDefaultArgs),
-      agentEnv: resolveTuiAgentLaunchEnv(defaultAgent, state.settings?.agentDefaultEnv),
-      platform: CLIENT_PLATFORM,
-      allowEmptyPromptLaunch: true
+      worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
+      launchSource: 'shortcut',
+      // Why: `agent-auto-ack-targets` relies on the floating panel's active tab never becoming the
+      // global `activeTabId`; activating here would also flip the main view off an open editor.
+      // This selects within the floating group below instead.
+      activate: false
     })
-    if (!startupPlan) {
+    if (!result) {
       toast.error(
         translate(
           'auto.components.floating.terminal.FloatingTerminalWindowControls.82da3701e7',
@@ -85,36 +89,17 @@ export function FloatingTerminalWindowControls({
       )
       return
     }
-    const tab = createTab(FLOATING_TERMINAL_WORKTREE_ID, undefined, undefined, { activate: false })
-    state.queueTabStartupCommand(tab.id, {
-      command: startupPlan.launchCommand,
-      ...(startupPlan.env ? { env: startupPlan.env } : {}),
-      launchConfig: startupPlan.launchConfig,
-      launchAgent: defaultAgent,
-      ...(startupPlan.startupCommandDelivery
-        ? { startupCommandDelivery: startupPlan.startupCommandDelivery }
-        : {}),
-      telemetry: {
-        agent_kind: tuiAgentToAgentKind(defaultAgent),
-        launch_source: 'shortcut',
-        request_kind: 'new'
-      }
-    })
-    setActiveTabForWorktree(FLOATING_TERMINAL_WORKTREE_ID, tab.id)
-    const fresh = useAppStore.getState()
-    const currentTabs = fresh.tabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? []
-    const stored = fresh.tabBarOrderByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? []
-    const validIds = new Set(currentTabs.map((entry) => entry.id))
-    const order = stored.filter((id) => validIds.has(id) && id !== tab.id)
-    for (const entry of currentTabs) {
-      if (entry.id !== tab.id && !order.includes(entry.id)) {
-        order.push(entry.id)
-      }
+    if (result.surface.kind !== 'local-terminal') {
+      return
     }
-    order.push(tab.id)
-    fresh.setTabBarOrder(FLOATING_TERMINAL_WORKTREE_ID, order)
-    focusTerminalTabSurface(tab.id)
-  }, [createTab, defaultAgent, defaultAgentLabel, setActiveTabForWorktree])
+    // Why: the floating panel renders its visible tab from the unified group's
+    // activeTabId. setActiveTabForWorktree only writes activeTabIdByWorktree, so
+    // the new agent tab would be appended but never selected/focused. activateTab
+    // selects it within the group, matching the empty-state tab creators.
+    setActiveTabForWorktree(FLOATING_TERMINAL_WORKTREE_ID, result.surface.tabId)
+    activateTab(result.surface.tabId)
+    focusTerminalTabSurface(result.surface.tabId)
+  }, [activateTab, defaultAgent, defaultAgentLabel, setActiveTabForWorktree])
 
   return (
     <div className="flex items-center gap-1 px-2" data-floating-terminal-no-drag>

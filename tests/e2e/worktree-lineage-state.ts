@@ -5,8 +5,11 @@ export type LineageScenario = {
   childId: string
 }
 
-export async function seedLineageScenario(page: Page): Promise<LineageScenario> {
-  return page.evaluate(() => {
+export async function seedLineageScenario(
+  page: Page,
+  options: { inlineOnly?: boolean; preserveGrouping?: boolean } = {}
+): Promise<LineageScenario> {
+  return page.evaluate(({ inlineOnly, preserveGrouping }) => {
     const store = window.__store
     if (!store) {
       throw new Error('window.__store is not available')
@@ -15,7 +18,9 @@ export async function seedLineageScenario(page: Page): Promise<LineageScenario> 
     const state = store.getState()
     state.setActiveView('terminal')
     state.setSidebarOpen(true)
-    state.setGroupBy('none')
+    if (!preserveGrouping) {
+      state.setGroupBy('none')
+    }
     state.setSortBy('recent')
     // Why: these specs assert lineage structure, not the user's persisted
     // sidebar filters. Make the seeded child render even when it has no live PTY.
@@ -35,38 +40,50 @@ export async function seedLineageScenario(page: Page): Promise<LineageScenario> 
     if (!parent.instanceId || !child.instanceId) {
       throw new Error('Worktree lineage E2E needs instance-stamped worktrees')
     }
+    const lineage = {
+      worktreeId: child.id,
+      worktreeInstanceId: child.instanceId,
+      parentWorktreeId: parent.id,
+      parentWorktreeInstanceId: parent.instanceId,
+      origin: 'manual' as const,
+      capture: { source: 'manual-action' as const, confidence: 'explicit' as const },
+      createdAt: Date.now()
+    }
     store.setState((current) => ({
       worktreesByRepo: Object.fromEntries(
         Object.entries(current.worktreesByRepo).map(([repoId, repoWorktrees]) => [
           repoId,
           repoWorktrees.map((worktree) => {
             if (worktree.id === parent.id) {
-              return { ...worktree, displayName: 'E2E lineage parent', sortOrder: 0 }
+              return {
+                ...worktree,
+                displayName: 'E2E lineage parent',
+                sortOrder: 0,
+                ...(inlineOnly
+                  ? { parentWorktreeId: null, childWorktreeIds: [child.id], lineage: null }
+                  : {})
+              }
             }
             if (worktree.id === child.id) {
-              return { ...worktree, displayName: 'E2E lineage child', sortOrder: 1 }
+              return {
+                ...worktree,
+                displayName: 'E2E lineage child',
+                sortOrder: 1,
+                ...(inlineOnly
+                  ? { parentWorktreeId: parent.id, childWorktreeIds: [], lineage }
+                  : {})
+              }
             }
             return worktree
           })
         ])
       ),
-      worktreeLineageById: {
-        ...current.worktreeLineageById,
-        [child.id]: {
-          worktreeId: child.id,
-          worktreeInstanceId: child.instanceId,
-          parentWorktreeId: parent.id,
-          parentWorktreeInstanceId: parent.instanceId,
-          origin: 'manual',
-          capture: { source: 'manual-action', confidence: 'explicit' },
-          createdAt: Date.now()
-        }
-      }
+      worktreeLineageById: inlineOnly ? {} : { ...current.worktreeLineageById, [child.id]: lineage }
     }))
 
     store.getState().setActiveWorktree(parent.id)
     return { parentId: parent.id, childId: child.id }
-  })
+  }, options)
 }
 
 export async function seedWorkspaceAgentStatus(
@@ -83,7 +100,7 @@ export async function seedWorkspaceAgentStatus(
 
       const state = store.getState()
       if (!state.worktreeCardProperties.includes('inline-agents')) {
-        state.toggleWorktreeCardProperty('inline-agents')
+        state.setWorktreeCardProperties([...state.worktreeCardProperties, 'inline-agents'])
       }
       if ((state.tabsByWorktree[worktreeId] ?? []).length === 0) {
         state.createTab(worktreeId)

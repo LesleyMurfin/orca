@@ -1,3 +1,5 @@
+import type { ExecutionHostId } from '../../../src/shared/execution-host'
+import type { AgentWorkingMode } from '../../../src/shared/agent-status-types'
 import type { RuntimeWorktreeAgentRow } from '../../../src/shared/runtime-types'
 
 export type Worktree = {
@@ -5,18 +7,29 @@ export type Worktree = {
   workspaceKind?: 'git' | 'folder-workspace'
   worktreeId: string
   repoId: string
+  hostId?: ExecutionHostId
+  terminalPlatform?: NodeJS.Platform
+  /** Display-only; set when the list spans hosts, so rows say which host they run on. */
+  hostContextLabel?: string
+  /** Resolved host for the display label; present when legacy rows omit hostId. */
+  hostContextHostId?: ExecutionHostId
   repo: string
   branch: string
   displayName: string
   workspaceStatus?: string
   sortOrder?: number
   manualOrder?: number
+  lastActivityAt?: number
+  createdAt?: number
   // Why: on-disk worktree directory path. Needed by NewWorktreeModal so the
   // marine-creature fallback dedupes against filesystem basenames.
   path: string
   isArchived?: boolean
   isMainWorktree?: boolean
   hasHostSidebarActivity?: boolean
+  worktreeInstanceId?: string
+  lineageWorktreeInstanceId?: string
+  parentWorktreeInstanceId?: string
   parentWorktreeId?: string | null
   childWorktreeIds?: string[]
   lineageDepth?: number
@@ -37,6 +50,7 @@ export type Worktree = {
   linkedGitLabIssue?: number | null
   comment?: string
   status?: 'working' | 'active' | 'permission' | 'done' | 'inactive'
+  workingMode?: AgentWorkingMode
   agents?: RuntimeWorktreeAgentRow[]
 }
 
@@ -44,6 +58,8 @@ export type FilterState = {
   filterRepoIds: Set<string>
   hideSleeping: boolean
   hideDefaultBranch: boolean
+  /** Absent means on: #8873's exemption must fail open on older host payloads. */
+  alwaysShowDefaultBranch?: boolean
 }
 
 export type Section = { key: string; title: string; icon?: 'pin'; data: Worktree[] }

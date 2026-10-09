@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { GhosttyImportPreview, GlobalSettings } from '../../../../shared/types'
+import type { GhosttyImportPreview, GlobalSettings } from '../../../../shared/global-settings-types'
 
 const mockStateValues: unknown[] = []
 let mockStateIndex = 0
@@ -13,7 +13,7 @@ const baseSettings: GlobalSettings = {
   terminalGpuAcceleration: 'auto',
   terminalCursorStyle: 'bar',
   terminalCursorBlink: true,
-  terminalScrollbackBytes: 10_000_000,
+  terminalScrollbackRows: 5_000,
   terminalBackgroundOpacity: 1,
   terminalInactivePaneOpacity: 1,
   terminalPaddingX: 0,

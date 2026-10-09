@@ -8,10 +8,13 @@ import {
   MIN_COMPATIBLE_RUNTIME_SERVER_VERSION,
   RUNTIME_PROTOCOL_VERSION
 } from '../../../../shared/protocol-version'
+import type { AutomationHostTarget } from './automation-host-client'
 import type { SshConnectionState } from '../../../../shared/ssh-types'
 import type { TaskSourceContext } from '../../../../shared/task-source-context'
-import type { RuntimeStatus } from '../../../../shared/runtime-types'
-import type { ProjectHostSetup, Repo, Worktree } from '../../../../shared/types'
+import type { ProjectHostSetup } from '../../../../shared/project-types'
+import type { Repo } from '../../../../shared/repo-types'
+import type { RuntimeEnvironmentStatus } from '../../../../shared/runtime-host-status'
+import type { Worktree } from '../../../../shared/worktree/types'
 import type { TaskSourceHostAvailability } from '../task-source-context-summary'
 
 export type AutomationTargetAvailability =
@@ -48,10 +51,8 @@ type AutomationTargetAvailabilityArgs = {
   workspace: Worktree | null | undefined
   projectHostSetups: readonly ProjectHostSetup[]
   sshConnectionStates: ReadonlyMap<string, Pick<SshConnectionState, 'status'>>
-  runtimeStatusByEnvironmentId?: ReadonlyMap<
-    string,
-    { status: RuntimeStatus | null; checkedAt: number }
-  >
+  runtimeStatusByEnvironmentId?: ReadonlyMap<string, RuntimeEnvironmentStatus>
+  automationHostTarget?: AutomationHostTarget | null
   sourceHostAvailability?: readonly TaskSourceHostAvailability[]
 }
 
@@ -62,11 +63,13 @@ export function getAutomationTargetAvailability({
   projectHostSetups,
   sshConnectionStates,
   runtimeStatusByEnvironmentId,
+  automationHostTarget,
   sourceHostAvailability
 }: AutomationTargetAvailabilityArgs): AutomationTargetAvailability {
   if (!repo) {
     return unavailable('missing-project', 'The target project is no longer available.')
   }
+
   if (automation.runContext) {
     const parsedHost = parseExecutionHostId(automation.runContext.hostId)
     if (parsedHost?.kind === 'runtime') {
@@ -93,15 +96,18 @@ export function getAutomationTargetAvailability({
         `Project setup on the selected automation host is ${setup.setupState}.`
       )
     }
-    if (
-      setup.projectId !== automation.runContext.projectId ||
-      setup.hostId !== automation.runContext.hostId ||
-      setup.repoId !== automation.runContext.repoId ||
-      setup.path !== automation.runContext.path ||
-      automation.runContext.repoId !== repo.id ||
-      automation.runContext.path !== repo.path ||
-      automation.runContext.hostId !== getRepoExecutionHostId(repo)
-    ) {
+    // Why: projectId is a derived identity that upgrades over time (repo:→git:→github:);
+    // matching on it strands automations created before their repo's identity resolved.
+    // Anchor on repoId/path/host instead — the durable, stable target identity.
+    const setupMatchesContext =
+      setup.repoId === automation.runContext.repoId &&
+      setup.path === automation.runContext.path &&
+      setupHostMatchesRunContext(setup.hostId, automation.runContext.hostId, automationHostTarget)
+    const repoMatchesContext =
+      automation.runContext.repoId === repo.id &&
+      automation.runContext.path === repo.path &&
+      repoHostMatchesRunContext(repo, automation.runContext.hostId, automationHostTarget)
+    if (!setupMatchesContext || !repoMatchesContext) {
       return unavailable(
         'host-mismatch',
         'The saved run host no longer matches this project setup.'
@@ -140,6 +146,40 @@ export function getAutomationTargetAvailability({
     case 'error':
       return unavailable('ssh-unavailable', 'Connect this SSH host before running manually.')
   }
+}
+
+function getRuntimeTargetHostId(target: AutomationHostTarget | null | undefined): string | null {
+  return target?.kind === 'environment'
+    ? `runtime:${encodeURIComponent(target.environmentId)}`
+    : null
+}
+
+function setupHostMatchesRunContext(
+  setupHostId: string,
+  runHostId: string,
+  target: AutomationHostTarget | null | undefined
+): boolean {
+  if (setupHostId === runHostId) {
+    return true
+  }
+  const targetHostId = getRuntimeTargetHostId(target)
+  // Why: remote-runtime project lists project the server-local host as runtime:<env>,
+  // while CLI-created automations can preserve the server's durable local run host.
+  return targetHostId !== null && setupHostId === targetHostId && runHostId === 'local'
+}
+
+function repoHostMatchesRunContext(
+  repo: Repo,
+  runHostId: string,
+  target: AutomationHostTarget | null | undefined
+): boolean {
+  if (runHostId === getRepoExecutionHostId(repo)) {
+    return true
+  }
+  const targetHostId = getRuntimeTargetHostId(target)
+  // Why: repos fetched from a remote runtime are owned by runtime:<env> in the
+  // renderer, but saved automations still target the host setup that runs there.
+  return targetHostId !== null && getRepoExecutionHostId(repo) === targetHostId
 }
 
 function getAutomationSourceAvailability(
@@ -222,11 +262,9 @@ function getAutomationSourceProviderLabel(provider: TaskSourceContext['provider'
   }
 }
 
-function getRuntimeAutomationAvailability(
+export function getRuntimeAutomationAvailability(
   environmentId: string,
-  runtimeStatusByEnvironmentId:
-    | ReadonlyMap<string, { status: RuntimeStatus | null; checkedAt: number }>
-    | undefined
+  runtimeStatusByEnvironmentId: ReadonlyMap<string, RuntimeEnvironmentStatus> | undefined
 ): AutomationTargetAvailability {
   const entry = runtimeStatusByEnvironmentId?.get(environmentId)
   if (!entry) {

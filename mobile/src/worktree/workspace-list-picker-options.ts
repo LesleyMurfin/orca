@@ -1,12 +1,20 @@
 import type { PickerOption } from '../components/PickerModal'
 import type { MobileGroupMode, MobileSortMode } from './workspace-view-settings'
 
+// Why: the host may be headless, so the note can't promise a desktop sidebar.
+export const WORKSPACE_VIEW_SHARED_NOTE = 'Synced across your devices'
+
 export const WORKSPACE_SORT_OPTIONS: PickerOption<MobileSortMode>[] = [
-  { value: 'smart', label: 'Smart', subtitle: 'Unread and active first' },
+  // Why: desktop and persisted state keep the `smart` key, while mobile shows the product label.
+  {
+    value: 'smart',
+    label: 'Agent activity',
+    subtitle: 'Agents that need attention, then recent activity'
+  },
   { value: 'name', label: 'Name', subtitle: 'Alphabetical by name' },
   { value: 'recent', label: 'Recent', subtitle: 'Most recent output first' },
   { value: 'repo', label: 'Repo', subtitle: 'Repository, then workspace name' },
-  { value: 'manual', label: 'Manual', subtitle: 'Server order' }
+  { value: 'manual', label: 'Manual', subtitle: 'Desktop drag order' }
 ]
 
 export const WORKSPACE_GROUP_OPTIONS: PickerOption<MobileGroupMode>[] = [

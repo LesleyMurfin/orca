@@ -21,6 +21,16 @@ export function getAutomationRerunPendingRemainingMs({
   return Math.max(0, pendingStartedAt + AUTOMATION_RERUN_PENDING_MIN_VISIBLE_MS - now)
 }
 
+export async function waitForAutomationRerunPendingVisibility(
+  pendingStartedAt: number
+): Promise<void> {
+  const remainingMs = getAutomationRerunPendingRemainingMs({ pendingStartedAt })
+  if (remainingMs <= 0) {
+    return
+  }
+  await new Promise<void>((resolve) => window.setTimeout(resolve, remainingMs))
+}
+
 export function canRerunAutomationRun({
   automation,
   run
@@ -41,13 +51,14 @@ export function canRerunAutomationRun({
 export function getAutomationRunViewState({
   run,
   workspaceExists,
-  terminalTabExists
+  terminalTargetExists
 }: {
   run: AutomationRun
   workspaceExists: boolean
-  terminalTabExists: boolean
+  terminalTargetExists: boolean
 }): AutomationRunViewState {
-  if (run.workspaceId && workspaceExists && run.terminalSessionId && terminalTabExists) {
+  const hasTerminalIdentity = Boolean(run.terminalPaneKey && run.terminalPtyId)
+  if (run.workspaceId && workspaceExists && terminalTargetExists) {
     return {
       availability: 'terminal',
       actionLabel: 'View run',
@@ -56,13 +67,20 @@ export function getAutomationRunViewState({
     }
   }
 
+  if (run.workspaceId && workspaceExists && hasTerminalIdentity) {
+    return {
+      availability: 'terminal',
+      actionLabel: 'View run',
+      statusLabel: 'Run terminal is unavailable.',
+      canOpen: true
+    }
+  }
+
   if (run.workspaceId && workspaceExists) {
     return {
       availability: 'workspace',
       actionLabel: 'Resume workspace',
-      statusLabel: run.terminalSessionId
-        ? 'Workspace is available; original terminal is closed.'
-        : 'Workspace is available.',
+      statusLabel: 'Workspace is available.',
       canOpen: true
     }
   }

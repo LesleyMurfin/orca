@@ -1,26 +1,54 @@
-/* eslint-disable max-lines -- Why: covers every pty:management IPC channel
-against shared mocks (electron, fs, daemon-init, DaemonPtyRouter). Splitting
-across files would duplicate the vi.hoisted setup and the shared helpers,
-with no meaningful ownership seam. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DaemonSessionInfo } from '../daemon/types'
 
-const { handleMock, removeHandlerMock, getDaemonProviderMock, restartDaemonMock } = vi.hoisted(
-  () => ({
-    handleMock: vi.fn(),
-    removeHandlerMock: vi.fn(),
-    getDaemonProviderMock: vi.fn(),
-    restartDaemonMock: vi.fn()
-  })
-)
+// Mirrors DaemonFolderAccessResetResult; declared here so the mock is not typed by the module it
+// replaces.
+type FolderAccessResetResult = {
+  outcome: string
+  mismatch?: { daemonScope: string; cwdClass: string; freshDaemonAccess: string } | null
+}
+
+const {
+  handleMock,
+  removeHandlerMock,
+  getDaemonProviderMock,
+  restartDaemonMock,
+  getCurrentDaemonMacTccAttributionHealthMock,
+  getDaemonFolderAccessMismatchMock,
+  refreshDaemonFolderAccessProbeMock,
+  resetFolderAccessForDaemonMock
+} = vi.hoisted(() => ({
+  handleMock: vi.fn(),
+  removeHandlerMock: vi.fn(),
+  getDaemonProviderMock: vi.fn(),
+  restartDaemonMock: vi.fn(),
+  getCurrentDaemonMacTccAttributionHealthMock: vi.fn(async () => 'unknown'),
+  getDaemonFolderAccessMismatchMock: vi.fn<
+    () => { daemonScope: string; cwdClass: string; freshDaemonAccess: string } | null
+  >(() => null),
+  refreshDaemonFolderAccessProbeMock: vi.fn(async () => {}),
+  resetFolderAccessForDaemonMock: vi.fn<() => Promise<FolderAccessResetResult>>(async () => ({
+    outcome: 'unsupported'
+  }))
+}))
 
 vi.mock('electron', () => ({
   ipcMain: { handle: handleMock, removeHandler: removeHandlerMock }
 }))
 
+vi.mock('../daemon/daemon-folder-access-mismatch', () => ({
+  getDaemonFolderAccessMismatch: getDaemonFolderAccessMismatchMock,
+  refreshDaemonFolderAccessProbe: refreshDaemonFolderAccessProbeMock
+}))
+
+vi.mock('../daemon/daemon-folder-access-reset', () => ({
+  resetFolderAccessForDaemon: resetFolderAccessForDaemonMock
+}))
+
 vi.mock('../daemon/daemon-init', () => ({
   getDaemonProvider: getDaemonProviderMock,
-  restartDaemon: restartDaemonMock
+  restartDaemon: restartDaemonMock,
+  getCurrentDaemonMacTccAttributionHealth: getCurrentDaemonMacTccAttributionHealthMock
 }))
 
 // Why: the handler uses `provider instanceof DaemonPtyRouter` to branch
@@ -33,14 +61,55 @@ vi.mock('../daemon/daemon-init', () => ({
 vi.mock('../daemon/daemon-pty-router', () => {
   class DaemonPtyRouter {
     private allAdapters: unknown[]
+    private current: unknown
     constructor(opts: { current: unknown; legacy: unknown[] }) {
+      this.current = opts.current
       this.allAdapters = [opts.current, ...opts.legacy]
     }
     getAllAdapters() {
       return this.allAdapters
     }
+    // Why: the folder-access read asks the *current* adapter for the daemon identity.
+    getCurrentAdapter() {
+      return this.current
+    }
+    getLegacyAdapters() {
+      return this.allAdapters.slice(1)
+    }
   }
   return { DaemonPtyRouter }
+})
+
+// Why: the handler also branches on `provider instanceof DegradedDaemonPtyProvider`
+// (for getAllAdapters) and reports `degraded` from it. The real constructor
+// subscribes to adapter events, so keep only the accessors pty-management uses.
+vi.mock('../daemon/degraded-daemon-pty-provider', () => {
+  class DegradedDaemonPtyProvider {
+    private allAdapters: unknown[]
+    private current: unknown
+    private routesFreshToFallback = true
+    constructor(opts: { current: unknown; legacy: unknown[] }) {
+      this.current = opts.current
+      this.allAdapters = [opts.current, ...opts.legacy]
+    }
+    getCurrentAdapter() {
+      return this.current
+    }
+    getLegacyAdapters() {
+      return this.allAdapters.slice(1)
+    }
+    get routesFreshSpawnsToLocalProvider(): true | undefined {
+      return this.routesFreshToFallback ? true : undefined
+    }
+    async recoverFreshSpawnRouting(): Promise<boolean> {
+      this.routesFreshToFallback = false
+      return true
+    }
+    getAllAdapters() {
+      return this.allAdapters
+    }
+  }
+  return { DegradedDaemonPtyProvider }
 })
 
 type HandlerMap = Record<string, (event: unknown, args?: unknown) => unknown>
@@ -77,6 +146,7 @@ type MockAdapter = {
   protocolVersion: number
   listSessions: ReturnType<typeof vi.fn>
   shutdown: ReturnType<typeof vi.fn>
+  getDaemonIdentity: ReturnType<typeof vi.fn>
 }
 
 function makeAdapter(
@@ -91,7 +161,8 @@ function makeAdapter(
   return {
     protocolVersion,
     listSessions: vi.fn(async () => sessions.map(({ protocolVersion: _pv, ...rest }) => rest)),
-    shutdown: vi.fn(shutdownImpl ?? (async () => {}))
+    shutdown: vi.fn(shutdownImpl ?? (async () => {})),
+    getDaemonIdentity: vi.fn(() => ({ pid: 1530, startedAtMs: 1_700_000, launchNonce: 'n1' }))
   }
 }
 
@@ -107,10 +178,24 @@ async function makeRouter(current: MockAdapter, legacy: MockAdapter[] = []) {
   return new DaemonPtyRouter({ current: current as never, legacy: legacy as never })
 }
 
+async function makeDegradedProvider(current: MockAdapter, legacy: MockAdapter[] = []) {
+  const { DegradedDaemonPtyProvider } = await import('../daemon/degraded-daemon-pty-provider')
+  return new DegradedDaemonPtyProvider({
+    current: current as never,
+    legacy: legacy as never,
+    fallback: undefined as never
+  })
+}
+
 describe('pty:management IPC handlers', () => {
   beforeEach(() => {
     getDaemonProviderMock.mockReset()
     restartDaemonMock.mockReset()
+    getCurrentDaemonMacTccAttributionHealthMock.mockReset()
+    getCurrentDaemonMacTccAttributionHealthMock.mockResolvedValue('unknown')
+    getDaemonFolderAccessMismatchMock.mockReset().mockReturnValue(null)
+    refreshDaemonFolderAccessProbeMock.mockReset().mockResolvedValue(undefined)
+    resetFolderAccessForDaemonMock.mockReset().mockResolvedValue({ outcome: 'unsupported' })
   })
 
   afterEach(() => {
@@ -128,13 +213,44 @@ describe('pty:management IPC handlers', () => {
       const handlers = buildHandlerMap()
       const result = (await handlers['pty:management:listSessions']({})) as {
         sessions: DaemonSessionInfo[]
+        degraded: boolean
       }
 
       expect(result.sessions).toHaveLength(3)
+      expect(result.degraded).toBe(false)
       const byId = new Map(result.sessions.map((s) => [s.sessionId, s]))
       expect(byId.get('new-1')?.protocolVersion).toBe(5)
       expect(byId.get('new-2')?.protocolVersion).toBe(5)
       expect(byId.get('old-1')?.protocolVersion).toBe(3)
+    })
+
+    it('reports degraded mode and still lists sessions when the daemon cannot spawn fresh PTYs', async () => {
+      const current = makeAdapter(5, [makeSession('preserved-1')])
+      const { registerDaemonManagementHandlers } = await importFresh()
+      getDaemonProviderMock.mockReturnValue(await makeDegradedProvider(current))
+      registerDaemonManagementHandlers()
+
+      const handlers = buildHandlerMap()
+      const result = (await handlers['pty:management:listSessions']({})) as {
+        sessions: DaemonSessionInfo[]
+        degraded: boolean
+      }
+
+      expect(result.degraded).toBe(true)
+      expect(result.sessions.map((s) => s.sessionId)).toEqual(['preserved-1'])
+    })
+
+    it('clears degraded mode after durable fresh-spawn routing recovers', async () => {
+      const current = makeAdapter(5, [makeSession('preserved-1')])
+      const provider = await makeDegradedProvider(current)
+      const { registerDaemonManagementHandlers } = await importFresh()
+      getDaemonProviderMock.mockReturnValue(provider)
+      registerDaemonManagementHandlers()
+      const handler = buildHandlerMap()['pty:management:listSessions']
+
+      await expect(handler({})).resolves.toMatchObject({ degraded: true })
+      await provider.recoverFreshSpawnRouting()
+      await expect(handler({})).resolves.toMatchObject({ degraded: false })
     })
 
     it('returns empty list when no daemon provider is installed', async () => {
@@ -186,10 +302,11 @@ describe('pty:management IPC handlers', () => {
     async function runKillAllWithPolls(
       handler: (event: unknown, args?: unknown) => unknown,
       pollCount: number = 65
-    ): Promise<{ killedCount: number; remainingCount: number }> {
+    ): Promise<{ killedCount: number; remainingCount: number; killedSessionIds: string[] }> {
       const resultPromise = handler({}) as Promise<{
         killedCount: number
         remainingCount: number
+        killedSessionIds: string[]
       }>
       // Why: advance the loop's sleeps one at a time. Between each sleep the
       // handler awaits collectSessions (a microtask), so we need to flush
@@ -235,7 +352,11 @@ describe('pty:management IPC handlers', () => {
       const handlers = buildHandlerMap()
       const result = await runKillAllWithPolls(handlers['pty:management:killAll'])
 
-      expect(result).toEqual({ killedCount: 3, remainingCount: 0 })
+      expect(result).toEqual({
+        killedCount: 3,
+        remainingCount: 0,
+        killedSessionIds: ['new-1', 'new-2', 'old-1']
+      })
       // Each initial session receives exactly one shutdown — no retries.
       expect(current.shutdown).toHaveBeenCalledTimes(2)
       expect(current.shutdown).toHaveBeenCalledWith('new-1', { immediate: true })
@@ -262,7 +383,7 @@ describe('pty:management IPC handlers', () => {
       const handlers = buildHandlerMap()
       const result = await runKillAllWithPolls(handlers['pty:management:killAll'])
 
-      expect(result).toEqual({ killedCount: 0, remainingCount: 1 })
+      expect(result).toEqual({ killedCount: 0, remainingCount: 1, killedSessionIds: [] })
       // One shutdown fired — no per-session retry. Initial-snapshot
       // accounting means the stuck session is counted once.
       expect(current.shutdown).toHaveBeenCalledTimes(1)
@@ -296,7 +417,11 @@ describe('pty:management IPC handlers', () => {
       const handlers = buildHandlerMap()
       const result = await runKillAllWithPolls(handlers['pty:management:killAll'])
 
-      expect(result).toEqual({ killedCount: 2, remainingCount: 0 })
+      expect(result).toEqual({
+        killedCount: 2,
+        remainingCount: 0,
+        killedSessionIds: ['a', 'b']
+      })
     })
 
     it('swallows per-session shutdown rejections without stopping the batch', async () => {
@@ -330,7 +455,11 @@ describe('pty:management IPC handlers', () => {
       expect(current.shutdown).toHaveBeenCalledWith('a', { immediate: true })
       expect(current.shutdown).toHaveBeenCalledWith('b', { immediate: true })
       // 'a' rejected and is still alive → counts as remaining; 'b' reaped.
-      expect(result).toEqual({ killedCount: 1, remainingCount: 1 })
+      expect(result).toEqual({
+        killedCount: 1,
+        remainingCount: 1,
+        killedSessionIds: ['b']
+      })
     })
   })
 
@@ -383,6 +512,114 @@ describe('pty:management IPC handlers', () => {
     })
   })
 
+  describe('macTccAttribution', () => {
+    type AttributionResult = {
+      health: string
+      folderAccessMismatch: {
+        daemonScope: string
+        cwdClass: string
+        freshDaemonAccess: string
+      } | null
+    }
+
+    async function readAttribution(): Promise<AttributionResult> {
+      const { registerDaemonManagementHandlers } = await importFresh()
+      registerDaemonManagementHandlers()
+      const handlers = buildHandlerMap()
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the handler map is untyped by construction; this channel's handler is the one registered above.
+      return (await handlers['pty:management:macTccAttribution']({})) as AttributionResult
+    }
+
+    it('reports the daemon attribution health', async () => {
+      getCurrentDaemonMacTccAttributionHealthMock.mockResolvedValue('severed')
+
+      const result = await readAttribution()
+
+      expect(result.health).toBe('severed')
+      expect(result.folderAccessMismatch).toBeNull()
+    })
+
+    it('fails open to unknown when the probe throws, keeping the folder evidence', async () => {
+      getCurrentDaemonMacTccAttributionHealthMock.mockRejectedValue(new Error('no pid record'))
+      const current = makeAdapter(5, [])
+      getDaemonProviderMock.mockReturnValue(await makeRouter(current, []))
+      getDaemonFolderAccessMismatchMock.mockReturnValue(evidence('denied'))
+
+      const result = await readAttribution()
+
+      expect(result.health).toBe('unknown')
+      expect(result.folderAccessMismatch).toEqual(evidence('denied'))
+    })
+
+    it('carries folder-access evidence for the current daemon', async () => {
+      const current = makeAdapter(5, [])
+      getDaemonProviderMock.mockReturnValue(await makeRouter(current, [makeAdapter(4, [])]))
+      getDaemonFolderAccessMismatchMock.mockReturnValue({
+        daemonScope: 'abc123def4567890',
+        cwdClass: 'documents',
+        freshDaemonAccess: 'allowed'
+      })
+
+      const result = await readAttribution()
+
+      expect(result.folderAccessMismatch).toEqual({
+        daemonScope: 'abc123def4567890',
+        cwdClass: 'documents',
+        freshDaemonAccess: 'allowed'
+      })
+      // Why: evidence belongs to the daemon spawning terminals now, never a legacy adapter's.
+      expect(getDaemonFolderAccessMismatchMock).toHaveBeenCalledWith({
+        pid: 1530,
+        startedAtMs: 1_700_000,
+        launchNonce: 'n1'
+      })
+      expect(current.getDaemonIdentity).toHaveBeenCalled()
+    })
+
+    function evidence(freshDaemonAccess: string): {
+      daemonScope: string
+      cwdClass: string
+      freshDaemonAccess: string
+    } {
+      return { daemonScope: 'abc123def4567890', cwdClass: 'documents', freshDaemonAccess }
+    }
+
+    // Why re-probe on the poll: the fix dialog's first step completes in System Settings, and
+    // this is the only moment anything can notice that it landed.
+    it.each([['denied'], ['unknown']])(
+      'reports the verdict the re-probe leaves behind, not the %s one it started from',
+      async (initial) => {
+        getDaemonFolderAccessMismatchMock.mockReturnValue(evidence(initial))
+        refreshDaemonFolderAccessProbeMock.mockImplementation(async () => {
+          getDaemonFolderAccessMismatchMock.mockReturnValue(evidence('allowed'))
+        })
+
+        const result = await readAttribution()
+
+        expect(refreshDaemonFolderAccessProbeMock).toHaveBeenCalledTimes(1)
+        expect(result.folderAccessMismatch?.freshDaemonAccess).toBe('allowed')
+      }
+    )
+
+    it('keeps the folder evidence when the refresh throws', async () => {
+      getDaemonFolderAccessMismatchMock.mockReturnValue(evidence('denied'))
+      refreshDaemonFolderAccessProbeMock.mockRejectedValue(new Error('probe exploded'))
+
+      const result = await readAttribution()
+
+      expect(result.folderAccessMismatch).toEqual(evidence('denied'))
+    })
+
+    it('reads a null identity when no daemon provider exists', async () => {
+      getDaemonProviderMock.mockReturnValue(null)
+
+      const result = await readAttribution()
+
+      expect(getDaemonFolderAccessMismatchMock).toHaveBeenCalledWith(null)
+      expect(result.folderAccessMismatch).toBeNull()
+    })
+  })
+
   describe('restart', () => {
     it('delegates to restartDaemon and reports success', async () => {
       restartDaemonMock.mockResolvedValue({ killedCount: 2 })
@@ -409,6 +646,58 @@ describe('pty:management IPC handlers', () => {
       consoleErrorSpy.mockRestore()
 
       expect(result.success).toBe(false)
+    })
+  })
+
+  describe('resetFolderAccess', () => {
+    async function runReset(): Promise<FolderAccessResetResult> {
+      const { registerDaemonManagementHandlers } = await importFresh()
+      registerDaemonManagementHandlers()
+      const handlers = buildHandlerMap()
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the handler map is untyped by construction; this channel's handler is the one registered above.
+      return (await handlers['pty:management:resetFolderAccess']({})) as FolderAccessResetResult
+    }
+
+    it('hands the current daemon to the reset and returns its verdict', async () => {
+      const current = makeAdapter(5, [])
+      getDaemonProviderMock.mockReturnValue(await makeRouter(current, [makeAdapter(4, [])]))
+      resetFolderAccessForDaemonMock.mockResolvedValue({
+        outcome: 'probed',
+        mismatch: {
+          daemonScope: 'abc123def4567890',
+          cwdClass: 'documents',
+          freshDaemonAccess: 'allowed'
+        }
+      })
+
+      expect(await runReset()).toEqual({
+        outcome: 'probed',
+        mismatch: {
+          daemonScope: 'abc123def4567890',
+          cwdClass: 'documents',
+          freshDaemonAccess: 'allowed'
+        }
+      })
+      // Why the current adapter: a legacy daemon's denial is not the one the user is looking at.
+      expect(resetFolderAccessForDaemonMock).toHaveBeenCalledWith({
+        pid: 1530,
+        startedAtMs: 1_700_000,
+        launchNonce: 'n1'
+      })
+    })
+
+    it('reports unsupported rather than rejecting when the reset throws', async () => {
+      resetFolderAccessForDaemonMock.mockRejectedValue(new Error('no app bundle'))
+
+      expect(await runReset()).toEqual({ outcome: 'unsupported' })
+    })
+
+    it('registers the channel exactly once per registration', async () => {
+      const { registerDaemonManagementHandlers } = await importFresh()
+      registerDaemonManagementHandlers()
+
+      expect(removeHandlerMock).toHaveBeenCalledWith('pty:management:resetFolderAccess')
+      expect(buildHandlerMap()['pty:management:resetFolderAccess']).toBeTypeOf('function')
     })
   })
 })
