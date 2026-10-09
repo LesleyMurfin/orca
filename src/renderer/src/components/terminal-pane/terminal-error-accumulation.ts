@@ -34,8 +34,10 @@ function preserveRemoteTerminalClosedMarker(
   }
 
   const restLines = bounded.split('\n').filter((line) => line !== REMOTE_TERMINAL_CLOSED_MARKER)
+  // Why not slice(-maxRestLines) alone: a one-line budget makes that slice(-0), which keeps the
+  // whole rest instead of none of it.
   const maxRestLines = Math.max(0, maxLines - 1)
-  const keptRestLines = restLines.length > maxRestLines ? restLines.slice(-maxRestLines) : restLines
+  const keptRestLines = maxRestLines === 0 ? [] : restLines.slice(-maxRestLines)
   let preserved =
     keptRestLines.length === 0
       ? REMOTE_TERMINAL_CLOSED_MARKER

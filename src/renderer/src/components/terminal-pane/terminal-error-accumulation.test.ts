@@ -106,6 +106,12 @@ describe('appendTerminalErrorMessage', () => {
     expect(bounded.startsWith(REMOTE_TERMINAL_CLOSED_MARKER)).toBe(true)
     expect(bounded.length).toBeLessThanOrEqual(MAX_TERMINAL_ERROR_CHARS)
   })
+
+  it('keeps only the marker when the line budget leaves no room for the rest', () => {
+    const surface = `${REMOTE_TERMINAL_CLOSED_MARKER}\nSSH connection failed: host unreachable`
+
+    expect(boundTerminalErrorSurface(surface, 1)).toBe(REMOTE_TERMINAL_CLOSED_MARKER)
+  })
 })
 
 describe('pane terminal errors', () => {
