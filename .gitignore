@@ -116,6 +116,8 @@ docs/**
 !docs/audits/crashpad-read-limit/source-hashes.json
 !docs/agent-skill-sharing-implementation-checklist.md
 !docs/mobile-terminal-shortcut-bar.md
+!docs/reference/
+!docs/reference/pc-wsl-orca-update-path.md
 
 # Stably CLI (only docs/ are tracked)
 .stably/*
