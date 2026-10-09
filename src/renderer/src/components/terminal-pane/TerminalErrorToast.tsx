@@ -402,8 +402,16 @@ export function TerminalErrorToast({
               : translate('auto.components.terminal.pane.TerminalErrorToast.retry', 'Retry')}
           </Button>
         ) : null}
+        {isRemoteTerminalClosedError(error) && onClosePane ? (
+          <Button variant="destructive" size="xs" className="ml-3" onClick={onClosePane}>
+            {translate(
+              'auto.components.terminal.pane.TerminalContextMenu.8c17d6786d',
+              'Close Pane'
+            )}
+          </Button>
+        ) : null}
         <button
-          onClick={() => onDismiss()}
+          onClick={onDismiss}
           style={{
             background: 'none',
             border: 'none',
@@ -417,14 +425,6 @@ export function TerminalErrorToast({
         >
           ×
         </button>
-        {isRemoteTerminalClosedError(error) && onClosePane ? (
-          <Button variant="destructive" size="xs" onClick={() => void onClosePane()}>
-            {translate(
-              'auto.components.terminal.pane.TerminalContextMenu.8c17d6786d',
-              'Close Pane'
-            )}
-          </Button>
-        ) : null}
       </div>
     </div>
   )
