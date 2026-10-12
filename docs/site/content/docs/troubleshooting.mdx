@@ -92,7 +92,7 @@ oldest deleted, 10 MB × 10 files by default — so read `.N` as oldest and the 
 newest. A headless `orcad` host writes `orcad.trace.ndjson` under its own name instead.
 
 ```bash
-jq -c 'select(.status == "error" or .level == "error")' main.trace.ndjson
+jq -c 'select(.exit._tag == "Failure")' main.trace.ndjson
 ```
 
 An unparseable final line is a torn write from a crash, not a corrupt file. A record too large for
@@ -114,7 +114,7 @@ endpoint is the named pipe `\\?\pipe\orca-terminal-host-v<N>-<hash>`.
 - PID file present and the process gone → it died without teardown; the replacement cold-restores
   scrollback by design.
 - Repeated starts seconds apart → a crash loop. Orca stops respawning after 5 failed starts in 60
-  seconds, and only an explicit restart clears that window.
+  seconds. The window naturally drains after 60 seconds, or an explicit restart clears it immediately.
 - `.swap-…` / `.hold-…` files beside the PID or token file are claims in progress. Never delete
   them; a live one briefly holds the only copy of a real record.
 
@@ -138,7 +138,7 @@ follows symlinks reports it absent.
 ### Stale SSH multiplex sockets
 
 System-OpenSSH connections use a private ControlMaster directory: `$XDG_RUNTIME_DIR/orca-ssh/`
-when that variable is an absolute path, otherwise `$TMPDIR/orca-ssh-<uid>/`. It is created `0700`
+when that variable is an absolute path, otherwise `$TMPDIR/orca-ssh-<uid>/` (note: on macOS `$TMPDIR` is `/var/folders/...`, not `/tmp`). It is created `0700`
 and re-validated every time — a directory, owned by your uid, with no group or other bits. If that
 check fails, Orca runs without multiplexing. Socket names are a digest of the target, the freshly
 resolved `ssh -G` config, and whether the session is Kerberos-only, so a route or auth change never
@@ -193,8 +193,8 @@ When Orca is closed or unresponsive, find its state and settings across platform
 #### Recovering from ghost tab reconciliation loops
 If a tab flickers or repeatedly reopens after closing:
 1. Quit Orca completely.
-2. In `orca-data.json`, locate `"openFilesByWorktree"`.
-3. Set the affected workspace ID entry to `[]` and clear `"activeFileIdByWorktree"`.
+2. Check if a SQLite-backed profile is authoritative (`ORCA profile state exports --json`). If `profile-state.db` exists, do not hand-edit JSON; use `ORCA profile state rollback --backup <id>`.
+3. If JSON-backed, locate the target `workspaceSession` in `orca-data.json`, set `openFilesByWorktree` to `[]`, and clear `activeFileIdByWorktree`.
 4. Relaunch Orca.
 
 ## Getting help & community support

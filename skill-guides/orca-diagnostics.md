@@ -302,20 +302,25 @@ do not infer a cause the trace does not record.
 
 A report a maintainer can act on contains, in this order: Orca version and platform, what the
 user did, what happened instead, the smallest reproduction known, and the trace or `daemon.log`
-excerpt that shows it. If any of those are missing, collect them before filing rather than filing
-a report that will stall in triage. Redact file paths, repo names, host names, and tokens first.
+excerpt that shows it. If any of those are missing, collect them before filing.
 
-Route by what the user has: a question goes to Discord or GitHub Discussions, a reproducible
-defect with evidence goes to GitHub Issues, and anything carrying logs the user would rather not
-publish goes through **Help → Send Feedback** instead of a public tracker.
-
+Do not escalate immediately. Resolve configuration or environment issues locally. If it genuinely is a bug or a new feature request:
+1. **Search first:** Use `gh issue list -R stablyai/orca --search "..."` or `gh pr list` to see if this bug or feature is already reported, open, or recently resolved. If a match exists, tell the user the status instead of filing a duplicate.
+2. **Draft the report:** If it is new, compile the version, steps, and the relevant logs (for bugs) or the use-case (for features) into a ready-to-file markdown block.
+   - *Log limits:* Extract only the relevant 10-20 line snippet of the stack trace or failure envelope. Never dump the entire log file into the issue body.
+   - *Redaction:* Redact any PII, JWTs, absolute workspace paths (e.g., `/Users/name/work/`), and internal SSH hostnames before presenting the draft.
+3. **Ask for approval:** Show the drafted report or feature request to the user and ask if they want to proceed.
+4. **Execute:** 
+   - If the issue is public-safe, use the `gh` CLI (e.g., `gh issue create -R stablyai/orca ...`) to file it automatically on the user's behalf. Once created, provide the user with the direct URL to the new GitHub issue.
+   - If the `gh` CLI is unavailable or unauthenticated, provide the pre-packaged markdown and a direct browser link to `https://github.com/stablyai/orca/issues/new`.
+   - If the user prefers Discord, provide a concise, Discord-formatted summary block (with code fences) ready for them to copy/paste into the `#support` channel.
+   - If the logs are sensitive, instruct the user to open **Help → Send Feedback** and provide the pre-packaged markdown for them to paste into the dialog.
 ## Action gates
 
-| Trigger / Condition | Action / Routing | Reference Document |
-| :--- | :--- | :--- |
-| Unhandled exceptions or IPC rejections | Extract stack traces with jq | `references/trace-analysis.md` |
-| Reconnecting to SSH host hangs | Triage OpenSSH ControlMaster zombie sockets | `references/ssh-multiplex.md` |
-| Electron UI wedged or renderer unresponsive | Connect via CDP port 9222 and inspect targets | `references/cdp-troubleshooting.md` |
-| App freeze, slow reconnect, or unknown error | Run 4-step SRE triage sequence and telemetry map | `references/sre-playbook.md` |
-| Ghost tabs flicker or reopen in loop | Clear openFilesByWorktree in orca-data.json | `references/telemetry-and-settings.md` |
-| Embedded browser, worktree lock/PTY desync, or mobile pairing fail | Triage webview CDP, stale git index lock, and mobile network route | `references/worktree-browser-mobile.md` |
+When investigating deep diagnostic states (such as Electron UI freezes, unhandled IPC rejections, SSH ControlMaster zombie sockets, ghost tabs, or daemon crashes), do not guess at the remediation steps. Instead, read the definitive SRE playbooks located in the public documentation:
+
+```bash
+cat docs/site/content/docs/troubleshooting.mdx
+```
+
+This document contains the exact `jq` filters, socket probe commands, and offline SQLite recovery steps needed to resolve complex faults.
