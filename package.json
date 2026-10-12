@@ -98,6 +98,7 @@
     "build:cli": "tsc -p config/tsconfig.cli.json --outDir out --composite false --incremental false && pnpm run prepare:cli-output",
     "prepare:cli-output": "node config/scripts/verify-cli-bin.mjs --fix-executable --fix-package-json && node config/scripts/install-dev-cli.mjs",
     "test:linux-cli-contract": "node config/scripts/run-linux-cli-launch-contract-docker.mjs --appimage dist/orca-linux.AppImage",
+    "test:orca-serve-systemd": "node config/scripts/run-orca-serve-systemd-docker.mjs",
     "test:repro:skills-cli-runtime": "pnpm run build:cli && pnpm run build:electron-vite && pnpm run verify:built-skills-cli",
     "build:electron-vite": "node config/scripts/run-electron-vite-build.mjs",
     "build:electron-vite:parallel": "node config/scripts/run-electron-vite-targets-in-parallel.mjs",

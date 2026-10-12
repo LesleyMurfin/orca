@@ -6,7 +6,7 @@ export const SERVE_COMMAND_SPECS: CommandSpec[] = [
     path: ['serve'],
     summary: 'Start an Orca runtime server without opening a desktop window',
     usage:
-      'orca serve [--port <port>] [--pairing-address <host>] [--mobile-pairing] [--no-pairing] [--grant-desktop-control] [--project-root <path>] [--recipe-json] [--generate-systemd] [--user] [--json]',
+      'orca serve [--port <port>] [--pairing-address <host>] [--mobile-pairing] [--no-pairing] [--grant-desktop-control] [--project-root <path>] [--recipe-json] [--generate-service] [--user] [--json]',
     allowedFlags: [
       ...GLOBAL_FLAGS,
       'port',
@@ -16,12 +16,12 @@ export const SERVE_COMMAND_SPECS: CommandSpec[] = [
       'grant-desktop-control',
       'project-root',
       'recipe-json',
-      'generate-systemd',
+      'generate-service',
       'user'
     ],
     notes: [
       'Runs in the foreground and prints the bound endpoint, advertised endpoint, and pairing status. Stop it with Ctrl+C.',
-      'Use --generate-systemd to output a ready-to-use systemd service unit for the server instead of starting it.',
+      'Use --generate-service to output a ready-to-use supervision manifest for the current OS (systemd on Linux, launchd on macOS, Scheduled Task XML on Windows) instead of starting the server.',
       '--pairing-address changes only the client-advertised address; use a reachable LAN, Tailscale, SSH-forward, or reverse-proxy endpoint.',
       'Use --recipe-json with --project-root from VM recipes to print the recipe result JSON and leave the server running.',
       'Use --mobile-pairing to print a mobile-scoped pairing QR/link instead of the default runtime-environment pairing link.',

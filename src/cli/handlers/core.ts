@@ -5,6 +5,7 @@ import { RuntimeClientError, serveOrcaApp } from '../runtime-client'
 import { stripElectronRunAsNode } from '../runtime/launch'
 import { resolveCliStatusCaller } from '../runtime/status-caller'
 import { getServeOptionValidationError } from '../../shared/serve-option-validation'
+import { generateServiceManifest } from './serve-service-generator'
 
 function envRecord(): Record<string, string> {
   // Why: the `orca` launcher runs Orca's Electron binary as Node, so this CLI
@@ -98,43 +99,9 @@ export const CORE_HANDLERS: Record<string, CommandHandler> = {
     printResult(result, json, formatCliStatus)
   },
   serve: async ({ flags, json }) => {
-    const generateSystemd = flags.get('generate-systemd') === true
-    if (generateSystemd) {
-      const isUserUnit = flags.get('user') === true
-      const portArg = flags.get('port') ? ` --port ${flags.get('port')}` : ''
-      const pairingArg = flags.get('pairing-address')
-        ? ` --pairing-address ${flags.get('pairing-address')}`
-        : ''
-      const execPath = process.platform === 'linux' ? '/usr/bin/orca-ide' : process.execPath
-
-      const userBlock = isUserUnit
-        ? ''
-        : `User=orca\nGroup=orca\nWorkingDirectory=/home/orca\nEnvironment=HOME=/home/orca\nEnvironment=XDG_RUNTIME_DIR=/run/user/1001\n`
-      const wantedBy = isUserUnit ? 'default.target' : 'multi-user.target'
-      const description = isUserUnit ? 'Orca runtime server (user)' : 'Orca runtime server'
-      const wants = isUserUnit ? '' : 'Wants=network-online.target\n'
-      const after = isUserUnit ? 'After=network.target' : 'After=network-online.target'
-
-      console.log(`[Unit]
-Description=${description}
-${wants}${after}
-StartLimitIntervalSec=300
-StartLimitBurst=5
-
-[Service]
-Type=simple
-${userBlock}ExecStart=${execPath} serve${portArg}${pairingArg}
-Restart=on-failure
-RestartSec=5
-RestartPreventExitStatus=3 78
-KillMode=mixed
-KillSignal=SIGTERM
-TimeoutStopSec=45
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=${wantedBy}`)
+    const generateService = flags.get('generate-service') === true
+    if (generateService) {
+      console.log(generateServiceManifest(flags))
       return
     }
 

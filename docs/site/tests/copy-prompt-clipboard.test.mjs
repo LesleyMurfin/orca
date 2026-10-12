@@ -71,7 +71,12 @@ test('a rejected clipboard write surfaces the failure state instead of failing s
 })
 
 test('an absent clipboard API fails visibly rather than throwing', async () => {
-  for (const getClipboard of [() => undefined, () => null, () => ({}), () => ({ writeText: null })]) {
+  for (const getClipboard of [
+    () => undefined,
+    () => null,
+    () => ({}),
+    () => ({ writeText: null })
+  ]) {
     const { controller, states } = harness(getClipboard)
     assert.equal(await controller.copy('prompt text'), 'failed')
     assert.deepEqual(states, [{ copied: false, failed: true }])

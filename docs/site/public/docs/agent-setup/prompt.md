@@ -94,7 +94,7 @@ Install the binary (`orca-ide`), create an unprivileged `orca` user, and supervi
 
 ```bash
 # Generate the systemd service file dynamically:
-orca-ide serve --generate-systemd --port 6768 --pairing-address <server-tailscale-ip-or-hostname> | sudo tee /etc/systemd/system/orca-serve.service
+orca-ide serve --generate-service --port 6768 --pairing-address <server-tailscale-ip-or-hostname> | sudo tee /etc/systemd/system/orca-serve.service
 ```
 
 _(Resolve the absolute path with `readlink -f "$(command -v orca-ide)"` as the service user and run that instead of a bare `orca-ide` if it is not in `$PATH`)_
@@ -120,7 +120,7 @@ If running under your own user account without root permissions:
    ```bash
    # Generate the user systemd service file dynamically:
    mkdir -p ~/.config/systemd/user
-   orca-ide serve --generate-systemd --user --port 6768 --pairing-address <server-ip-or-tailscale> > ~/.config/systemd/user/orca-serve.service
+   orca-ide serve --generate-service --user --port 6768 --pairing-address <server-ip-or-tailscale> > ~/.config/systemd/user/orca-serve.service
    ```
 
 _(Resolve the absolute path with `readlink -f "$(command -v orca-ide)"` if needed)_

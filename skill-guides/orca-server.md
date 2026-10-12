@@ -130,7 +130,7 @@ credentials. Agents on the server run as that user.
 
 ```bash
 # Generate the systemd service file dynamically:
-ORCA serve --generate-systemd --port 6768 --pairing-address <server-tailscale-ip-or-hostname> | sudo tee /etc/systemd/system/orca-serve.service
+ORCA serve --generate-service --port 6768 --pairing-address <server-tailscale-ip-or-hostname> | sudo tee /etc/systemd/system/orca-serve.service
 ```
 
 Why those settings:
