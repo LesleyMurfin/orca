@@ -98,6 +98,46 @@ export const CORE_HANDLERS: Record<string, CommandHandler> = {
     printResult(result, json, formatCliStatus)
   },
   serve: async ({ flags, json }) => {
+    const generateSystemd = flags.get('generate-systemd') === true
+    if (generateSystemd) {
+      const isUserUnit = flags.get('user') === true
+      const portArg = flags.get('port') ? ` --port ${flags.get('port')}` : ''
+      const pairingArg = flags.get('pairing-address')
+        ? ` --pairing-address ${flags.get('pairing-address')}`
+        : ''
+      const execPath = process.platform === 'linux' ? '/usr/bin/orca-ide' : process.execPath
+
+      const userBlock = isUserUnit
+        ? ''
+        : `User=orca\nGroup=orca\nWorkingDirectory=/home/orca\nEnvironment=HOME=/home/orca\nEnvironment=XDG_RUNTIME_DIR=/run/user/1001\n`
+      const wantedBy = isUserUnit ? 'default.target' : 'multi-user.target'
+      const description = isUserUnit ? 'Orca runtime server (user)' : 'Orca runtime server'
+      const wants = isUserUnit ? '' : 'Wants=network-online.target\n'
+      const after = isUserUnit ? 'After=network.target' : 'After=network-online.target'
+
+      console.log(`[Unit]
+Description=${description}
+${wants}${after}
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+${userBlock}ExecStart=${execPath} serve${portArg}${pairingArg}
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=3 78
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=45
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=${wantedBy}`)
+      return
+    }
+
     const projectRootValue = flags.get('project-root')
     const projectRoot = typeof projectRootValue === 'string' ? projectRootValue : null
     const noPairing = flags.get('no-pairing') === true

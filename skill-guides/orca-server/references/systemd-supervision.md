@@ -4,43 +4,16 @@ Load this before writing, repairing, or diagnosing the unit that keeps a headles
 up. The guide's kernel states the three load-bearing directives; this document is the whole unit
 plus what each line protects against.
 
-## Unit template
+## Generate and install
 
-Install as `/etc/systemd/system/orca-serve.service`:
+Generate the correct configuration for the current environment rather than writing the unit by hand:
 
-```ini
-[Unit]
-Description=Orca runtime server
-Wants=network-online.target
-After=network-online.target
-StartLimitIntervalSec=300
-StartLimitBurst=5
-
-[Service]
-Type=simple
-User=orca
-Group=orca
-WorkingDirectory=/home/orca
-Environment=HOME=/home/orca
-Environment=XDG_RUNTIME_DIR=/run/user/1001
-ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>
-Restart=on-failure
-RestartSec=5
-RestartPreventExitStatus=3 78
-KillMode=mixed
-KillSignal=SIGTERM
-TimeoutStopSec=45
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
+```bash
+# Generate the systemd service file dynamically:
+ORCA serve --generate-systemd --port 6768 --pairing-address <server-tailscale-ip-or-hostname> | sudo tee /etc/systemd/system/orca-serve.service
 ```
 
-Replace `1001` with `id -u orca`. Resolve the absolute path with
-`readlink -f "$(command -v orca-ide)"` as the service user and write that in `ExecStart=`: the
-deb/rpm symlink is `/usr/bin/orca-ide`, an AppImage registers `~/.local/bin/orca-ide`, and a bare
-`orca` on Linux is the GNOME Orca screen reader.
+The generator automatically handles `ExecStart=`, `KillMode=mixed`, and the `RestartPreventExitStatus=` boundaries.
 
 ## Directives that carry weight
 
@@ -59,7 +32,7 @@ deb/rpm symlink is `/usr/bin/orca-ide`, an AppImage registers `~/.local/bin/orca
   in its own scope.
 - `TimeoutStopSec` — use `45`, not `120`. The runtime caps its own stop: bounded daemon retirement
   (2 × 5s) then a 15s shutdown deadline, after which it logs `shutdown after SIGTERM exceeded
-  15000ms — exiting` and exits `1`. Anything past ~30s is the cgroup sweep after the main process
+15000ms — exiting` and exits `1`. Anything past ~30s is the cgroup sweep after the main process
   is gone, not the runtime finishing work.
 - `StartLimitIntervalSec` / `StartLimitBurst` — a backstop for failure modes no exit status
   classifies: five starts in five minutes and the unit stays down instead of thrashing.
@@ -101,7 +74,7 @@ unit; leave it unset so Orca owns `:99`.
 ## Reading a failure
 
 1. `systemctl is-active orca-serve.service` and `systemctl show -p ExecMainStatus
-   orca-serve.service` — the exit status says which class of failure happened. `78` is a
+orca-serve.service` — the exit status says which class of failure happened. `78` is a
    configuration fault: fix the data root, the `--bind` value, the bundled runtime, or the profile
    store. `3` means another process already owns the profile — stop the desktop app or the other
    `serve`. A busy port is **not** 78: it exits `1`, which `Restart=on-failure` retries forever, so

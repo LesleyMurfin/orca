@@ -22,7 +22,9 @@ against that runtime once it is reachable belongs to `orca-cli`.
 You are often the first thing a new operator talks to.
 
 ### 1. Discover the user's environment first
+
 Orca can be deployed and supervised in several different ways. Before executing installation or configuration commands, ask the operator how they want their environment set up:
+
 1. **Host mode**: Will this server run the **headless daemon (`orca serve`)** or share an active **desktop app session**?
 2. **Supervision strategy**: Should it run as an unprivileged **user systemd service** (recommended for lingering/restart survival), inside a **container/Docker**, or as an ad-hoc foreground process?
 3. **Network & access**: Will clients connect via a **private LAN**, a mesh network like **Tailscale**, or an **SSH tunnel**? (Helps pick the right `--pairing-address`).
@@ -37,11 +39,12 @@ Three documents ship beside this guide. At a gate below, run
 rejected too, the CLI predates bundled references: use `ORCA <command> --help`, keep the rules
 here, and do not guess.
 
-| Gate                                                                         | Reference                          |
-| ---------------------------------------------------------------------------- | ---------------------------------- |
+| Gate                                                                          | Reference                           |
+| ----------------------------------------------------------------------------- | ----------------------------------- |
 | Writing, hardening, or diagnosing the systemd unit that supervises the server | `references/systemd-supervision.md` |
 | Terminals dying on restart, or a long job that must survive one               | `references/daemon-scope.md`        |
-| Headless server down, crash loops, port collision, or 4-bucket triage        | `references/server-triage.md`       |
+| Headless server down, crash loops, port collision, or 4-bucket triage         | `references/server-triage.md`       |
+
 ## Install Orca on the host
 
 Before any of the host modes below, the server computer needs Orca itself. Install it from
@@ -125,34 +128,9 @@ and immediately times out, which reads like a product bug and is not one.
 Give the runtime its own unprivileged user that owns the repos, agent CLIs, and provider
 credentials. Agents on the server run as that user.
 
-```ini
-# /etc/systemd/system/orca-serve.service
-[Unit]
-Description=Orca runtime server
-Wants=network-online.target
-After=network-online.target
-StartLimitIntervalSec=300
-StartLimitBurst=5
-
-[Service]
-Type=simple
-User=orca
-Group=orca
-WorkingDirectory=/home/orca
-Environment=HOME=/home/orca
-Environment=XDG_RUNTIME_DIR=/run/user/1001
-ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>
-Restart=on-failure
-RestartSec=5
-RestartPreventExitStatus=3 78
-KillMode=mixed
-KillSignal=SIGTERM
-TimeoutStopSec=45
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
+```bash
+# Generate the systemd service file dynamically:
+ORCA serve --generate-systemd --port 6768 --pairing-address <server-tailscale-ip-or-hostname> | sudo tee /etc/systemd/system/orca-serve.service
 ```
 
 Why those settings:
@@ -171,7 +149,7 @@ Why those settings:
   malformed `--bind` address, an unusable bundled runtime, or an unreadable profile store. `3`
   means another process already owns this userData profile — the desktop app, or a `serve` that is
   still running; the host prints `[single-instance] Another Orca instance is already running for
-  this userData profile`. A port already in use is **neither**: the listener fails with a plain
+this userData profile`. A port already in use is **neither**: the listener fails with a plain
   error and exits `1`, which `Restart=on-failure` retries every `RestartSec` forever, so fix
   `--port` rather than the unit when the journal shows `EADDRINUSE`.
 

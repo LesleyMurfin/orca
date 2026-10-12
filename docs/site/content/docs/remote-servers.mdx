@@ -35,8 +35,8 @@ faster place to start; come back here once the app works locally.
 
 <Callout title="Stuck at any step?">
   Jump to [Troubleshooting](#troubleshooting) below, the general
-  [Troubleshooting](/docs/troubleshooting) page, or ask in
-  [Discord](https://discord.gg/fzjDKHxv8Q) — see [Getting help](#getting-help).
+  [Troubleshooting](/docs/troubleshooting) page, or ask in [Discord](https://discord.gg/fzjDKHxv8Q)
+  — see [Getting help](#getting-help).
 </Callout>
 
 ## Agent setup & installation
@@ -181,12 +181,12 @@ Install Orca and its bundled CLI on the server, then run:
 
 <Callout title="On Linux, start it with orca-ide serve">
   The Linux CLI is named `orca-ide`, because GNOME Orca's screen reader already owns
-  `/usr/bin/orca`. A packaged `orca serve` also drops a bare `orca` dispatcher into
-  `~/.local/bin` on its first Linux start and leaves it there — Orca never removes it. Which
-  binary a later bare `orca` runs then depends entirely on your `PATH` order, so never type bare
-  `orca` on a Linux host: it is either the screen reader or a second Orca runtime refused by the
-  first. Read `orca serve` as `orca-ide serve` throughout this page when the host is Linux, and
-  use an absolute path in service units. See [Install → Linux](/docs/install#linux).
+  `/usr/bin/orca`. A packaged `orca serve` also drops a bare `orca` dispatcher into `~/.local/bin`
+  on its first Linux start and leaves it there — Orca never removes it. Which binary a later bare
+  `orca` runs then depends entirely on your `PATH` order, so never type bare `orca` on a Linux host:
+  it is either the screen reader or a second Orca runtime refused by the first. Read `orca serve` as
+  `orca-ide serve` throughout this page when the host is Linux, and use an absolute path in service
+  units. See [Install → Linux](/docs/install#linux).
 </Callout>
 
 ```bash
@@ -228,34 +228,9 @@ Use only one host mode at a time. If the Orca desktop app is already sharing tha
 
 On a Linux server, let systemd own the process so it starts at boot and comes back after a crash. Give it an unprivileged user that owns the repos, agent CLIs, and provider credentials—agents run as that user.
 
-```ini
-# /etc/systemd/system/orca-serve.service
-[Unit]
-Description=Orca runtime server
-Wants=network-online.target
-After=network-online.target
-StartLimitIntervalSec=300
-StartLimitBurst=5
-
-[Service]
-Type=simple
-User=orca
-Group=orca
-WorkingDirectory=/home/orca
-Environment=HOME=/home/orca
-Environment=XDG_RUNTIME_DIR=/run/user/1001
-ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>
-Restart=on-failure
-RestartSec=5
-RestartPreventExitStatus=3 78
-KillMode=mixed
-KillSignal=SIGTERM
-TimeoutStopSec=45
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
+```bash
+# Generate the systemd service file dynamically:
+orca-ide serve --generate-systemd --port 6768 --pairing-address <server-tailscale-ip-or-hostname> | sudo tee /etc/systemd/system/orca-serve.service
 ```
 
 Three settings carry the weight:
