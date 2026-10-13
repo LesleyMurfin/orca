@@ -41,7 +41,8 @@ const GUIDE_REFERENCES = {
     'provider-vercel.md',
     'ssh-host.md',
     'windows-scripts.md'
-  ]
+  ],
+  'orca-server': ['daemon-scope.md', 'server-triage.md', 'systemd-supervision.md']
 }
 const GUIDE_REFERENCE_PATHS = Object.entries(GUIDE_REFERENCES).flatMap(([guide, references]) =>
   references.map((reference) => [guide, reference])

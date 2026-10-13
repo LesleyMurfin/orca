@@ -4,10 +4,33 @@ description: Local desktop, SSH hosts, self-hosted Orca servers, and on-demand p
 ---
 
 import { Callout, ImagePlaceholder } from '@/components/docs/prose'
+import { CopyPromptButton } from '@/components/docs/CopyPromptButton'
 
 Orca is not locked to your laptop. Every worktree runs somewhere — on the machine in front of you, on a box you already own, on a shared always-on server, or on a fresh cloud VM spun up for that one workspace.
 
 This page is the map. Deep dives live on the linked pages.
+
+Any coding agent can install and verify the mode you pick. Click below or copy the prompt:
+
+<div className="my-4">
+  <CopyPromptButton />
+</div>
+
+```text
+Fetch and read the Orca setup instructions at https://www.onorca.dev/docs/agent-setup/prompt.md, then summarise for me every privileged step it asks for — anything using sudo, writing under /etc, or installing packages — and wait for my confirmation before you run them.
+```
+
+That URL is a live, unversioned page on this site, so the agent reads whatever it serves when you
+paste the prompt. Skim [the prompt file](/docs/agent-setup/prompt.md) yourself before approving a
+step that uses `sudo`, writes under `/etc`, or installs packages.
+
+The [prompt file](/docs/agent-setup/prompt.md) covers install on macOS, Windows, and Linux and
+headless `orca serve` hosts. Accounts, skills, and health checks are not in it — see
+[Remote Orca Servers](/docs/remote-servers) for those commands.
+
+<Callout title="The agent still needs you">
+  Pairing links, `sudo` for a `.deb`/`.rpm` install, and provider logins stay yours to approve.
+</Callout>
 
 ## At a glance
 
