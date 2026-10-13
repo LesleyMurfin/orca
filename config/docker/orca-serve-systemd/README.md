@@ -1,6 +1,6 @@
 # orca-serve systemd KillMode=mixed oracle
 
-Proves the unit emitted by `orca serve --generate-service`:
+Proves the canonical `config/systemd/orca-serve.service` unit template:
 
 1. loads under a real `systemctl` in a privileged systemd container, and
 2. honors `KillMode=mixed` across a `systemctl restart` cycle — the main process

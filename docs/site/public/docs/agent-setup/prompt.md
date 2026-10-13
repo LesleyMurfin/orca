@@ -93,11 +93,37 @@ Detect the architecture first: `uname -m` (`x86_64` â†’ x64, `aarch64`/`arm64` â
 Install the binary (`orca-ide`), create an unprivileged `orca` user, and supervise with `/etc/systemd/system/orca-serve.service`:
 
 ```bash
-# Generate the systemd service file dynamically:
-orca-ide serve --generate-service --port 6768 --pairing-address <server-tailscale-ip-or-hostname> | sudo tee /etc/systemd/system/orca-serve.service
+cat << 'EOF' | sudo tee /etc/systemd/system/orca-serve.service
+[Unit]
+Description=Orca runtime server
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=orca
+Group=orca
+WorkingDirectory=/home/orca
+Environment=HOME=/home/orca
+Environment=XDG_RUNTIME_DIR=/run/user/<uid>
+ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=3 78
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=45
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
 ```
 
-_(Resolve the absolute path with `readlink -f "$(command -v orca-ide)"` as the service user and run that instead of a bare `orca-ide` if it is not in `$PATH`)_
+_(Resolve the absolute path with `readlink -f "$(command -v orca-ide)"` as the service user and run that instead of a bare `orca-ide` if it is not in `$PATH`. Replace `<uid>` with the output of `id -u orca`.)_
 
 Enable and start:
 
@@ -118,9 +144,29 @@ If running under your own user account without root permissions:
    ```
 2. Create `~/.config/systemd/user/orca-serve.service`:
    ```bash
-   # Generate the user systemd service file dynamically:
    mkdir -p ~/.config/systemd/user
-   orca-ide serve --generate-service --user --port 6768 --pairing-address <server-ip-or-tailscale> > ~/.config/systemd/user/orca-serve.service
+   cat << 'EOF' > ~/.config/systemd/user/orca-serve.service
+[Unit]
+Description=Orca runtime server (user)
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=3 78
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=45
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
    ```
 
 _(Resolve the absolute path with `readlink -f "$(command -v orca-ide)"` if needed)_

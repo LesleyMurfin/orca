@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -45,53 +45,12 @@ function runDocker(command, allowFailure = false) {
 }
 
 function generateUnitFile() {
-  const generator = join(temp, 'generate-unit.mjs')
-  writeFileSync(
-    generator,
-    `import { writeFileSync } from 'node:fs'
-import { CORE_HANDLERS } from ${JSON.stringify(join(repo, 'src/cli/handlers/core.ts'))}
-const chunks = []
-const originalLog = console.log
-console.log = (...args) => {
-  chunks.push(args.map(String).join(' '))
-}
-await CORE_HANDLERS.serve({
-  flags: new Map([
-    ['generate-service', true],
-    ['port', '6768'],
-    ['pairing-address', '127.0.0.1']
-  ]),
-  client: null,
-  cwd: ${JSON.stringify(repo)},
-  json: false,
-  rawArgs: []
-})
-console.log = originalLog
-const unit = chunks.join('\\n').trim()
-if (!unit.includes('KillMode=mixed')) {
-  throw new Error('generate-service output missing KillMode=mixed')
-}
-if (!unit.includes('ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address 127.0.0.1')) {
-  throw new Error('generate-service output missing expected ExecStart')
-}
-writeFileSync(process.argv[2], unit + '\\n')
-`
-  )
+  const ssotPath = join(repo, 'config/systemd/orca-serve.service')
   const unitPath = join(temp, 'orca-serve.service')
-  const result = spawnSync(process.execPath, ['--import', 'tsx', generator, unitPath], {
-    cwd: repo,
-    encoding: 'utf8',
-    maxBuffer: 4 * 1024 * 1024,
-    env: process.env
-  })
-  if (result.error) {
-    throw result.error
-  }
-  if (result.status !== 0) {
-    process.stdout.write(result.stdout ?? '')
-    process.stderr.write(result.stderr ?? '')
-    throw new Error(`generate-service helper failed with ${result.status}`)
-  }
+  const unit = readFileSync(ssotPath, 'utf8')
+    .replaceAll('<uid>', '1001')
+    .replaceAll('<server-tailscale-ip-or-hostname>', '127.0.0.1')
+  writeFileSync(unitPath, unit)
   return unitPath
 }
 

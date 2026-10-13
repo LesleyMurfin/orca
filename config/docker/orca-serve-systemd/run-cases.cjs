@@ -83,13 +83,12 @@ function readOptional(path) {
 function installFixture() {
   const nodeBin = fs.existsSync('/usr/local/bin/node') ? '/usr/local/bin/node' : '/usr/bin/node'
   // Preserve systemd Environment= overrides for contrast units.
-  const wrapper =
-    [
-      '#!/bin/sh',
-      `ORCA_SERVE_FIXTURE_STATE="\${ORCA_SERVE_FIXTURE_STATE:-${stateDir}}"`,
-      'export ORCA_SERVE_FIXTURE_STATE',
-      `exec ${nodeBin} ${fixtureSource} "$@"`
-    ].join('\n') + '\n'
+  const wrapper = `${[
+    '#!/bin/sh',
+    `ORCA_SERVE_FIXTURE_STATE="\${ORCA_SERVE_FIXTURE_STATE:-${stateDir}}"`,
+    'export ORCA_SERVE_FIXTURE_STATE',
+    `exec ${nodeBin} ${fixtureSource} "$@"`
+  ].join('\n')}\n`
   fs.writeFileSync(fixtureBin, wrapper, { mode: 0o755 })
 }
 

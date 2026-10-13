@@ -129,8 +129,34 @@ Give the runtime its own unprivileged user that owns the repos, agent CLIs, and 
 credentials. Agents on the server run as that user.
 
 ```bash
-# Generate the systemd service file dynamically:
-ORCA serve --generate-service --port 6768 --pairing-address <server-tailscale-ip-or-hostname> | sudo tee /etc/systemd/system/orca-serve.service
+cat << 'EOF' | sudo tee /etc/systemd/system/orca-serve.service
+[Unit]
+Description=Orca runtime server
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=orca
+Group=orca
+WorkingDirectory=/home/orca
+Environment=HOME=/home/orca
+Environment=XDG_RUNTIME_DIR=/run/user/<uid>
+ExecStart=ORCA serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=3 78
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=45
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
 ```
 
 Why those settings:
@@ -157,7 +183,7 @@ Load `references/systemd-supervision.md` before writing or repairing the unit: i
 full template, the start-limit backstop, the Xvfb package headless browser panes need, and how
 to read a failed start.
 
-Replace `1001` with `id -u orca`. Then:
+Replace `<uid>` with `id -u orca`. Then:
 
 ```bash
 sudo systemctl daemon-reload

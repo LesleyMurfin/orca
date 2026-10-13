@@ -30,8 +30,8 @@ if (role === 'child') {
   setInterval(() => {}, 60_000)
 } else {
   // Installed as /usr/bin/orca-ide: argv looks like [node, script, 'serve', ...]
-  const serveIndex = process.argv.findIndex((arg) => arg === 'serve')
-  if (serveIndex < 0) {
+  const serveIndex = process.argv.indexOf('serve')
+  if (serveIndex === -1) {
     process.stderr.write('serve-fixture: expected serve argv\n')
     process.exit(78)
   }

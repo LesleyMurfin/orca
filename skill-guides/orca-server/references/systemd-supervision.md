@@ -4,16 +4,40 @@ Load this before writing, repairing, or diagnosing the unit that keeps a headles
 up. The guide's kernel states the three load-bearing directives; this document is the whole unit
 plus what each line protects against.
 
-## Generate and install
+## Install the unit
 
-Generate the correct configuration for the current environment rather than writing the unit by hand:
+Write the unit from this template. Substitute `ORCA` with the absolute path to the executable, replace `<uid>` with `id -u orca`, and set `--pairing-address` to a reachable host:
 
 ```bash
-# Generate the systemd service file dynamically:
-ORCA serve --generate-service --port 6768 --pairing-address <server-tailscale-ip-or-hostname> | sudo tee /etc/systemd/system/orca-serve.service
-```
+cat << 'EOF' | sudo tee /etc/systemd/system/orca-serve.service
+[Unit]
+Description=Orca runtime server
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
-The generator automatically handles `ExecStart=`, `KillMode=mixed`, and the `RestartPreventExitStatus=` boundaries.
+[Service]
+Type=simple
+User=orca
+Group=orca
+WorkingDirectory=/home/orca
+Environment=HOME=/home/orca
+Environment=XDG_RUNTIME_DIR=/run/user/<uid>
+ExecStart=ORCA serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=3 78
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=45
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
 
 ## Directives that carry weight
 

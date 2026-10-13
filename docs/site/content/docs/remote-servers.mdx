@@ -229,8 +229,34 @@ Use only one host mode at a time. If the Orca desktop app is already sharing tha
 On a Linux server, let systemd own the process so it starts at boot and comes back after a crash. Give it an unprivileged user that owns the repos, agent CLIs, and provider credentials—agents run as that user.
 
 ```bash
-# Generate the service file dynamically:
-orca-ide serve --generate-service --port 6768 --pairing-address <server-tailscale-ip-or-hostname> | sudo tee /etc/systemd/system/orca-serve.service
+cat << 'EOF' | sudo tee /etc/systemd/system/orca-serve.service
+[Unit]
+Description=Orca runtime server
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=orca
+Group=orca
+WorkingDirectory=/home/orca
+Environment=HOME=/home/orca
+Environment=XDG_RUNTIME_DIR=/run/user/<uid>
+ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=3 78
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=45
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
 ```
 
 Three settings carry the weight:
@@ -239,7 +265,7 @@ Three settings carry the weight:
 - `KillMode=mixed` — only the main process receives `SIGTERM`. That matters because `orca serve`'s graceful stop deliberately leaves the terminal daemon running, so a restarted runtime can adopt the PTYs. `KillMode=control-group` would signal the daemon and every agent at once and lose that work; the final `SIGKILL` still sweeps whatever remains in the cgroup.
 - `RestartPreventExitStatus=3 78` — two statuses a restart cannot repair. `78` is a configuration fault: a user-data root held by another runtime, a malformed `--bind` address, an unusable bundled runtime, or an unreadable profile store. `3` means another process already owns this user-data profile — the desktop app, or a `serve` that is still running. A busy port is neither: it exits `1` and `Restart=on-failure` will retry it every `RestartSec` forever, so fix `--port` when the journal shows `EADDRINUSE`.
 
-Write an absolute path in the unit rather than a bare `orca`, which resolves to the GNOME Orca screen reader. The deb/rpm install symlinks `/usr/bin/orca-ide`; an AppImage registers `~/.local/bin/orca-ide` instead, so resolve it with `readlink -f "$(command -v orca-ide)"` as the service user. Replace `1001` with the output of `id -u orca`, set `--pairing-address` to the reachable LAN or Tailscale address, then:
+Write an absolute path in the unit rather than a bare `orca`, which resolves to the GNOME Orca screen reader. The deb/rpm install symlinks `/usr/bin/orca-ide`; an AppImage registers `~/.local/bin/orca-ide` instead, so resolve it with `readlink -f "$(command -v orca-ide)"` as the service user. Replace `<uid>` with the output of `id -u orca`, set `--pairing-address` to the reachable LAN or Tailscale address, then:
 
 ```bash
 sudo systemctl daemon-reload
