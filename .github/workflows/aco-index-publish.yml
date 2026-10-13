@@ -1,0 +1,507 @@
+name: ACO index publish
+
+# PRD-0106 Milestone 3 — CI artifact publisher for the ACO Maintainer Kit.
+#
+# What this builds
+# ----------------
+# Zero-daemon structural index only:
+#   .aco/graph.db       SQLite AST / symbol graph (riley_kg init + full sync)
+#   .aco/manifest.json  source sha, built_at (UTC), sha256 checksum, sizes
+#
+# Jev / XERJ / Elasticsearch are NEVER started, probed, or required. Contributors
+# consume file artifacts only (see .aco/README.md).
+#
+# Publish channel choice (why release assets, not a fat orphan branch)
+# -------------------------------------------------------------------
+# PRIMARY  : GitHub Release assets on rolling tag `aco-index` plus immutable
+#            tag `aco-index-<shortsha>`.
+#            Reason: full-repo graph.db is ~200MB+ and exceeds GitHub's 100MB
+#            git blob limit. Release assets allow up to 2GB without Git LFS and
+#            keep `main` free of binary bloat (PRD success criterion).
+# SECONDARY: orphan branch `aco-index` carries ONLY `.aco/manifest.json` (a few
+#            KB pointer + checksums). Consumers can `git fetch origin aco-index`
+#            to discover the latest release without cloning the DB into git.
+# ALWAYS   : actions/upload-artifact on the workflow run (acceptance path:
+#            download artifact, verify sha256 from manifest).
+#
+# Optional future: Git LFS on the orphan branch if release APIs are unavailable.
+# That path is intentionally not defaulted here (extra maintainer setup).
+#
+# Secrets / fork safety
+# ---------------------
+# - No repository secrets. Uses the job-scoped github.token only.
+# - Does not push to upstream `stablyai/orca`; only github.repository (the fork
+#   when run on a fork).
+# - `push` to main is COMMENTED OUT below so this file can live on a fork
+#   without surprise CI cost if the workflow is ever visible to upstream.
+#
+# How a maintainer enables this
+# -----------------------------
+# 1. Ensure Actions are enabled on the fork.
+# 2. Set repository variable RILEY_KG_GIT_URL to a git URL whose tree contains
+#    an installable `riley_kg` package (monorepo root with pyproject that
+#    packages riley_kg is fine). Example shape:
+#      https://github.com/<org>/<repo>.git
+#    Or pass the same value as the workflow_dispatch input `riley_kg_git_url`.
+# 3. Actions → "ACO index publish" → Run workflow (workflow_dispatch).
+# 4. Optional: uncomment the `push:` trigger block to refresh on main commits.
+# 5. Confirm the `aco-index` release assets and orphan branch updated.
+# 6. Contributors pull via the steps in `.aco/README.md` (file-only; no daemon).
+
+on:
+  workflow_dispatch:
+    inputs:
+      riley_kg_git_url:
+        description: >
+          Git URL for riley_kg source (monorepo or package root). Overrides
+          repository variable RILEY_KG_GIT_URL when non-empty.
+        required: false
+        type: string
+        default: ""
+      riley_kg_ref:
+        description: Git ref for riley_kg source (branch, tag, or SHA)
+        required: false
+        type: string
+        default: "main"
+      publish_release:
+        description: Upload graph.db + manifest.json to GitHub Release assets
+        required: false
+        type: boolean
+        default: true
+      publish_orphan_manifest:
+        description: Force-push manifest-only orphan branch aco-index
+        required: false
+        type: boolean
+        default: true
+      full_reindex:
+        description: >
+          true = riley_kg init (full rebuild). false = init if missing else sync.
+        required: false
+        type: boolean
+        default: true
+
+  # Upstream-safe default: push trigger disabled.
+  # Maintainer enablement — uncomment to refresh the index on main pushes:
+  # push:
+  #   branches: [main]
+  #   paths-ignore:
+  #     - "**/*.md"
+  #     - ".aco/**"
+  #     - ".github/workflows/aco-index-publish.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aco-index-publish-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    name: Build .aco index and publish
+    runs-on: ubuntu-latest
+    # Full Orca symbol extraction can exceed 30–40m; keep headroom for deps.
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      # Fail-open posture: never consult Jev even if a runner has leftovers.
+      ORCA_JEV_DISABLED: "1"
+      JEV_URL: ""
+      XERJ_URL: ""
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Need full history only for incremental mode; full reindex is content-based.
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve riley_kg source
+        id: kg
+        shell: bash
+        env:
+          INPUT_URL: ${{ inputs.riley_kg_git_url }}
+          INPUT_REF: ${{ inputs.riley_kg_ref }}
+          VAR_URL: ${{ vars.RILEY_KG_GIT_URL }}
+        run: |
+          set -euo pipefail
+          url="${INPUT_URL:-}"
+          if [[ -z "${url}" ]]; then
+            url="${VAR_URL:-}"
+          fi
+          ref="${INPUT_REF:-main}"
+          if [[ -z "${url}" ]]; then
+            cat <<'EOF' >&2
+          error: riley_kg source not configured.
+
+          Set repository variable RILEY_KG_GIT_URL, or pass workflow_dispatch
+          input riley_kg_git_url, to a git URL that contains the riley_kg package.
+          No secrets are required — a public or tokenless HTTPS URL is enough
+          when the package is public; for private sources use a checkout deploy
+          key / fine-grained token as a normal Actions remote, not a Jev secret.
+
+          This workflow never requires Jev/XERJ.
+          EOF
+            exit 1
+          fi
+          echo "url=${url}" >> "${GITHUB_OUTPUT}"
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install riley_kg (SQLite path; no daemon)
+        shell: bash
+        env:
+          RILEY_KG_GIT_URL: ${{ steps.kg.outputs.url }}
+          RILEY_KG_REF: ${{ steps.kg.outputs.ref }}
+        run: |
+          set -euo pipefail
+          src="${RUNNER_TEMP}/riley-kg-src"
+          rm -rf "${src}"
+          # Shallow clone, then resolve branch/tag/SHA. --branch fails for raw SHAs.
+          git clone --depth 1 "${RILEY_KG_GIT_URL}" "${src}"
+          git -C "${src}" fetch --depth 1 origin "${RILEY_KG_REF}" || \
+            git -C "${src}" fetch --depth 1 origin "+refs/heads/*:refs/remotes/origin/*"
+          git -C "${src}" checkout --force "${RILEY_KG_REF}" \
+            || git -C "${src}" checkout --force "origin/${RILEY_KG_REF}" \
+            || git -C "${src}" checkout --force FETCH_HEAD
+
+          # Accept either monorepo root (pyproject packages riley_kg) or a
+          # nested riley_kg/ directory with its own packaging layout.
+          install_root="${src}"
+          if [[ ! -f "${install_root}/pyproject.toml" && -d "${src}/riley_kg" ]]; then
+            # PYTHONPATH fallback when the clone is a bare package tree.
+            install_root="${src}"
+          fi
+
+          python -m pip install --upgrade pip
+          # Runtime deps for zero-daemon init/sync (cli imports psycopg at
+          # module import even when only SQLite commands run).
+          python -m pip install \
+            "pydantic>=2" \
+            "psycopg[binary]>=3" \
+            "click>=8" \
+            "requests>=2" \
+            "tree-sitter>=0.23" \
+            "tree-sitter-typescript>=0.23" \
+            "tree-sitter-python>=0.23"
+
+          if [[ -f "${install_root}/pyproject.toml" ]]; then
+            # Editable install pulls console script riley-kg when declared.
+            python -m pip install -e "${install_root}" || true
+          fi
+
+          # Always put the clone on PYTHONPATH so `python -m riley_kg.cli` works
+          # even when packaging metadata is incomplete in a sparse checkout.
+          if [[ -d "${src}/riley_kg" ]]; then
+            echo "PYTHONPATH=${src}${PYTHONPATH:+:${PYTHONPATH}}" >> "${GITHUB_ENV}"
+          elif [[ -d "${src}/../riley_kg" ]]; then
+            echo "PYTHONPATH=$(dirname "${src}")${PYTHONPATH:+:${PYTHONPATH}}" >> "${GITHUB_ENV}"
+          else
+            # Walk one level for monorepo layouts like projects/agents/riley_kg.
+            found="$(find "${src}" -maxdepth 4 -type d -name riley_kg 2>/dev/null | head -n 1 || true)"
+            if [[ -z "${found}" ]]; then
+              echo "error: could not locate riley_kg package under ${src}" >&2
+              exit 1
+            fi
+            echo "PYTHONPATH=$(dirname "${found}")${PYTHONPATH:+:${PYTHONPATH}}" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Verify riley_kg CLI (offline)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m riley_kg.cli --help >/dev/null
+          python -m riley_kg.cli init --help >/dev/null
+          python -m riley_kg.cli sync --help >/dev/null
+          # Sanity: no Jev endpoints required for help/init/sync paths.
+          if [[ -n "${JEV_URL}" || -n "${XERJ_URL}" ]]; then
+            echo "error: JEV/XERJ must remain unset for this job" >&2
+            exit 1
+          fi
+
+      - name: Build .aco/graph.db
+        shell: bash
+        env:
+          FULL_REINDEX: ${{ inputs.full_reindex == true || inputs.full_reindex == 'true' || github.event_name == 'push' }}
+        run: |
+          set -euo pipefail
+          repo_root="${GITHUB_WORKSPACE}"
+          mkdir -p "${repo_root}/.aco"
+
+          # Prefer init for a clean full index; sync refreshes an existing DB.
+          if [[ "${FULL_REINDEX}" == "true" || ! -f "${repo_root}/.aco/graph.db" ]]; then
+            echo "Running riley_kg init (full symbol extraction, SQLite only)"
+            python -m riley_kg.cli init --path "${repo_root}"
+          else
+            echo "Running riley_kg sync (full rescan into existing DB)"
+            python -m riley_kg.cli sync --path "${repo_root}" --db "${repo_root}/.aco/graph.db"
+          fi
+
+          # Collapse WAL into the main DB file before checksum / publish.
+          python - <<'PY'
+          import sqlite3
+          from pathlib import Path
+          db = Path(".aco/graph.db")
+          if not db.is_file():
+              raise SystemExit("error: .aco/graph.db was not produced")
+          conn = sqlite3.connect(str(db))
+          try:
+              conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+              conn.execute("VACUUM")
+          finally:
+              conn.close()
+          for side in (".aco/graph.db-wal", ".aco/graph.db-shm"):
+              p = Path(side)
+              if p.exists():
+                  p.unlink()
+          print(f"graph.db size_bytes={db.stat().st_size}")
+          PY
+
+      - name: Write .aco/manifest.json
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          root = Path(".")
+          aco = root / ".aco"
+          db_path = aco / "graph.db"
+          if not db_path.is_file():
+              raise SystemExit("error: missing .aco/graph.db")
+
+          def sha256_file(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          source_sha = os.environ["GITHUB_SHA"]
+          short_sha = source_sha[:12]
+          built_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          checksum = sha256_file(db_path)
+          size_bytes = db_path.stat().st_size
+
+          graph_json = aco / "graph.json"
+          artifacts = {
+              "graph.db": {
+                  "path": ".aco/graph.db",
+                  "sha256": checksum,
+                  "size_bytes": size_bytes,
+              }
+          }
+          if graph_json.is_file():
+              artifacts["graph.json"] = {
+                  "path": ".aco/graph.json",
+                  "sha256": sha256_file(graph_json),
+                  "size_bytes": graph_json.stat().st_size,
+              }
+
+          manifest = {
+              "schema_version": 1,
+              "name": "aco-index",
+              "repository": os.environ.get("GITHUB_REPOSITORY", ""),
+              "source_sha": source_sha,
+              "source_sha_short": short_sha,
+              "built_at": built_at,
+              "checksum": checksum,
+              "artifacts": artifacts,
+              "tool": {
+                  "name": "riley_kg",
+                  "invocation": "python -m riley_kg.cli init|sync",
+                  "storage": "sqlite",
+                  "daemon": False,
+              },
+              "jev_required": False,
+              "xerj_required": False,
+              "publish": {
+                  "primary": "github-release-assets",
+                  "release_tag_rolling": "aco-index",
+                  "release_tag_immutable": f"aco-index-{short_sha}",
+                  "orphan_branch": "aco-index",
+                  "orphan_branch_contents": [".aco/manifest.json"],
+              },
+              "consumer": {
+                  "offline": True,
+                  "docs": ".aco/README.md",
+              },
+          }
+
+          aco.mkdir(parents=True, exist_ok=True)
+          out = aco / "manifest.json"
+          out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps({"manifest": str(out), "checksum": checksum, "built_at": built_at}))
+
+          gh_out = Path(os.environ["GITHUB_OUTPUT"])
+          with gh_out.open("a", encoding="utf-8") as fh:
+              fh.write(f"checksum={checksum}\n")
+              fh.write(f"built_at={built_at}\n")
+              fh.write(f"short_sha={short_sha}\n")
+              fh.write(f"size_bytes={size_bytes}\n")
+          PY
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aco-index-${{ steps.manifest.outputs.short_sha }}
+          path: |
+            .aco/graph.db
+            .aco/manifest.json
+            .aco/graph.json
+          if-no-files-found: error
+          retention-days: 14
+          # graph.db can exceed default compression comfort; still upload.
+          compression-level: 0
+
+      - name: Publish GitHub Release assets (primary channel)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_release }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHORT_SHA: ${{ steps.manifest.outputs.short_sha }}
+          CHECKSUM: ${{ steps.manifest.outputs.checksum }}
+          BUILT_AT: ${{ steps.manifest.outputs.built_at }}
+          SIZE_BYTES: ${{ steps.manifest.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          rolling_tag="aco-index"
+          immutable_tag="aco-index-${SHORT_SHA}"
+          notes="$(cat <<EOF
+          ACO zero-daemon index (riley_kg SQLite).
+
+          - source_sha: \`${GITHUB_SHA}\`
+          - built_at: \`${BUILT_AT}\`
+          - graph.db sha256: \`${CHECKSUM}\`
+          - graph.db size_bytes: \`${SIZE_BYTES}\`
+          - jev_required: false
+          - xerj_required: false
+
+          Consume offline — see \`.aco/README.md\`. No Jev/XERJ daemon needed.
+          EOF
+          )"
+
+          publish_tag() {
+            local tag="$1"
+            local title="$2"
+            if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+              gh release upload "${tag}" \
+                .aco/graph.db \
+                .aco/manifest.json \
+                --repo "${GITHUB_REPOSITORY}" \
+                --clobber
+              gh release edit "${tag}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --notes "${notes}" \
+                --title "${title}" \
+                || true
+            else
+              gh release create "${tag}" \
+                .aco/graph.db \
+                .aco/manifest.json \
+                --repo "${GITHUB_REPOSITORY}" \
+                --title "${title}" \
+                --notes "${notes}" \
+                --target "${GITHUB_SHA}"
+            fi
+          }
+
+          publish_tag "${immutable_tag}" "ACO index ${SHORT_SHA}"
+          # Rolling tag always points at the latest successful build artifacts.
+          if gh release view "${rolling_tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${rolling_tag}" \
+              .aco/graph.db \
+              .aco/manifest.json \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber
+            gh release edit "${rolling_tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --notes "${notes}" \
+              --title "ACO index (rolling)" \
+              --target "${GITHUB_SHA}" \
+              || true
+          else
+            gh release create "${rolling_tag}" \
+              .aco/graph.db \
+              .aco/manifest.json \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "ACO index (rolling)" \
+              --notes "${notes}" \
+              --target "${GITHUB_SHA}"
+          fi
+
+      - name: Publish orphan branch aco-index (manifest only)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_orphan_manifest }}
+        shell: bash
+        env:
+          SHORT_SHA: ${{ steps.manifest.outputs.short_sha }}
+          CHECKSUM: ${{ steps.manifest.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          # Detached orphan tree: only .aco/manifest.json is committed so the
+          # branch stays tiny and never hosts graph.db (see header rationale).
+          work="${RUNNER_TEMP}/aco-index-orphan"
+          rm -rf "${work}"
+          mkdir -p "${work}/.aco"
+          cp .aco/manifest.json "${work}/.aco/manifest.json"
+
+          # Minimal consumer hint on the orphan branch tip.
+          cat > "${work}/README.md" <<EOF
+          # aco-index (manifest branch)
+
+          This orphan branch intentionally stores **only** \`.aco/manifest.json\`.
+
+          Download \`graph.db\` from the GitHub Release tag named in the manifest
+          (\`aco-index\` rolling, or \`aco-index-<sha>\` immutable). See the
+          tracked file \`.aco/README.md\` on \`main\` for contributor steps.
+
+          source_sha: ${GITHUB_SHA}
+          graph.db sha256: ${CHECKSUM}
+          EOF
+
+          git -C "${work}" init
+          git -C "${work}" checkout -B aco-index
+          git -C "${work}" config user.name "github-actions[bot]"
+          git -C "${work}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "${work}" add README.md .aco/manifest.json
+          git -C "${work}" commit -m "aco-index: manifest for ${SHORT_SHA}"
+          git -C "${work}" remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "${work}" push --force origin HEAD:aco-index
+
+      - name: Summary
+        shell: bash
+        env:
+          SHORT_SHA: ${{ steps.manifest.outputs.short_sha }}
+          CHECKSUM: ${{ steps.manifest.outputs.checksum }}
+          BUILT_AT: ${{ steps.manifest.outputs.built_at }}
+          SIZE_BYTES: ${{ steps.manifest.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## ACO index publish"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| source_sha | \`${GITHUB_SHA}\` |"
+            echo "| built_at | \`${BUILT_AT}\` |"
+            echo "| graph.db sha256 | \`${CHECKSUM}\` |"
+            echo "| graph.db size_bytes | \`${SIZE_BYTES}\` |"
+            echo "| release (rolling) | \`aco-index\` |"
+            echo "| release (immutable) | \`aco-index-${SHORT_SHA}\` |"
+            echo "| orphan branch | \`aco-index\` (manifest only) |"
+            echo "| jev_required | false |"
+            echo ""
+            echo "Offline-first: contributors need files only — no Jev/XERJ."
+          } >> "${GITHUB_STEP_SUMMARY}"

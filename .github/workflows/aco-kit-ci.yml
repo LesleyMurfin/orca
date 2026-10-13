@@ -1,0 +1,299 @@
+name: ACO kit CI
+
+# PRD-0106 — fork-only offline test gate for the ACO Maintainer Kit.
+#
+# Runs ONLY on LesleyMurfin/orca. Never on upstream stablyai/orca.
+# Offline-first: no Jev/XERJ required. graph.db is never committed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      riley_kg_git_url:
+        description: >
+          Git URL for riley_kg source (overrides vars.RILEY_KG_GIT_URL).
+          Leave empty to skip Layer B1 when neither input nor variable is set.
+        required: false
+        type: string
+        default: ""
+      riley_kg_ref:
+        description: Git ref for riley_kg source
+        required: false
+        type: string
+        default: "main"
+      run_layer_c:
+        description: Attempt Layer C product smoke when .aco/graph.db is available
+        required: false
+        type: boolean
+        default: true
+
+  pull_request:
+    paths:
+      - ".ai/skills/aco-triage/**"
+      - ".ai/hooks/pre/jev-probe*"
+      - ".aco/README.md"
+      - ".github/workflows/aco-kit-ci.yml"
+      - ".github/workflows/aco-index-publish.yml"
+
+  # Fork branch only — does not fire on main / upstream.
+  push:
+    branches:
+      - "ai/orca-aco-graph-xerj-test-suite"
+    paths:
+      - ".ai/skills/aco-triage/**"
+      - ".ai/hooks/pre/jev-probe*"
+      - ".aco/README.md"
+      - ".github/workflows/aco-kit-ci.yml"
+      - ".github/workflows/aco-index-publish.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aco-kit-ci-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kit-tests:
+    name: ACO kit layers A/B1/C/D
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Hard fork guard: skip entirely on upstream or any other fork.
+    if: github.repository == 'LesleyMurfin/orca'
+
+    env:
+      ORCA_JEV_DISABLED: "1"
+      JEV_URL: ""
+      XERJ_URL: ""
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Upstream / non-fork guard (belt)
+        if: github.repository != 'LesleyMurfin/orca'
+        run: |
+          echo "ACO kit CI is fork-only (LesleyMurfin/orca). Skipping on ${{ github.repository }}."
+          exit 0
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node (jev-probe self-test)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install PyYAML (Layer D)
+        run: python -m pip install --upgrade pip pyyaml
+
+      # ── Layer A — kit / graceful-degrade ──────────────────────────────
+      - name: "Layer A1 — graceful-degrade smoke"
+        run: python3 .ai/skills/aco-triage/tests/test_graceful_degrade_smoke.py
+
+      - name: "Layer A2 — verify with ORCA_JEV_DISABLED=1"
+        run: ORCA_JEV_DISABLED=1 python3 .ai/skills/aco-triage/scripts/verify_graceful_degrade.py
+
+      - name: "Layer A3 — verify --offline-only"
+        run: python3 .ai/skills/aco-triage/scripts/verify_graceful_degrade.py --offline-only
+
+      - name: "Layer A4 — jev-probe self-test"
+        run: >
+          node --experimental-strip-types --no-warnings
+          .ai/hooks/pre/jev-probe.self-test.ts
+
+      # ── Layer B1 — primary graph pytest (optional if riley_kg missing) ─
+      - name: Resolve riley_kg source
+        id: kg
+        shell: bash
+        env:
+          INPUT_URL: ${{ inputs.riley_kg_git_url }}
+          INPUT_REF: ${{ inputs.riley_kg_ref }}
+          VAR_URL: ${{ vars.RILEY_KG_GIT_URL }}
+        run: |
+          set -euo pipefail
+          url="${INPUT_URL:-}"
+          if [[ -z "${url}" ]]; then
+            url="${VAR_URL:-}"
+          fi
+          ref="${INPUT_REF:-main}"
+          if [[ -z "${url}" ]]; then
+            echo "available=false" >> "${GITHUB_OUTPUT}"
+            echo "Layer B1 soft-skip: set vars.RILEY_KG_GIT_URL or workflow_dispatch input riley_kg_git_url"
+            exit 0
+          fi
+          echo "available=true" >> "${GITHUB_OUTPUT}"
+          echo "url=${url}" >> "${GITHUB_OUTPUT}"
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout riley_kg
+        if: steps.kg.outputs.available == 'true'
+        id: kg_checkout
+        shell: bash
+        env:
+          RILEY_KG_GIT_URL: ${{ steps.kg.outputs.url }}
+          RILEY_KG_REF: ${{ steps.kg.outputs.ref }}
+        run: |
+          set -euo pipefail
+          src="${RUNNER_TEMP}/riley-kg-src"
+          rm -rf "${src}"
+          git clone --depth 1 "${RILEY_KG_GIT_URL}" "${src}"
+          git -C "${src}" fetch --depth 1 origin "${RILEY_KG_REF}" || \
+            git -C "${src}" fetch --depth 1 origin "+refs/heads/*:refs/remotes/origin/*" || true
+          git -C "${src}" checkout --force "${RILEY_KG_REF}" \
+            || git -C "${src}" checkout --force "origin/${RILEY_KG_REF}" \
+            || git -C "${src}" checkout --force FETCH_HEAD || true
+
+          # Locate package root for PYTHONPATH.
+          if [[ -d "${src}/riley_kg" ]]; then
+            root="${src}"
+          else
+            found="$(find "${src}" -maxdepth 4 -type d -name riley_kg 2>/dev/null | head -n 1 || true)"
+            if [[ -z "${found}" ]]; then
+              echo "error: could not locate riley_kg under ${src}" >&2
+              exit 1
+            fi
+            root="$(dirname "${found}")"
+          fi
+          echo "root=${root}" >> "${GITHUB_OUTPUT}"
+          echo "PYTHONPATH=${root}" >> "${GITHUB_ENV}"
+
+      - name: Install riley_kg test deps
+        if: steps.kg.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install \
+            "pytest>=7" \
+            "pydantic>=2" \
+            "psycopg[binary]>=3" \
+            "click>=8" \
+            "requests>=2" \
+            "tree-sitter>=0.23" \
+            "tree-sitter-typescript>=0.23" \
+            "tree-sitter-python>=0.23"
+          root="${{ steps.kg_checkout.outputs.root }}"
+          if [[ -f "${root}/pyproject.toml" ]]; then
+            python -m pip install -e "${root}" || true
+          fi
+
+      - name: "Layer B1 — primary graph pytest"
+        if: steps.kg.outputs.available == 'true'
+        shell: bash
+        working-directory: ${{ steps.kg_checkout.outputs.root }}
+        run: |
+          set -euo pipefail
+          # Primary graph suite (TEST-MATRIX B1 baseline: 23 passed).
+          files=()
+          for f in tests/test_init_sync_cli.py tests/test_sqlite_graph_engine.py tests/test_sqlite_store.py; do
+            if [[ -f "$f" ]]; then
+              files+=("$f")
+            fi
+          done
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "Layer B1 soft-skip: primary graph test files not found under ${PWD}"
+            exit 0
+          fi
+          python -m pytest "${files[@]}" -q
+
+      # ── Layer C — optional product smoke on real graph.db ────────────
+      - name: Restore cached graph.db (optional)
+        if: ${{ inputs.run_layer_c != false }}
+        id: graph_cache
+        uses: actions/cache@v4
+        with:
+          path: .aco/graph.db
+          key: aco-graph-db-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            aco-graph-db-${{ runner.os }}-
+
+      - name: "Layer C — product smoke (soft-skip if no graph.db)"
+        if: ${{ inputs.run_layer_c != false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f .aco/graph.db ]]; then
+            echo "Layer C soft-skip: .aco/graph.db not present (no full sync in default CI)"
+            exit 0
+          fi
+          if [[ "${{ steps.kg.outputs.available }}" != "true" ]]; then
+            echo "Layer C soft-skip: riley_kg not available for CLI smoke"
+            exit 0
+          fi
+          python -m riley_kg.cli --help >/dev/null
+          # Prefer a path that exists in this checkout; fall back to --help only.
+          sample=""
+          for p in src/main/ipc/app.ts cloud/apps/relay/src/assignment-store.ts; do
+            if [[ -f "$p" ]]; then
+              sample="$p"
+              break
+            fi
+          done
+          if [[ -n "${sample}" ]]; then
+            python -m riley_kg.cli blast-radius --db .aco/graph.db "${sample}"
+          else
+            echo "Layer C: graph.db present; no sample source file — CLI help only"
+          fi
+          python - <<'PY'
+          import sqlite3
+          from pathlib import Path
+          db = Path(".aco/graph.db")
+          conn = sqlite3.connect(str(db))
+          try:
+              nodes = conn.execute("SELECT COUNT(*) FROM kg_nodes").fetchone()[0]
+              edges = conn.execute("SELECT COUNT(*) FROM kg_edges").fetchone()[0]
+          finally:
+              conn.close()
+          print(f"Layer C sqlite counts: nodes={nodes} edges={edges} size={db.stat().st_size}")
+          if nodes <= 0 or edges <= 0:
+              raise SystemExit("Layer C fail: empty graph")
+          PY
+
+      # ── Layer D — workflow YAML parse ────────────────────────────────
+      - name: "Layer D — YAML parse kit workflows"
+        run: |
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+          try:
+              import yaml
+          except ImportError:
+              sys.exit("PyYAML required for Layer D")
+          files = [
+              Path(".github/workflows/aco-index-publish.yml"),
+              Path(".github/workflows/aco-kit-ci.yml"),
+          ]
+          for path in files:
+              if not path.is_file():
+                  raise SystemExit(f"missing workflow: {path}")
+              with path.open(encoding="utf-8") as fh:
+                  doc = yaml.safe_load(fh)
+              if not isinstance(doc, dict):
+                  raise SystemExit(f"unexpected YAML root in {path}")
+              print(f"OK parse {path}")
+          # Guard must remain present in this workflow.
+          text = Path(".github/workflows/aco-kit-ci.yml").read_text(encoding="utf-8")
+          if "github.repository == 'LesleyMurfin/orca'" not in text:
+              raise SystemExit("fork guard missing from aco-kit-ci.yml")
+          if "stablyai/orca" not in text:
+              # Comment / docs reference is enough; require the string appears.
+              raise SystemExit("upstream stablyai/orca must be mentioned (guard docs)")
+          print("OK fork guard present")
+          PY
+
+      - name: Summarize
+        if: always()
+        run: |
+          cat <<'EOF'
+          ACO kit CI complete (fork-only, offline-first).
+          - Layer A: smoke + verify + jev-probe self-test (required)
+          - Layer B1: primary graph pytest when RILEY_KG_GIT_URL configured
+          - Layer C: product smoke only if .aco/graph.db available (never built by default)
+          - Layer D: YAML parse + fork-guard assertion
+          graph.db is never committed; Jev/XERJ never required.
+          EOF
