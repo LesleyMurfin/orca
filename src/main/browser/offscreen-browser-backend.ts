@@ -5,26 +5,30 @@ import { ORCA_BROWSER_GUEST_WEB_PREFERENCES } from '../../shared/browser-guest-w
 import { mapSettledWithConcurrency } from '../../shared/map-with-concurrency'
 import type { BrowserBackend, BrowserBackendCreateTab } from './browser-backend'
 import type { BrowserManager } from './browser-manager'
-
-export type OffscreenBrowserManager = Pick<
-  BrowserManager,
-  'registerOffscreenGuest' | 'unregisterGuest'
->
 import type { AgentBrowserBridge } from './agent-browser-bridge'
 import { browserSessionRegistry } from './browser-session-registry'
 import { BrowserError } from './browser-error'
-import { resolveWithTimeout } from './browser-manager-types'
 import {
   offscreenBrowserTabCapacityMessage,
   OFFSCREEN_BROWSER_TAB_CAPACITY_CODE,
   resolveOffscreenBrowserTabCap
 } from './offscreen-browser-tab-capacity'
+import { loadOffscreenBrowserUrl } from './offscreen-browser-page-load'
+import {
+  type OffscreenRendererIdentity,
+  OffscreenRendererIdentityBook,
+  probeRendererStartTimeMs
+} from './offscreen-renderer-identity'
 import {
   nodeRendererProcessControl,
   reclaimRendererProcess,
   type RendererProcessControl
 } from './offscreen-renderer-process-reclaim'
-import { readProcessStartTimeMs } from '../runtime/agent-session-process-identity-probe'
+
+export type OffscreenBrowserManager = Pick<
+  BrowserManager,
+  'registerOffscreenGuest' | 'unregisterGuest'
+>
 
 // Why: headless orca serve has no renderer window to host a <webview>, so each
 // browser page is backed by a main-process offscreen BrowserWindow. The window
@@ -35,17 +39,18 @@ import { readProcessStartTimeMs } from '../runtime/agent-session-process-identit
 
 const DEFAULT_VIEWPORT_WIDTH = 1280
 const DEFAULT_VIEWPORT_HEIGHT = 800
-const LOAD_TIMEOUT_MS = 30_000
 const OWNER_RETIREMENT_CONCURRENCY = 4
 // Why bounded: retirement drives the agent-browser helper through the page's own renderer, and
-// #14552 hit pages whose renderer had stopped answering. The teardown below must not queue behind
+// #14552 hit pages whose renderer had stopped answering. The teardown below must not hang behind
 // a wait that will never return.
 const DEFAULT_OWNER_RETIREMENT_TIMEOUT_MS = 5_000
-const START_TIME_PROBE_TIMEOUT_MS = 1_000
 
 export class OffscreenBrowserBackend implements BrowserBackend {
   private readonly windowsByPageId = new Map<string, BrowserWindow>()
   private readonly closingPageIds = new Set<string>()
+  // Why capture while live: webContents.destroyed fires after the contents stop answering,
+  // so close-time pid/start-time probes cannot recover the pair for an unexpected crash.
+  private readonly rendererIdentities = new OffscreenRendererIdentityBook()
   // Shutdown is terminal for this backend; rejecting creates closes the race
   // where destroyAll snapshots ownership and a new page appears afterward.
   private shutdownStarted = false
@@ -112,6 +117,13 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     })
 
     this.windowsByPageId.set(browserPageId, win)
+    // Best-effort identity while the contents still answer; finished before most crashes.
+    void this.rendererIdentities.capture(
+      browserPageId,
+      win,
+      this.rendererProcessControl,
+      () => this.windowsByPageId.get(browserPageId) === win
+    )
 
     // Why: register the guest and return immediately so the new tab appears
     // without waiting for the page to finish loading. Previously createTab
@@ -131,6 +143,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       // policy on it and hand back a page id nothing can drive. The renderer door aborts its mount
       // the same way; this is that abort.
       this.windowsByPageId.delete(browserPageId)
+      this.rendererIdentities.delete(browserPageId)
       win.destroy()
       throw new Error(`Browser page ${browserPageId} was refused`)
     }
@@ -141,18 +154,25 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     // entry so commands fail cleanly instead of resolving a dead WebContents.
     win.webContents.once('destroyed', () => {
       // Explicit close removes the page first and performs awaited cleanup;
-      // only an unexpected destruction still owns the bridge retirement here.
+      // only an unexpected destruction still owns retirement + reclaim here.
       if (this.windowsByPageId.get(browserPageId) !== win) {
         return
       }
-      void this.retirePageOwner(browserPageId)
+      // Single-flight with closeTab: claim the closing slot before any await.
+      if (this.closingPageIds.has(browserPageId)) {
+        return
+      }
       this.windowsByPageId.delete(browserPageId)
-      this.closingPageIds.delete(browserPageId)
+      this.closingPageIds.add(browserPageId)
       this.browserManager.unregisterGuest(browserPageId)
+      const identity = this.rendererIdentities.takeForUnexpectedDestroy(browserPageId, win)
+      const teardown = this.finishUnexpectedTeardown(browserPageId, identity)
+      this.pendingOwnerRetirements.add(teardown)
+      void teardown.finally(() => this.pendingOwnerRetirements.delete(teardown))
     })
 
     const url = params.url || 'about:blank'
-    void this.loadUrl(win, url).catch((error) => {
+    void loadOffscreenBrowserUrl(win, url).catch((error) => {
       console.warn(
         '[offscreen-browser] page load failed:',
         error instanceof Error ? error.message : String(error)
@@ -167,40 +187,36 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     if (!win) {
       return
     }
+    // Claim ownership before any await so the destroyed handler cannot double-reclaim.
+    if (this.closingPageIds.has(browserPageId)) {
+      return
+    }
     this.windowsByPageId.delete(browserPageId)
     this.closingPageIds.add(browserPageId)
     this.browserManager.unregisterGuest(browserPageId)
     // Why read the pid and start time before teardown: WebContents stops answering once it is
     // destroyed, and the pid+startTime pair binds reclamation to that exact process instance.
-    const osProcessId = win.isDestroyed() ? 0 : win.webContents.getOSProcessId()
-    const expectedStartTimeMs =
-      osProcessId > 0
-        ? (
-            await resolveWithTimeout(
-              (this.rendererProcessControl.readStartTimeMs ?? readProcessStartTimeMs)(osProcessId),
-              START_TIME_PROBE_TIMEOUT_MS,
-              null
-            ).catch(() => ({ value: null, timedOut: false }))
-          ).value
-        : null
+    const identity = await this.rendererIdentities.takeForClose(
+      browserPageId,
+      win,
+      this.rendererProcessControl
+    )
     try {
-      await this.settleOwnerRetirement(browserPageId)
-    } finally {
+      await this.retirePageOwner(browserPageId)
       if (!win.isDestroyed()) {
         win.destroy()
       }
+      // Hold the tab slot through grace/kill so create cannot oversubscribe mid-reclaim.
+      if (identity && identity.osProcessId > 0) {
+        await reclaimRendererProcess(identity.osProcessId, {
+          control: this.rendererProcessControl,
+          expectedStartTimeMs: identity.expectedStartTimeMs
+        })
+      }
+    } finally {
       this.closingPageIds.delete(browserPageId)
+      this.rendererIdentities.delete(browserPageId)
     }
-    if (osProcessId > 0) {
-      await reclaimRendererProcess(osProcessId, {
-        control: this.rendererProcessControl,
-        expectedStartTimeMs
-      })
-    }
-  }
-  /** Resolves on retirement or on the timeout, whichever lands first; the page is gone either way. */
-  private settleOwnerRetirement(browserPageId: string): Promise<void> {
-    return this.retirePageOwner(browserPageId)
   }
 
   getWebContentsId(browserPageId: string): number | null {
@@ -237,76 +253,30 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     return settled.promise
   }
 
-  private async loadUrl(win: BrowserWindow, url: string): Promise<void> {
-    const wc = win.webContents
-    await new Promise<void>((resolve, reject) => {
-      let settled = false
-      const timer = setTimeout(() => {
-        if (settled) {
-          return
+  private async finishUnexpectedTeardown(
+    browserPageId: string,
+    identity: OffscreenRendererIdentity | null
+  ): Promise<void> {
+    try {
+      await this.retirePageOwner(browserPageId)
+      if (identity && identity.osProcessId > 0) {
+        let expectedStartTimeMs = identity.expectedStartTimeMs
+        // Window contents are gone; a wedged renderer may still own the pid. One last probe
+        // binds reclaim to that live process when create-time capture had not finished.
+        if (expectedStartTimeMs === null) {
+          expectedStartTimeMs = await probeRendererStartTimeMs(
+            identity.osProcessId,
+            this.rendererProcessControl
+          )
         }
-        settled = true
-        cleanup()
-        // Why: about:blank and slow pages can resolve via timeout without a
-        // did-finish-load; treat that as success so the tab is still operable.
-        resolve()
-      }, LOAD_TIMEOUT_MS)
-
-      const onFinish = (): void => {
-        if (settled) {
-          return
-        }
-        settled = true
-        cleanup()
-        resolve()
+        await reclaimRendererProcess(identity.osProcessId, {
+          control: this.rendererProcessControl,
+          expectedStartTimeMs
+        })
       }
-      const onFail = (
-        _e: unknown,
-        errorCode: number,
-        errorDescription: string,
-        _validatedURL: string,
-        isMainFrame: boolean
-      ): void => {
-        // Why: subframe/iframe (e.g. ad/tracker) load failures also fire
-        // did-fail-load. Only the main frame failing means the page itself
-        // failed; ignore the rest or an otherwise-usable page gets rejected.
-        if (!isMainFrame) {
-          return
-        }
-        if (settled) {
-          return
-        }
-        settled = true
-        cleanup()
-        // Why: aborted loads (-3) happen on redirects/SPA navigations and are not
-        // real failures; the page is still usable.
-        if (errorCode === -3) {
-          resolve()
-          return
-        }
-        reject(new Error(`${errorDescription} (${errorCode})`))
-      }
-      const onDestroyed = (): void => {
-        if (settled) {
-          return
-        }
-        settled = true
-        cleanup()
-        resolve()
-      }
-      const cleanup = (): void => {
-        clearTimeout(timer)
-        wc.removeListener('did-finish-load', onFinish)
-        wc.removeListener('did-fail-load', onFail)
-        wc.removeListener('destroyed', onDestroyed)
-      }
-
-      wc.on('did-finish-load', onFinish)
-      wc.on('did-fail-load', onFail)
-      wc.once('destroyed', onDestroyed)
-      void wc.loadURL(url).catch(() => {
-        // loadURL rejects on aborted navigations; did-fail-load handles the rest.
-      })
-    })
+    } finally {
+      this.closingPageIds.delete(browserPageId)
+      this.rendererIdentities.delete(browserPageId)
+    }
   }
 }

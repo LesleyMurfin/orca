@@ -198,7 +198,9 @@ describe('offscreen browser tab reclaim', () => {
       browserManager,
       rendererProcessControl: {
         isAlive: (osProcessId) => !killed.includes(osProcessId),
-        kill: (osProcessId) => killed.push(osProcessId)
+        kill: (osProcessId) => killed.push(osProcessId),
+        // Matching start-time is required before SIGKILL (unknown identity must not kill).
+        readStartTimeMs: async () => 10_000
       }
     })
 
@@ -286,5 +288,69 @@ describe('offscreen browser tab reclaim', () => {
       })
     ).resolves.toBe('pid_reused')
     expect(control.kill).not.toHaveBeenCalled()
+  })
+
+  it('returns pid_reused and does not kill when expected start-time is unknown', async () => {
+    const control = { isAlive: () => true, kill: vi.fn() }
+
+    await expect(
+      reclaimRendererProcess(4321, {
+        control,
+        isShared: () => false,
+        expectedStartTimeMs: null,
+        graceMs: 0
+      })
+    ).resolves.toBe('pid_reused')
+    expect(control.kill).not.toHaveBeenCalled()
+  })
+
+  it('reclaims the renderer when the window is destroyed unexpectedly', async () => {
+    const browserManager = { registerOffscreenGuest: vi.fn(() => true), unregisterGuest: vi.fn() }
+    const killed: number[] = []
+    const backend = createBackend({
+      browserManager,
+      rendererProcessControl: {
+        isAlive: (osProcessId) => !killed.includes(osProcessId),
+        kill: (osProcessId) => killed.push(osProcessId),
+        readStartTimeMs: async () => 10_000
+      }
+    })
+
+    await openTab(backend, 'page-1')
+    const osProcessId = mocks.windows[0].webContents.getOSProcessId()
+
+    // destroy() marks the window gone before emitting, so shared-check won't see our own pid.
+    mocks.windows[0].destroy()
+    await vi.waitFor(() => expect(browserManager.unregisterGuest).toHaveBeenCalledWith('page-1'))
+    // Unexpected teardown probes start-time if needed, then kills after grace.
+    await vi.waitFor(() => expect(killed).toEqual([osProcessId]), { timeout: 3_000 })
+    expect(backend.getWebContentsId('page-1')).toBeNull()
+  })
+
+  it('refuses create while a close is still reclaiming at cap', async () => {
+    const browserManager = { registerOffscreenGuest: vi.fn(() => true), unregisterGuest: vi.fn() }
+    const backend = createBackend({
+      browserManager,
+      maxTabs: 1,
+      rendererProcessControl: {
+        // Stay alive through the grace window so reclaim holds the slot.
+        isAlive: () => true,
+        kill: vi.fn(),
+        readStartTimeMs: async () => null
+      }
+    })
+
+    await openTab(backend, 'page-1')
+    vi.useFakeTimers()
+    const closePromise = backend.closeTab('page-1')
+    // Enter reclaim grace without finishing it — slot must still be held.
+    await vi.advanceTimersByTimeAsync(25)
+    await expect(openTab(backend, 'page-2')).rejects.toMatchObject({
+      code: OFFSCREEN_BROWSER_TAB_CAPACITY_CODE
+    })
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    await closePromise
+    await expect(openTab(backend, 'page-2')).resolves.toEqual({ browserPageId: 'page-2' })
   })
 })

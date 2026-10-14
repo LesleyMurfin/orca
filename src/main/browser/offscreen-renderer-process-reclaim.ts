@@ -86,16 +86,21 @@ export async function reclaimRendererProcess(
       return 'shared'
     }
     if (Date.now() >= deadline) {
-      if (expectedStartTime !== null) {
-        const currentStartTime = await readStartTime(osProcessId).catch(() => null)
-        if (
-          currentStartTime === null ||
-          Math.abs(currentStartTime - expectedStartTime) > PROCESS_START_TIME_TOLERANCE_MS
-        ) {
-          // The original process exited and its PID was reused or is no longer verifiable.
-          return 'pid_reused'
-        }
+      // Why refuse the kill when start-time is unknown: a bare PID is not an identity.
+      // Between destroy and this deadline the OS may have reused the number for an
+      // unrelated process; SIGKILL without a matching start-time would hit that victim.
+      if (expectedStartTime === null) {
+        return 'pid_reused'
       }
+      const currentStartTime = await readStartTime(osProcessId).catch(() => null)
+      if (
+        currentStartTime === null ||
+        Math.abs(currentStartTime - expectedStartTime) > PROCESS_START_TIME_TOLERANCE_MS
+      ) {
+        // The original process exited and its PID was reused or is no longer verifiable.
+        return 'pid_reused'
+      }
+      // Recheck immediately before the signal: another tab may have attached mid-probe.
       if (isShared(osProcessId)) {
         return 'shared'
       }
