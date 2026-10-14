@@ -10,6 +10,7 @@ import type { BrowserPageZoomCommand } from '../../../../../shared/browser-page-
 import { paneChannel } from '../client-hosted-browser-pane-test-rig'
 import type { BrowserChromeShortcutScope, GrabIntent } from '../describe-page/browser-page-types'
 import { useBrowserPageKeyboardShortcuts } from './use-browser-page-keyboard-shortcuts'
+import { useAppStore } from '@/store'
 
 // Why: the chords are Cmd on macOS and Ctrl elsewhere, so the platform cannot be left to the runner.
 const MAC_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
@@ -293,11 +294,28 @@ describe('useBrowserPageKeyboardShortcuts in a split of two active browser panes
   })
 
   it('zooms only the targeted pane and does not overwrite default zoom for other tabs', () => {
-    const { a, b } = renderSplit('focused', 'inactive')
+    const prior = {
+      browserDefaultZoomLevel: useAppStore.getState().browserDefaultZoomLevel,
+      setBrowserDefaultZoomLevel: useAppStore.getState().setBrowserDefaultZoomLevel
+    }
+    const setBrowserDefaultZoomLevel = vi.fn()
+    const priorDefault = 1.5
+    useAppStore.setState({
+      browserDefaultZoomLevel: priorDefault,
+      setBrowserDefaultZoomLevel
+    })
 
-    act(() => zoomRequests.emit({ browserPageId: 'page-b', direction: 'in' }))
+    try {
+      const { a, b } = renderSplit('focused', 'inactive')
 
-    expect(b.webview.setZoomLevel).toHaveBeenCalledTimes(1)
-    expect(a.webview.setZoomLevel).not.toHaveBeenCalled()
+      act(() => zoomRequests.emit({ browserPageId: 'page-b', direction: 'in' }))
+
+      expect(b.webview.setZoomLevel).toHaveBeenCalledTimes(1)
+      expect(a.webview.setZoomLevel).not.toHaveBeenCalled()
+      expect(setBrowserDefaultZoomLevel).not.toHaveBeenCalled()
+      expect(useAppStore.getState().browserDefaultZoomLevel).toBe(priorDefault)
+    } finally {
+      useAppStore.setState(prior)
+    }
   })
 })
