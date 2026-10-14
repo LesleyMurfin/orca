@@ -2,6 +2,7 @@ import { throwIfSignalAborted, waitForPromiseWithSignal } from '../../shared/abo
 import { annotateWorktreeLocksFromAdmin } from '../../shared/git-worktree-admin'
 import { stat } from 'node:fs/promises'
 import type { GitWorktreeInfo } from '../../shared/worktree/types'
+import { normalizeMainWorktreePaths } from '../../shared/git-main-worktree-path-normalize'
 import { toWslExecutionSpace } from '../../shared/wsl-paths'
 import {
   hasUnsupportedRevParsePathFormatEcho,
@@ -178,31 +179,24 @@ async function normalizeMainWorktreePath(
   const mainIndex = worktrees.findIndex((worktree) => worktree.isMainWorktree)
   const mainWorktree = worktrees[mainIndex]
   // Why: under WSL, porcelain/rev-parse paths are Linux but repoPath is UNC; compare in Git-output
-  // space so the early-return matches and we skip a needless rev-parse per poll (runner still gets repoPath).
+  // space so path equality matches and we skip a needless rev-parse when bare-root or path==repo settles.
   const comparablePath = toWslExecutionSpace(repoPath)
-  if (!mainWorktree || areWorktreePathsEqual(mainWorktree.path, comparablePath)) {
+  if (!mainWorktree) {
     return worktrees
   }
 
-  const location = await readRepoLocation(repoPath, comparablePath, options)
-  if (!location) {
-    return worktrees
-  }
+  const needsLocation = !areWorktreePathsEqual(mainWorktree.path, comparablePath)
+  const location = needsLocation
+    ? await readRepoLocation(repoPath, comparablePath, options)
+    : undefined
 
-  // Why: only a separate-git-dir/submodule main worktree reports git-common-dir as its path; gate on
-  // that equality so we don't overwrite a linked worktree's real working root with its own toplevel.
-  if (!areWorktreePathsEqual(mainWorktree.path, location.commonDir)) {
-    return worktrees
-  }
-  // Why: a linked worktree of a bare/separate-git-dir repo passes the gate above too, but its toplevel
-  // is its own folder; relabelling would give the main row that folder's path and repeat it (#23631).
-  if (!areWorktreePathsEqual(location.gitDir, location.commonDir)) {
-    return worktrees
-  }
-
-  const normalized = [...worktrees]
-  normalized[mainIndex] = { ...mainWorktree, path: location.topLevel }
-  return normalized
+  return normalizeMainWorktreePaths({
+    worktrees,
+    mainIndex,
+    repoPath: comparablePath,
+    location,
+    arePathsEqual: areWorktreePathsEqual
+  })
 }
 
 export async function readWorktreeList(

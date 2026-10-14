@@ -85,6 +85,7 @@ async function createBareRepo(): Promise<string> {
   return realpath(repoPath)
 }
 
+
 afterEach(async () => {
   revParseTopLevelCalls.count = 0
   await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
@@ -225,4 +226,32 @@ describe('git worktree separate git dir paths', () => {
       isMainWorktree: true
     })
   })
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps bare as main when a bare+linked layout is listed from the checkout',
+    async () => {
+      // #23631: git-dir under bare/worktrees/* is not the common dir, so do not rewrite or
+      // steal Primary onto the linked checkout — bare stays the main entry.
+      const root = await mkdtemp(path.join(tmpdir(), 'orca-bare-linked-worktree-'))
+      tempRoots.push(root)
+      const sourcePath = await createCommittedRepo(root, 'source')
+      const barePath = path.join(root, '.bare')
+      execFileSync('git', ['clone', '--bare', '--quiet', sourcePath, barePath])
+      const checkoutPath = path.join(root, 'main')
+      git(barePath, ['worktree', 'add', '--quiet', checkoutPath, 'main'])
+      const resolvedBare = await realpath(barePath)
+      const resolvedCheckout = await realpath(checkoutPath)
+
+      const worktrees = await listWorktrees(resolvedCheckout)
+
+      expect(worktrees.find((worktree) => worktree.isMainWorktree)?.path).toBe(resolvedBare)
+      expect(worktrees.filter((worktree) => worktree.path === resolvedCheckout)).toEqual([
+        expect.objectContaining({
+          path: resolvedCheckout,
+          isBare: false,
+          isMainWorktree: false
+        })
+      ])
+    }
+  )
 })

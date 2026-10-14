@@ -7,6 +7,7 @@ import { GitHandlerOperationContext } from './git-handler-operation-context'
 import { isUnsupportedWorktreeListZError } from './git-handler-utils'
 import { parseWorktreeList } from '../shared/git-worktree-porcelain-parser'
 import type { GitWorktreeInfo } from '../shared/worktree/types'
+import { normalizeMainWorktreePaths } from '../shared/git-main-worktree-path-normalize'
 import {
   addWorktreeOp,
   areRelayWorktreePathsEqual,
@@ -117,31 +118,25 @@ export class GitHandlerWorktreeOperations extends GitHandlerOperationContext {
     throwIfSignalAborted(signal)
     const mainIndex = worktrees.findIndex((worktree) => worktree.isMainWorktree === true)
     const mainWorktree = worktrees[mainIndex]
-    const mainPath = mainWorktree?.path ?? ''
     // Expand `~` so legacy tilde SSH repo paths match git's absolute path, sparing a rev-parse per poll.
     const resolvedRepoPath = expandTilde(repoPath)
-    if (!mainPath || areRelayWorktreePathsEqual(mainPath, resolvedRepoPath)) {
+    if (!mainWorktree) {
       return worktrees
     }
 
-    const location = await this.readRepoLocation(resolvedRepoPath, signal)
+    const needsLocation = !areRelayWorktreePathsEqual(mainWorktree.path, resolvedRepoPath)
+    const location = needsLocation
+      ? await this.readRepoLocation(resolvedRepoPath, signal)
+      : undefined
     throwIfSignalAborted(signal)
-    if (!location) {
-      return worktrees
-    }
 
-    // Why: only separate-git-dir/submodule repos have main entry == git-common-dir; gate on it so we don't clobber a linked worktree's real root.
-    if (!areRelayWorktreePathsEqual(mainPath, location.commonDir)) {
-      return worktrees
-    }
-    // Why: a linked worktree of a bare/separate-git-dir repo passes the gate above too; relabelling would repeat its path (#23631).
-    if (!areRelayWorktreePathsEqual(location.gitDir, location.commonDir)) {
-      return worktrees
-    }
-
-    const normalized = [...worktrees]
-    normalized[mainIndex] = { ...mainWorktree, path: location.topLevel }
-    return normalized
+    return normalizeMainWorktreePaths({
+      worktrees,
+      mainIndex,
+      repoPath: resolvedRepoPath,
+      location,
+      arePathsEqual: areRelayWorktreePathsEqual
+    })
   }
 
   async listWorktrees(params: Record<string, unknown>, context?: RequestContext) {
