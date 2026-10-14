@@ -12,7 +12,7 @@ keywords:
   - orca-emulator-android skill
 ---
 
-Orca ships **skills** that agents install into their skill directories. Public install packages are **hybrid discovery stubs**: short `SKILL.md` files that tell the agent _when_ to engage Orca and how to load the full guide from the running CLI. Command flags live in the binary so they cannot drift from the app version.
+Orca ships **skills** that agents install into their skill directories. Public install packages are **hybrid discovery stubs**: short `SKILL.md` files that tell the agent _when_ to engage Orca and how to load the full guide from the running CLI. Command flags live in the binary, so the flags a stub resolves through `orca skills get` cannot drift from the app version. That guarantee covers skill guides only — setup instructions fetched over the web, such as [the agent setup prompt](/docs/agent-setup/prompt.md), are served live and unversioned, so an agent must read them and confirm privileged steps with you before running them.
 
 ## Installable Orca skills
 
