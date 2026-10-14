@@ -205,6 +205,7 @@ describe('GitHandler', () => {
           ],
           { stdio: 'pipe' }
         )
+        const resolvedBare = await fs.realpath(bareRepoPath)
         const resolvedLinked = await fs.realpath(linkedWorktreePath)
 
         // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the registered request returns the worktree list shape.
@@ -214,12 +215,16 @@ describe('GitHandler', () => {
         const desktopResult = await readWorktreeList(resolvedLinked)
 
         expect(relayResult).toEqual(desktopResult)
-        expect(relayResult).toHaveLength(1)
-        expect(relayResult[0]).toMatchObject({
-          path: resolvedLinked,
-          isBare: false,
-          isMainWorktree: true
-        })
+        expect(relayResult.find((worktree) => worktree.isMainWorktree === true)?.path).toBe(
+          resolvedBare
+        )
+        expect(relayResult.filter((worktree) => worktree.path === resolvedLinked)).toEqual([
+          expect.objectContaining({
+            path: resolvedLinked,
+            isBare: false,
+            isMainWorktree: false
+          })
+        ])
       }
     )
 

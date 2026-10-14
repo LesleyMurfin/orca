@@ -85,25 +85,6 @@ async function createBareRepo(): Promise<string> {
   return realpath(repoPath)
 }
 
-async function createBareRepoWithLinkedWorktree(): Promise<{
-  barePath: string
-  checkoutPath: string
-  head: string
-}> {
-  const root = await mkdtemp(path.join(tmpdir(), 'orca-bare-linked-worktree-'))
-  tempRoots.push(root)
-  const sourcePath = await createCommittedRepo(root, 'source')
-  const barePath = path.join(root, '.bare')
-  execFileSync('git', ['clone', '--bare', '--quiet', sourcePath, barePath])
-  const checkoutPath = path.join(root, 'main')
-  git(barePath, ['worktree', 'add', '--quiet', checkoutPath, 'main'])
-  const head = git(barePath, ['rev-parse', 'refs/heads/main']).trim()
-  return {
-    barePath: await realpath(barePath),
-    checkoutPath: await realpath(checkoutPath),
-    head
-  }
-}
 
 afterEach(async () => {
   revParseTopLevelCalls.count = 0
@@ -247,27 +228,30 @@ describe('git worktree separate git dir paths', () => {
   })
 
   it.skipIf(process.platform === 'win32')(
-    'merges the bare main entry into the checkout it relocates onto',
+    'keeps bare as main when a bare+linked layout is listed from the checkout',
     async () => {
-      // Bare + external worktrees (`<root>/.bare` plus `<root>/main`): the bare
-      // main entry's git-common-dir is its own path, so the relocation target is
-      // a checkout git already listed. Emitting both leaves two rows sharing one
-      // path (and one worktreeId), and the git-derived row wins downstream dedup
-      // — dropping isMainWorktree so the checkout loses its Primary badge.
-      const { barePath, checkoutPath, head } = await createBareRepoWithLinkedWorktree()
+      // #23631: git-dir under bare/worktrees/* is not the common dir, so do not rewrite or
+      // steal Primary onto the linked checkout — bare stays the main entry.
+      const root = await mkdtemp(path.join(tmpdir(), 'orca-bare-linked-worktree-'))
+      tempRoots.push(root)
+      const sourcePath = await createCommittedRepo(root, 'source')
+      const barePath = path.join(root, '.bare')
+      execFileSync('git', ['clone', '--bare', '--quiet', sourcePath, barePath])
+      const checkoutPath = path.join(root, 'main')
+      git(barePath, ['worktree', 'add', '--quiet', checkoutPath, 'main'])
+      const resolvedBare = await realpath(barePath)
+      const resolvedCheckout = await realpath(checkoutPath)
 
-      const worktrees = await listWorktrees(checkoutPath)
+      const worktrees = await listWorktrees(resolvedCheckout)
 
-      expect(worktrees.filter((worktree) => worktree.path === checkoutPath)).toEqual([
+      expect(worktrees.find((worktree) => worktree.isMainWorktree)?.path).toBe(resolvedBare)
+      expect(worktrees.filter((worktree) => worktree.path === resolvedCheckout)).toEqual([
         expect.objectContaining({
-          path: checkoutPath,
-          branch: 'refs/heads/main',
-          head,
+          path: resolvedCheckout,
           isBare: false,
-          isMainWorktree: true
+          isMainWorktree: false
         })
       ])
-      expect(worktrees.map((worktree) => worktree.path)).not.toContain(barePath)
     }
   )
 })
