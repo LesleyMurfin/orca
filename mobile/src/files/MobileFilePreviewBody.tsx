@@ -5,6 +5,7 @@ import { colors } from '../theme/mobile-theme'
 import type { MobileFilePreviewResult } from './mobile-file-preview-request'
 import { MobileFileMarkdownPreview } from './MobileFileMarkdownPreview'
 import { MobileFilePreviewEditableSource } from './MobileFilePreviewEditableSource'
+import { MobileHtmlPreview } from '../components/MobileHtmlPreview'
 import { MobileFilePreviewSourceText } from './MobileFilePreviewSourceText'
 import type { MobileFilePreviewLineColumn } from './mobile-file-preview-line-column'
 import { filePreviewStyles as styles } from './mobile-file-preview-styles'
@@ -103,12 +104,17 @@ export function MobileFilePreviewBody({ preview, ...options }: Props) {
     return options.editable ? (
       <EditablePreviewSource {...options} />
     ) : (
-      <MobileFilePreviewSourceText
-        relativePath={options.relativePath}
-        content={preview.content}
-        truncated={preview.truncated}
-        byteLength={preview.byteLength}
-        initialLine={options.lineColumn?.line}
+      <MobileHtmlPreview
+        html={preview.content}
+        renderSource={() => (
+          <MobileFilePreviewSourceText
+            relativePath={options.relativePath}
+            content={preview.content}
+            truncated={preview.truncated}
+            byteLength={preview.byteLength}
+            initialLine={options.lineColumn?.line}
+          />
+        )}
       />
     )
   }

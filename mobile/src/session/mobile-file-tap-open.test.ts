@@ -283,6 +283,11 @@ describe('openMobileFileTap', () => {
       { worktree: 'id:wt-1', relativePath: 'public/report #1?.html' },
       { timeoutMs: 15_000 }
     )
+    // Type-level: OpenMobileFileTapOptions has no openBrowser. Runtime: only path-resolve + files.open.
+    expect(client.sendRequest.mock.calls.map((call) => call[0])).toEqual([
+      'files.resolveTerminalPath',
+      'files.open'
+    ])
   })
 
   it('passes the terminal cwd when resolving relative taps', async () => {

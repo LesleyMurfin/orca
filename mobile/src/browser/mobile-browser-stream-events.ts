@@ -47,7 +47,8 @@ export function handleBrowserScreencastEvent(args: HandleScreencastEventArgs): v
   } = args
 
   if (event.type === 'ready') {
-    clearStartupTimer()
+    // Why: ready means the host subscribed, not that pixels exist. Clearing the
+    // first-frame timer here left busy=false + no frame + no error forever.
     if (busyRef.current) {
       busyRef.current = false
       setBusy(false)

@@ -1,7 +1,7 @@
 import { Buffer } from 'buffer'
 import { createElement } from 'react'
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   BrowserScreencastOpcode,
   type BrowserScreencastFrame
@@ -147,7 +147,15 @@ function errorMessages(renderer: ReactTestRenderer): string[] {
 
 describe('MobileBrowserPane with a stream that reports ready but sends no frames', () => {
   // Why: a host that stops painting still reports `ready`, so the pane used to clear its
-  // indicator and leave an unexplained black rectangle.
+  // indicator and leave an unexplained black rectangle. Keep the spinner until pixels arrive
+  // or the first-frame timer surfaces the timeout error.
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('keeps showing the loading indicator instead of an empty black pane', async () => {
     const { renderer, stream } = await renderStreamingPane()
 
@@ -156,6 +164,22 @@ describe('MobileBrowserPane with a stream that reports ready but sends no frames
     })
 
     expect(spinnerCount(renderer)).toBeGreaterThan(0)
+  })
+
+  it('surfaces the startup timeout when ready never produces frames', async () => {
+    const { renderer, stream } = await renderStreamingPane()
+
+    act(() => {
+      stream.listener({ type: 'ready', tab: { url: 'https://dashboard.example' } })
+    })
+    expect(spinnerCount(renderer)).toBeGreaterThan(0)
+
+    act(() => {
+      vi.advanceTimersByTime(15_000)
+    })
+
+    expect(errorMessages(renderer)).toContain('Browser stream timed out.')
+    expect(spinnerCount(renderer)).toBe(0)
   })
 
   it('clears the indicator once real pixels arrive', async () => {
