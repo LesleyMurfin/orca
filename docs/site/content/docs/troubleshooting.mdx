@@ -149,7 +149,7 @@ the host works. Orca already recovers: it removes the socket and retries with Co
 disabled for that session, so one occurrence is recovery, not a bug. Investigate when it repeats.
 
 ```bash
-ls -la "${XDG_RUNTIME_DIR:-/tmp}/orca-ssh"* 2>/dev/null
+ls -la ${XDG_RUNTIME_DIR:+"$XDG_RUNTIME_DIR/orca-ssh"} "${TMPDIR:-/tmp}/orca-ssh-$(id -u)" 2>/dev/null
 ssh -O check -S <socket-path> <host>
 ssh -O exit  -S <socket-path> <host>
 ```

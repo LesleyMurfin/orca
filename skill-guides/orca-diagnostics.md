@@ -143,7 +143,8 @@ stale `daemon.log` on any host that exports it, and do not read that absence as 
 
 Orca's terminals are hosted by a detached daemon process that outlives an app restart. It writes
 lifecycle events — never terminal input/output and never tokens — to `daemon.log` in the logs
-directory, as NDJSON with the same rotation discipline.
+directory, as NDJSON. Rotation is size-based like the trace sink but tighter by default:
+`daemon.log` → `.1` → `.2`, 5 MB × 3 files (active + two rotated), not the trace's 10 MB × 10.
 
 Its runtime files live in `<userData>/daemon/`, versioned by wire protocol so an older build's
 daemon is never reused after a breaking change. One exception: when `<userData>` is long enough
@@ -275,7 +276,7 @@ same connection with ControlMaster disabled for the rest of the session — so a
 the logs is recovery, not a bug. Investigate when it repeats on every connect.
 
 ```bash
-ls -la "${XDG_RUNTIME_DIR:-/tmp}/orca-ssh"* 2>/dev/null
+ls -la ${XDG_RUNTIME_DIR:+"$XDG_RUNTIME_DIR/orca-ssh"} "${TMPDIR:-/tmp}/orca-ssh-$(id -u)" 2>/dev/null
 ssh -O check -S "<socket-path>" <host>     # "Master running" or an error
 ssh -O exit  -S "<socket-path>" <host>     # ask the master to exit cleanly
 ```
@@ -310,17 +311,21 @@ Do not escalate immediately. Resolve configuration or environment issues locally
    - *Log limits:* Extract only the relevant 10-20 line snippet of the stack trace or failure envelope. Never dump the entire log file into the issue body.
    - *Redaction:* Redact any PII, JWTs, absolute workspace paths (e.g., `/Users/name/work/`), and internal SSH hostnames before presenting the draft.
 3. **Ask for approval:** Show the drafted report or feature request to the user and ask if they want to proceed.
-4. **Execute:** 
+4. **Execute:**
    - If the issue is public-safe, use the `gh` CLI (e.g., `gh issue create -R stablyai/orca ...`) to file it automatically on the user's behalf. Once created, provide the user with the direct URL to the new GitHub issue.
    - If the `gh` CLI is unavailable or unauthenticated, provide the pre-packaged markdown and a direct browser link to `https://github.com/stablyai/orca/issues/new`.
    - If the user prefers Discord, provide a concise, Discord-formatted summary block (with code fences) ready for them to copy/paste into the `#support` channel.
    - If the logs are sensitive, instruct the user to open **Help → Send Feedback** and provide the pre-packaged markdown for them to paste into the dialog.
+
 ## Action gates
 
-When investigating deep diagnostic states (such as Electron UI freezes, unhandled IPC rejections, SSH ControlMaster zombie sockets, ghost tabs, or daemon crashes), do not guess at the remediation steps. Instead, read the definitive SRE playbooks located in the public documentation:
+When investigating deep diagnostic states (Electron UI freezes, unhandled IPC rejections, SSH
+ControlMaster zombie sockets, ghost tabs, or daemon crashes), do not invent remediation steps.
+Use this guide first, then the public troubleshooting SSOT (same deep-diagnostics content the
+docs site publishes):
 
-```bash
-cat docs/site/content/docs/troubleshooting.mdx
-```
+[https://www.onorca.dev/docs/troubleshooting](https://www.onorca.dev/docs/troubleshooting)
 
-This document contains the exact `jq` filters, socket probe commands, and offline SQLite recovery steps needed to resolve complex faults.
+In a full Orca source checkout only, that page is authored from
+`docs/site/content/docs/troubleshooting.mdx`. Installed agents should prefer the public URL or
+`ORCA skills get orca-diagnostics --full` — never assume a monorepo path exists on the user's machine.
