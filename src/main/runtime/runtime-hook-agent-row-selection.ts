@@ -76,7 +76,7 @@ export function selectFreshExplicitAgentStatus(args: {
   stateStartedAt: number
 } | null {
   const row = selectFreshExplicitAgentStatusRow({
-    handles: [args.handle],
+    handles: args.handle ? [args.handle] : [],
     paneKeys: args.paneKey ? [args.paneKey] : [],
     hookRows: args.hookRows
   })
