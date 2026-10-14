@@ -11,6 +11,7 @@ import {
   writePendingSendCache,
   type NativeChatPendingSend
 } from './native-chat-pending'
+import { clearQueuedOnPendingSends } from './native-chat-clear-queued-pending-sends'
 import type { NativeChatDeliveryNotice } from './NativeChatMessageRow'
 import type { ReadState } from './native-chat-live-session-contract'
 
@@ -108,6 +109,10 @@ export function useNativeChatPendingDelivery(args: {
     () => save((entries) => entries.filter((entry) => entry.delivery)),
     [save]
   )
+  const clearQueued = useCallback(
+    () => save((entries) => clearQueuedOnPendingSends(entries)),
+    [save]
+  )
 
   // A lost acknowledgment is the only unconfirmed trigger: an ordinary send, including one Claude
   // queues mid-turn, has no transport doubt and stays pending until its row lands.
@@ -178,5 +183,5 @@ export function useNativeChatPendingDelivery(args: {
     }
     return result
   }, [pending, cancel])
-  return { pending, record, cancel, reject, holdUnconfirmed, clear, notices }
+  return { pending, record, cancel, reject, holdUnconfirmed, clear, clearQueued, notices }
 }

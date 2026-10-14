@@ -91,10 +91,10 @@ function supersedes(candidate: NativeChatMessage, existing: NativeChatMessage): 
 }
 
 // Why: the tail bubbles form fixed tiers that timestamps alone can't express.
-// Host-queued rows (`queued: true`, accepted but not yet handed to the agent) wait
-// after the live turn. The streaming preview is the in-progress reply. Everything
-// else — including the optimistic echo for the prompt that triggered that reply —
-// sorts with ordinary transcript order so the prompt stays above its answer.
+// Mid-turn follow-ups (`queued: true`) wait after the live turn. The streaming
+// preview is the in-progress reply. Everything else — including the optimistic
+// echo for the prompt that triggered that reply — sorts with ordinary transcript
+// order so the prompt stays above its answer.
 function messageSortRank(message: NativeChatMessage): number {
   if (message.queued) {
     return 2

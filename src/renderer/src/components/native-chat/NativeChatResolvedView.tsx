@@ -33,6 +33,7 @@ import {
   shouldPruneLaunchPrompt
 } from './native-chat-pending'
 import { useNativeChatPendingDelivery } from './use-native-chat-pending-delivery'
+import { useClearNativeChatQueuedWhenIdle } from './use-clear-native-chat-queued-when-idle'
 import {
   appendCommandMarkerCache,
   applyCommandMarkerBoundaries,
@@ -156,14 +157,13 @@ export function NativeChatResolvedView({
     [paneKey, agent, sessionId]
   )
   const delivery = useNativeChatPendingDelivery({ paneKey, agent, session })
-  const { pending, record, clear } = delivery
+  const { pending, record, clear, clearQueued } = delivery
   // Slash commands aren't chat turns, so they get a small local "Ran /clear"
   // system line instead of a user bubble. Capped + cached per conversation.
   const [commandMarkers, setCommandMarkers] = useState<NativeChatCommandMarker[]>(() =>
     readCommandMarkerCache(commandMarkerScope)
   )
-  // Command markers are session-scoped because slash commands like /clear are
-  // local feedback for a specific transcript boundary.
+  // Command markers are session-scoped (/clear is local transcript feedback).
   useEffect(() => {
     setCommandMarkers(readCommandMarkerCache(commandMarkerScope))
     setWorkingInterrupted(false)
@@ -237,8 +237,7 @@ export function NativeChatResolvedView({
     isFocusedGroup,
     composerReady: shownPromptCard === null && targetPtyId !== null && canSend
   })
-
-  // Active pending echoes above stream; queued follow-ups wait after it via rank.
+  // Pending above stream; queued follow-ups wait after via rank.
   const pendingMessages = useMemo(
     () => pendingSendsAsMessages(pending, sessionAfterCommandBoundaries.messages),
     [pending, sessionAfterCommandBoundaries.messages]
@@ -260,6 +259,7 @@ export function NativeChatResolvedView({
     liveWorking,
     hookPreviewIsToolOutput
   ])
+  useClearNativeChatQueuedWhenIdle(liveWorking, streamingText, clearQueued)
   const sessionWithPending = useMemo<typeof session>(() => {
     if (pending.length === 0 && commandMarkers.length === 0 && !streamingText) {
       return sessionAfterCommandBoundaries
@@ -282,9 +282,7 @@ export function NativeChatResolvedView({
     },
     [liveWorking, record, streamingText]
   )
-  // Derive the view state from the pending-augmented session so a send into an
-  // otherwise-empty conversation flips to the list (showing the queued bubble)
-  // instead of staying on the empty state.
+  // Pending-augmented session drives empty→list flip on first send.
   const viewState = selectNativeChatViewState(sessionWithPending)
 
   const isConversation = viewState.kind === 'ready'
