@@ -64,15 +64,15 @@ const CROSS_KIND_DIRECTIVES = [
   'StartLimitBurst'
 ]
 
-// Why pinned literals rather than a cross-file comparison: the same system unit also ships in
-// skill-guides/orca-server.md, skill-guides/orca-server/references/systemd-supervision.md, and
-// docs/site/content/docs/remote-servers.mdx, which live outside this package's test scope.
-// Those copies pin the identical list in config/scripts/remote-servers-doc-contract.test.mjs, so
-// a directive that drifts on either side fails on that side instead of going unnoticed.
+// Why pinned literals rather than a cross-file comparison: this docs-site package only
+// owns prompt.md. The monorepo SSOT (config/systemd/*.service) and skill-guide copies land
+// with the server pack (LesleyMurfin/orca#60) under config/scripts/orca-serve-unit-template-sync.test.mjs.
+// Until that pack merges, prompt.md is the sole unit body on this branch — keep these pins
+// identical to config/systemd/orca-serve.service load-bearing lines so the two PRs do not fight.
 const SYSTEM_UNIT_DIRECTIVES = [
   'Description=Orca runtime server',
   'Environment=HOME=/home/orca',
-  'Environment=XDG_RUNTIME_DIR=/run/user/1001',
+  'Environment=XDG_RUNTIME_DIR=/run/user/<uid>',
   'ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>',
   'Group=orca',
   'KillMode=mixed',

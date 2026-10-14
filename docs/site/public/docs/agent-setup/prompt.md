@@ -43,7 +43,7 @@ When a user reports an issue, ask the diagnostic classification questions before
 
 ### Diagnostic Gate 0: Discover Environment & Classify Domain
 1. **Operating Environment**:
-   - Are you running **Orca Desktop** (macOS, Windows, Linux) or a headless **Orca Server (`orca-ide serve`)**?
+   - Are you running **Orca Desktop** (macOS, Windows, Linux) or a headless **Orca Server** (on Linux the CLI is `orca-ide serve`; bare `orca` is the GNOME screen reader)?
    - If remote, are you connecting over a local LAN, Tailscale, or an OpenSSH multiplexed connection?
 2. **Domain Classification**:
    | Domain | Symptoms | Decisive Verification Question / Test |
@@ -95,7 +95,7 @@ User=orca
 Group=orca
 WorkingDirectory=/home/orca
 Environment=HOME=/home/orca
-Environment=XDG_RUNTIME_DIR=/run/user/1001
+Environment=XDG_RUNTIME_DIR=/run/user/<uid>
 ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>
 Restart=on-failure
 RestartSec=5
@@ -109,7 +109,7 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 ```
-*(Replace `1001` with `id -u orca`, and set `--pairing-address` to the reachable LAN/Tailscale address. Resolve the absolute path with `readlink -f "$(command -v orca-ide)"` as the service user and write that in `ExecStart=`: the deb/rpm symlink is `/usr/bin/orca-ide`, an AppImage registers `~/.local/bin/orca-ide`, and a bare `orca` on Linux is the GNOME Orca screen reader).*
+*(Replace `<uid>` with `id -u orca`, and set `--pairing-address` to the reachable LAN/Tailscale address. Resolve the absolute path with `readlink -f "$(command -v orca-ide)"` as the service user and write that in `ExecStart=`: the deb/rpm symlink is `/usr/bin/orca-ide`, an AppImage registers `~/.local/bin/orca-ide`, and a bare `orca` on Linux is the GNOME Orca screen reader).*
 
 Enable and start:
 ```bash
@@ -136,13 +136,15 @@ If running under your own user account without root permissions:
 
    [Service]
    Type=simple
-   ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-ip-or-tailscale>
+   ExecStart=/usr/bin/orca-ide serve --port 6768 --pairing-address <server-tailscale-ip-or-hostname>
    Restart=on-failure
    RestartSec=5
    RestartPreventExitStatus=3 78
    KillMode=mixed
    KillSignal=SIGTERM
    TimeoutStopSec=45
+   StandardOutput=journal
+   StandardError=journal
 
    [Install]
    WantedBy=default.target
