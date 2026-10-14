@@ -260,26 +260,34 @@ describe('remoteWorkspace:setForConnectedTargets session fallback', () => {
   })
 })
 
+function createGap03OfflineStore(
+  activeConnectionIdsAtShutdown: string[]
+): InstanceType<typeof Store> {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'orca-ssh-partition-gap03-')))
+  directories.push(dir)
+  const store = createSqliteTestStore(Store, { dataFile: join(dir, 'orca-data.json') })
+  // executionHostId required so catalogAttribution marks WORKTREE_ID confirmed (GAP-03 signal).
+  store.addRepo(remoteRepo(REPO_ID, '/remote/checkout', TARGET_ID, SSH_HOST_ID))
+  store.setWorkspaceSession({
+    ...getDefaultWorkspaceSession(),
+    // No base tabsByWorktree row at all — the offline / ordinary-restart shape for SSH-routed tabs.
+    activeConnectionIdsAtShutdown
+  })
+  store.setWorkspaceSession(
+    {
+      ...getDefaultWorkspaceSession(),
+      tabsByWorktree: { [WORKTREE_ID]: [runtimeAuthoredTab()] }
+    },
+    SSH_HOST_ID
+  )
+  return store
+}
+
 describe('remoteWorkspace:setForConnectedTargets GAP-03 offline fallback', () => {
   it('does not re-publish stale ssh-partition tabs after a genuine offline gap when session is omitted', async () => {
     // Renderer hydration declines these; the shipping debounced writer used to omit `session` and
     // let main re-adopt the parked ssh mirror into the replace-session payload.
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'orca-ssh-partition-gap03-')))
-    const store = new Store({ dataFile: join(dir, 'orca-data.json') })
-    stores.push(store)
-    store.addRepo(remoteRepo(REPO_ID, '/remote/checkout', TARGET_ID, SSH_HOST_ID))
-    store.setWorkspaceSession({
-      ...getDefaultWorkspaceSession(),
-      // Disconnected at last quit — GAP-03 precondition. No base tabsByWorktree row at all.
-      activeConnectionIdsAtShutdown: []
-    })
-    store.setWorkspaceSession(
-      {
-        ...getDefaultWorkspaceSession(),
-        tabsByWorktree: { [WORKTREE_ID]: [runtimeAuthoredTab()] }
-      },
-      SSH_HOST_ID
-    )
+    const store = createGap03OfflineStore([])
 
     await publishToConnectedTarget(store)
 
@@ -287,21 +295,7 @@ describe('remoteWorkspace:setForConnectedTargets GAP-03 offline fallback', () =>
   })
 
   it('still publishes ssh-partition tabs when the client quit while connected (ordinary restart)', async () => {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'orca-ssh-partition-gap03-connected-')))
-    const store = new Store({ dataFile: join(dir, 'orca-data.json') })
-    stores.push(store)
-    store.addRepo(remoteRepo(REPO_ID, '/remote/checkout', TARGET_ID, SSH_HOST_ID))
-    store.setWorkspaceSession({
-      ...getDefaultWorkspaceSession(),
-      activeConnectionIdsAtShutdown: [TARGET_ID]
-    })
-    store.setWorkspaceSession(
-      {
-        ...getDefaultWorkspaceSession(),
-        tabsByWorktree: { [WORKTREE_ID]: [runtimeAuthoredTab()] }
-      },
-      SSH_HOST_ID
-    )
+    const store = createGap03OfflineStore([TARGET_ID])
 
     await publishToConnectedTarget(store)
 

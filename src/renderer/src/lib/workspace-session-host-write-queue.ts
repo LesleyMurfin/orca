@@ -72,7 +72,7 @@ export function enqueueHostPartitionWrite<T>(
   const state = options?.state
   const parsed = parseExecutionHostId(hostId)
   const targetId = parsed?.kind === 'ssh' ? parsed.targetId : null
-  const carriesParkedShadowRows = options?.carriesParkedShadowRows ?? true
+  const carriesParkedShadowRows = options?.carriesParkedShadowRows ?? false
   const preparedWithoutTestimony =
     targetId !== null && state && carriesParkedShadowRows
       ? !hostHasAnsweredForTarget(state, targetId)

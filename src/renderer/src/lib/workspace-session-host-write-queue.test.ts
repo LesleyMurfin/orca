@@ -295,7 +295,8 @@ describe('workspace-session-host-write-queue', () => {
     const writeFn = vi.fn().mockResolvedValue('testimony-guarded-res')
 
     const guardedWrite = enqueueHostPartitionWrite(hostId, initialTestimonyState, writeFn, {
-      getLiveState: () => liveState
+      getLiveState: () => liveState,
+      carriesParkedShadowRows: true
     })
 
     // Live testimony arrives before the active write finishes, updating liveState
@@ -313,6 +314,49 @@ describe('workspace-session-host-write-queue', () => {
     expect(resActive).toBe('active-done')
     expect(resGuarded).toBeNull()
     expect(writeFn).not.toHaveBeenCalled()
+  })
+
+  it('does not discard a pre-testimony write by default when carriesParkedShadowRows is omitted', async () => {
+    resetHostPartitionWriteStateForTest()
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: test fixture mock
+    const hostId = 'ssh:target-1' as ExecutionHostId
+
+    const initialTestimonyState: RemoteWorkspaceTestimonyState = Object.freeze({
+      remoteWorkspaceHydratedTargetIds: new Set<string>(),
+      remoteWorkspaceSyncStatusByTargetId: {}
+    })
+
+    let liveState: RemoteWorkspaceTestimonyState = initialTestimonyState
+
+    let resolveActive: (() => void) | undefined
+    const activeBlocker = new Promise<void>((resolve) => {
+      resolveActive = resolve
+    })
+
+    const activeWrite = enqueueHostPartitionWrite(hostId, async () => {
+      await activeBlocker
+      return 'active-done'
+    })
+
+    const writeFn = vi.fn().mockResolvedValue('default-opt-in-res')
+
+    const guardedWrite = enqueueHostPartitionWrite(hostId, initialTestimonyState, writeFn, {
+      getLiveState: () => liveState
+    })
+
+    liveState = {
+      remoteWorkspaceHydratedTargetIds: new Set(['target-1']),
+      remoteWorkspaceSyncStatusByTargetId: {
+        'target-1': { phase: 'idle' }
+      }
+    }
+
+    resolveActive?.()
+
+    const [resActive, resGuarded] = await Promise.all([activeWrite, guardedWrite])
+    expect(resActive).toBe('active-done')
+    expect(resGuarded).toBe('default-opt-in-res')
+    expect(writeFn).toHaveBeenCalledOnce()
   })
 
   it('does not discard a pre-testimony write when carriesParkedShadowRows is false even if testimony arrives before dequeuing', async () => {

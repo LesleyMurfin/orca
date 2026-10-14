@@ -339,14 +339,19 @@ export function adoptStrandedHostPartitionSession(
   // truth (zero tabs), not a blind spot — so a host row that still names real tabs here is this
   // client's stale pre-disconnect cache, not evidence of anything live. Declining leaves the row
   // in place for `partitionRowsTheWriteWontReturn` to park rather than deleting it.
+  //
+  // Why originalBase, not the post-supersede `base`: main's ownedSessionKeys path strips base
+  // residue (including empty #12723 placeholders) before adoption so the host's live tabs can
+  // fully replace. That strip must not rewrite "base held an empty placeholder" into "base never
+  // named this worktree" — the latter is the offline-gap signal, the former is the split repair.
   const hostTabsByWorktree = host.tabsByWorktree ?? {}
-  const baseTabs = base.tabsByWorktree ?? {}
+  const originalBaseTabs = originalBase.tabsByWorktree ?? {}
   for (const workspaceId of options.reconciledWorktreeIds ?? []) {
     const canonicalKey = worktreeWorkspaceKey(workspaceId)
     const hasBaseKey =
-      Object.hasOwn(baseTabs, workspaceId) ||
-      Object.hasOwn(baseTabs, canonicalKey) ||
-      Object.keys(baseTabs).some(
+      Object.hasOwn(originalBaseTabs, workspaceId) ||
+      Object.hasOwn(originalBaseTabs, canonicalKey) ||
+      Object.keys(originalBaseTabs).some(
         (key) => normalizeWorkspaceSessionKeyToWorkspaceId(key) === workspaceId
       )
     if (!adoptable.has(workspaceId) || hasBaseKey) {
