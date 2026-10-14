@@ -14,6 +14,7 @@ import {
   localizeTerminalSpawnHints,
   withoutTerminalSpawnIssueRequest
 } from './terminal-spawn-error-display'
+import { REMOTE_TERMINAL_CLOSED_MARKER } from './terminal-error-accumulation'
 
 const SSH_PREFIX = 'SSH connection is not active'
 // Produced by pty-connection.ts reportError() when a PTY reattach can't reach its SSH host.
@@ -30,10 +31,9 @@ const STALE_DAEMON_CWD_MARKERS = [
 ]
 // Thrown by ipc/pty.ts when a persisted pane owner can't be proven alive or dead (STA-3536).
 const PANE_OWNER_UNVERIFIED_MARKER = 'terminal_pane_owner_unverified'
-// remote-runtime-pty-transport.ts surfaces this English literal as a wire-level marker, so it is
-// translated here rather than at the source -- otherwise the banner mixes English with the
-// localized chrome around it (#9194).
-const REMOTE_TERMINAL_CLOSED_MARKER = 'Remote terminal was closed.'
+// remote-runtime-pty-transport.ts surfaces REMOTE_TERMINAL_CLOSED_MARKER as a wire-level
+// English literal; translated here rather than at the source so the banner does not mix
+// English with the localized chrome around it (#9194).
 // Why: a lone /g regex carries lastIndex across .test() calls, so each token gets a stateless test form and a /g replace form.
 function tokenPattern(source: string): { match: RegExp; replaceAll: RegExp } {
   return { match: new RegExp(source), replaceAll: new RegExp(source, 'g') }
@@ -99,6 +99,17 @@ export function isExplainedTerminalError(error: string): boolean {
     )
 }
 
+export function isRemoteTerminalClosedError(error: string): boolean {
+  const closedMarker = translate(
+    'auto.components.terminal.pane.TerminalErrorToast.remoteTerminalClosed',
+    REMOTE_TERMINAL_CLOSED_MARKER
+  )
+  // Full-line equality only — mid-line substrings must not unlock Close Pane.
+  return error
+    .split('\n')
+    .some((line) => line === REMOTE_TERMINAL_CLOSED_MARKER || line === closedMarker)
+}
+
 export function isPaneOwnerUnverifiedError(error: string): boolean {
   const lines = error.split('\n').filter((line) => line.length > 0)
   return lines.length > 0 && lines.every((line) => line.includes(PANE_OWNER_UNVERIFIED_MARKER))
@@ -160,7 +171,7 @@ export function humanizeTerminalError(error: string): string {
     humanized = humanized.replaceAll(REMOTE_TERMINAL_CLOSED_MARKER, () =>
       translate(
         'auto.components.terminal.pane.TerminalErrorToast.remoteTerminalClosed',
-        'Remote terminal was closed.'
+        REMOTE_TERMINAL_CLOSED_MARKER
       )
     )
   }
@@ -190,6 +201,7 @@ export function TerminalErrorToast({
   error,
   paneOnClient = true,
   onDismiss,
+  onClosePane,
   onRestartDaemon,
   onRetry
 }: {
@@ -197,6 +209,7 @@ export function TerminalErrorToast({
   /** False for a pane on an SSH or remote host, or one whose host is not yet known. */
   paneOnClient?: boolean
   onDismiss: () => void
+  onClosePane?: () => void
   onRestartDaemon?: () => void
   onRetry?: () => Promise<boolean>
 }): React.JSX.Element {
@@ -359,6 +372,14 @@ export function TerminalErrorToast({
             {retrying
               ? translate('auto.components.terminal.pane.TerminalErrorToast.retrying', 'Retrying…')
               : translate('auto.components.terminal.pane.TerminalErrorToast.retry', 'Retry')}
+          </Button>
+        ) : null}
+        {isRemoteTerminalClosedError(error) && onClosePane ? (
+          <Button variant="destructive" size="xs" className="ml-3" onClick={onClosePane}>
+            {translate(
+              'auto.components.terminal.pane.TerminalContextMenu.8c17d6786d',
+              'Close Pane'
+            )}
           </Button>
         ) : null}
         <button

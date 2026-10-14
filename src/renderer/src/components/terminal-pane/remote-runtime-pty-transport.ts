@@ -1,6 +1,7 @@
 import { readTerminalSpawnDeferral } from '../../../../shared/host-spawn-admission'
 import { remoteRestoreSpawnIntentParams } from '../../runtime/remote-restore-spawn-intent'
 import { createAgentSessionKeyboardOptions } from '@/runtime/agent-session-keyboard-capability'
+import { REMOTE_TERMINAL_CLOSED_MARKER } from './terminal-error-accumulation'
 import { createRemoteRuntimeDisconnectedInputGrace } from './remote-runtime-disconnected-input-grace'
 import {
   createRemoteRuntimeRecoveryInputHold,
@@ -1060,7 +1061,7 @@ export function createRemoteRuntimePtyTransport(
     if (!hostHandle) {
       connecting = false
       emitRecoveryState()
-      surfaceErrorMessage('Remote terminal was closed.')
+      surfaceErrorMessage(REMOTE_TERMINAL_CLOSED_MARKER)
       return undefined
     }
 
@@ -2580,7 +2581,7 @@ export function createRemoteRuntimePtyTransport(
         await adoptPersistedHandle()
         return
       }
-      surfaceErrorMessage('Remote terminal was closed.')
+      surfaceErrorMessage(REMOTE_TERMINAL_CLOSED_MARKER)
       if (resolution.kind === 'absent') {
         // Why: the host answered, but its pane registry may still be rebuilding after a restart,
         // so retire with the host-loss sentinel instead of closing the tab outright (#21344).
