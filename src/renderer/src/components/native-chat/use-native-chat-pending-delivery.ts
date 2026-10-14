@@ -14,6 +14,10 @@ import {
 import type { NativeChatDeliveryNotice } from './NativeChatMessageRow'
 import type { ReadState } from './native-chat-live-session-contract'
 
+export type NativeChatRecordPendingOptions = {
+  queued?: boolean
+}
+
 /** How long a send whose write acknowledgment was lost waits for its row; the phone's hold matches. */
 export const NATIVE_CHAT_UNCONFIRMED_SEND_HOLD_MS = 20_000
 
@@ -58,9 +62,10 @@ export function useNativeChatPendingDelivery(args: {
     save((entries) => prunePendingSends(releaseEmptyTranscriptClaims(entries, sessionId), messages))
   }, [messages, save, sessionId])
   const record = useCallback(
-    (text: string, imagePaths?: string[]) => {
+    (text: string, imagePaths?: string[], options?: NativeChatRecordPendingOptions) => {
       const sentAt = Date.now()
       const boundary = messages.at(-1)
+      const isQueued = options?.queued
       const entry: NativeChatPendingSend = {
         id: nextNativeChatPendingSendId(sentAt),
         text,
@@ -68,7 +73,8 @@ export function useNativeChatPendingDelivery(args: {
         afterMessageId: boundary?.id ?? null,
         afterMessageTimestamp: boundary?.timestamp ?? null,
         ...(readEmptySessionId ? { afterEmptyTranscriptSessionId: readEmptySessionId } : {}),
-        ...(imagePaths ? { imagePaths } : {})
+        ...(imagePaths ? { imagePaths } : {}),
+        ...(isQueued ? { queued: true } : {})
       }
       setPending(appendPendingSendCache(scope, entry))
       return entry.id
