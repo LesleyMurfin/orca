@@ -30,17 +30,30 @@ function setPlatform(platform: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value: platform, configurable: true })
 }
 
+/** X server argv as /proc/<pid>/cmdline (NUL-separated). */
+function xServerCmdline(binary = 'Xvfb'): string {
+  return `${binary}\0:99\0-screen\0`
+}
+
 function mockLiveXDisplay(pid = 4321): void {
   statSyncMock.mockReturnValue({ isSocket: () => true })
   existsSyncMock.mockReturnValue(true)
-  readFileSyncMock.mockReturnValue(`${pid}\n`)
+  readFileSyncMock.mockImplementation((path: string) => {
+    if (String(path).includes('/cmdline')) {
+      return xServerCmdline()
+    }
+    return `${pid}\n`
+  })
   vi.spyOn(process, 'kill').mockImplementation(() => true)
 }
 
 function mockXvfbTakesDisplay(pid = 1234): void {
   let bound = false
   statSyncMock.mockImplementation(() => ({ isSocket: () => true }))
-  readFileSyncMock.mockImplementation(() => {
+  readFileSyncMock.mockImplementation((path: string) => {
+    if (String(path).includes('/cmdline')) {
+      return xServerCmdline()
+    }
     if (!bound) {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
     }
@@ -179,9 +192,7 @@ describe('ensureVirtualDisplayForHeadlessServe', () => {
 
   it('reuses an existing virtual display only when its X server is alive', async () => {
     setPlatform('linux')
-    statSyncMock.mockReturnValue({ isSocket: () => true }) // :99 socket present
-    existsSyncMock.mockReturnValue(true)
-    readFileSyncMock.mockReturnValue('4321\n') // lock holds a PID
+    mockLiveXDisplay(4321)
     const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true as never) // PID alive
     const { ensureVirtualDisplayForHeadlessServe } = await import('./ensure-virtual-display')
 
@@ -198,7 +209,12 @@ describe('ensureVirtualDisplayForHeadlessServe', () => {
     existsSyncMock.mockReturnValue(true) // lock present
     let bound = false
     statSyncMock.mockImplementation(() => ({ isSocket: () => true }))
-    readFileSyncMock.mockImplementation(() => (bound ? '1234\n' : '9999\n'))
+    readFileSyncMock.mockImplementation((path: string) => {
+      if (String(path).includes('/cmdline')) {
+        return xServerCmdline()
+      }
+      return bound ? '1234\n' : '9999\n'
+    })
     // The orphan lock names a dead PID; the freshly spawned Xvfb is alive.
     const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid) => {
       if (pid === 9999) {
@@ -261,7 +277,10 @@ describe('ensureVirtualDisplayForHeadlessServe', () => {
     let lockWritten = false
     statSyncMock.mockImplementation(() => ({ isSocket: () => lockWritten }))
     rmSyncMock.mockImplementation(() => {})
-    readFileSyncMock.mockImplementation(() => {
+    readFileSyncMock.mockImplementation((path: string) => {
+      if (String(path).includes('/cmdline')) {
+        return xServerCmdline()
+      }
       if (!lockWritten) {
         throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
       }
@@ -276,6 +295,258 @@ describe('ensureVirtualDisplayForHeadlessServe', () => {
 
     expect(ensureVirtualDisplayForHeadlessServe({ isServeMode: true })).toBe(true)
     expect(process.env.DISPLAY).toBe(':99')
+  })
+
+  describe('isStaleDisplayLock and orphan lock recovery', () => {
+    it('reaps an orphan stale lock when socket is missing and PID is dead (ESRCH)', async () => {
+      setPlatform('linux')
+      statSyncMock.mockImplementation((path: string) => {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), {
+          code: 'ENOENT'
+        })
+      })
+      let bound = false
+      readFileSyncMock.mockImplementation((path: string) => {
+        if (String(path).includes('/cmdline')) {
+          return xServerCmdline()
+        }
+        if (bound && path.includes('.X99-lock')) {
+          return '1234\n'
+        }
+        if (path.includes('.X99-lock')) {
+          return '9999\n'
+        }
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      })
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid) => {
+        if (pid === 9999) {
+          throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+        }
+        return true
+      })
+      spawnMock.mockImplementation(() => {
+        bound = true
+        statSyncMock.mockImplementation(() => ({ isSocket: () => true }))
+        return { pid: 1234, once: vi.fn(), kill: vi.fn(), killed: false }
+      })
+      const { isStaleDisplayLock, ensureVirtualDisplayForHeadlessServe } =
+        await import('./ensure-virtual-display')
+
+      expect(isStaleDisplayLock(99)).toBe(true)
+      expect(ensureVirtualDisplayForHeadlessServe({ isServeMode: true })).toBe(true)
+      expect(rmSyncMock).toHaveBeenCalledWith('/tmp/.X99-lock', { force: true })
+      expect(rmSyncMock).toHaveBeenCalledWith('/tmp/.X11-unix/X99', { force: true })
+      expect(spawnMock).toHaveBeenCalledWith(
+        'Xvfb',
+        expect.arrayContaining([':99', '-terminate']),
+        expect.objectContaining({ detached: true })
+      )
+      expect(process.env.DISPLAY).toBe(':99')
+      killSpy.mockRestore()
+    })
+
+    it('preserves lock file when PID is alive', async () => {
+      setPlatform('linux')
+      readFileSyncMock.mockImplementation((path: string) => {
+        if (String(path).includes('/cmdline')) {
+          return xServerCmdline()
+        }
+        return '4321\n'
+      })
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+      const { isStaleDisplayLock } = await import('./ensure-virtual-display')
+
+      expect(isStaleDisplayLock(99)).toBe(false)
+      expect(rmSyncMock).not.toHaveBeenCalled()
+      killSpy.mockRestore()
+    })
+
+    it('preserves lock file when PID belongs to another user (EPERM)', async () => {
+      setPlatform('linux')
+      readFileSyncMock.mockReturnValue('1\n')
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+        throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' })
+      })
+      const { isStaleDisplayLock } = await import('./ensure-virtual-display')
+
+      expect(isStaleDisplayLock(99)).toBe(false)
+      expect(rmSyncMock).not.toHaveBeenCalled()
+      killSpy.mockRestore()
+    })
+
+    it('reaps corrupt, non-integer, or empty lock files', async () => {
+      setPlatform('linux')
+      const { isStaleDisplayLock } = await import('./ensure-virtual-display')
+
+      for (const invalidContent of ['', '   ', 'not-a-pid', '-123', '0']) {
+        readFileSyncMock.mockReturnValue(invalidContent)
+        expect(isStaleDisplayLock(99)).toBe(true)
+      }
+    })
+
+    it('returns false when lock file does not exist (ENOENT)', async () => {
+      setPlatform('linux')
+      readFileSyncMock.mockImplementation(() => {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      })
+      const { isStaleDisplayLock } = await import('./ensure-virtual-display')
+
+      expect(isStaleDisplayLock(99)).toBe(false)
+    })
+  })
+
+  describe('removeStaleDisplayArtifacts', () => {
+    it('does not unlink artifacts if probeDisplayLock reports alive', async () => {
+      setPlatform('linux')
+      readFileSyncMock.mockImplementation((path: string) => {
+        if (String(path).includes('/cmdline')) {
+          return xServerCmdline()
+        }
+        return '5555\n'
+      })
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+      const { removeStaleDisplayArtifacts } = await import('./ensure-virtual-display')
+
+      removeStaleDisplayArtifacts(99)
+
+      expect(rmSyncMock).not.toHaveBeenCalled()
+      killSpy.mockRestore()
+    })
+
+    it('does not unlink artifacts if lock process belongs to another user (EPERM)', async () => {
+      setPlatform('linux')
+      readFileSyncMock.mockReturnValue('1\n')
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+        throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' })
+      })
+      const { removeStaleDisplayArtifacts } = await import('./ensure-virtual-display')
+
+      removeStaleDisplayArtifacts(99)
+
+      expect(rmSyncMock).not.toHaveBeenCalled()
+      killSpy.mockRestore()
+    })
+
+    it('unlinks lock and socket artifacts when display server is dead', async () => {
+      setPlatform('linux')
+      readFileSyncMock.mockReturnValue('9999\n')
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid) => {
+        if (pid === 9999) {
+          throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+        }
+        return true
+      })
+      const { removeStaleDisplayArtifacts } = await import('./ensure-virtual-display')
+
+      removeStaleDisplayArtifacts(99)
+
+      expect(rmSyncMock).toHaveBeenCalledWith('/tmp/.X99-lock', { force: true })
+      expect(rmSyncMock).toHaveBeenCalledWith('/tmp/.X11-unix/X99', { force: true })
+      killSpy.mockRestore()
+    })
+
+    it('adopts managed display without spawn when it becomes alive during cleanup', async () => {
+      setPlatform('linux')
+      statSyncMock.mockImplementation(() => ({ isSocket: () => true }))
+      let probeCallCount = 0
+      readFileSyncMock.mockImplementation((path: string) => {
+        if (String(path).includes('/cmdline')) {
+          return xServerCmdline()
+        }
+        if (path.includes('.X99-lock')) {
+          probeCallCount++
+          // First probe (tryAdopt) sees missing — concurrent server not yet visible.
+          if (probeCallCount === 1) {
+            throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+          }
+          // removeStale re-probe and post-cleanup adopt see the live concurrent server.
+          return '7777\n'
+        }
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      })
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+      spawnMock.mockReturnValue({ pid: 8888, once: vi.fn(), kill: vi.fn(), killed: false })
+
+      const { ensureVirtualDisplayForHeadlessServe } = await import('./ensure-virtual-display')
+
+      expect(ensureVirtualDisplayForHeadlessServe({ isServeMode: true })).toBe(true)
+      expect(rmSyncMock).not.toHaveBeenCalled()
+      expect(spawnMock).not.toHaveBeenCalled()
+      expect(process.env.DISPLAY).toBe(':99')
+      killSpy.mockRestore()
+    })
+
+    it('adopts before spawn when managed display becomes live after lock-only cleanup', async () => {
+      setPlatform('linux')
+      let phase: 'orphan' | 'live' = 'orphan'
+      statSyncMock.mockImplementation(() => {
+        if (phase === 'live') {
+          return { isSocket: () => true }
+        }
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      })
+      readFileSyncMock.mockImplementation((path: string) => {
+        if (String(path).includes('/cmdline')) {
+          return xServerCmdline()
+        }
+        if (path.includes('.X99-lock')) {
+          return phase === 'live' ? '7777\n' : '9999\n'
+        }
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      })
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid) => {
+        if (pid === 9999) {
+          throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+        }
+        return true
+      })
+      rmSyncMock.mockImplementation(() => {
+        // Concurrent managed server appears after orphan lock unlink.
+        phase = 'live'
+      })
+      spawnMock.mockReturnValue({ pid: 8888, once: vi.fn(), kill: vi.fn(), killed: false })
+
+      const { ensureVirtualDisplayForHeadlessServe } = await import('./ensure-virtual-display')
+
+      expect(ensureVirtualDisplayForHeadlessServe({ isServeMode: true })).toBe(true)
+      expect(rmSyncMock).toHaveBeenCalled()
+      expect(spawnMock).not.toHaveBeenCalled()
+      expect(process.env.DISPLAY).toBe(':99')
+      killSpy.mockRestore()
+    })
+
+    it('treats recycled non-X lock PID as stale when /proc cmdline is readable', async () => {
+      setPlatform('linux')
+      readFileSyncMock.mockImplementation((path: string) => {
+        if (path === '/proc/4321/cmdline') {
+          return 'nginx\0-g\0daemon off;\0'
+        }
+        if (String(path).includes('.X99-lock')) {
+          return '4321\n'
+        }
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      })
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+      const { isStaleDisplayLock } = await import('./ensure-virtual-display')
+
+      expect(isStaleDisplayLock(99)).toBe(true)
+      killSpy.mockRestore()
+    })
+
+    it('keeps lock alive when kill(0) succeeds but /proc cmdline is unreadable', async () => {
+      setPlatform('linux')
+      readFileSyncMock.mockImplementation((path: string) => {
+        if (String(path).includes('/cmdline')) {
+          throw Object.assign(new Error('EACCES'), { code: 'EACCES' })
+        }
+        return '4321\n'
+      })
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+      const { isStaleDisplayLock } = await import('./ensure-virtual-display')
+
+      expect(isStaleDisplayLock(99)).toBe(false)
+      killSpy.mockRestore()
+    })
   })
 
   describe('hasUsableLinuxDisplay', () => {
