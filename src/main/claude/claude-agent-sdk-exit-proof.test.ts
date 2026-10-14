@@ -745,6 +745,69 @@ describe('claude child tree reaper', () => {
     await expect(tree.reap()).resolves.toBe('unverifiable')
   })
 
+  it('discards a refresh walk that outlives the root instead of merging strangers', async () => {
+    const child = mockChild()
+    let exited = false
+    const first = snapshotOf(4243)
+    const walkGate = Promise.withResolvers<void>()
+    // Recycled-looking rows a post-exit table walk could invent under the same root pid.
+    const strangers: DescendantSnapshot = {
+      root: { pid: 424242, startedAt: 'Mon Jan 1 00:00:00 2026' },
+      rootPgid: 1,
+      descendants: [{ pid: 8888, ppid: 424242, pgid: 1, startedAt: 'Thu Jan 4 00:00:00 2026' }],
+      capturedAtMs: 99
+    }
+    const captureDescendants = vi
+      .fn()
+      .mockResolvedValueOnce(first)
+      .mockImplementationOnce(async () => {
+        await walkGate.promise
+        return strangers
+      })
+    const terminateDescendants = vi.fn(async () => 'exited' as const)
+    const tree = createClaudeChildTreeReaper(child, {
+      platform: 'linux',
+      exited: () => exited,
+      captureDescendants,
+      terminateDescendants
+    })
+
+    await tree.capture()
+    const refreshing = tree.refresh!()
+    await vi.waitFor(() => expect(captureDescendants).toHaveBeenCalledTimes(2))
+    // Root exit lands while the close-boundary walk is still in flight.
+    exited = true
+    walkGate.resolve()
+    await refreshing
+
+    await expect(tree.reap()).resolves.toBe('exited')
+    // Prior identity-safe evidence is kept; the post-exit walk must not enlarge it.
+    expect(terminateDescendants).toHaveBeenCalledTimes(1)
+    expect(terminateDescendants).toHaveBeenCalledWith(first)
+    expect(terminateDescendants.mock.calls[0]![0].descendants.map((row) => row.pid)).toEqual([4243])
+  })
+
+  it('does not start a refresh walk once the root has already exited', async () => {
+    const child = mockChild()
+    let exited = false
+    const captureDescendants = vi.fn(async () => snapshotOf(4243))
+    const terminateDescendants = vi.fn(async () => 'exited' as const)
+    const tree = createClaudeChildTreeReaper(child, {
+      platform: 'linux',
+      exited: () => exited,
+      captureDescendants,
+      terminateDescendants
+    })
+
+    await tree.capture()
+    expect(captureDescendants).toHaveBeenCalledTimes(1)
+    exited = true
+    await tree.refresh?.()
+    expect(captureDescendants).toHaveBeenCalledTimes(1)
+    await expect(tree.reap()).resolves.toBe('exited')
+    expect(terminateDescendants).toHaveBeenCalledWith(snapshotOf(4243))
+  })
+
   it('proves a childless snapshot without signalling anything', async () => {
     const child = mockChild()
     const terminateDescendants = vi.fn()
