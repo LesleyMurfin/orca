@@ -61,7 +61,8 @@ export function handleBrowserScreencastEvent(args: HandleScreencastEventArgs): v
       }
     }
   } else if (event.type === 'end') {
-    clearStartupTimer()
+    // Why: end without pixels is still a frameless stream. Clearing the timer
+    // here recreated the infinite spinner; leave it armed until a frame or error.
     if (busyRef.current) {
       busyRef.current = false
       setBusy(false)

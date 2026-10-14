@@ -5,10 +5,10 @@
 - **Upstream status**: `stablyai/orca#25962` is OPEN (reported via Discord bot by a user on public Wi-Fi paired to a home desktop). Only comment is `AmethystLiang`: "Thanks for reporting. Looking into it". Assignee is `Jinwoo-H`.
 - **Reproduction status**: **NOT REPRODUCED** on physical device or paired desktop in this environment. Manual verification on paired host/phone remains unverified (`Visual Proof: N/A`).
 - **Policy gate**: **DO NOT PUSH UPSTREAM** to `stablyai/orca` without device reproduction, validation of relative assets, and coordination with maintainers.
-- **Fork status**: Local-HTML half on branch `ai/bug-25962-mobile-browser-loop` (seed commit `65b148486d4`; tip includes validation-doc move). Fork PR of record: `LesleyMurfin/orca#59`. Workspace: `bug-25962-mobile-browser-loop`.
+- **Fork status**: Branch `ai/bug-25962-mobile-browser-loop` / fork PR `LesleyMurfin/orca#59`. Workspace: `bug-25962-mobile-browser-loop`.
 - **Scope honesty (two halves of #25962)**:
-  1. **Local HTML taps (this PR's primary code path)**: stop special-casing local worktree HTML into `openBrowser(file://…)`. Route through `files.open` so the session file tab opens. That tab already renders HTML via `MobileHtmlPreview` inside `MobileSessionFileReader` (preview/source toggle), not host Chromium screencast.
-  2. **Localhost / browser-bar URLs (separate)**: still open a mobile browser tab and depend on `browser.screencast`. The infinite spinner there is a **stream first-frame / ready-vs-startup-timer** concern in the browser pane — **not** fixed solely by the HTML `files.open` change. Treat localhost as follow-up (or sibling stream-timeout work), not as closed by the local-HTML routing fix.
+  1. **Local HTML taps (shipped)**: no more `openBrowser(file://…)` special case. `files.open` opens a session file tab (`MobileHtmlPreview` in `MobileSessionFileReader`). Preview-route HTML also uses `MobileHtmlPreview` via `MobileFilePreviewBody`.
+  2. **Localhost / browser-bar URLs (partial code + HOLD for device proof)**: still use screencast. **Shipped unit fix**: `ready`/`end` no longer clear the first-frame startup timer (`mobile-browser-stream-events.ts`); after 15s with no pixels the pane shows `Browser stream timed out.` instead of spinning forever. **Not done**: paired-device repro, relative-asset check for inline HTML, upstream push.
 - **Upstream collisions identified**:
   1. `stablyai/orca#13234` (author `innocarpe`, open): Routes remote/SSH HTML to preview, but **deliberately preserves** local worktree HTML `openBrowser(file://…)` for relative asset resolution. Direct architectural conflict with our deletion of that path.
   2. `stablyai/orca#25491` (author `nwparker`, active Oct 2026): Edits `mobile-file-tap-open.ts` for headless fallback on `files.open`, keeping `openBrowser`.
@@ -42,24 +42,26 @@ Issue #25962 reports:
 3. `localhost` URLs open into the same infinite spinner.
 
 Root cause analysis reveals two completely different mechanisms conflated under one user-visible symptom:
-- **Local HTML taps**: In `mobile/src/session/mobile-file-tap-open.ts`, local HTML files were special-cased to call `openBrowser(fileUri)` instead of `files.open`. On remote-paired sessions (e.g. desktop at home, phone on public Wi-Fi), this launches host Chromium and starts a `browser.screencast` stream. If the desktop display sleeps, headless/Xvfb issues occur, or the stream stalls, mobile displays an infinite spinner. **Fix path**: drop the special case; `files.open` activates a session file tab. `MobileSessionFileReader` already mounts `MobileHtmlPreview` for `doc.kind === 'html'`. Absolute/line-anchored preview-route opens still go through `MobileFilePreviewBody` (separate surface from the session tab).
-- **Localhost URLs**: These are web URLs opened via terminal or browser bar (`handleTerminalOpenUrl` / `handleCreateBrowser`). They **must** use the browser screencast stream. Spinner persistence is about stream ready clearing the startup timer before any frames (first-frame timeout / error surface), **not** about HTML file routing. Closing only the local-HTML `files.open` path does **not** claim localhost fixed.
+- **Local HTML taps**: `mobile-file-tap-open.ts` special-cased local HTML into `openBrowser(fileUri)` → host Chromium + screencast → spinner on stall. **Shipped**: drop special case; `files.open` → session file tab + `MobileHtmlPreview`. Preview route: `MobileFilePreviewBody` also mounts `MobileHtmlPreview`.
+- **Localhost URLs**: terminal/browser-bar URLs still create a browser tab + screencast. **Shipped unit fix**: first-frame timer stays armed through `ready`/`end` until pixels or `error` (`mobile-browser-stream-events.ts` + frameless-stream tests). **Still HOLD**: device proof that stalled localhost no longer spins forever on a paired phone.
 
 ## Files to Touch
 
 ### Local HTML Path (Shipped on fork PR #59)
-- `mobile/src/session/mobile-file-tap-open.ts` — routes local HTML through `files.open` / `fileTapOpenRun` (same as images/SSH).
-- `mobile/src/session/mobile-file-tap-open.test.ts` — verified unit tests for `files.open` dispatch.
-- `mobile/src/session/use-mobile-file-tap-handlers.ts` — dead `openBrowser` removed from tap options.
-- `mobile/src/session/use-mobile-file-tap-handlers.test.ts` — updated option assertions.
+- `mobile/src/session/mobile-file-tap-open.ts` — local HTML through `files.open` / `fileTapOpenRun`.
+- `mobile/src/session/mobile-file-tap-open.test.ts` — `files.open` dispatch; no browser path.
+- `mobile/src/session/use-mobile-file-tap-handlers.ts` (+ tests) — `openBrowser` removed from tap options.
 - `mobile/src/session/use-mobile-session-file-actions.ts` — wiring cleanup.
-- `mobile/src/session/mobile-native-chat-open-file.test.ts` — test option alignment.
+- `mobile/src/session/mobile-native-chat-open-file.test.ts` — option alignment.
 - `mobile/src/test-support/rpc-recording/adapters/file-tap-open-mount-adapters.ts` — mock adapter alignment.
-- Session render path (already present; not introduced by this bugfix alone): `mobile/src/session/MobileSessionFileReader.tsx` → `MobileHtmlPreview`.
+- `mobile/src/files/MobileFilePreviewBody.tsx` (+ test) — non-editable HTML → `MobileHtmlPreview`.
+- Session tab render (pre-existing): `MobileSessionFileReader.tsx` → `MobileHtmlPreview`.
 
-### Localhost / Screencast Follow-Up (Separate Scope — Not Closed by HTML `files.open`)
-- `mobile/src/browser/use-mobile-browser-stream.ts` — first-frame / ready-vs-startup-timer timeout and error emission when stream produces 0 frames after ready.
-- `mobile/src/browser/MobileBrowserPaneView.tsx` — surface distinct error state instead of permanent spinner overlay.
+### Localhost / Screencast (Partial — unit timer fix shipped; device HOLD)
+- `mobile/src/browser/mobile-browser-stream-events.ts` — **shipped**: do not clear first-frame timer on `ready` or `end`.
+- `mobile/src/browser/use-mobile-browser-stream.ts` — existing 15s startup timer + `Browser stream timed out.` (now fires after frameless ready/end).
+- `mobile/src/browser/MobileBrowserPaneView.tsx` — overlay already shows error text when set.
+- `mobile/src/browser/mobile-browser-frameless-stream.test.tsx` — ready/end without frames → timeout error.
 
 ## Step-by-Step Validation & Reproduction Protocol
 
@@ -117,4 +119,4 @@ cd mobile && pnpm oxlint && pnpm oxfmt --check src/session/
 - **Zero Upstream Submissions**: Do not run `gh pr create --repo stablyai/orca`. The user has explicitly mandated that changes remain on the fork (`LesleyMurfin/orca`) until full device reproduction and validation.
 - **Fork PR of Record**: `https://github.com/LesleyMurfin/orca/pull/59` (historical note only: an earlier fork draft lived at `#57` on `ai/Discord-Github-Responses`; do not cite `#57` as this PR).
 - **Do not invent port-forwarding**: The mobile architecture uses host screencast pixels, not device loopback. `localhost` is supposed to run on host Chromium and stream frames.
-- **Do not over-claim #25962 closed**: local HTML → session tab / `MobileHtmlPreview` is the in-scope half; localhost spinner remains a browser-stream first-frame timeout concern until that follow-up lands.
+- **Do not over-claim #25962 closed**: code paths above are unit-tested; **device repro + relative assets + upstream coordination** remain HOLD. Localhost has a shipped first-frame timeout, not a claim that every stall scenario is production-proven.

@@ -182,6 +182,23 @@ describe('MobileBrowserPane with a stream that reports ready but sends no frames
     expect(spinnerCount(renderer)).toBe(0)
   })
 
+  it('still times out when the stream ends without frames', async () => {
+    const { renderer, stream } = await renderStreamingPane()
+
+    act(() => {
+      stream.listener({ type: 'ready', tab: { url: 'https://dashboard.example' } })
+      stream.listener({ type: 'end' })
+    })
+    expect(spinnerCount(renderer)).toBeGreaterThan(0)
+
+    act(() => {
+      vi.advanceTimersByTime(15_000)
+    })
+
+    expect(errorMessages(renderer)).toContain('Browser stream timed out.')
+    expect(spinnerCount(renderer)).toBe(0)
+  })
+
   it('clears the indicator once real pixels arrive', async () => {
     const { renderer, stream } = await renderStreamingPane()
 
