@@ -41,6 +41,28 @@ function xDisplayLockPath(displayNumber: number): string {
 // two callers must treat differently — see each call site.
 type DisplayLockProbe = 'alive' | 'dead' | 'missing'
 
+// Why: kill(0) succeeds for any live PID, including one that reused a stale lock's
+// process id. When /proc is readable, only treat X-server-like command lines as
+// display owners so managed :99 can reap non-X PID reuse. Unreadable /proc stays
+// fail-closed (alive) — we must not unlink another user's live process lock.
+function isLikelyXServerPid(pid: number): boolean | 'unknown' {
+  try {
+    const cmd = readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+    // cmdline is NUL-separated argv
+    if (
+      cmd.includes('Xvfb') ||
+      cmd.includes('Xorg') ||
+      cmd.includes('Xwayland') ||
+      /(^|\/|\0)X(\0|$)/.test(cmd)
+    ) {
+      return true
+    }
+    return false
+  } catch {
+    return 'unknown'
+  }
+}
+
 function probeDisplayLock(displayNumber: number): DisplayLockProbe {
   let pid: number
   try {
@@ -55,19 +77,22 @@ function probeDisplayLock(displayNumber: number): DisplayLockProbe {
   try {
     // signal 0 probes existence without affecting the process.
     process.kill(pid, 0)
-    return 'alive'
   } catch (error) {
     // EPERM means the PID exists under another uid — a root-owned X server is still live.
     return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EPERM'
       ? 'alive'
       : 'dead'
   }
+  // kill(0) succeeded — corroborate against PID reuse when /proc is readable.
+  return isLikelyXServerPid(pid) === false ? 'dead' : 'alive'
 }
 
 /**
  * Checks whether an X display lock file exists for a dead or corrupt process.
  * If the process holding the lock is dead (ESRCH) or the lock file is malformed,
  * the lock is stale and should be cleared before Xvfb spawn.
+ *
+ * Exported for unit tests (seam); production callers are in this module only.
  *
  * @param displayNumber - The X11 display number (e.g. 99 for :99).
  * @returns True if the lock file exists for a dead or corrupt process; otherwise false.
@@ -105,22 +130,37 @@ function isManagedDisplayServerAlive(displayNumber: number): boolean {
 
 /**
  * Removes stale X11 lock and socket artifacts for a given display number.
- * Re-verifies that the display server remains dead before removing files
- * to avoid clobbering an active server spawned by a concurrent launch.
+ * Re-verifies that the display server remains dead before each unlink to avoid
+ * clobbering an active server spawned by a concurrent launch.
+ *
+ * Exported for unit tests (seam); production callers are in this module only.
  *
  * @param displayNumber - The X11 display number (e.g. 99 for :99).
  */
 export function removeStaleDisplayArtifacts(displayNumber: number): void {
-  if (probeDisplayLock(displayNumber) === 'alive') {
-    return
-  }
+  // Re-probe before every unlink so a concurrent server mid-loop is not clobbered.
   for (const path of [xDisplayLockPath(displayNumber), xvfbSocketPath(displayNumber)]) {
+    if (probeDisplayLock(displayNumber) === 'alive') {
+      return
+    }
     try {
       rmSync(path, { force: true })
     } catch {
       // Best effort; if removal fails, Xvfb startup below will surface the error.
     }
   }
+}
+
+/** Adopt Orca's managed :99 when a live server and usable socket are both present. */
+function tryAdoptManagedVirtualDisplay(): boolean {
+  if (
+    !isManagedDisplayServerAlive(VIRTUAL_DISPLAY_NUMBER) ||
+    !isUnixSocket(xvfbSocketPath(VIRTUAL_DISPLAY_NUMBER))
+  ) {
+    return false
+  }
+  process.env.DISPLAY = VIRTUAL_DISPLAY
+  return true
 }
 
 function sleepSync(ms: number): void {
@@ -284,8 +324,7 @@ export function ensureVirtualDisplayForHeadlessServe(options: { isServeMode: boo
   // A crashed prior run can leave an orphan socket; trusting it by path alone
   // would advertise browser support that then fails at tab creation.
   if (isUnixSocket(xvfbSocketPath(VIRTUAL_DISPLAY_NUMBER))) {
-    if (isManagedDisplayServerAlive(VIRTUAL_DISPLAY_NUMBER)) {
-      process.env.DISPLAY = VIRTUAL_DISPLAY
+    if (tryAdoptManagedVirtualDisplay()) {
       return true
     }
     // Why: stale socket/lock — clean them up so Xvfb can rebind the display
@@ -293,7 +332,7 @@ export function ensureVirtualDisplayForHeadlessServe(options: { isServeMode: boo
     removeStaleDisplayArtifacts(VIRTUAL_DISPLAY_NUMBER)
   } else if (isStaleDisplayLock(VIRTUAL_DISPLAY_NUMBER)) {
     // Orphan lock file with no socket, left by unclean exit or dead PID.
-    // Unconditionally remove stale lock artifacts before Xvfb attempts to bind :99.
+    // Live-gated remove: only unlinks while re-probe still shows not-alive.
     console.warn(
       `[serve] Detected stale display lock at ${xDisplayLockPath(VIRTUAL_DISPLAY_NUMBER)} ` +
         'without an active server. Cleaning up prior to starting Xvfb.'
@@ -301,6 +340,11 @@ export function ensureVirtualDisplayForHeadlessServe(options: { isServeMode: boo
     removeStaleDisplayArtifacts(VIRTUAL_DISPLAY_NUMBER)
   }
 
+  // Why: cleanup may no-op if a concurrent server bound :99 after our dead/missing
+  // probe — adopt it instead of spawning a competing Xvfb.
+  if (tryAdoptManagedVirtualDisplay()) {
+    return true
+  }
   try {
     xvfbProcess = spawn(
       'Xvfb',
