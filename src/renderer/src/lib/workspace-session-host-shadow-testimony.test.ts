@@ -220,4 +220,51 @@ describe('shadowRowsTheHostHasNotAnswered', () => {
     // Local-only scrollback survives:
     expect(hostSlice?.localOnlyScrollbackByTabId).toEqual(scrollback)
   })
+
+  it('withholds split-layout chrome for declined worktrees once the host has answered', () => {
+    // Parked with declined tabs; if left in the write shadow after testimony, attach restores ghost
+    // groups/layouts onto the SSH partition with no tabs (layout-only residue).
+    const answeredState: RemoteWorkspaceTestimonyState = {
+      remoteWorkspaceHydratedTargetIds: new Set([TARGET_ID]),
+      remoteWorkspaceSyncStatusByTargetId: {
+        [TARGET_ID]: { phase: 'synced', direction: 'pull' }
+      }
+    }
+
+    const worktreeKey = 'worktree:repo-1::worktree-1'
+    const worktreeTabs = [tab('tab-worktree', worktreeKey)]
+    const shadow: HostSessionSlices = {
+      [SSH_HOST_ID]: {
+        ...sessionWithTabs({ [worktreeKey]: worktreeTabs }),
+        unifiedTabs: { [worktreeKey]: worktreeTabs },
+        tabGroups: {
+          [worktreeKey]: [{ id: 'g1', tabIds: ['tab-worktree'], activeTabId: 'tab-worktree' }]
+        },
+        tabGroupLayouts: {
+          [worktreeKey]: { root: { type: 'leaf', tabIds: ['tab-worktree'] } }
+        },
+        activeGroupIdByWorktree: { [worktreeKey]: 'g1' },
+        // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: non-terminal control that must still survive.
+        openFilesByWorktree: {
+          [worktreeKey]: [
+            {
+              filePath: '/x.ts',
+              relativePath: 'x.ts',
+              worktreeId: worktreeKey,
+              language: 'typescript'
+            }
+          ] as never
+        }
+      }
+    }
+
+    const result = shadowRowsTheHostHasNotAnswered(shadow, answeredState)
+    const hostSlice = result?.[SSH_HOST_ID]
+    expect(hostSlice?.tabsByWorktree).toBeUndefined()
+    expect(hostSlice?.unifiedTabs).toBeUndefined()
+    expect(hostSlice?.tabGroups).toBeUndefined()
+    expect(hostSlice?.tabGroupLayouts).toBeUndefined()
+    expect(hostSlice?.activeGroupIdByWorktree).toBeUndefined()
+    expect(hostSlice?.openFilesByWorktree?.[worktreeKey]).toBeDefined()
+  })
 })

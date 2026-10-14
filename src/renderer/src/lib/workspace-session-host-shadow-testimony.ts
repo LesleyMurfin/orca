@@ -17,9 +17,9 @@ import {
 } from './remote-workspace-host-testimony'
 
 /**
- * Terminal fields that direct-SSH remote workspace snapshots actually project and manage.
- * Non-terminal fields (such as `openFilesByWorktree` editor drafts) are never reported by an
- * SSH host snapshot, so host testimony does not supersede them and they are never withheld.
+ * Terminal / terminal-UI fields that direct-SSH remote workspace snapshots project and manage.
+ * Includes split-layout chrome parked with declined worktrees so post-answer writes do not restore
+ * ghost groups after tabs were withheld. Non-terminal fields (e.g. `openFilesByWorktree`) stay.
  */
 export const SSH_TERMINAL_TESTIMONY_FIELDS: Partial<Record<keyof WorkspaceSessionState, true>> = {
   tabsByWorktree: true,
@@ -27,7 +27,11 @@ export const SSH_TERMINAL_TESTIMONY_FIELDS: Partial<Record<keyof WorkspaceSessio
   remoteSessionIdsByTabId: true,
   terminalPtyIncarnationsByPaneKey: true,
   activeTabIdByWorktree: true,
-  defaultTerminalTabsAppliedByWorktreeId: true
+  defaultTerminalTabsAppliedByWorktreeId: true,
+  unifiedTabs: true,
+  tabGroups: true,
+  tabGroupLayouts: true,
+  activeGroupIdByWorktree: true
 }
 
 /**
