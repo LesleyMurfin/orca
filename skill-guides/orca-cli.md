@@ -3,7 +3,7 @@ name: orca-cli
 description: >-
   Operate Orca-managed worktrees, folder contexts, terminals, repos, automations, artifacts,
   skill sharing, worktree comments, and Orca's embedded browser through the `orca` CLI. Use
-  when the user says "$orca-cli", "Orca worktree", "child worktree", "spawn codex/claude in a
+  when the user says "$orca-cli", "Orca worktree", "child worktree", "spawn an agent in a
   worktree", "read/wait/send Orca terminal", "handoff" / "handover" / "give this to another
   agent", "Orca browser", "orca artifacts", or "share skills". Prefer it over raw git
   worktree, ad hoc PTYs, or Computer Use when Orca state is involved. Use Computer Use only
@@ -22,6 +22,8 @@ Use `orca` when Orca's running editor/runtime is the source of truth. Use plain 
 
 Prefer `--json` for agent-driven calls. If the CLI is missing, say so explicitly instead of inspecting source files first.
 
+These commands start a **separate CLI agent process** in a worktree. Use them only when the user asked for that: a handoff, another worktree, a named agent, or supervision that must be reported on. If you only need concurrent work, use your own harness's subagents; never start a second agent CLI to do work you can already do in your own session. When the user named an agent, pass that id; otherwise there is no default, so omit `--agent` (omitting it launches no agent, and `--prompt` without `--agent` is a hard `invalid_argument` error — `src/cli/handlers/worktree.ts:72-84`).
+
 ## Full Handoffs
 
 A full handoff transfers ownership to another agent or worktree, then the original agent stops. Treat requests phrased as "hand off", "handoff", "handover", "give this to another agent", "give this to another worktree", "another agent", or "another worktree" as full handoffs unless the user explicitly asks to supervise, monitor, wait for results, track completion, coordinate a DAG, use decision gates, or manage ask/reply.
@@ -33,7 +35,7 @@ Do not use `orca orchestration task-create`, `orca orchestration dispatch --inje
 Independent new-worktree handoff:
 
 ```text
-ORCA worktree create --name <task-name> --no-parent --agent codex --prompt "<task brief>" --json
+ORCA worktree create --name <task-name> --no-parent --agent <agent-id> --prompt "<task brief>" --json
 ```
 
 Use `--no-parent` and omit `--base-branch` for independent top-level handoffs unless the user explicitly asks for stacked work, "branch from current", or a specific base. Put any current-branch context in the prompt.
@@ -83,7 +85,7 @@ ORCA worktree show --worktree <selector> --json
 ORCA worktree create --repo id:<repoId> --name related-task --json
 ORCA worktree create --repo id:<repoId> --name related-task --parent-worktree active --json
 ORCA worktree create --repo id:<repoId> --name folder-child --parent-worktree folder:<folderId> --json
-ORCA worktree create --name child-task --agent codex --prompt "hi" --json
+ORCA worktree create --name child-task --agent <agent-id> --prompt "hi" --json
 ORCA worktree create --name independent-task --no-parent --json
 ORCA worktree set --worktree id:<repoId>::<worktreePath> --display-name "My Task" --json
 ORCA worktree set --worktree active --comment "reproduced bug; testing fix" --json
@@ -118,13 +120,13 @@ Lineage rules:
 Agent/setup flags:
 
 ```text
-ORCA worktree create --name task --agent codex --prompt "hi" --json
-ORCA worktree create --name task --agent claude --setup run --json
+ORCA worktree create --name task --agent <agent-id> --prompt "hi" --json
+ORCA worktree create --name task --agent <agent-id> --setup run --json
 ORCA worktree create --name task --setup skip --json
 ORCA worktree create --name task --run-hooks --json
 ```
 
-- `--agent <id>` launches that agent **in the first terminal** (Orca docs: _"`--agent` launches the selected agent in the first terminal"_); `--prompt <text>` sends initial work to it. Known ids include `claude`, `codex`, `omp`, `pi`, `grok`, and other installed TUI agents.
+- `--agent <agent-id>` has no default: omit it and no agent is launched (`src/cli/handlers/worktree.ts:72-84`), and `--prompt` without `--agent` is rejected as `invalid_argument`. When passed, it launches that agent **in the first terminal** (Orca docs: _"`--agent` launches the selected agent in the first terminal"_); `--prompt <text>` sends initial work to it. Any key of `TUI_AGENT_CONFIG` is valid (`src/shared/tui-agent-config.ts:363-365`) — `claude`, `codex`, `omp`, `pi`, `grok`, and other installed TUI agents. Pass the id the user named.
 - **Prefer agent-first create for agent workers.** `ORCA worktree create --agent <id> --prompt "..."` puts the agent in the first terminal with no extra fallback shell. Repo setup or default-terminal settings may still add tabs or splits. A bare create's fallback shell plus a later `terminal create --command <agent>` is the anti-pattern; use `--agent`. Configured default tabs are intentional; never close one without verifying it is an unused shell.
 - Address the agent through exactly one handle. Use `startupTerminal.handle` as the sole agent handle when create returns it; otherwise take the match from `ORCA terminal list --worktree id:<repoId>::<newWorktreePath> --json`. Handles are runtime-scoped: after an Orca restart or a `terminal_handle_stale` error, re-list and continue with the replacement only; never dual-send to old and replacement handles. `--agent` already owns the first terminal, so do not `terminal create` that agent again.
 - `--setup run|skip|inherit` controls repo setup hooks. Default is `inherit`, which follows the repo's setup policy.
@@ -132,7 +134,7 @@ ORCA worktree create --name task --run-hooks --json
 - `--activate` and `--run-hooks` reveal the new worktree. `--agent` alone stays in the background.
 - Let Orca choose setup terminal placement from repo settings, including tab vs split behavior.
 - If an older installed CLI rejects `--agent`, `--prompt`, or `--setup`, create the worktree normally, then run `ORCA terminal create --worktree <selector> --command "<requested-agent>"` and `ORCA terminal send` if a prompt is needed. This can leave a fallback shell when no default tabs are configured; close it only after confirming it is unused.
-- `worktree create` makes a new checkout. For a fresh agent in the **current** checkout, use `ORCA terminal create --worktree active --command "codex" --json`.
+- `worktree create` makes a new checkout. For a fresh agent in the **current** checkout, use `ORCA terminal create --worktree active --command "<agent-id>" --json`.
 
 ## Worktree Comments
 
@@ -173,7 +175,7 @@ ORCA terminal wait --terminal <handle> --for exit --timeout-ms 5000 --json
 ORCA terminal wait --terminal <handle> --for tui-idle --timeout-ms 300000 --json
 ORCA terminal create --json
 ORCA terminal create --title "Worker" --json
-ORCA terminal create --worktree active --command "codex" --json
+ORCA terminal create --worktree active --command "<agent-id>" --json
 ORCA terminal split --terminal <handle> --direction vertical --json
 ORCA terminal split --terminal <handle> --direction horizontal --command "npm test" --json
 ORCA terminal rename --terminal <handle> --title "New Name" --json
