@@ -37,7 +37,6 @@ describe('useMobileFileTapHandlers', () => {
       nativeChatSessionId: 'session-1',
       activeHandleRef: { current: 'terminal-1' as string | null },
       terminalCwdRef: { current: new Map([['terminal-1', '/repo/sub']]) },
-      openBrowser: vi.fn(),
       fetchSessionTabs: vi.fn(async () => {}),
       getSessionTabs: () => [],
       getActiveSessionTabId: () => 'terminal-tab',

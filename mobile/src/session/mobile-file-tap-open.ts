@@ -2,9 +2,7 @@ import type {
   RuntimeNativeChatFileContext,
   RuntimeTerminalPathResolution
 } from '../../../src/shared/runtime-types'
-import { filesystemPathToFileUri } from '../../../src/shared/file-uri-path'
 import { createMobileFilePreviewHref } from '../files/mobile-file-preview-route'
-import { classifyMobileArtifact } from './mobile-artifact-kind'
 import { fileTapOpenRun, fileTapPathResolve } from './mobile-session-launch-operations'
 import { shouldActivateOpenedMobileSessionTab } from './opened-mobile-session-tab'
 import type { RpcOperationSender } from '../transport/rpc-operation-sender'
@@ -26,7 +24,6 @@ export type OpenMobileFileTapOptions<T extends FileTapSessionTab> = {
   line: number | null
   column: number | null
   pushPreviewRoute: (href: ReturnType<typeof createMobileFilePreviewHref>) => void
-  openBrowser: (url: string) => void
   triggerOpenFeedback: () => void
   fetchSessionTabs: () => Promise<void>
   getSessionTabs: () => readonly T[]
@@ -163,14 +160,6 @@ async function openMobileFileTapAsync<T extends FileTapSessionTab>(
         ...(resolvedWorktreeName ? { worktreeName: resolvedWorktreeName } : {})
       })
     )
-    return
-  }
-  if (
-    classifyMobileArtifact(openedPath) === 'html' &&
-    resolved.openTarget?.kind === 'worktree-file' &&
-    resolved.openTarget.provider === 'local'
-  ) {
-    options.openBrowser(filesystemPathToFileUri(resolved.openTarget.absolutePath))
     return
   }
   const openResponse = await fileTapOpenRun.request(

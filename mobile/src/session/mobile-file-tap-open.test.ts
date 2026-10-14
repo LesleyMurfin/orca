@@ -51,7 +51,6 @@ describe('openMobileFileTap', () => {
       line: 12,
       column: 3,
       pushPreviewRoute,
-      openBrowser: vi.fn(),
       triggerOpenFeedback,
       fetchSessionTabs: vi.fn(),
       getSessionTabs: () => [],
@@ -119,7 +118,6 @@ describe('openMobileFileTap', () => {
       line: null,
       column: null,
       pushPreviewRoute: vi.fn(),
-      openBrowser: vi.fn(),
       triggerOpenFeedback: vi.fn(),
       fetchSessionTabs: vi.fn(),
       getSessionTabs: () => [openedTab],
@@ -166,7 +164,6 @@ describe('openMobileFileTap', () => {
       line: null,
       column: null,
       pushPreviewRoute,
-      openBrowser: vi.fn(),
       triggerOpenFeedback: vi.fn(),
       fetchSessionTabs: vi.fn(),
       getSessionTabs: () => [],
@@ -218,7 +215,6 @@ describe('openMobileFileTap', () => {
       line: 120,
       column: 7,
       pushPreviewRoute,
-      openBrowser: vi.fn(),
       triggerOpenFeedback,
       fetchSessionTabs: vi.fn(),
       getSessionTabs: () => [],
@@ -245,7 +241,7 @@ describe('openMobileFileTap', () => {
     expect(client.sendRequest).not.toHaveBeenCalledWith('files.open', expect.anything())
   })
 
-  it('encodes worktree HTML paths before opening a browser tab', async () => {
+  it('opens local worktree HTML through files.open', async () => {
     const client = createClient([
       ok({
         worktree: 'wt-1',
@@ -259,9 +255,9 @@ describe('openMobileFileTap', () => {
           relativePath: 'public/report #1?.html',
           absolutePath: '/repo/public/report #1?.html'
         }
-      })
+      }),
+      ok({ opened: true })
     ])
-    const openBrowser = vi.fn()
 
     openMobileFileTap({
       client,
@@ -271,7 +267,6 @@ describe('openMobileFileTap', () => {
       line: null,
       column: null,
       pushPreviewRoute: vi.fn(),
-      openBrowser,
       triggerOpenFeedback: vi.fn(),
       fetchSessionTabs: vi.fn(),
       getSessionTabs: () => [],
@@ -281,9 +276,18 @@ describe('openMobileFileTap', () => {
       scheduleDelayedAction: vi.fn()
     })
     await Promise.resolve()
+    await Promise.resolve()
 
-    expect(openBrowser).toHaveBeenCalledWith('file:///repo/public/report%20%231%3F.html')
-    expect(client.sendRequest).not.toHaveBeenCalledWith('files.open', expect.anything())
+    expect(client.sendRequest).toHaveBeenCalledWith(
+      'files.open',
+      { worktree: 'id:wt-1', relativePath: 'public/report #1?.html' },
+      { timeoutMs: 15_000 }
+    )
+    // Type-level: OpenMobileFileTapOptions has no openBrowser. Runtime: only path-resolve + files.open.
+    expect(client.sendRequest.mock.calls.map((call) => call[0])).toEqual([
+      'files.resolveTerminalPath',
+      'files.open'
+    ])
   })
 
   it('passes the terminal cwd when resolving relative taps', async () => {
@@ -314,7 +318,6 @@ describe('openMobileFileTap', () => {
       line: null,
       column: null,
       pushPreviewRoute: vi.fn(),
-      openBrowser: vi.fn(),
       triggerOpenFeedback: vi.fn(),
       fetchSessionTabs: vi.fn(),
       getSessionTabs: () => [],
@@ -338,7 +341,7 @@ describe('openMobileFileTap', () => {
     )
   })
 
-  it('does not open SSH worktree HTML paths as local browser file URLs', async () => {
+  it('opens SSH worktree HTML through files.open', async () => {
     const client = createClient([
       ok({
         worktree: 'wt-1',
@@ -355,7 +358,6 @@ describe('openMobileFileTap', () => {
       }),
       ok({ opened: true })
     ])
-    const openBrowser = vi.fn()
 
     openMobileFileTap({
       client,
@@ -365,7 +367,6 @@ describe('openMobileFileTap', () => {
       line: null,
       column: null,
       pushPreviewRoute: vi.fn(),
-      openBrowser,
       triggerOpenFeedback: vi.fn(),
       fetchSessionTabs: vi.fn(),
       getSessionTabs: () => [],
@@ -377,7 +378,6 @@ describe('openMobileFileTap', () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(openBrowser).not.toHaveBeenCalled()
     expect(client.sendRequest).toHaveBeenCalledWith(
       'files.open',
       { worktree: 'id:wt-1', relativePath: 'report.html' },
@@ -407,7 +407,6 @@ describe('openMobileFileTap', () => {
       line: null,
       column: null,
       pushPreviewRoute,
-      openBrowser: vi.fn(),
       triggerOpenFeedback: vi.fn(),
       fetchSessionTabs: vi.fn(),
       getSessionTabs: () => [],
@@ -469,7 +468,6 @@ describe('openMobileFileTap', () => {
       line: null,
       column: null,
       pushPreviewRoute: vi.fn(),
-      openBrowser: vi.fn(),
       triggerOpenFeedback: vi.fn(),
       fetchSessionTabs: vi.fn(),
       getSessionTabs: () => [],
@@ -514,7 +512,6 @@ describe('openMobileFileTap', () => {
       line: null,
       column: null,
       pushPreviewRoute: vi.fn(),
-      openBrowser: vi.fn(),
       triggerOpenFeedback: vi.fn(),
       fetchSessionTabs: vi.fn(),
       getSessionTabs: () => [],
@@ -552,7 +549,6 @@ describe('openMobileFileTap', () => {
       line: null,
       column: null,
       pushPreviewRoute: vi.fn(),
-      openBrowser: vi.fn(),
       triggerOpenFeedback: vi.fn(),
       fetchSessionTabs: vi.fn(),
       getSessionTabs: () => [],
@@ -597,7 +593,6 @@ describe('openMobileFileTap', () => {
       line: null,
       column: null,
       pushPreviewRoute: vi.fn(),
-      openBrowser: vi.fn(),
       triggerOpenFeedback: vi.fn(),
       fetchSessionTabs: vi.fn(),
       getSessionTabs: () => [],
@@ -645,7 +640,6 @@ describe('openMobileFileTap', () => {
       line: null,
       column: null,
       pushPreviewRoute: vi.fn(),
-      openBrowser: vi.fn(),
       triggerOpenFeedback: vi.fn(),
       fetchSessionTabs: vi.fn(),
       getSessionTabs: () => [openedTab],

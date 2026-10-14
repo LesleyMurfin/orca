@@ -47,7 +47,8 @@ export function handleBrowserScreencastEvent(args: HandleScreencastEventArgs): v
   } = args
 
   if (event.type === 'ready') {
-    clearStartupTimer()
+    // Why: ready means the host subscribed, not that pixels exist. Clearing the
+    // first-frame timer here left busy=false + no frame + no error forever.
     if (busyRef.current) {
       busyRef.current = false
       setBusy(false)
@@ -60,7 +61,8 @@ export function handleBrowserScreencastEvent(args: HandleScreencastEventArgs): v
       }
     }
   } else if (event.type === 'end') {
-    clearStartupTimer()
+    // Why: end without pixels is still a frameless stream. Clearing the timer
+    // here recreated the infinite spinner; leave it armed until a frame or error.
     if (busyRef.current) {
       busyRef.current = false
       setBusy(false)

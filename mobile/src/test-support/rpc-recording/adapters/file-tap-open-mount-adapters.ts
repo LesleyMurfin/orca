@@ -49,7 +49,6 @@ export function fileTapOpenMountAdapters(
               line: args.line === undefined ? null : Number(args.line),
               column: null,
               pushPreviewRoute: (href) => effect('push-preview-route', href),
-              openBrowser: (url: string) => effect('open-browser', { url }),
               triggerOpenFeedback: () => effect('open-feedback', {}),
               fetchSessionTabs: () => {
                 effect('fetch-session-tabs', {})

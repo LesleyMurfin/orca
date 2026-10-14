@@ -13,7 +13,6 @@ type MobileFileTapHandlerOptions<T extends FileTapSessionTab> = {
   nativeChatSessionId: string | null
   activeHandleRef: MutableRefObject<string | null>
   terminalCwdRef: MutableRefObject<Map<string, string>>
-  openBrowser: (url: string) => void
   fetchSessionTabs: () => Promise<void>
   getSessionTabs: () => readonly T[]
   getActiveSessionTabId: () => string | null
@@ -50,7 +49,6 @@ export function useMobileFileTapHandlers<T extends FileTapSessionTab>(
     getSessionTabs,
     hostId,
     nativeChatSessionId,
-    openBrowser,
     scheduleDelayedAction,
     reportChatTapFailure,
     switchSessionTab,
@@ -74,7 +72,6 @@ export function useMobileFileTapHandlers<T extends FileTapSessionTab>(
       getSessionTabs,
       hostId,
       nativeChatSessionId,
-      openBrowser,
       scheduleDelayedAction,
       reportChatTapFailure,
       switchSessionTab,
@@ -91,7 +88,6 @@ export function useMobileFileTapHandlers<T extends FileTapSessionTab>(
     getSessionTabs,
     hostId,
     nativeChatSessionId,
-    openBrowser,
     router,
     scheduleDelayedAction,
     reportChatTapFailure,
@@ -119,7 +115,6 @@ export function useMobileFileTapHandlers<T extends FileTapSessionTab>(
         line,
         column,
         pushPreviewRoute: (href) => routerRef.current.push(href),
-        openBrowser: current.openBrowser,
         triggerOpenFeedback: triggerSelection,
         fetchSessionTabs: current.fetchSessionTabs,
         getSessionTabs: current.getSessionTabs,
@@ -159,7 +154,6 @@ export function useMobileFileTapHandlers<T extends FileTapSessionTab>(
           ? { tabId: nativeChatTabId, sessionId: nativeChatSessionId }
           : null,
       pushPreviewRoute: (href) => routerRef.current.push(href),
-      openBrowser: current.openBrowser,
       triggerOpenFeedback: triggerSelection,
       fetchSessionTabs: current.fetchSessionTabs,
       getSessionTabs: current.getSessionTabs,

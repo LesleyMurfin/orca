@@ -22,7 +22,6 @@ function baseOptions(client: { sendRequest: ReturnType<typeof vi.fn> }) {
     hostId: 'host-1',
     worktreeId: 'wt-1',
     pushPreviewRoute: vi.fn(),
-    openBrowser: vi.fn(),
     triggerOpenFeedback: vi.fn(),
     fetchSessionTabs: vi.fn(),
     getSessionTabs: () => [],

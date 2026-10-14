@@ -35,7 +35,6 @@ export function useMobileSessionFileActions(scope: MobileSessionTerminalSendActi
     nativeChatSessionId: resolveMobileNativeChatFileSessionId(activeSessionTab),
     activeHandleRef,
     terminalCwdRef,
-    openBrowser: (url) => void handleCreateBrowserRef.current?.(url),
     fetchSessionTabs,
     getSessionTabs: () => sessionTabsRef.current,
     getActiveSessionTabId: () => activeSessionTabIdRef.current,
