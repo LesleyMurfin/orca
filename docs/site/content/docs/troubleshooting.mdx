@@ -170,17 +170,30 @@ renderer, and other processes, per-worktree terminal sessions, and host memory a
 
 ### Chrome DevTools Protocol (CDP) troubleshooting
 
-When the UI is frozen, wedged, or a renderer process crashes without an error dialog, inspect the window state directly via CDP:
+When the UI is frozen, wedged, or a renderer process crashes without an error dialog, inspect the window state directly via CDP.
 
-1. Launch Orca with a remote debugging port:
+`--remote-debugging-port` is a **Chromium/Electron process switch**, not an Orca CLI flag. Do not pass it to `orca`, `orca-ide`, or `orca open`: those launchers set `ELECTRON_RUN_AS_NODE=1` and run the CLI entrypoint, so Chromium never binds a debug port. Quit any running desktop instance first (Orca holds a single-instance lock per profile), then start the **app binary** with the switch:
+
+```bash
+# macOS
+open -na /Applications/Orca.app --args --remote-debugging-port=9222
+# or: /Applications/Orca.app/Contents/MacOS/Orca --remote-debugging-port=9222
+
+# Linux (.deb / .rpm) — app binary under /opt, not the PATH CLI shim
+/opt/Orca/orca-ide --remote-debugging-port=9222
+# AppImage: ./orca-linux.AppImage --remote-debugging-port=9222
+
+# Windows (PowerShell)
+& "$env:LOCALAPPDATA\Programs\Orca\Orca.exe" --remote-debugging-port=9222
+```
+
+From a source checkout, the electron-vite dev runner injects a free port automatically and logs `[orca-dev] Remote debugging on http://127.0.0.1:<port>`. Override with `REMOTE_DEBUGGING_PORT=9222` or by passing `--remote-debugging-port=9222` to that runner.
+
+1. Confirm the endpoint, then list targets (window and webview entries):
    ```bash
-   orca --remote-debugging-port=9222
+   curl -s http://127.0.0.1:9222/json | jq ".[] | {title: .title, type: .type, id: .id, webSocketDebuggerUrl: .webSocketDebuggerUrl}"
    ```
-2. Query active targets and find the wedged window or webview:
-   ```bash
-   curl -s http://127.0.0.1:9222/json | jq ".[ ] | {title: .title, type: .type, id: .id}"
-   ```
-3. Evaluate renderer health and capture logs over the target WebSocket without revealing or focusing the window.
+2. Attach over the target's `webSocketDebuggerUrl` to evaluate renderer health and capture logs without revealing or focusing the window.
 
 ### Telemetry paths & offline state recovery
 
