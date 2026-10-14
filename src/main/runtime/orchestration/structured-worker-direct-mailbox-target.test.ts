@@ -19,7 +19,7 @@ const {
 const SESSION_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d'
 
 /** The real method through the real prototype chain; a re-declared copy would pin nothing. */
-class MailboxTargetProbe extends OrcaRuntimeWithGetPtyRecordForPaneKey {
+abstract class MailboxTargetProbe extends OrcaRuntimeWithGetPtyRecordForPaneKey {
   probeResolveTarget(mailboxHandle: string): unknown {
     return this.resolveStructuredMailboxTarget(mailboxHandle)
   }

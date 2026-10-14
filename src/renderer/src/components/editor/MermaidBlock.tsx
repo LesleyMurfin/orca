@@ -1,7 +1,9 @@
-import React, { useEffect, useId, useState } from 'react'
+import React, { useEffect, useId, useRef, useState } from 'react'
+import { Maximize2 } from 'lucide-react'
 import type mermaidNamespace from 'mermaid'
 import DOMPurify from 'dompurify'
 import { getMermaidConfig } from './mermaid-config'
+import { readMermaidThemeColors } from './mermaid-theme-colors'
 import { translate } from '@/i18n/i18n'
 
 type MermaidApi = typeof mermaidNamespace
@@ -18,10 +20,17 @@ function loadMermaid(): Promise<MermaidApi> {
   return mermaidModulePromise
 }
 
+/** A diagram with the page background it was themed against. */
+export type RenderedMermaidDiagram = { svg: string; background?: string }
+
 type MermaidBlockProps = {
   content: string
   isDark: boolean
   htmlLabels?: boolean
+  className?: string
+  pendingContent?: React.ReactNode
+  renderEnabled?: boolean
+  onExpand?: (diagram: RenderedMermaidDiagram) => void
 }
 
 // Why: mermaid.render() manipulates global DOM state (element IDs, internal
@@ -53,12 +62,27 @@ function enqueueRender(fn: () => Promise<void>): void {
 export default function MermaidBlock({
   content,
   isDark,
-  htmlLabels = false
+  htmlLabels = false,
+  className,
+  pendingContent,
+  renderEnabled = true,
+  onExpand
 }: MermaidBlockProps): React.JSX.Element {
   const id = useId().replace(/:/g, '_')
-  const [result, setResult] = useState<{ svg: string } | { error: string } | null>(null)
+  const [rendered, setRendered] = useState<{
+    content: string
+    result: RenderedMermaidDiagram | { error: string }
+  } | null>(null)
+  // Why: new source waits as source, but a theme change keeps the old diagram until it re-renders.
+  const result =
+    pendingContent !== undefined && rendered?.content !== content
+      ? null
+      : (rendered?.result ?? null)
 
   useEffect(() => {
+    if (!renderEnabled) {
+      return
+    }
     let cancelled = false
 
     const render = async (): Promise<void> => {
@@ -72,19 +96,27 @@ export default function MermaidBlock({
         // MermaidBlock cannot overwrite htmlLabels/theme between initialize()
         // and render(), which would make markdown preview fall back to the
         // broken foreignObject label path again.
-        mermaid.initialize(getMermaidConfig(isDark, htmlLabels))
+        const colors = readMermaidThemeColors()
+        mermaid.initialize(getMermaidConfig(isDark, htmlLabels, isDark ? colors : undefined))
         const { svg } = await mermaid.render(`mermaid-${id}`, content)
         if (!cancelled) {
           // Why: although mermaid uses DOMPurify internally, we add an explicit
           // sanitization pass as defense-in-depth against XSS in case upstream
           // behaviour changes or a mermaid version ships without sanitization.
-          setResult({
-            svg: DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true } })
+          setRendered({
+            content,
+            result: {
+              svg: DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true } }),
+              background: colors?.background
+            }
           })
         }
       } catch (err) {
         if (!cancelled) {
-          setResult({ error: err instanceof Error ? err.message : 'Invalid mermaid syntax' })
+          setRendered({
+            content,
+            result: { error: err instanceof Error ? err.message : 'Invalid mermaid syntax' }
+          })
           // Mermaid leaves an error element in the DOM on failure — clean it up.
           const errorEl = document.getElementById(`d${`mermaid-${id}`}`)
           errorEl?.remove()
@@ -98,10 +130,14 @@ export default function MermaidBlock({
     return () => {
       cancelled = true
     }
-  }, [content, htmlLabels, isDark, id])
+  }, [content, htmlLabels, isDark, id, renderEnabled])
 
-  if (result && 'error' in result) {
-    return (
+  if ((!renderEnabled || result === null) && pendingContent !== undefined) {
+    return <>{pendingContent}</>
+  }
+
+  const diagram =
+    result && 'error' in result ? (
       <div className="mermaid-block">
         <div className="mermaid-error">
           {translate('auto.components.editor.MermaidBlock.dcc132e691', 'Diagram error:')}{' '}
@@ -111,13 +147,53 @@ export default function MermaidBlock({
           <code>{content}</code>
         </pre>
       </div>
+    ) : result && onExpand ? (
+      <ExpandableDiagram diagram={result} onExpand={onExpand} />
+    ) : (
+      <div
+        className="mermaid-block"
+        dangerouslySetInnerHTML={result ? { __html: result.svg } : undefined}
+      />
     )
-  }
+  return className ? <div className={className}>{diagram}</div> : diagram
+}
 
+function ExpandableDiagram({
+  diagram,
+  onExpand
+}: {
+  diagram: RenderedMermaidDiagram
+  onExpand: (diagram: RenderedMermaidDiagram) => void
+}): React.JSX.Element {
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const label = translate('auto.components.editor.MermaidBlock.expand', 'Expand diagram')
   return (
     <div
-      className="mermaid-block"
-      dangerouslySetInnerHTML={result ? { __html: result.svg } : undefined}
-    />
+      className="group/diagram relative cursor-zoom-in"
+      onClick={() => {
+        // Why: dragging across labels selects text; only a plain click expands.
+        if (window.getSelection()?.isCollapsed === false) {
+          return
+        }
+        // Why: closing the viewer returns focus to whatever was focused when it opened.
+        buttonRef.current?.focus({ preventScroll: true })
+        onExpand(diagram)
+      }}
+    >
+      <div className="mermaid-block" dangerouslySetInnerHTML={{ __html: diagram.svg }} />
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-label={label}
+        title={label}
+        onClick={(event) => {
+          event.stopPropagation()
+          onExpand(diagram)
+        }}
+        className="absolute top-0 right-0 flex size-6 items-center justify-center rounded-md bg-background/80 text-muted-foreground transition-opacity hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none can-hover:opacity-0 can-hover:group-hover/diagram:opacity-100 can-hover:focus-visible:opacity-100"
+      >
+        <Maximize2 className="size-3.5" />
+      </button>
+    </div>
   )
 }

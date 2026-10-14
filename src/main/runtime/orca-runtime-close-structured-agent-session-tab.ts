@@ -15,6 +15,11 @@ import { applyBrowserSessionTabSelection } from './browser-session-tab-selection
 import { getStructuredAgentSessionHost } from '../native-chat/agent-session-wire/structured-agent-session-registry'
 import type { StructuredAgentSessionCloseCause } from '../native-chat/agent-session-wire/structured-agent-session-host-lifetime'
 import { retireStructuredAgentSessionTabFrom } from './structured-agent-session-tab-retirement'
+import { chatTabId, withChatTabChanges, type ChatTabChange } from './agent-session-tab-layout'
+import { savedSessionId } from './saved-structured-agent-session-restoration'
+import { LOCAL_EXECUTION_HOST_ID } from '../../shared/execution-host'
+import { structuredSessionTabRetired } from './structured-worker-custody'
+import type { StructuredAgentId } from '../../shared/agent-session-provider-handle'
 
 export class OrcaRuntimeWithCloseStructuredAgentSessionTab extends OrcaRuntimeWithCloseMobileSessionTab {
   protected async closeStructuredAgentSessionTab(
@@ -242,6 +247,51 @@ export class OrcaRuntimeWithCloseStructuredAgentSessionTab extends OrcaRuntimeWi
         options.caller.navigation,
         options.caller.clientNavigationId
       )
+    }
+  }
+
+  /** Saves a chat's tab in a windowless host's layout, where it is listed from once read there. */
+  protected saveWindowlessAgentSessionTab(
+    worktreeId: string,
+    chat: { sessionId: string; agent: StructuredAgentId }
+  ): void {
+    this.changeWindowlessChatTabs(worktreeId, [
+      { open: { sessionId: chat.sessionId, agent: chat.agent, tabId: chatTabId(chat.sessionId) } }
+    ])
+  }
+
+  /**
+   * Removes a chat's saved tab once the index no longer lists it. Called from the index's hidden
+   * notice, which every chat close reaches; a close that put the tab back keeps it.
+   */
+  protected removeWindowlessAgentSessionTab(sessionId: string): void {
+    const host = getStructuredAgentSessionHost()
+    if (!host || !structuredSessionTabRetired(host, sessionId)) {
+      return
+    }
+    const saved = this.store?.getWorkspaceSession?.(LOCAL_EXECUTION_HOST_ID)?.unifiedTabs ?? {}
+    for (const [worktreeId, tabs] of Object.entries(saved)) {
+      if (tabs.some((tab) => savedSessionId(tab) === sessionId)) {
+        this.changeWindowlessChatTabs(worktreeId, [{ close: sessionId }])
+      }
+    }
+  }
+
+  // A window saves its own layout whole, chat tabs included; only a host with none saves them here.
+  protected changeWindowlessChatTabs(worktreeId: string, changes: readonly ChatTabChange[]): void {
+    const session = this.getAvailableAuthoritativeWindow()
+      ? null
+      : this.getWorkspaceSessionForWorktree(worktreeId)
+    const next =
+      session &&
+      withChatTabChanges(
+        this.getWorkspaceSessionHostIdForWorktree(worktreeId),
+        session,
+        worktreeId,
+        changes
+      )
+    if (next) {
+      this.setWorkspaceSessionForWorktree(worktreeId, next)
     }
   }
 }

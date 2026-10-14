@@ -103,14 +103,14 @@ describe('SSH retained payload admission', () => {
     expect(malformed).not.toHaveProperty('hostNodeRuntime')
   })
 
-  it('admits only a literal move offer on a relay server status', () => {
+  it("drops an older host's move offer and admits only a literal elsewhere flag", () => {
     const state = { targetId: 'ssh-a', status: 'connected', error: null, reconnectAttempt: 0 }
     const relay = { kind: 'relay', reason: 'relay_terminals_live', terminals: 2 }
 
     expect(
       admitSshConnectionState({ ...state, managedServer: { ...relay, offerMove: true } }, 'ssh-a')
         ?.managedServer
-    ).toEqual({ ...relay, offerMove: true })
+    ).toEqual(relay)
     expect(
       admitSshConnectionState(
         { ...state, managedServer: { ...relay, terminalsElsewhere: true } },
@@ -118,8 +118,10 @@ describe('SSH retained payload admission', () => {
       )?.managedServer
     ).toEqual({ ...relay, terminalsElsewhere: true })
     expect(
-      admitSshConnectionState({ ...state, managedServer: { ...relay, offerMove: 'yes' } }, 'ssh-a')
-        ?.managedServer
+      admitSshConnectionState(
+        { ...state, managedServer: { ...relay, terminalsElsewhere: 'yes' } },
+        'ssh-a'
+      )?.managedServer
     ).toEqual(relay)
   })
 

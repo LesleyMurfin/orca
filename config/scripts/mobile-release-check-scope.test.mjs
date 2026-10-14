@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, matchesGlob, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
-import { runProcessSync } from './script-child-process.mjs'
+import { runProcessSync } from '@orca/process-host'
 import { shouldRunMobileReleaseChecks } from './mobile-release-check-scope.mjs'
 
 const root = resolve(import.meta.dirname, '../..')
@@ -76,10 +76,14 @@ it('gates Ruby independently and retains mobile static validation', () => {
   expect(steps.indexOf(detector)).toBeGreaterThan(
     steps.findIndex((step) => step.uses === './.github/actions/install-node-dependencies')
   )
+  expect(steps.find((step) => step.name === 'Setup Bun for tests').if).toBe(
+    steps.find((step) => step.name === 'Test').if
+  )
   const gated = steps.filter(
     (step) =>
       step.if !== undefined &&
       step.name !== 'Test' &&
+      step.name !== 'Setup Bun for tests' &&
       step.name !== 'Summarize RPC recording changes'
   )
   expect(gated.map((step) => step.name)).toEqual([
@@ -133,6 +137,7 @@ function fixture(detectorStep = detector) {
   for (const file of [
     'package.json',
     'config/scripts/pr-code-change-scope.mjs',
+    'config/scripts/pr-layout-oracle-route.mjs',
     'config/scripts/mobile-release-check-scope.mjs',
     'config/scripts/mobile-test-change-scope.mjs'
   ]) {

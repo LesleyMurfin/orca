@@ -7,6 +7,8 @@ import {
   normalizeVisibleTaskProviders,
   useHostClient,
   useHostRepoList,
+  useMemo,
+  reconcileRepoSelection,
   useLastConnectedAt,
   useRelayRecoveryStatus,
   useLocalSearchParams,
@@ -17,6 +19,8 @@ import {
   useState
 } from './mobile-tasks-dependencies'
 import { newTabRepoListRead } from '../session/mobile-session-read-operations'
+import { useHostProtocolGates } from '../components/host-protocol-gates-context'
+import { useTaskHostRepos } from './use-task-host-repos'
 import {
   type ActionableTaskItem,
   DEFAULT_LINEAR_DISPLAY_PROPERTIES,
@@ -49,7 +53,8 @@ export function useMobileTasksRouteAndItemState() {
   const { hostId, taskSource } = useLocalSearchParams<{ hostId: string; taskSource?: string }>()
   const router = useRouter()
   const insets = useSafeAreaInsets()
-  const { client, state: connState } = useHostClient(hostId)
+  const { client: desktopClient, state: connState } = useHostClient(hostId)
+  const { hostCapabilities } = useHostProtocolGates()
   const reconnectAttempts = useReconnectAttempt(hostId)
   const lastConnectedAt = useLastConnectedAt(hostId)
   const relayRecovery = useRelayRecoveryStatus(hostId)
@@ -57,17 +62,24 @@ export function useMobileTasksRouteAndItemState() {
   const loadGenerationRef = useRef(0)
   const taskResumeRef = useRef<TaskResumeState>({})
   const repoList = useHostRepoList<RepoSummary>(
-    client,
-    client && connState === 'connected'
+    desktopClient,
+    desktopClient && connState === 'connected'
       ? async () => {
-          const reply = await newTabRepoListRead.request(client)
+          const reply = await newTabRepoListRead.request(desktopClient)
           // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Preserve the established response shape at this boundary.
           return newTabRepoListRead.interpret(reply) as RepoSummary[]
         }
       : null
   )
-  const repos = repoList.state.repos
-  const { ensureLoaded: repoListEnsureLoaded, reload: repoListReload } = repoList
+  // Why one client: every call naming a server's repo then runs on that server.
+  const { client, repos, serverRepoList, repoListEnsureLoaded, repoListReload, repoHostLabels } =
+    useTaskHostRepos({
+      hostId,
+      desktopClient,
+      connState,
+      hostCapabilities,
+      desktopRepoList: repoList
+    })
   const [provider, setProvider] = useState<TaskProvider>('github')
   const [visibleProviders, setVisibleProviders] = useState<TaskProvider[]>(() =>
     normalizeVisibleTaskProviders(undefined)
@@ -92,8 +104,6 @@ export function useMobileTasksRouteAndItemState() {
     null
   )
   const [selectedLinearTeamIds, setSelectedLinearTeamIds] = useState<Set<string>>(new Set())
-  const defaultRepoSelectionRef = useRef<string[] | null>(null)
-  const repoSelectionHydratedRef = useRef(false)
   const defaultLinearTeamSelectionRef = useRef<string[] | null>(null)
   const [showLinearWorkspacePicker, setShowLinearWorkspacePicker] = useState(false)
   const [showLinearTeamPicker, setShowLinearTeamPicker] = useState(false)
@@ -109,6 +119,15 @@ export function useMobileTasksRouteAndItemState() {
   const [linearConnectError, setLinearConnectError] = useState('')
   const [taskSort, setTaskSort] = useState<TaskSort>('updated')
   const [selectedRepoIds, setSelectedRepoIds] = useState<Set<string>>(new Set())
+  // The saved choice narrowed to what is listed now (empty = all). Listing changes never prune the
+  // choice; a user edit rewrites it from what's shown, so it can drop a briefly gone server's ids.
+  const effectiveRepoKey = [...reconcileRepoSelection(repos, [...selectedRepoIds])]
+    .sort()
+    .join('\n')
+  const effectiveRepoIds = useMemo(
+    (): ReadonlySet<string> => new Set(effectiveRepoKey ? effectiveRepoKey.split('\n') : []),
+    [effectiveRepoKey]
+  )
   const [items, setItems] = useState<TaskItem[]>([])
   const [githubPages, setGithubPages] = useState<
     Array<Extract<TaskItem, { provider: 'github' }>[]>
@@ -181,6 +200,8 @@ export function useMobileTasksRouteAndItemState() {
     taskResumeRef,
     repoList,
     repos,
+    serverRepoList,
+    repoHostLabels,
     repoListEnsureLoaded,
     repoListReload,
     provider,
@@ -219,8 +240,6 @@ export function useMobileTasksRouteAndItemState() {
     setSelectedLinearWorkspaceId,
     selectedLinearTeamIds,
     setSelectedLinearTeamIds,
-    defaultRepoSelectionRef,
-    repoSelectionHydratedRef,
     defaultLinearTeamSelectionRef,
     showLinearWorkspacePicker,
     setShowLinearWorkspacePicker,
@@ -245,6 +264,7 @@ export function useMobileTasksRouteAndItemState() {
     taskSort,
     setTaskSort,
     selectedRepoIds,
+    effectiveRepoIds,
     setSelectedRepoIds,
     items,
     setItems,

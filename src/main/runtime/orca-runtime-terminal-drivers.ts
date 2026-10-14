@@ -1,14 +1,19 @@
 // @ts-nocheck -- mechanically split from OrcaRuntimeService; behavior is covered by AST equivalence and characterization tests.
 import { OrcaRuntimeWithFitOverrideListeners } from './orca-runtime-fit-override-listeners'
-import { RuntimeTerminalDriverController } from './runtime-terminal-driver-controller'
-import { RuntimeEdgeCommandController } from './runtime-edge-command-controller'
-import { getBrowserHostLeaseRegistry } from './browser-host-lease-registry-instance'
-import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
 import type {
+  DriverState,
+  ApplyLayoutResult,
+  PtyLayoutTarget,
   LayoutQueueEntry,
   PtyLayoutState,
   RuntimeCommandSurfaceHost
 } from './orca-runtime-core'
+
+import { RuntimeTerminalDriverController } from './runtime-terminal-driver-controller'
+import { RuntimeEdgeCommandController } from './runtime-edge-command-controller'
+import { getBrowserHostLeaseRegistry } from './browser-host-lease-registry-instance'
+import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
+
 import { RuntimeBrowserDriverController } from './runtime-browser-driver-controller'
 import { RemoteDesktopTerminalFloor } from './remote-desktop-terminal-floor'
 import type { StatsCollector } from '../stats/collector'
@@ -16,7 +21,21 @@ import { RuntimeRemoteFetchController } from './runtime-remote-fetch-controller'
 import { RuntimeWorktreeBaseReconciliation } from './runtime-worktree-base-reconciliation'
 import { RuntimeWorktreeRemovalInFlight } from './runtime-worktree-removal-in-flight'
 
-export class OrcaRuntimeWithTerminalDrivers extends OrcaRuntimeWithFitOverrideListeners {
+export abstract class OrcaRuntimeWithTerminalDrivers extends OrcaRuntimeWithFitOverrideListeners {
+  abstract getDriver(ptyId: string): DriverState
+  protected abstract enqueueLayout(
+    ptyId: string,
+    target: PtyLayoutTarget
+  ): Promise<ApplyLayoutResult>
+  abstract mobileTookFloor(
+    ptyId: string,
+    clientId: string,
+    previousFloor?: DriverState,
+    isCurrent?: () => boolean
+  ): Promise<void>
+  protected abstract resolveDesktopRestoreTarget(ptyId: string): { cols: number; rows: number }
+  abstract getTerminalSize(ptyId: string): { cols: number; rows: number } | null
+
   // Why: per-PTY driver state. The "driver" is whoever currently owns the
   // input/resize floor. While `kind === 'mobile'` the desktop renderer drops
   // xterm.onData/onResize and shows the lock banner; `terminal.send` /

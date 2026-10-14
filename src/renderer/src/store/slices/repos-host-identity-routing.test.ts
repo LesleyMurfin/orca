@@ -484,7 +484,7 @@ describe('repo slice host identity routing', () => {
 
   it('removeProject of an SSH host row routes local even when a runtime is focused', async () => {
     // Regression: removing an SSH host's repo (explicit ssh hostId) must NOT route
-    // repo.rm to the focused runtime env. settingsForRepoOwner clears the focused
+    // repo.rm to the focused runtime env. Owner routing clears the focused
     // runtime for SSH owners, so removal stays on the host-scoped local path.
     const sshDuplicate: Repo = {
       id: 'same-repo',

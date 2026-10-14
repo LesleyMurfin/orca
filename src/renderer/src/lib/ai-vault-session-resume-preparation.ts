@@ -1,18 +1,81 @@
 import type { AiVaultSession } from '../../../shared/ai-vault-types'
+import type {
+  AiVaultPrepareSessionResumeArgs,
+  AiVaultPrepareSessionResumeResult
+} from '../../../shared/ai-vault-resume-preparation'
 import {
   isLegacySharedCodexHome,
   isPerAccountManagedCodexHome
 } from '../../../shared/ai-vault-resume-preparation'
 import {
   getSshTargetIdForExecutionHost,
-  LOCAL_EXECUTION_HOST_ID
+  LOCAL_EXECUTION_HOST_ID,
+  parseExecutionHostId
 } from '../../../shared/execution-host'
+import { readIpcErrorMessage } from './ipc-error'
 import type { AiVaultResumeCommandSession } from './ai-vault-resume-command'
 
 export function prepareAiVaultSessionForResume(session: AiVaultSession): Promise<AiVaultSession> {
-  return session.structuredSession
+  return session.structuredSession || !aiVaultSessionNeedsResumePreparation(session)
     ? Promise.resolve(session)
     : prepareAiVaultSessionHome(session, false)
+}
+
+export function prepareAiVaultSessionForTerminalResume(
+  session: AiVaultSession
+): Promise<AiVaultSession> {
+  return prepareAiVaultSessionHome(session, false, true)
+}
+
+export function prepareAiVaultSessionResumeRequest(
+  args: AiVaultPrepareSessionResumeArgs
+): Promise<AiVaultPrepareSessionResumeResult> {
+  return window.api.aiVault.prepareSessionResume(args)
+}
+
+export async function prepareAiVaultTerminalResumeRequest(
+  args: AiVaultPrepareSessionResumeArgs
+): Promise<AiVaultPrepareSessionResumeResult> {
+  const needsHomePreparation = aiVaultSessionNeedsResumePreparation(args)
+  try {
+    // Why: this request checks ownership; old desktop resumes kept the recorded home otherwise.
+    const result = await prepareAiVaultSessionResumeRequest(
+      needsHomePreparation ? args : { ...args, codexHome: null }
+    )
+    if (
+      typeof result?.useRealCodexHome !== 'boolean' ||
+      (result.substituteCodexHome !== undefined && typeof result.substituteCodexHome !== 'string')
+    ) {
+      throw new Error('Invalid aiVault.prepareSessionResume response')
+    }
+    return needsHomePreparation ? result : { useRealCodexHome: false }
+  } catch (error) {
+    if (
+      !args.fork &&
+      parseExecutionHostId(args.executionHostId)?.kind === 'runtime' &&
+      !needsHomePreparation &&
+      isMissingPairedResumePreparation(error)
+    ) {
+      return { useRealCodexHome: false }
+    }
+    throw error
+  }
+}
+
+function isMissingPairedResumePreparation(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+  const desktopPrepareError =
+    error.message.startsWith("Error invoking remote method 'aiVault:prepareSessionResume':") ||
+    error.message.startsWith("Error occurred in handler for 'aiVault:prepareSessionResume':")
+  return (
+    (desktopPrepareError &&
+      readIpcErrorMessage(error) === 'aiVault.prepareSessionResume: method_not_found') ||
+    ('code' in error &&
+      error.code === 'method_not_found' &&
+      error.message === 'Unknown method: aiVault.prepareSessionResume')
+  )
 }
 
 /** Picks the Codex home a fork of `session` runs under, the same way a resume picks it. */
@@ -22,19 +85,23 @@ export function prepareAiVaultSessionForFork(session: AiVaultSession): Promise<A
 
 async function prepareAiVaultSessionHome(
   session: AiVaultSession,
-  fork: boolean
+  fork: boolean,
+  terminalResume = false
 ): Promise<AiVaultSession> {
-  if (!aiVaultSessionNeedsResumePreparation(session)) {
+  if (fork && !aiVaultSessionNeedsResumePreparation(session)) {
     return session
   }
-  const result = await window.api.aiVault.prepareSessionResume({
+  const args: AiVaultPrepareSessionResumeArgs = {
     agent: session.agent,
     sessionId: session.sessionId,
     filePath: session.filePath,
     codexHome: session.codexHome,
     executionHostId: session.executionHostId,
     ...(fork ? { fork: true } : {})
-  })
+  }
+  const result = await (terminalResume
+    ? prepareAiVaultTerminalResumeRequest(args)
+    : prepareAiVaultSessionResumeRequest(args))
   if (result.useRealCodexHome) {
     return { ...session, codexHome: null }
   }

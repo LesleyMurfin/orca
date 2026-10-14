@@ -29,6 +29,7 @@ import {
   type AgentSessionWriteRefusal
 } from './agent-session-write-failure'
 import { agentSessionRefusalReasonWords } from './agent-session-refusal-reason-words'
+import { TUI_AGENT_DISPLAY_NAMES } from './tui-agent-display-names'
 
 export {
   agentSessionRefusalReasonWords,
@@ -46,7 +47,26 @@ const NOT_DONE: Record<AgentSessionWriteKind, AgentSessionWriteNoticeSentence> =
   answer: 'notDoneAnswer',
   option: 'notDoneOption',
   command: 'notDoneCommand',
+  clear: 'notDoneCommand',
+  compact: 'notDoneCommand',
   goal: 'notDoneGoal'
+}
+
+/** A /clear or /compact refused because the agent is working: one plain sentence for every
+ *  reason that is, saying only what the person sees and can do. */
+const COMMAND_WHILE_WORKING: Partial<
+  Record<AgentSessionWriteKind, Partial<Record<string, AgentSessionWriteNoticeSentence[]>>>
+> = {
+  clear: {
+    turnActive: ['agentStillWorking', 'runClearWhenDone'],
+    messagesUnsettled: ['agentStillWorking', 'runClearWhenDone'],
+    promptPending: ['clearAfterAnswer']
+  },
+  compact: {
+    turnActive: ['agentStillWorking', 'runCompactWhenDone'],
+    messagesUnsettled: ['agentStillWorking', 'runCompactWhenDone'],
+    promptPending: ['compactAfterAnswer']
+  }
 }
 
 /** That the write did not happen, for one that a second attempt can carry out. Only the phone says
@@ -69,7 +89,8 @@ function causeParts(
   }
   const saysNotDone =
     (write === 'read-history' && AGENT_SESSION_HISTORY_UNREAD_CAUSES.has(cause)) ||
-    (cause === 'questionChanged' && write === 'answer')
+    (cause === 'questionChanged' && write === 'answer') ||
+    (cause === 'cancelNotSaved' && write === 'stop')
   return saysNotDone ? [cause] : [cause, NOT_DONE[write]]
 }
 
@@ -79,6 +100,16 @@ function reasonParts(
   write: AgentSessionWriteKind,
   context: AgentSessionFailureWordsContext
 ): AgentSessionWriteNoticePart[] | undefined {
+  if (
+    failure.code === 'agent_session_operation_invalid' &&
+    failure.details?.codexInstallation &&
+    (write === 'send' || write === 'composer-send')
+  ) {
+    return [
+      NOT_DONE[write],
+      { failure: { kind: 'startFailed', refusal: failure }, surface: 'rejection', context }
+    ]
+  }
   if (
     failure.code === 'agent_session_operation_invalid' &&
     failure.details?.argumentProblem &&
@@ -94,9 +125,31 @@ function reasonParts(
       }
     ]
   }
+  const commandWhileWorking =
+    failure.code === 'agent_session_operation_invalid'
+      ? COMMAND_WHILE_WORKING[write]?.[failure.details?.reason ?? '']
+      : undefined
+  if (commandWhileWorking) {
+    return commandWhileWorking
+  }
   const words = agentSessionRefusalReasonWords(failure)
   if (!words || 'words' in words) {
     return undefined
+  }
+  if ('writes' in words) {
+    if (!words.writes.includes(write)) {
+      return undefined
+    }
+    const agent =
+      failure.code === 'agent_session_operation_invalid' ? failure.details?.agent : undefined
+    const said: AgentSessionWriteNoticePart[] = [
+      {
+        failure: { kind: words.fact },
+        surface: 'row',
+        context: agent ? { ...context, agentName: TUI_AGENT_DISPLAY_NAMES[agent] } : context
+      }
+    ]
+    return context.retryControl && words.action === 'retry' ? said : [...said, words.step]
   }
   if ('fact' in words) {
     return write === 'send' || write === 'composer-send'

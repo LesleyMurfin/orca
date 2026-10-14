@@ -16,10 +16,10 @@
       "ordinal": 51,
       "value": "transport failure"
     },
-    "06945c581b21": {
-      "name": "defaultGitHubPreset",
-      "ordinal": 62,
-      "value": "issues"
+    "0557cf6e117f": {
+      "name": "linearFilter",
+      "ordinal": 66,
+      "value": "all"
     },
     "08c3599aa1ff": {
       "name": "showGitHubKindPicker",
@@ -83,6 +83,11 @@
       "ordinal": 51,
       "value": ""
     },
+    "265e84a16ebd": {
+      "name": "githubKind",
+      "ordinal": 65,
+      "value": "issues"
+    },
     "281c23abda8b": {
       "name": "settings.get#1",
       "ordinal": 43,
@@ -127,6 +132,11 @@
       "name": "error",
       "ordinal": 42,
       "value": ""
+    },
+    "2a56620ac048": {
+      "name": "githubPreset",
+      "ordinal": 64,
+      "value": "issues"
     },
     "2ae77d454712": {
       "name": "ui.get#1",
@@ -209,6 +219,16 @@
       "ordinal": 9,
       "value": false
     },
+    "4121b85bfa08": {
+      "name": "provider",
+      "ordinal": 61,
+      "value": "github"
+    },
+    "45df0a2741dc": {
+      "name": "query",
+      "ordinal": 68,
+      "value": "is:issue is:open"
+    },
     "45e466d86a07": {
       "name": "showLinearWorkspacePicker",
       "ordinal": 3,
@@ -218,11 +238,6 @@
       "name": "showGitHubProjectFieldsPicker",
       "ordinal": 23,
       "value": false
-    },
-    "494f3c869f37": {
-      "name": "taskStateHydrated",
-      "ordinal": 69,
-      "value": true
     },
     "4979dce5a6d2": {
       "name": "preflight.check#1",
@@ -377,11 +392,6 @@
         }
       }
     },
-    "542593b21c22": {
-      "name": "appliedQuery",
-      "ordinal": 68,
-      "value": "is:issue is:open"
-    },
     "558df6e44ef7": {
       "name": "settings.get#1",
       "ordinal": 47,
@@ -437,6 +447,11 @@
         "visibleTaskProviders": ["github", "linear"]
       }
     },
+    "5a33c7e88b8e": {
+      "name": "defaultGitHubPreset",
+      "ordinal": 63,
+      "value": "issues"
+    },
     "644df42439c4": {
       "name": "linearWorkspaces",
       "ordinal": 55,
@@ -485,11 +500,6 @@
       "name": "showSortPicker",
       "ordinal": 16,
       "value": false
-    },
-    "737d03a180a4": {
-      "name": "githubMode",
-      "ordinal": 61,
-      "value": "items"
     },
     "796a64aabbc9": {
       "name": "showGitLabViewPicker",
@@ -690,6 +700,11 @@
       "ordinal": 6,
       "value": false
     },
+    "90d9c563300c": {
+      "name": "taskStateHydrated",
+      "ordinal": 70,
+      "value": true
+    },
     "917e8342c71e": {
       "name": "showCreateTask",
       "ordinal": 30,
@@ -769,15 +784,15 @@
         }
       }
     },
+    "9c3cbdd83e1d": {
+      "name": "appliedQuery",
+      "ordinal": 69,
+      "value": "is:issue is:open"
+    },
     "a5110db5951d": {
       "name": "linearTeams",
       "ordinal": 56,
       "value": []
-    },
-    "ac6cda1d7c7a": {
-      "name": "githubKind",
-      "ordinal": 64,
-      "value": "issues"
     },
     "ace3d3315687": {
       "name": "showGitLabFilterPicker",
@@ -793,6 +808,11 @@
       "name": "status.get#1",
       "ordinal": 40,
       "json": "{\"id\":\"frame-1\",\"deviceToken\":\"recording-device\",\"method\":\"status.get\"}"
+    },
+    "b39bd3d3c40b": {
+      "name": "selectedRepoIds",
+      "ordinal": 59,
+      "value": []
     },
     "b3f3f6a6069b": {
       "name": "ui.get#1",
@@ -827,20 +847,10 @@
         "$rpc": "null"
       }
     },
-    "b8f36c62d60b": {
-      "name": "githubPreset",
-      "ordinal": 63,
-      "value": "issues"
-    },
     "b99d5f718523": {
       "name": "showLinearDisplayPicker",
       "ordinal": 8,
       "value": false
-    },
-    "bb8650c59a0f": {
-      "name": "visibleProviders",
-      "ordinal": 59,
-      "value": ["github", "linear"]
     },
     "c4b6b5ed0b10": {
       "name": "showCreateTargetPicker",
@@ -851,14 +861,9 @@
       "hydrated": false,
       "settings": {}
     },
-    "cb9416350e8d": {
-      "name": "linearFilter",
-      "ordinal": 65,
-      "value": "all"
-    },
-    "cff6ef7f2791": {
+    "c967fcbd2446": {
       "name": "githubProjectSettings",
-      "ordinal": 66,
+      "ordinal": 67,
       "value": {
         "activeProject": {
           "$rpc": "null"
@@ -1008,10 +1013,15 @@
         "$rpc": "null"
       }
     },
-    "f48548c0c512": {
-      "name": "query",
-      "ordinal": 67,
-      "value": "is:issue is:open"
+    "f62cf435afca": {
+      "name": "githubMode",
+      "ordinal": 62,
+      "value": "items"
+    },
+    "f7b209507189": {
+      "name": "visibleProviders",
+      "ordinal": 60,
+      "value": ["github", "linear"]
     },
     "f7c2d2661209": {
       "name": "selectedLinearWorkspaceId",
@@ -1019,11 +1029,6 @@
       "value": {
         "$rpc": "null"
       }
-    },
-    "fa73b8d70b9b": {
-      "name": "provider",
-      "ordinal": 60,
-      "value": "github"
     },
     "fe7472dae00e": {
       "name": "showGitHubPresetPicker",
@@ -1169,17 +1174,18 @@
             "a5110db5951d",
             "575605e669c4",
             "f7c2d2661209",
-            "bb8650c59a0f",
-            "fa73b8d70b9b",
-            "737d03a180a4",
-            "06945c581b21",
-            "b8f36c62d60b",
-            "ac6cda1d7c7a",
-            "cb9416350e8d",
-            "cff6ef7f2791",
-            "f48548c0c512",
-            "542593b21c22",
-            "494f3c869f37"
+            "b39bd3d3c40b",
+            "f7b209507189",
+            "4121b85bfa08",
+            "f62cf435afca",
+            "5a33c7e88b8e",
+            "2a56620ac048",
+            "265e84a16ebd",
+            "0557cf6e117f",
+            "c967fcbd2446",
+            "45df0a2741dc",
+            "9c3cbdd83e1d",
+            "90d9c563300c"
           ]
         }
       },
@@ -1253,17 +1259,18 @@
             "a5110db5951d",
             "575605e669c4",
             "f7c2d2661209",
-            "bb8650c59a0f",
-            "fa73b8d70b9b",
-            "737d03a180a4",
-            "06945c581b21",
-            "b8f36c62d60b",
-            "ac6cda1d7c7a",
-            "cb9416350e8d",
-            "cff6ef7f2791",
-            "f48548c0c512",
-            "542593b21c22",
-            "494f3c869f37"
+            "b39bd3d3c40b",
+            "f7b209507189",
+            "4121b85bfa08",
+            "f62cf435afca",
+            "5a33c7e88b8e",
+            "2a56620ac048",
+            "265e84a16ebd",
+            "0557cf6e117f",
+            "c967fcbd2446",
+            "45df0a2741dc",
+            "9c3cbdd83e1d",
+            "90d9c563300c"
           ]
         }
       },
@@ -1337,17 +1344,18 @@
             "a5110db5951d",
             "575605e669c4",
             "f7c2d2661209",
-            "bb8650c59a0f",
-            "fa73b8d70b9b",
-            "737d03a180a4",
-            "06945c581b21",
-            "b8f36c62d60b",
-            "ac6cda1d7c7a",
-            "cb9416350e8d",
-            "cff6ef7f2791",
-            "f48548c0c512",
-            "542593b21c22",
-            "494f3c869f37"
+            "b39bd3d3c40b",
+            "f7b209507189",
+            "4121b85bfa08",
+            "f62cf435afca",
+            "5a33c7e88b8e",
+            "2a56620ac048",
+            "265e84a16ebd",
+            "0557cf6e117f",
+            "c967fcbd2446",
+            "45df0a2741dc",
+            "9c3cbdd83e1d",
+            "90d9c563300c"
           ]
         }
       },
@@ -1421,17 +1429,18 @@
             "a5110db5951d",
             "575605e669c4",
             "f7c2d2661209",
-            "bb8650c59a0f",
-            "fa73b8d70b9b",
-            "737d03a180a4",
-            "06945c581b21",
-            "b8f36c62d60b",
-            "ac6cda1d7c7a",
-            "cb9416350e8d",
-            "cff6ef7f2791",
-            "f48548c0c512",
-            "542593b21c22",
-            "494f3c869f37"
+            "b39bd3d3c40b",
+            "f7b209507189",
+            "4121b85bfa08",
+            "f62cf435afca",
+            "5a33c7e88b8e",
+            "2a56620ac048",
+            "265e84a16ebd",
+            "0557cf6e117f",
+            "c967fcbd2446",
+            "45df0a2741dc",
+            "9c3cbdd83e1d",
+            "90d9c563300c"
           ]
         }
       },
@@ -1505,17 +1514,18 @@
             "a5110db5951d",
             "575605e669c4",
             "f7c2d2661209",
-            "bb8650c59a0f",
-            "fa73b8d70b9b",
-            "737d03a180a4",
-            "06945c581b21",
-            "b8f36c62d60b",
-            "ac6cda1d7c7a",
-            "cb9416350e8d",
-            "cff6ef7f2791",
-            "f48548c0c512",
-            "542593b21c22",
-            "494f3c869f37"
+            "b39bd3d3c40b",
+            "f7b209507189",
+            "4121b85bfa08",
+            "f62cf435afca",
+            "5a33c7e88b8e",
+            "2a56620ac048",
+            "265e84a16ebd",
+            "0557cf6e117f",
+            "c967fcbd2446",
+            "45df0a2741dc",
+            "9c3cbdd83e1d",
+            "90d9c563300c"
           ]
         }
       },
@@ -1589,17 +1599,18 @@
             "a5110db5951d",
             "575605e669c4",
             "f7c2d2661209",
-            "bb8650c59a0f",
-            "fa73b8d70b9b",
-            "737d03a180a4",
-            "06945c581b21",
-            "b8f36c62d60b",
-            "ac6cda1d7c7a",
-            "cb9416350e8d",
-            "cff6ef7f2791",
-            "f48548c0c512",
-            "542593b21c22",
-            "494f3c869f37"
+            "b39bd3d3c40b",
+            "f7b209507189",
+            "4121b85bfa08",
+            "f62cf435afca",
+            "5a33c7e88b8e",
+            "2a56620ac048",
+            "265e84a16ebd",
+            "0557cf6e117f",
+            "c967fcbd2446",
+            "45df0a2741dc",
+            "9c3cbdd83e1d",
+            "90d9c563300c"
           ]
         }
       },
@@ -1673,17 +1684,18 @@
             "a5110db5951d",
             "575605e669c4",
             "f7c2d2661209",
-            "bb8650c59a0f",
-            "fa73b8d70b9b",
-            "737d03a180a4",
-            "06945c581b21",
-            "b8f36c62d60b",
-            "ac6cda1d7c7a",
-            "cb9416350e8d",
-            "cff6ef7f2791",
-            "f48548c0c512",
-            "542593b21c22",
-            "494f3c869f37"
+            "b39bd3d3c40b",
+            "f7b209507189",
+            "4121b85bfa08",
+            "f62cf435afca",
+            "5a33c7e88b8e",
+            "2a56620ac048",
+            "265e84a16ebd",
+            "0557cf6e117f",
+            "c967fcbd2446",
+            "45df0a2741dc",
+            "9c3cbdd83e1d",
+            "90d9c563300c"
           ]
         }
       },
@@ -1757,17 +1769,18 @@
             "a5110db5951d",
             "575605e669c4",
             "f7c2d2661209",
-            "bb8650c59a0f",
-            "fa73b8d70b9b",
-            "737d03a180a4",
-            "06945c581b21",
-            "b8f36c62d60b",
-            "ac6cda1d7c7a",
-            "cb9416350e8d",
-            "cff6ef7f2791",
-            "f48548c0c512",
-            "542593b21c22",
-            "494f3c869f37"
+            "b39bd3d3c40b",
+            "f7b209507189",
+            "4121b85bfa08",
+            "f62cf435afca",
+            "5a33c7e88b8e",
+            "2a56620ac048",
+            "265e84a16ebd",
+            "0557cf6e117f",
+            "c967fcbd2446",
+            "45df0a2741dc",
+            "9c3cbdd83e1d",
+            "90d9c563300c"
           ]
         }
       },
@@ -1841,17 +1854,18 @@
             "a5110db5951d",
             "575605e669c4",
             "f7c2d2661209",
-            "bb8650c59a0f",
-            "fa73b8d70b9b",
-            "737d03a180a4",
-            "06945c581b21",
-            "b8f36c62d60b",
-            "ac6cda1d7c7a",
-            "cb9416350e8d",
-            "cff6ef7f2791",
-            "f48548c0c512",
-            "542593b21c22",
-            "494f3c869f37"
+            "b39bd3d3c40b",
+            "f7b209507189",
+            "4121b85bfa08",
+            "f62cf435afca",
+            "5a33c7e88b8e",
+            "2a56620ac048",
+            "265e84a16ebd",
+            "0557cf6e117f",
+            "c967fcbd2446",
+            "45df0a2741dc",
+            "9c3cbdd83e1d",
+            "90d9c563300c"
           ]
         }
       },

@@ -13,6 +13,8 @@ import {
 import { createHash } from 'node:crypto'
 import { isTuiAgentEnabled } from '../../shared/tui-agent-selection'
 import { resolveAgentStartupPlanInputs } from '../../shared/agent-startup-plan-inputs'
+import { agentLaunchQuotingShell } from '../../shared/agent-launch-runtime'
+import { openCodeModelCheckPlatform } from './agent-launch-scope-runtime'
 import { buildExecutionHostAgentStartupPlan } from '../opencode/opencode-model-startup-plan'
 import type { RuntimeTerminalCreate } from '../../shared/runtime-types'
 import type {
@@ -24,6 +26,7 @@ import {
   isAgentSessionOperationOutcomeUnknown
 } from './runtime-agent-launch-resolution'
 import { agentStartedTelemetry } from '../agent-launch/agent-started-telemetry'
+import { withAgentSessionAccountEnv } from './agent-session-account-env'
 
 export class OrcaRuntimeWithCreateAgentSession extends OrcaRuntimeWithGetAgentSessionExecutionNamespace {
   async createAgentSession(
@@ -130,10 +133,12 @@ export class OrcaRuntimeWithCreateAgentSession extends OrcaRuntimeWithGetAgentSe
       if (!isTuiAgentEnabled(request.agent, settings.disabledTuiAgents)) {
         throw new Error('Selected agent is disabled. Choose an enabled agent before creating.')
       }
+      const launchRuntime = this.resolveAgentLaunchRuntime(workspace, request.agent)
       const startupArgs = resolveAgentStartupPlanInputs({
         agent: request.agent,
         settings,
-        platform: this.getAgentLaunchPlatformForWorkspace(workspace),
+        platform: launchRuntime.platform,
+        shell: agentLaunchQuotingShell(launchRuntime),
         // Why: `workspace.repo` is display metadata and may be a row from another host; the launch
         // shape must match the PTY route this scope already resolved.
         isRemote: Boolean(workspace.connectionId),
@@ -142,6 +147,11 @@ export class OrcaRuntimeWithCreateAgentSession extends OrcaRuntimeWithGetAgentSe
       })
       const startup = await buildExecutionHostAgentStartupPlan({
         inputs: startupArgs,
+        modelCheckPlatform: openCodeModelCheckPlatform(
+          this.store!,
+          workspace,
+          launchRuntime.platform
+        ),
         cwd: startupCwd ?? workspace.path,
         prompt: request.prompt ?? '',
         promptDelivery: request.promptDelivery,
@@ -177,9 +187,11 @@ export class OrcaRuntimeWithCreateAgentSession extends OrcaRuntimeWithGetAgentSe
       try {
         terminal = await this.createTerminal(`id:${workspace.id}`, {
           command: startup.launchCommand,
-          env: startup.env,
+          // Why outside both fingerprints: the desktop re-prepares it per attempt; the first spawn wins.
+          env: withAgentSessionAccountEnv(startup.env, request.accountEnv),
           launchConfig: startup.launchConfig,
           launchAgent: request.agent,
+          launchRuntime,
           terminalKittyKeyboardProtocol: request.terminalKittyKeyboardProtocol,
           startupCommandDelivery: startup.startupCommandDelivery,
           // A fresh agent this host built; the request has no surface field, so it counts as `unknown`.

@@ -17,6 +17,7 @@ import {
   subscribeToRuntimeTerminalData,
   toRemoteRuntimePtyId
 } from './runtime-terminal-stream'
+import { stubRuntimeEnvironmentBridge } from './runtime-environment-bridge-fixture'
 
 describe('remote runtime terminal ids', () => {
   it('encodes and decodes the owning runtime environment', () => {
@@ -65,13 +66,7 @@ describe('remote runtime terminal data subscriptions', () => {
       )
       return { unsubscribe, sendBinary }
     })
-    vi.stubGlobal('window', {
-      api: {
-        runtimeEnvironments: {
-          subscribe: runtimeSubscribe
-        }
-      }
-    })
+    stubRuntimeEnvironmentBridge({ subscribe: runtimeSubscribe })
   })
 
   afterEach(() => {
@@ -82,7 +77,6 @@ describe('remote runtime terminal data subscriptions', () => {
     const watcher = vi.fn()
 
     const dispose = await subscribeToRuntimeTerminalData(
-      { activeRuntimeEnvironmentId: 'env-fallback' },
       'remote:env-1@@terminal-1',
       'watcher-1',
       watcher
@@ -151,7 +145,6 @@ describe('remote runtime terminal data subscriptions', () => {
 
   it('echoes the opaque stream generation in cumulative source-range ACKs', async () => {
     const dispose = await subscribeToRuntimeTerminalData(
-      { activeRuntimeEnvironmentId: 'env-fallback' },
       'remote:env-1@@terminal-1',
       'watcher-1',
       vi.fn()
@@ -195,7 +188,6 @@ describe('remote runtime terminal data subscriptions', () => {
   it('can start at the live tail without replaying the initial snapshot', async () => {
     const watcher = vi.fn()
     const subscription = subscribeToRuntimeTerminalData(
-      { activeRuntimeEnvironmentId: 'env-fallback' },
       'remote:env-1@@terminal-1',
       'watcher-1',
       watcher,
@@ -248,13 +240,11 @@ describe('remote runtime terminal data subscriptions', () => {
 
   it('keeps the shared terminal multiplexer until the last watcher closes', async () => {
     const firstDispose = await subscribeToRuntimeTerminalData(
-      { activeRuntimeEnvironmentId: 'env-fallback' },
       'remote:env-1@@terminal-1',
       'watcher-1',
       vi.fn()
     )
     const secondDispose = await subscribeToRuntimeTerminalData(
-      { activeRuntimeEnvironmentId: 'env-fallback' },
       'remote:env-1@@terminal-2',
       'watcher-2',
       vi.fn()
@@ -276,12 +266,7 @@ describe('remote runtime terminal data subscriptions', () => {
     runtimeSubscribe.mockRejectedValueOnce(new Error('offline'))
 
     await expect(
-      subscribeToRuntimeTerminalData(
-        { activeRuntimeEnvironmentId: 'env-fallback' },
-        'remote:env-1@@terminal-1',
-        'watcher-1',
-        vi.fn()
-      )
+      subscribeToRuntimeTerminalData('remote:env-1@@terminal-1', 'watcher-1', vi.fn())
     ).rejects.toThrow('offline')
 
     expect(sendBinary).not.toHaveBeenCalled()
@@ -302,7 +287,6 @@ describe('remote runtime terminal data subscriptions', () => {
     })
 
     const subscriptionPromise = subscribeToRuntimeTerminalData(
-      { activeRuntimeEnvironmentId: 'env-fallback' },
       'remote:env-1@@terminal-1',
       'watcher-1',
       vi.fn()
@@ -577,7 +561,7 @@ describe('remote runtime terminal multiplex ACK gate', () => {
       cols: 120,
       rows: 40,
       // No scrollbackRows: an older host's screen-only image.
-      keepsLocalScrollback: true
+      carriesHistory: false
     })
     expect(onSubscribed).toHaveBeenCalledTimes(1)
 
@@ -599,7 +583,7 @@ describe('remote runtime terminal multiplex ACK gate', () => {
       pendingEscapeTailAnsi: undefined,
       cols: 120,
       rows: 40,
-      keepsLocalScrollback: false
+      carriesHistory: true
     })
     expect(onSubscribed).toHaveBeenCalledTimes(1)
 
@@ -615,12 +599,12 @@ describe('remote runtime terminal multiplex ACK gate', () => {
       },
       ''
     )
-    // A screen-only recovery (scrollbackRows absent or 0) keeps the pane's history (#14593).
-    expect(onSnapshot).toHaveBeenCalledWith('\x1b[?2026l\x1b[2J\x1b[H', {
+    // P2-5: a screen-only recovery (an older host) still drops the pane's history, which ends before the dropped output.
+    expect(onSnapshot).toHaveBeenCalledWith('\x1b[?2026l\x1b[2J\x1b[3J\x1b[H', {
       pendingEscapeTailAnsi: undefined,
       cols: 120,
       rows: 40,
-      keepsLocalScrollback: true
+      carriesHistory: false
     })
     expect(onSubscribed).toHaveBeenCalledTimes(1)
 

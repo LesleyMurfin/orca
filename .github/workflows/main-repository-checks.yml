@@ -1,0 +1,44 @@
+name: Main repository checks
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-repository-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository:
+    name: README links and workflow configuration
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    env:
+      ORCA_BACKGROUND_LAUNCH: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          filter: blob:none
+          sparse-checkout: |
+            /README.md
+            /docs/readme/
+            /config/.bun-version
+            /config/scripts/check-readme-local-links.mjs
+            /.github/scripts/check-required-pr-context.mjs
+            /.github/workflows/
+          sparse-checkout-cone-mode: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: config/.bun-version
+
+      - name: Check README local links
+        run: bun config/scripts/check-readme-local-links.mjs
+
+      - name: Check required PR context ownership
+        run: bun .github/scripts/check-required-pr-context.mjs

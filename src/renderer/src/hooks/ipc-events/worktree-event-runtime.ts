@@ -1,8 +1,16 @@
 import { activateAndRevealWorktree } from '@/lib/worktree-activation'
-import { LOCAL_EXECUTION_HOST_ID, type ExecutionHostId } from '../../../../shared/execution-host'
+import {
+  LOCAL_EXECUTION_HOST_ID,
+  parseExecutionHostId,
+  type ExecutionHostId
+} from '../../../../shared/execution-host'
 import type { RuntimeClientEvent } from '../../../../shared/runtime-client-events'
 import type { AppState } from '../../store/types'
 import { useAppStore } from '../../store'
+import {
+  invalidateRemoteWorktreeLineage,
+  isRemoteWorktreeLineageFresh
+} from '../../store/slices/worktrees/metadata/worktree-lineage-readiness'
 import {
   createWorktreeChangeRefreshQueue,
   type WorktreeChangeRefreshQueue
@@ -42,7 +50,11 @@ export function createWorktreeEventRuntime(
   const handleWorktreesChanged = async (
     repoId: string,
     renamed?: { oldWorktreeId: string; newWorktreeId: string },
-    options?: { forceLocalOwner?: boolean; executionHostId?: ExecutionHostId }
+    options?: {
+      forceLocalOwner?: boolean
+      executionHostId?: ExecutionHostId
+      sortOrderOnly?: boolean
+    }
   ): Promise<void> => {
     const localRefreshStartedWithRuntime =
       options?.forceLocalOwner === true && isRuntimeEnvironmentActive()
@@ -72,15 +84,24 @@ export function createWorktreeEventRuntime(
             }
           : undefined
     )
-    await useAppStore
-      .getState()
-      .fetchWorktreeLineage(
-        options?.forceLocalOwner
-          ? { forceLocalOwner: true }
-          : options?.executionHostId
-            ? { executionHostId: options.executionHostId }
-            : undefined
-      )
+    const lineageOwner = parseExecutionHostId(options?.executionHostId)
+    if (
+      options?.sortOrderOnly !== true ||
+      lineageOwner?.kind !== 'runtime' ||
+      renamed ||
+      options.forceLocalOwner ||
+      !isRemoteWorktreeLineageFresh(useAppStore.getState, lineageOwner.environmentId)
+    ) {
+      await useAppStore
+        .getState()
+        .fetchWorktreeLineage(
+          options?.forceLocalOwner
+            ? { forceLocalOwner: true }
+            : options?.executionHostId
+              ? { executionHostId: options.executionHostId }
+              : undefined
+        )
+    }
     // Why: an id change unmounts the active pane; re-activate so the tab reconciles, else it vanishes until re-select.
     if (renamedWasActive && renamed) {
       useAppStore.getState().setActiveWorktree(renamed.newWorktreeId)
@@ -135,7 +156,24 @@ export function createWorktreeEventRuntime(
       afterState.removeWorkspaceSpaceWorktrees(removed)
     }
   }
-  const worktreeChangeRefreshQueue = createWorktreeChangeRefreshQueue(handleWorktreesChanged)
+  const refreshQueue = createWorktreeChangeRefreshQueue(handleWorktreesChanged)
+  let disposed = false
+  const worktreeChangeRefreshQueue: WorktreeChangeRefreshQueue = {
+    dispose() {
+      disposed = true
+      refreshQueue.dispose()
+    },
+    enqueue(event) {
+      if (disposed) {
+        return
+      }
+      const owner = parseExecutionHostId(event.executionHostId)
+      if (owner?.kind === 'runtime' && (event.sortOrderOnly !== true || event.renamed)) {
+        invalidateRemoteWorktreeLineage(useAppStore.getState, owner.environmentId)
+      }
+      refreshQueue.enqueue(event)
+    }
+  }
   unsubs.push(worktreeChangeRefreshQueue.dispose)
 
   const activateNotifiedWorktree = async (

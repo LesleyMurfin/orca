@@ -1,4 +1,5 @@
 import type { WorktreeSlice } from '../../worktree-helpers'
+import { tryRuntimeTargetForWorktreeOwner } from '../listing/worktree-owner-target'
 import type { WorktreeSliceGet, WorktreeSliceSet } from '../listing/worktree-slice-types'
 import { parseWorkspaceKey } from '../../../../../../shared/workspace-scope'
 import { applyWorktreeUpdates, getRepoIdFromWorktreeId } from '../../worktree-helpers'
@@ -9,7 +10,6 @@ import {
 import { getFolderWorkspaceActivityPersistence } from './folder-workspace-activity'
 import {
   persistPassiveWorktreeMetaForOwner,
-  trySettingsForWorktreeOwner,
   warnAmbiguousOwnerOnce
 } from '../listing/worktree-owner-settings'
 import { persistWorktreeMeta } from '../metadata/worktree-meta-persist'
@@ -224,12 +224,12 @@ export function createBumpWorktreeActivity(
       return
     }
 
-    const ownerSettings = trySettingsForWorktreeOwner(get(), worktreeId)
-    if (!ownerSettings) {
+    const ownerTarget = tryRuntimeTargetForWorktreeOwner(get(), worktreeId)
+    if (!ownerTarget) {
       warnAmbiguousOwnerOnce(worktreeId, 'persist worktree activity timestamp')
       return
     }
-    void persistWorktreeMeta(ownerSettings, worktreeId, {
+    void persistWorktreeMeta(ownerTarget, worktreeId, {
       lastActivityAt: now
     }).catch((err) => {
       if (isRuntimeSelectorNotFoundError(err)) {

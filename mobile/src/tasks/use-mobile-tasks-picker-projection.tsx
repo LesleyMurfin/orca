@@ -10,6 +10,7 @@ import {
   type TaskListEntry,
   sortMobileTaskItems,
   getRepoBadgeColor,
+  getTaskRepoDetail,
   hasGitHubIssueSourceChoice,
   issueSourceSlug,
   taskRepositoryMeta
@@ -33,7 +34,8 @@ export function useMobileTasksPickerProjection(model: DetailCommentRenderersMode
     provider,
     reposById,
     selectedHostedRepos,
-    selectedRepoIds,
+    effectiveRepoIds,
+    repoHostLabels,
     taskSort,
     visibleProviders,
     workspaceRepos
@@ -44,7 +46,7 @@ export function useMobileTasksPickerProjection(model: DetailCommentRenderersMode
         ? hostedRepos.map((repo) => ({
             value: repo.id,
             label: repo.displayName,
-            subtitle: repo.path,
+            subtitle: getTaskRepoDetail(repo, repoHostLabels),
             renderIcon: () => (
               <View
                 style={[
@@ -59,7 +61,7 @@ export function useMobileTasksPickerProjection(model: DetailCommentRenderersMode
             label: team.name,
             subtitle: team.workspaceName
           })),
-    [hostedRepos, linearTeams, provider]
+    [hostedRepos, linearTeams, provider, repoHostLabels]
   )
   const selectedCreateTarget =
     provider === 'github' || provider === 'gitlab'
@@ -108,19 +110,19 @@ export function useMobileTasksPickerProjection(model: DetailCommentRenderersMode
         )
       : `${githubIssueSourceRows.length} sources`
   const repoPickerLabel =
-    selectedRepoIds.size === 0 || selectedHostedRepos.length === hostedRepos.length
+    effectiveRepoIds.size === 0 || selectedHostedRepos.length === hostedRepos.length
       ? 'All repos'
       : selectedHostedRepos.length === 1
         ? selectedHostedRepos[0]!.displayName
         : `${selectedHostedRepos.length} repos`
   const repoPickerSelectedRepo =
-    selectedRepoIds.size > 0 && selectedHostedRepos.length === 1 ? selectedHostedRepos[0]! : null
+    effectiveRepoIds.size > 0 && selectedHostedRepos.length === 1 ? selectedHostedRepos[0]! : null
   const workspaceRepoOptions = useMemo<PickerOption<string>[]>(
     () =>
       workspaceRepos.map((repo) => ({
         value: repo.id,
         label: repo.displayName,
-        subtitle: repo.path,
+        subtitle: getTaskRepoDetail(repo, repoHostLabels),
         renderIcon: () => (
           <View
             style={[
@@ -130,7 +132,7 @@ export function useMobileTasksPickerProjection(model: DetailCommentRenderersMode
           />
         )
       })),
-    [workspaceRepos]
+    [repoHostLabels, workspaceRepos]
   )
   const sortedItems = useMemo(
     () => sortMobileTaskItems(items, taskSort, reposById),

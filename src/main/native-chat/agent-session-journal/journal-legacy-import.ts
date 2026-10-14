@@ -28,12 +28,12 @@ import {
   decodeOmpTranscriptLine
 } from '../transcript-line-decoders'
 import { decodeTranscriptStream } from '../transcript-stream-lines'
+import { readOpenCodeNativeChatTranscriptFull } from '../transcript-opencode'
 import { boundSubagentEntryId } from '../subagent-entry-id-bounds'
 import { createLegacyIdentityTracker } from './journal-legacy-identity'
 import type { JournalReplacementItem } from './journal-epoch-replacement'
 import {
   boundInlineText,
-  boundPayload,
   boundToolInput,
   DEFAULT_JOURNAL_PAYLOAD_LIMITS,
   type JournalPayloadLimits
@@ -90,8 +90,11 @@ export async function prepareLegacyTranscriptImport(input: {
   const options = input.options ?? {}
   const limits = options.limits ?? DEFAULT_JOURNAL_PAYLOAD_LIMITS
   const transcriptAgent = resolveNativeChatTranscriptAgent(input.agent)
-  if (!transcriptAgent || transcriptAgent === 'opencode') {
+  if (!transcriptAgent) {
     return { ok: false, error: `Unsupported agent for journal import: ${input.agent}` }
+  }
+  if (transcriptAgent === 'opencode') {
+    return prepareOpenCodeImport({ ...input, limits })
   }
   const filePath =
     options.filePath ?? (await resolveSessionFilePath(input.agent, input.sessionId, options))
@@ -130,9 +133,42 @@ export async function prepareLegacyTranscriptImport(input: {
   if (decoded.identities.length !== decoded.messages.length) {
     return { ok: false, error: 'Legacy transcript identity coverage is incomplete' }
   }
+  return { ok: true, items: replacementItems(decoded.messages, decoded.identities, limits) }
+}
+
+/** OpenCode keeps conversations in a database (`filePath` names it), read by the reader its
+ *  transcript view uses; its message ids are stable, so they are the identities. */
+async function prepareOpenCodeImport(input: {
+  agent: AgentType
+  sessionId: string
+  options?: LegacyImportOptions
+  limits: JournalPayloadLimits
+}): Promise<{ ok: true; items: JournalReplacementItem[] } | { ok: false; error: string }> {
+  const dbPath = input.options?.filePath
+  const read = await readOpenCodeNativeChatTranscriptFull(
+    input.sessionId,
+    dbPath ? { resolveDbPath: async () => dbPath } : {}
+  )
+  if ('error' in read) {
+    return { ok: false, error: read.error }
+  }
+  const identities = read.messages.map((message): AgentJournalItemIdentity => ({
+    provider: 'legacy',
+    agent: input.agent,
+    sessionId: input.sessionId,
+    recordId: message.id
+  }))
+  return { ok: true, items: replacementItems(read.messages, identities, input.limits) }
+}
+
+function replacementItems(
+  messages: readonly NativeChatMessage[],
+  identities: readonly AgentJournalItemIdentity[],
+  limits: JournalPayloadLimits
+): JournalReplacementItem[] {
   const replacement: JournalReplacementItem[] = []
-  for (const [index, message] of decoded.messages.entries()) {
-    const identity = decoded.identities[index]
+  for (const [index, message] of messages.entries()) {
+    const identity = identities[index]
     if (!identity) {
       continue
     }
@@ -142,7 +178,7 @@ export async function prepareLegacyTranscriptImport(input: {
       observedAt: message.timestamp ?? undefined
     })
   }
-  return { ok: true, items: replacement }
+  return replacement
 }
 
 const TRANSCRIPT_DECODERS = {
@@ -218,16 +254,8 @@ function legacyItemBody(
       kind: 'tool-call',
       name: only.name,
       input: boundToolInput(only.input, limits),
+      ...(only.callId !== undefined ? { callId: only.callId } : {}),
       state: 'completed'
-    }
-  }
-  if (only?.type === 'tool-result') {
-    return {
-      kind: 'tool-call',
-      name: 'tool-result',
-      input: null,
-      state: only.isError ? 'failed' : 'completed',
-      output: boundPayload(only.output, limits)
     }
   }
   return {

@@ -53,6 +53,11 @@ export type StructuredAgentSessionDeliveryLoopDeps = {
     sessionId: string,
     startedFor: string
   ) => Promise<StructuredAgentSessionResumeOutcome>
+  /** A message's model and effort, applied before its agent starts or it is handed over. */
+  applyMessageOptions: (
+    sessionId: string,
+    options: AgentJournalSubmission['options']
+  ) => Promise<void>
   /** The fence the conversation's own writes carry; see `structuredAgentSessionConversationFence`. */
   conversationFence: (sessionId: string) => number
   /** Settles queued messages as a completed close of the chat does; false when that failed. */
@@ -196,6 +201,9 @@ export class StructuredAgentSessionDeliveryLoop {
     if (failedStart) {
       return this.fail(sessionId, failedStart)
     }
+    if (!session.child) {
+      await this.deps.applyMessageOptions(sessionId, oldest.options)
+    }
     const ready = await this.deps.ensureProviderChild(sessionId, oldest.clientMessageId)
     if (!ready.ok && ready.refusal.details?.reason === 'previousExitUnverifiable') {
       // Failed in the step that was refused: a message accepted, or an exit proven, after it must
@@ -257,6 +265,7 @@ export class StructuredAgentSessionDeliveryLoop {
     if (!next) {
       return this.stop(sessionId)
     }
+    await this.deps.applyMessageOptions(sessionId, next.options)
     await handOverSubmission(
       {
         sessionId,

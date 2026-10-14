@@ -35,6 +35,11 @@ export const AiVaultListSessionsParams = z
     includeAntigravityIdeSessions: OptionalBoolean,
     unlimited: OptionalBoolean,
     force: OptionalBoolean,
+    afterFingerprint: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable()
+      .optional(),
     scopePaths: z
       .array(z.string().min(1).max(AI_VAULT_SCOPE_PATH_MAX_LENGTH))
       // Why: clamp instead of reject — scope paths only ever widen discovery, and

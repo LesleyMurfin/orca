@@ -1,4 +1,4 @@
-import { safeStorage } from 'electron'
+import { guardedSafeStorage as safeStorage } from '../host/safe-storage-availability'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'

@@ -5,20 +5,21 @@ import type {
 } from '../../shared/orcad-migration-manifest'
 import type { Store } from '../persistence'
 
-type OrcadMigrationCatalogFlushStore = Pick<Store, 'flushPendingOrThrowAsync'>
+type OrcadMigrationCatalogFlushStore = Partial<Pick<Store, 'flushPendingOrThrowAsync'>>
 type OrcadMigrationCatalogStageStore = OrcadMigrationCatalogFlushStore &
-  Pick<Store, 'stageOrcadMigrationCatalog'>
+  Partial<Pick<Store, 'stageOrcadMigrationCatalog'>>
 type OrcadMigrationCatalogCommitStore = OrcadMigrationCatalogFlushStore &
-  Pick<Store, 'commitStagedOrcadMigrationCatalog'>
+  Partial<Pick<Store, 'commitStagedOrcadMigrationCatalog'>>
 type OrcadMigrationCatalogAbortStore = OrcadMigrationCatalogFlushStore &
-  Pick<Store, 'abortStagedOrcadMigrationCatalog'>
+  Partial<Pick<Store, 'abortStagedOrcadMigrationCatalog'>>
 
 export async function stageOrcadMigrationCatalogDurably(args: {
   store: OrcadMigrationCatalogStageStore
   manifest: OrcadMigrationManifest
   signal?: AbortSignal
 }): Promise<OrcadMigrationCatalogState> {
-  const result = args.store.stageOrcadMigrationCatalog(args.manifest)
+  // SAFETY: Returned or mutable Store slots retain their original native missing-method failure.
+  const result = args.store.stageOrcadMigrationCatalog!(args.manifest)
   await flushMigrationState(args.store, args.signal)
   return result
 }
@@ -29,7 +30,8 @@ export async function commitStagedOrcadMigrationCatalogDurably(args: {
   signal?: AbortSignal
   onDurableCommit: () => void
 }): Promise<OrcadMigrationCatalogState> {
-  const result = args.store.commitStagedOrcadMigrationCatalog(args.manifest)
+  // SAFETY: Returned or mutable Store slots retain their original native missing-method failure.
+  const result = args.store.commitStagedOrcadMigrationCatalog!(args.manifest)
   await flushMigrationState(args.store, args.signal)
   args.onDurableCommit()
   return result
@@ -40,7 +42,8 @@ export async function abortStagedOrcadMigrationCatalogDurably(args: {
   manifest: OrcadMigrationManifest
   signal?: AbortSignal
 }): Promise<OrcadMigrationCatalogAbortResult> {
-  const result = args.store.abortStagedOrcadMigrationCatalog(args.manifest)
+  // SAFETY: Returned or mutable Store slots retain their original native missing-method failure.
+  const result = args.store.abortStagedOrcadMigrationCatalog!(args.manifest)
   // An already-absent retry may follow an in-memory abort whose flush failed.
   if (result.state === 'absent') {
     await flushMigrationState(args.store, args.signal)
@@ -50,15 +53,17 @@ export async function abortStagedOrcadMigrationCatalogDurably(args: {
 }
 
 export function getOrcadMigrationCatalogState(args: {
-  store: Pick<Store, 'getOrcadMigrationCatalogState'>
+  store: Partial<Pick<Store, 'getOrcadMigrationCatalogState'>>
   manifest: OrcadMigrationManifest
 }): OrcadMigrationCatalogState {
-  return args.store.getOrcadMigrationCatalogState(args.manifest)
+  // SAFETY: Returned or mutable Store slots retain their original native missing-method failure.
+  return args.store.getOrcadMigrationCatalogState!(args.manifest)
 }
 
 function flushMigrationState(
   store: OrcadMigrationCatalogFlushStore,
   signal?: AbortSignal
 ): Promise<void> {
-  return store.flushPendingOrThrowAsync({ signal, drainToStableGeneration: false })
+  // SAFETY: Returned or mutable Store slots retain their original native missing-method failure.
+  return store.flushPendingOrThrowAsync!({ signal, drainToStableGeneration: false })
 }

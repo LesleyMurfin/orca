@@ -1,9 +1,11 @@
 // @ts-nocheck -- mechanically split from OrcaRuntimeService; behavior is covered by AST equivalence and characterization tests.
 import { OrcaRuntimeWithTerminalDrivers } from './orca-runtime-terminal-drivers'
+import type { FolderWorkspace } from '../../shared/folder-workspace-types'
+import type { ResolvedWorktree } from './runtime-worktree-path-identity'
 import { confirmRunTerminalShellAlone, readRunTerminalClientUse } from './run-terminal-client-use'
 import { ALL_EXECUTION_HOSTS_SCOPE, type ExecutionHostScope } from '../../shared/execution-host'
 import { RuntimePreservedBranchCleanup } from './runtime-preserved-branch-cleanup'
-import type { IPtyProvider } from '../providers/types'
+import type { IPtyProvider } from '../providers/pty-provider-contract'
 import type {
   AgentSessionCreateOperation,
   OrchestrationCompatibilitySshAttachmentAuthority,
@@ -31,8 +33,6 @@ import { RuntimeAccountController } from './runtime-account-controller'
 import { RuntimeMobileSpeechCatalog } from './runtime-mobile-speech-catalog'
 import { RuntimeMobileDictationController } from './runtime-mobile-dictation-controller'
 import { RuntimeProjectHostSetupController } from './runtime-project-host-setup-controller'
-import { addRemoteRepoFromPath } from '../ipc/repos/remote-repo-registration'
-import type { Store } from '../persistence'
 import { RuntimeProjectGroupController } from './runtime-project-group-controller'
 import { RuntimeNestedRepoImport } from './runtime-nested-repo-import'
 import { RuntimeRepositoryRegistrationController } from './runtime-repository-registration-controller'
@@ -46,17 +46,32 @@ import { RuntimeWorkspaceSessionController } from './runtime-workspace-session-c
 import { RuntimeAiVaultCommands } from './runtime-ai-vault-commands'
 import { ClaudeAgentTeamsService } from './claude-agent-teams-service'
 import { teardownFolderWorkspacePtys } from './folder-workspace-pty-teardown'
+import { countRepoTerminalsNotKnownExited } from './project-removal-impact'
 
-export class OrcaRuntimeWithPreservedBranchCleanup extends OrcaRuntimeWithTerminalDrivers {
-  protected readonly preservedBranchCleanup = new RuntimePreservedBranchCleanup(() =>
+import type { Worktree } from '../../shared/worktree/types'
+import type { TerminalWorkspaceLaunchScope } from './runtime-legacy-worker-terminal-recovery-types'
+
+export abstract class OrcaRuntimeWithPreservedBranchCleanup extends OrcaRuntimeWithTerminalDrivers {
+  protected abstract runWorktreeTerminalMutation<T>(
+    worktreeId: string,
+    operation: () => Promise<T>
+  ): Promise<T>
+  protected abstract folderWorkspaceToResolvedWorktree(
+    folderWorkspace: FolderWorkspace
+  ): ResolvedWorktree
+
+  protected abstract resolveTerminalWorkspaceLaunchScope(
+    selector: string,
+    createdWorktree?: Worktree
+  ): Promise<TerminalWorkspaceLaunchScope>
+
+  readonly preservedBranchCleanup = new RuntimePreservedBranchCleanup(() =>
     this.store ? this.requireStore() : null
   )
 
   protected readonly getLocalProviderFn: (() => IPtyProvider) | null
 
-  protected readonly getSshProviderFn: ((connectionId: string) => IPtyProvider | undefined) | null
-
-  protected readonly onPtyStopped: ((ptyId: string) => void) | null
+  readonly onPtyStopped: ((ptyId: string) => void) | null
 
   protected readonly onTerminalAgentStatus:
     | ((event: RuntimeTerminalAgentStatusEvent) => void)
@@ -72,11 +87,11 @@ export class OrcaRuntimeWithPreservedBranchCleanup extends OrcaRuntimeWithTermin
 
   protected terminalSideEffectConsumerAvailable = false
 
-  protected readonly getAgentStatusSnapshotFn: (() => AgentStatusIpcPayload[]) | null
+  readonly getAgentStatusSnapshotFn: (() => AgentStatusIpcPayload[]) | null
 
   protected readonly structuredAgentStatusSinkFn: StructuredAgentSessionStatusSink | null
 
-  protected readonly readObservedAgentStatusPaneIdentityFn: (
+  readonly readObservedAgentStatusPaneIdentityFn: (
     paneKey: string
   ) => ObservedAgentStatusPaneIdentity
 
@@ -251,22 +266,15 @@ export class OrcaRuntimeWithPreservedBranchCleanup extends OrcaRuntimeWithTermin
     listRepos: () => this.listRepos(),
     addRepo: (path, kind, hostId) =>
       (this as RuntimeCommandSurfaceHost<this>).addRepo(path, kind, hostId),
-    addRemoteRepo: async (remote) => {
-      // The same registration the desktop IPC handler uses, so both surfaces agree on SSH hosts.
-      const result = await addRemoteRepoFromPath(this.requireStore() as unknown as Store, remote)
-      if ('error' in result) {
-        throw new Error(result.error)
-      }
-      this.invalidateResolvedWorktreeCache()
-      this.invalidateWorktreeScanCacheForRepo(result.repo.id)
-      this.notifyReposChanged()
-      return result.repo
-    },
     cloneRepo: (url, destination, hostId) =>
       (this as RuntimeCommandSurfaceHost<this>).cloneRepo(url, destination, hostId),
     invalidateResolvedWorktrees: () => this.invalidateResolvedWorktreeCache(),
     invalidateWorktreeScan: (repoId) => this.invalidateWorktreeScanCacheForRepo(repoId),
-    notifyReposChanged: () => this.notifyReposChanged()
+    notifyReposChanged: () => this.notifyReposChanged(),
+    countLiveTerminalsForRepo: (repo) =>
+      countRepoTerminalsNotKnownExited(repo, this.ptysById.values(), (ptyId) =>
+        this.isPtyKnownExited(ptyId)
+      )
   })
 
   protected readonly projectGroups = new RuntimeProjectGroupController({
@@ -278,7 +286,6 @@ export class OrcaRuntimeWithPreservedBranchCleanup extends OrcaRuntimeWithTermin
       teardownFolderWorkspacePtys(
         {
           runtime: this,
-          getSshProvider: this.getSshProviderFn,
           getLocalProvider: () => this.getLocalProvider(),
           onPtyStopped: this.onPtyStopped
         },

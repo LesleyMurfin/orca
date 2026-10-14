@@ -2,10 +2,13 @@
 import { defaultAgentChatLabel } from '../../shared/agent-session-chat-label'
 import { OrcaRuntimeWithGetStructuredAgentSessionCreateSupport } from './orca-runtime-get-structured-agent-session-create-support'
 import { getStructuredAgentSessionHost } from '../native-chat/agent-session-wire/structured-agent-session-registry'
-import { replaceConversationInSnapshot } from './structured-conversation-tab-replacement'
-import type { ConversationReplacement } from '../native-chat/agent-session-wire/structured-conversation-command'
 import { collectSavedStructuredAgentSessionIds } from './saved-structured-agent-session-restoration'
-import { seedStructuredAgentSessionTabIndex } from './structured-agent-session-tab-index-seed'
+import {
+  chatTabChangesMatchingIndex,
+  seedStructuredAgentSessionTabIndex
+} from './structured-agent-session-tab-index-seed'
+import { chatTabId } from './agent-session-tab-layout'
+import { structuredSessionTabRetired } from './structured-worker-custody'
 import { LOCAL_EXECUTION_HOST_ID } from '../../shared/execution-host'
 import type {
   RuntimeMobileSessionAgentTab,
@@ -18,39 +21,26 @@ import type { Repo } from '../../shared/repo-types'
 import type { GitAdmissionTier } from '../git/command-runner/git-exec-options'
 import {
   getLocalProjectGhExecOptions,
-  resolveLocalProjectRuntimeForRepo,
   type LocalProjectGhExecOptions
 } from '../project-runtime-git-options'
-import { getAgentLaunchPlatformForRepo } from './runtime-agent-launch-resolution'
+import {
+  agentLaunchPlatformForScope,
+  newWorktreeLaunchScope,
+  resolveAgentLaunchRuntime,
+  resolveStartupAgentLaunchRuntime
+} from './agent-launch-scope-runtime'
+import type { TuiAgent } from '../../shared/tui-agent'
+import type { AgentLaunchRuntime } from '../../shared/agent-launch-runtime'
 import type { TerminalWorkspaceLaunchScope } from './runtime-legacy-worker-terminal-recovery-types'
-import { isWindowsAbsolutePathLike } from '../../shared/cross-platform-path'
-import { isWslUncPath } from '../../shared/wsl-paths'
 import { parseAppSshPtyId } from '../../shared/ssh-pty-id'
 import type { PtyProcessInspection } from '../providers/pty-process-inspection'
 import type { StructuredAgentId } from '../../shared/agent-session-provider-handle'
 
-export class OrcaRuntimeWithRestoreStructuredAgentSessionTabsOnce extends OrcaRuntimeWithGetStructuredAgentSessionCreateSupport {
-  /** Projects only: a replacement's chat already has its tab in the store, which the /clear commit
-   *  moved in the same write. */
-  replaceStructuredAgentSessionTab(replacement: ConversationReplacement): void {
-    const prior = this.mobileSessionTabsByWorktree.get(replacement.workspaceId)
-    const next = prior ? replaceConversationInSnapshot(prior, replacement) : null
-    if (next && next !== prior) {
-      const stored = this.storeMobileSessionSnapshot(replacement.workspaceId, next)
-      this.emitMobileSessionTabsSnapshot(stored)
-    } else if (
-      !prior?.tabs.some(
-        (tab) => tab.type === 'agent-session' && tab.sessionId === replacement.sessionId
-      )
-    ) {
-      this.projectStructuredAgentSessionTab({
-        ...replacement,
-        replacesSessionId: replacement.sourceSessionId,
-        activate: false
-      })
-    }
-  }
+export type AgentLaunchScope = Parameters<
+  OrcaRuntimeWithRestoreStructuredAgentSessionTabsOnce['getAgentLaunchPlatformForWorkspace']
+>[0]
 
+export class OrcaRuntimeWithRestoreStructuredAgentSessionTabsOnce extends OrcaRuntimeWithGetStructuredAgentSessionCreateSupport {
   protected async restoreStructuredAgentSessionTabsOnce(): Promise<void> {
     await this.prepareStructuredAgentSessionStartupRestoration()
     const host = getStructuredAgentSessionHost()
@@ -83,9 +73,24 @@ export class OrcaRuntimeWithRestoreStructuredAgentSessionTabsOnce extends OrcaRu
       targets,
       restored.map((session) => session.sessionId)
     )
-    // Past the seed, projecting records nothing.
-    for (const replacement of host?.conversationReplacements?.() ?? []) {
-      this.replaceStructuredAgentSessionTab(replacement)
+    const changes = chatTabChangesMatchingIndex(
+      this.store?.getWorkspaceSession?.(LOCAL_EXECUTION_HOST_ID)?.unifiedTabs ?? {},
+      restored.map((session) => ({
+        worktreeId: session.workspaceId,
+        open: {
+          sessionId: session.sessionId,
+          agent: session.agent,
+          tabId: chatTabId(session.sessionId)
+        }
+      })),
+      // A chat a newer Orca wrote is only unreadable here, so it keeps its tab.
+      (sessionId) =>
+        !!host &&
+        structuredSessionTabRetired(host, sessionId) &&
+        !host.deps?.store?.isSessionUnreadable?.(sessionId)
+    )
+    for (const [worktreeId, worktreeChanges] of changes) {
+      this.changeWindowlessChatTabs(worktreeId, worktreeChanges)
     }
     for (const session of restored) {
       this.projectStructuredAgentSessionTab({ ...session, activate: false, notify: false })
@@ -106,7 +111,6 @@ export class OrcaRuntimeWithRestoreStructuredAgentSessionTabsOnce extends OrcaRu
     agent: StructuredAgentId
     activate: boolean
     notify?: boolean
-    replacesSessionId?: string
     /** The host tab id a create reserved; a session that already has a tab keeps its own. */
     tabId?: string
   }): Promise<void> {
@@ -124,6 +128,7 @@ export class OrcaRuntimeWithRestoreStructuredAgentSessionTabsOnce extends OrcaRu
           })
         })
     }
+    this.saveWindowlessAgentSessionTab(input.workspaceId, input)
     this.projectStructuredAgentSessionTab(input)
   }
 
@@ -134,7 +139,6 @@ export class OrcaRuntimeWithRestoreStructuredAgentSessionTabsOnce extends OrcaRu
     agent: StructuredAgentId
     activate: boolean
     notify?: boolean
-    replacesSessionId?: string
   }): void {
     const existing = this.mobileSessionTabsByWorktree.get(input.workspaceId)
     const id = `agent-session:${input.sessionId}`
@@ -172,7 +176,6 @@ export class OrcaRuntimeWithRestoreStructuredAgentSessionTabsOnce extends OrcaRu
       id,
       title: defaultAgentChatLabel(input.agent),
       sessionId: input.sessionId,
-      ...(input.replacesSessionId ? { replacesSessionId: input.replacesSessionId } : {}),
       agent: input.agent,
       isActive: input.activate
     }
@@ -293,22 +296,32 @@ export class OrcaRuntimeWithRestoreStructuredAgentSessionTabsOnce extends OrcaRu
     return Object.keys(localGitOptions).length > 0 ? [localGitOptions] : []
   }
 
-  protected getAgentLaunchPlatformForRepo(repo: Repo): NodeJS.Platform {
-    const projectRuntime = repo.connectionId
-      ? undefined
-      : resolveLocalProjectRuntimeForRepo(this.requireStore(), repo)
-    return getAgentLaunchPlatformForRepo(repo, projectRuntime)
+  protected getAgentLaunchPlatformForWorkspace(
+    scope: Pick<TerminalWorkspaceLaunchScope, 'repo' | 'path'> & {
+      connectionId?: string | null
+    }
+  ): NodeJS.Platform {
+    return agentLaunchPlatformForScope(this.requireStore(), scope)
   }
 
-  protected getAgentLaunchPlatformForWorkspace(
-    scope: TerminalWorkspaceLaunchScope
-  ): NodeJS.Platform {
-    if (scope.repo) {
-      return this.getAgentLaunchPlatformForRepo(scope.repo)
-    }
-    if (scope.connectionId) {
-      return isWindowsAbsolutePathLike(scope.path) ? 'win32' : 'linux'
-    }
-    return isWslUncPath(scope.path) ? 'linux' : process.platform
+  protected resolveAgentLaunchRuntime(
+    scope: TerminalWorkspaceLaunchScope,
+    agent: TuiAgent | undefined
+  ): AgentLaunchRuntime {
+    return resolveAgentLaunchRuntime(this.requireStore(), scope, undefined, agent)
+  }
+
+  /** A startup's fact: the workspace it starts in, else the new worktree a create is making. */
+  protected resolveStartupAgentLaunchRuntime(
+    repo: Repo,
+    agent: TuiAgent,
+    scope?: TerminalWorkspaceLaunchScope
+  ): ReturnType<typeof resolveStartupAgentLaunchRuntime> {
+    const store = this.requireStore()
+    return resolveStartupAgentLaunchRuntime(
+      store,
+      scope ?? newWorktreeLaunchScope(repo, store.getSettings()),
+      agent
+    )
   }
 }

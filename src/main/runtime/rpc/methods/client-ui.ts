@@ -5,14 +5,29 @@ import {
   NativeChatSessionOptionsMutation,
   PRBotAuthorOverrideUpdate,
   SettingsUpdate
-} from './client-settings-schemas'
+} from '../../../../shared/rpc-contract/client-settings-params'
 import { FeatureInteractionIdParam, UiUpdate } from './client-ui-schemas'
 // Type-only side effect: keeps the schema/PersistedUIState parity assertions in
 // the typecheck graph so drift fails the build instead of a paired client.
 
-import { TerminalQuickCommandsUpdate } from './terminal-quick-command-rpc-schema'
+import { TerminalQuickCommandsUpdate } from '../../../../shared/rpc-contract/terminal-quick-command-params'
+import { AgentLaunchSettingsMutation } from '../../../../shared/rpc-contract/agent-launch-settings-params'
 
 export const CLIENT_UI_METHODS = [
+  defineMethod({
+    name: 'settings.getAgentLaunch',
+    permission: 'workspace',
+    params: null,
+    handler: (_params, { runtime }) => ({ settings: runtime.getClientAgentLaunchSettings() })
+  }),
+  defineMethod({
+    name: 'settings.mutateAgentLaunch',
+    permission: 'settings-write',
+    params: AgentLaunchSettingsMutation,
+    handler: async (params, { runtime }) => ({
+      settings: await runtime.mutateClientAgentLaunchSettings(params)
+    })
+  }),
   defineMethod({
     name: 'settings.get',
     permission: 'workspace',

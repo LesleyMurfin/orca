@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { OrcaRuntimeService } from './orca-runtime'
-
-type InventoryInternals = {
-  sessionTabsInventoryWaiters: Set<() => void>
-}
+import { getSessionTabsInventoryPublication } from './session-tabs/session-tabs-inventory-test-fixture'
 
 function createInventoryRuntime(): OrcaRuntimeService {
   const runtime = new OrcaRuntimeService()
@@ -12,11 +9,11 @@ function createInventoryRuntime(): OrcaRuntimeService {
 }
 
 async function waitForInventoryWaiter(runtime: OrcaRuntimeService): Promise<void> {
-  const internals = runtime as unknown as InventoryInternals
-  for (let index = 0; index < 20 && internals.sessionTabsInventoryWaiters.size === 0; index += 1) {
+  const publication = getSessionTabsInventoryPublication(runtime)
+  for (let index = 0; index < 20 && publication.pendingWaiterCount === 0; index += 1) {
     await Promise.resolve()
   }
-  expect(internals.sessionTabsInventoryWaiters.size).toBe(1)
+  expect(publication.pendingWaiterCount).toBe(1)
 }
 
 describe('authoritative session tab inventory publication', () => {
@@ -365,7 +362,7 @@ describe('authoritative session tab inventory publication', () => {
     controller.abort()
 
     await expect(pending).rejects.toThrow('client_disconnected')
-    expect((runtime as unknown as InventoryInternals).sessionTabsInventoryWaiters.size).toBe(0)
+    expect(getSessionTabsInventoryPublication(runtime).pendingWaiterCount).toBe(0)
   })
 
   it('does not scan when the inventory request is already cancelled', async () => {
@@ -399,10 +396,7 @@ describe('authoritative session tab inventory publication', () => {
     ).toThrow('Runtime graph publisher does not match the authoritative window')
     await Promise.resolve()
     expect(settled).toBe(false)
-    expect(
-      (runtime as unknown as { sessionTabsInventoryPublicationEpoch: number | null })
-        .sessionTabsInventoryPublicationEpoch
-    ).toBeNull()
+    expect(getSessionTabsInventoryPublication(runtime).epoch).toBeNull()
 
     runtime.syncWindowGraph(1, { tabs: [], leaves: [], mobileSessionTabs: [] })
     await expect(pending).resolves.toEqual({ snapshots: [], authoritative: true })

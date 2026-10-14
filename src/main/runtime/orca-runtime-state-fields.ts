@@ -3,7 +3,7 @@ import { OrcaRuntimeWithLinearCommands } from './orca-runtime-linear-commands'
 import type { ExecutionHostScope } from '../../shared/execution-host'
 import type { RuntimeStore } from './runtime-store-contract'
 import type { StatsCollector } from '../stats/collector'
-import type { IPtyProvider } from '../providers/types'
+import type { IPtyProvider } from '../providers/pty-provider-contract'
 import type { PrepareClaudeAuth } from '../ipc/pty/host-env/types'
 import type { RuntimeTerminalAgentStatusEvent } from './runtime-terminal-contracts'
 import type { TerminalSideEffectBatch } from '../../shared/terminal-side-effect-facts'
@@ -60,7 +60,6 @@ export class OrcaRuntimeWithStateFields extends OrcaRuntimeWithLinearCommands {
     stats?: StatsCollector,
     deps?: {
       getLocalProvider?: () => IPtyProvider
-      getSshProvider?: (connectionId: string) => IPtyProvider | undefined
       prepareClaudeAuth?: PrepareClaudeAuth
       onPtyStopped?: (ptyId: string) => void
       onTerminalAgentStatus?: (event: RuntimeTerminalAgentStatusEvent) => void
@@ -192,7 +191,6 @@ export class OrcaRuntimeWithStateFields extends OrcaRuntimeWithLinearCommands {
       showManagedWorktree: (selector) => this.showManagedWorktree(selector),
       resolveProjectRuntimeForWorktree: (worktreeId) =>
         this.resolveProjectRuntimeForWorktree(worktreeId),
-      getSshProvider: (connectionId) => this.getSshProviderFn?.(connectionId),
       getClaudeConfigDirectory: (target) => this.accounts.getClaudeConfigDirectory(target),
       skillTransactionRecovery: (deps?.skillTransactionRecovery ?? Promise.resolve()).catch(
         (error) => {
@@ -263,7 +261,6 @@ export class OrcaRuntimeWithStateFields extends OrcaRuntimeWithLinearCommands {
     // lazily via thunk so teardown always sees the currently-installed
     // provider (design §4.3 wire-up).
     this.getLocalProviderFn = deps?.getLocalProvider ?? null
-    this.getSshProviderFn = deps?.getSshProvider ?? null
     this.onPtyStopped = deps?.onPtyStopped ?? null
     this.onTerminalAgentStatus = deps?.onTerminalAgentStatus ?? null
     this.onClaudeTerminalEvidence = deps?.onClaudeTerminalEvidence ?? null

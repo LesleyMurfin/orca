@@ -5,6 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, vi } from 'vitest'
+import { activeProviderContext } from '../../../shared/agent-session-provider-context'
 import { agentSessionFailureFact } from '../../../shared/agent-session-failure'
 import { agentSessionFailureWords } from '../../../shared/agent-session-failure-words'
 import { computeAgentSessionPayloadFingerprint } from '../../../shared/agent-session-mutation-envelope'
@@ -34,7 +35,12 @@ import {
 import { claudeAndCodexDeclared } from './structured-agent-session-adapter-router-test-support'
 
 export const QUEUED_RIG_CALLER = { callerKey: 'client-1' }
-type RigSendOptions = { internal?: true; from?: AgentMessageSource }
+type RigSendOptions = {
+  internal?: true
+  from?: AgentMessageSource
+  /** The model and effort the send carries. */
+  carried?: Readonly<Record<string, string>>
+}
 
 export function eventually(assertion: () => void | Promise<void>): Promise<void> {
   return vi.waitFor(assertion, { timeout: 10_000 })
@@ -94,7 +100,11 @@ export async function createQueuedMessageTestRig(
     const body = { ...hostTestMessage(text), ...(options?.from ? { from: options.from } : {}) }
     const clientOperationId = hostTestOperationId()
     // Fingerprinted as the host digests a send: the message without its sender.
-    const fields = { body: agentSessionMessagePayload(body), ...(delivery ? { delivery } : {}) }
+    const fields = {
+      body: agentSessionMessagePayload(body),
+      ...(delivery ? { delivery } : {}),
+      ...(options?.carried ? { options: options.carried } : {})
+    }
     const result = host.send(QUEUED_RIG_CALLER, {
       envelope: envelope(fields, 'agentSession.send', clientOperationId),
       ...fields,
@@ -189,7 +199,7 @@ export async function createQueuedMessageTestRig(
       clientMessageId: id,
       providerIdentity: {
         provider: 'codex',
-        threadId: THREAD,
+        threadId: activeProviderContext(store.getRecord(SESSION)!).head?.handle.nativeId ?? THREAD,
         turnId: `turn-${itemId}`,
         ordinal: 0
       }
@@ -283,8 +293,10 @@ export async function createQueuedMessageTestRig(
     cancelTurn,
     closeSession,
     compact,
+    setOption: provider.adapter.setOption,
     starts: provider.starts,
     holdNextStart: provider.holdNextStart,
+    failNextStart: provider.failNextStart,
     finishCompact: provider.finishCompact,
     providerEvents: provider.providerEvents,
     envelope,

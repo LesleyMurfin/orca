@@ -1,3 +1,4 @@
+import type { ExecutionHostId } from '../../../src/shared/execution-host'
 import type {
   ProviderCheckSummary,
   GitHubOwnerRepo,
@@ -13,6 +14,8 @@ export type RepoSummary = {
   badgeColor?: string
   kind?: 'git' | 'folder'
   connectionId?: string | null
+  /** Set on a server's repos, whose calls run on that server. */
+  executionHostId?: ExecutionHostId | null
   issueSourcePreference?: IssueSourcePreference
   /** Fork parent resolved by the host; drives upstream Project row matching. */
   upstream?: { owner: string; repo: string; host?: string } | null

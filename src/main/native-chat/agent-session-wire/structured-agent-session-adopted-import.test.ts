@@ -21,7 +21,26 @@ import { StructuredAgentSessionHost } from './structured-agent-session-host'
 import { openTestJournalHostDatabase } from '../agent-session-journal/journal-host-database-test-support'
 import { createStructuredAgentSessionLogger } from './structured-agent-session-logger'
 import { codexProviderHandle } from '../../../shared/agent-session-provider-handle-encoding'
-import { NO_STRUCTURED_AGENTS } from './structured-agent-session-adapter-router-test-support'
+import {
+  NO_STRUCTURED_AGENTS,
+  structuredAgentsDeclaringNothing
+} from './structured-agent-session-adapter-router-test-support'
+import { acpStructuredAgentDefinition } from '../../acp/acp-structured-agent-definitions'
+import { acpLaunchSpecFor } from '../../acp/acp-launch-specs'
+import { writeOpenCodeSqliteDatabase } from '../../ai-vault/session-scanner-opencode-sqlite-fixture'
+
+// The OpenCode reader's worker, run in process.
+vi.mock('../../ai-vault/session-scanner-opencode-sqlite-worker-spawn', async (importOriginal) => {
+  const query = await import('../transcript-opencode-sqlite-query')
+  return {
+    ...(await importOriginal<object>()),
+    readOpenCodeTranscriptPageViaWorker: async (
+      args: Parameters<typeof query.readOpenCodeTranscriptPage>[0]
+    ) => query.readOpenCodeTranscriptPage(args),
+    readOpenCodeTranscriptSignalViaWorker: async (args: { dbPath: string; sessionId: string }) =>
+      query.readOpenCodeTranscriptSignal(args.dbPath, args.sessionId)
+  }
+})
 
 const NOW = 1_800_000_000_000
 const SESSION = 'codex_adopting_session'
@@ -59,7 +78,10 @@ async function writeCodexRollout(path: string, text: string): Promise<void> {
   await writeFile(path, `${lines.join('\n')}\n`, 'utf8')
 }
 
-function attachParams(transcriptPath?: string): AgentSessionAttachParams {
+function attachParams(
+  transcriptPath?: string,
+  overrides: Partial<AgentSessionAttachParams> = {}
+): AgentSessionAttachParams {
   const params: AgentSessionAttachParams = {
     envelope: {
       sessionId: SESSION,
@@ -78,9 +100,10 @@ function attachParams(transcriptPath?: string): AgentSessionAttachParams {
     accountHome: { variable: 'CODEX_HOME', path: '/home/dev/.codex' },
     runtimeKind: 'native',
     adopt: {
-      providerHandle: { kind: 'codex', threadId: THREAD },
+      providerHandle: codexProviderHandle(THREAD),
       ...(transcriptPath ? { transcriptPath } : {})
-    }
+    },
+    ...overrides
   }
   return {
     ...params,
@@ -121,11 +144,13 @@ function adapter(): StructuredAgentSessionAdapter {
 async function attach(
   transcriptPath: string | undefined,
   sessionAdapter: StructuredAgentSessionAdapter,
-  onAttached: AttachFlowInput['onAttached'] = () => {}
+  onAttached: AttachFlowInput['onAttached'] = () => {},
+  params: AgentSessionAttachParams = attachParams(transcriptPath),
+  agents = NO_STRUCTURED_AGENTS
 ) {
   store ??= await openTestAgentSessionRecordStore(root!)
   return performAttach({
-    agents: NO_STRUCTURED_AGENTS,
+    agents,
     logger: createStructuredAgentSessionLogger(),
     store,
     adapter: sessionAdapter,
@@ -138,7 +163,7 @@ async function attach(
     },
     callerKey: 'client-1',
     optionRevision: () => 0,
-    params: attachParams(transcriptPath),
+    params,
     now: () => NOW,
     onAttached
   })
@@ -159,6 +184,73 @@ describe('adopting a provider conversation on create', () => {
     const page = (result as { value: { page: { items: unknown[] } } }).value.page
     expect(JSON.stringify(page.items)).toContain('ORCA-ADOPT-1')
   })
+
+  it.each([
+    {
+      agent: 'grok',
+      accountHome: { variable: 'GROK_HOME', path: '/home/dev/.grok' },
+      record: async (dir: string, text: string) => {
+        const path = join(dir, 'chat_history.jsonl')
+        await writeFile(
+          path,
+          `${JSON.stringify({ type: 'user', content: [{ type: 'text', text }] })}\n`
+        )
+        return path
+      }
+    },
+    {
+      agent: 'opencode',
+      accountHome: { kind: 'opencode', locator: { kind: 'unmanaged' } },
+      record: async (dir: string, text: string) => {
+        const path = join(dir, 'opencode.db')
+        writeOpenCodeSqliteDatabase(path, [
+          { id: THREAD, turns: [{ role: 'user', parts: [text] }] }
+        ])
+        return path
+      }
+    }
+  ] as const)(
+    "seeds a $agent chat's chain with the session it adopts and imports that CLI's history",
+    async ({ agent, accountHome, record }) => {
+      root = await mkdtemp(join(tmpdir(), `orca-adopt-${agent}-`))
+      const transcriptPath = await record(root, `ORCA-${agent}-ADOPT`)
+      const spec = acpLaunchSpecFor(agent)
+      if (!spec) {
+        throw new Error(`this build registers no ${agent} chats`)
+      }
+      const handle = { transport: 'acp', agent, nativeId: THREAD }
+      const sessionAdapter = adapter()
+      vi.mocked(sessionAdapter.acquire).mockImplementation(async ({ fence, spawnToken }) => ({
+        process: { hostId: 'local', pid: 4242, processStartTimeMs: NOW, spawnToken },
+        link: {
+          linkId: 'resumed-link',
+          handle,
+          origin: 'resumed',
+          mintedAtFence: fence,
+          observedAt: NOW
+        }
+      }))
+
+      const result = await attach(
+        transcriptPath,
+        sessionAdapter,
+        () => {},
+        attachParams(transcriptPath, {
+          provider: agent,
+          agent,
+          accountHome,
+          adopt: { providerHandle: handle, transcriptPath }
+        }),
+        structuredAgentsDeclaringNothing([acpStructuredAgentDefinition(spec)])
+      )
+
+      expect(result.ok && JSON.stringify(result.value.page.items)).toContain(`ORCA-${agent}-ADOPT`)
+      expect(store?.getRecord(SESSION)?.providerHandleChain[0]).toMatchObject({
+        origin: 'adopted',
+        handle
+      })
+    }
+  )
 
   it('replays create without replacing journal-only messages or rereading the source', async () => {
     root = await mkdtemp(join(tmpdir(), 'orca-adopt-replay-'))

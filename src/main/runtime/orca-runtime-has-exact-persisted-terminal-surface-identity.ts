@@ -1,5 +1,11 @@
 // @ts-nocheck -- mechanically split from OrcaRuntimeService; behavior is covered by AST equivalence and characterization tests.
 import { OrcaRuntimeWithAutomationOperations } from './orca-runtime-automation-operations'
+import type {
+  RuntimeTerminalOrphanAdoptionRequest,
+  RuntimeTerminalOrphanAdoptionResult
+} from '../../shared/runtime-types'
+
+import type { PtyControllerInventory } from './runtime-pty-controller-contract'
 import {
   resolveTerminalSessionWorktreeId,
   runtimeWorktreeIdsEqual
@@ -28,7 +34,15 @@ import type {
   ArtifactWriteRequest
 } from '../../shared/artifacts'
 
-export class OrcaRuntimeWithHasExactPersistedTerminalSurfaceIdentity extends OrcaRuntimeWithAutomationOperations {
+export abstract class OrcaRuntimeWithHasExactPersistedTerminalSurfaceIdentity extends OrcaRuntimeWithAutomationOperations {
+  abstract notifyMobileSessionTabsChanged(worktreeId?: string): void
+
+  protected abstract adoptTerminalOrphansFromInventoryUnderMutation(
+    request: RuntimeTerminalOrphanAdoptionRequest,
+    workspace: TerminalWorkspaceLaunchScope,
+    inventory: PtyControllerInventory
+  ): Promise<RuntimeTerminalOrphanAdoptionResult>
+
   /** The host's saved session, when it still lists `tabId` under this worktree. */
   protected getPersistedSessionListingTerminalTab(
     worktreeId: string,

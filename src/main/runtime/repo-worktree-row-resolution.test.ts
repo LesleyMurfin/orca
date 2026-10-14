@@ -39,6 +39,7 @@ function gitWorktree(path: string): GitWorktreeInfo {
 }
 
 function createDeps(repos: Repo[]): RepoWorktreeRowDeps & {
+  store: Store
   metaById: Record<string, WorktreeMeta>
   scanRepo: ReturnType<typeof vi.fn<RepoWorktreeRowDeps['scanRepo']>>
   listFolderWorkspaces: ReturnType<typeof vi.fn<RepoWorktreeRowDeps['listFolderWorkspaces']>>

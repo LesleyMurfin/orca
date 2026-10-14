@@ -25,7 +25,9 @@ vi.mock('@/lib/connection-context', () => ({ getConnectionIdFromState: () => nul
 vi.mock('@/lib/native-chat-transcript-readability', () => ({
   isNativeChatTranscriptLocalReadable: () => true
 }))
-vi.mock('@/runtime/web-runtime-session', () => ({ isWebRuntimeSessionActive: () => false }))
+vi.mock('@/runtime/web-runtime-session-environment', () => ({
+  isWebRuntimeSessionActive: () => false
+}))
 vi.mock('@/lib/worktree-runtime-owner', () => ({
   getExecutionHostIdForWorktree: () => 'local',
   getRuntimeEnvironmentIdForWorktree: () => null
@@ -49,12 +51,14 @@ vi.mock('@/runtime/local-runtime-capabilities', () => ({
 }))
 // A launch the host delivers waits on its reply; these tests read only what was sent.
 const callRuntimeRpc = vi.hoisted(() => vi.fn(() => new Promise(() => {})))
-vi.mock('@/runtime/runtime-rpc-client', () => ({ callRuntimeRpc, RuntimeRpcCallError: Error }))
+vi.mock('@/runtime/runtime-rpc-client', () => ({ callRuntimeRpc }))
+vi.mock('@/runtime/runtime-rpc-result', () => ({ RuntimeRpcCallError: Error }))
 
 function launchesThroughHost(profile: AgentLaunchCallerProfile): boolean {
   return newTabPromptLaunchesThroughHost({
     promptDelivery: profile.args.promptDelivery ?? 'auto-submit',
-    pastesPrompt: (profile.args.prompt?.trim() ?? '').length > 0
+    pastesPrompt: (profile.args.prompt?.trim() ?? '').length > 0,
+    isRemote: false
   })
 }
 
@@ -122,9 +126,16 @@ describe('agent launch caller placement and telemetry', () => {
       await launch(profile)
 
       if (launchesThroughHost(profile)) {
-        // The host starts the agent where the request names, so nothing waits on the tab.
-        expect(store.queueTabInitialCwd).not.toHaveBeenCalled()
-        expect(hostLaunchRequest(callRuntimeRpc)?.cwd).toBe(profile.args.initialCwd)
+        // The host plans the agent where the request names; the pane's spawn starts there too.
+        expect(hostLaunchRequest(store)?.cwd).toBe(profile.args.initialCwd)
+        if (profile.args.initialCwd?.trim()) {
+          expect(store.queueTabInitialCwd).toHaveBeenCalledExactlyOnceWith(
+            createdTabOptions(store)?.id,
+            profile.args.initialCwd
+          )
+        } else {
+          expect(store.queueTabInitialCwd).not.toHaveBeenCalled()
+        }
         return
       }
       if (profile.args.initialCwd) {
@@ -148,7 +159,7 @@ describe('agent launch caller placement and telemetry', () => {
     if (launchesThroughHost(profile)) {
       // The host stamps `agent_started` from the request; the window queues no command of its own.
       expect(queuedStartupPayload(store)).toBeUndefined()
-      expect(hostLaunchRequest(callRuntimeRpc)).toMatchObject({
+      expect(hostLaunchRequest(store)).toMatchObject({
         agent: profile.args.agent,
         launchSource: profile.args.launchSource ?? 'tab_bar_quick_launch'
       })

@@ -143,11 +143,7 @@ export function useNativeChatPasteLifetime(args: {
       }
       lifetime.uploads.delete(pendingId)
       if (saved.status === 'saved' && saved.tempPath) {
-        resolvePendingImageAttachment(
-          pendingId,
-          saved.tempPath,
-          owner?.kind === 'ssh' ? owner.connectionId : null
-        )
+        resolvePendingImageAttachment(pendingId, saved.tempPath, null)
       } else {
         dropPendingImageAttachment(pendingId)
       }

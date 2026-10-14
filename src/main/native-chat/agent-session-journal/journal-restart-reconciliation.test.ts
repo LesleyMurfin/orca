@@ -190,6 +190,38 @@ describe('reconcileJournalSubmissionsAgainstHistory', () => {
     expect(journal.submissions()[0]?.dispatchState).toBe('unknown')
   })
 
+  it('leaves a send that carried stopped history unknown: its provider copy leads with that history', async () => {
+    const journal = await open()
+    for (const clientMessageId of ['stopped', 'cm_1']) {
+      await journal.appendSubmission({
+        clientMessageId,
+        payloadFingerprint: digestPayload(clientMessageId),
+        body: userMessage(clientMessageId),
+        fence: 1,
+        handoverRecorded: true
+      })
+    }
+    await journal.resolveDispatch({
+      clientMessageId: 'cm_1',
+      state: 'pending',
+      fence: 1,
+      turnScope: AGENT_JOURNAL_THREAD_SCOPE,
+      carries: ['stopped']
+    })
+    const restarted = await open()
+    await restarted.markPendingSubmissionsUnknown(2)
+
+    const settled = await reconcileJournalSubmissionsAgainstHistory({
+      journal: restarted,
+      fence: 2,
+      history: window([])
+    })
+
+    expect(settled).toEqual([])
+    expect(restarted.submission('cm_1')?.dispatchState).toBe('unknown')
+    expect(restarted.stoppedHistoryCarried().get('cm_1')).toEqual(['stopped'])
+  })
+
   it('leaves multi-block text sends unknown because Claude joins them before recording history', async () => {
     const journal = await reopenAfterCrash(
       {

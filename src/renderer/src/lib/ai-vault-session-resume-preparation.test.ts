@@ -3,7 +3,8 @@ import type { AiVaultSession } from '../../../shared/ai-vault-types'
 import {
   dropDeletedSshResumeCwd,
   prepareAiVaultSessionForFork,
-  prepareAiVaultSessionForResume
+  prepareAiVaultSessionForResume,
+  prepareAiVaultSessionForTerminalResume
 } from './ai-vault-session-resume-preparation'
 
 afterEach(() => {
@@ -96,6 +97,29 @@ describe('prepareAiVaultSessionForResume', () => {
 
     await expect(prepareAiVaultSessionForResume(current)).resolves.toBe(current)
     expect(prepareSessionResume).not.toHaveBeenCalled()
+  })
+})
+
+describe('ordinary Resume against an older paired host', () => {
+  it.each([
+    new Error(
+      "Error invoking remote method 'aiVault:prepareSessionResume': Error: aiVault.prepareSessionResume: method_not_found"
+    ),
+    Object.assign(new Error('Unknown method: aiVault.prepareSessionResume'), {
+      code: 'method_not_found'
+    })
+  ])('retains neutral resumes but requires managed Codex home preparation', async (error) => {
+    stubPreparation(vi.fn().mockRejectedValue(error))
+    const remote = session({ agent: 'claude', executionHostId: 'runtime:paired' })
+    await expect(prepareAiVaultSessionForTerminalResume(remote)).resolves.toBe(remote)
+    await expect(
+      prepareAiVaultSessionForTerminalResume(
+        session({
+          executionHostId: 'runtime:paired',
+          codexHome: '/tmp/orca/codex-runtime-home/home'
+        })
+      )
+    ).rejects.toBe(error)
   })
 })
 

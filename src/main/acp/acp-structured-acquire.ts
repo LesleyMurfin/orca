@@ -8,22 +8,15 @@
 // (Close, Stop, quit) stops it at any point.
 
 import type { AgentSessionProviderHandleLink } from '../../shared/agent-session-provider-handle'
-import { TUI_AGENT_DISPLAY_NAMES } from '../../shared/tui-agent-display-names'
-import { isTuiAgent } from '../../shared/tui-agent-config'
 import {
-  AgentSessionAcquisitionRefusal,
   AgentSessionPreSpawnError,
   type AgentSessionAcquisition,
   type StructuredAgentSessionAcquireInput
 } from '../native-chat/agent-session-wire/structured-agent-session-adapter'
 import { providerTimelineSink } from '../native-chat/agent-session-timeline/provider-timeline-plan'
-import {
-  providerSpawnedProcessIdentity,
-  PROVIDER_SPAWN_TOKEN_ENV
-} from '../provider-process/provider-spawned-process-identity'
-import { structuredSessionChildIdentityEnv } from '../runtime/structured-session-child-identity-env'
-import { AcpAuthRequiredError } from './acp-errors'
-import { ACP_CHILD_ENV_TO_DELETE } from './acp-launch-specs'
+import { providerSpawnedProcessIdentity } from '../provider-process/provider-spawned-process-identity'
+import { AcpAgentError } from './acp-errors'
+import { acpAuthenticationRequired, acpSignInRequiredRefusal } from './acp-turn-failures'
 import {
   ACP_REOPEN_FAILED,
   acpReopenTakeover,
@@ -31,8 +24,9 @@ import {
 } from './acp-session-reopen-failure'
 import type { AcpSessionEvent } from './acp-session-runtime'
 import type { AcpStructuredConnection } from './acp-structured-connection'
-import { ACP_HANDLE_TRANSPORT } from './acp-structured-agent-definitions'
-import { AcpStructuredLane } from './acp-structured-lane'
+import { ACP_HANDLE_TRANSPORT, acpAgentName } from './acp-structured-agent-definitions'
+import { AcpStructuredLane, acpLaneChildWorkDelivery } from './acp-structured-lane'
+import { NO_ACP_CHILD_STOPS, probeAcpChildStops } from './acp-structured-child-stop'
 import type { AcpStructuredLaunch } from './acp-structured-launch-resolution'
 import { AcpStructuredOptions, restoreAcpSessionOptions } from './acp-structured-options'
 import { AcpStructuredPrompts } from './acp-structured-prompts'
@@ -44,12 +38,11 @@ import {
 import type { AcpStructuredSessionAdapterDeps } from './acp-structured-session-adapter-deps'
 import { AcpStructuredTurns, type AcpStructuredTurnsDeps } from './acp-structured-turns'
 import { RequestPermissionResponseSchema } from './generated/acp-protocol.generated'
+import { createStructuredAgentSessionLogger } from '../native-chat/agent-session-wire/structured-agent-session-logger'
 
 /** Frames an agent may send before its session exists; past this they are dropped. */
 const MAX_EARLY_FRAMES = 2_048
-export function acpAgentName(agent: string): string {
-  return isTuiAgent(agent) ? TUI_AGENT_DISPLAY_NAMES[agent] : agent
-}
+export { acpAgentName } from './acp-structured-agent-definitions'
 
 export async function acquireAcpStructuredSession(input: {
   acquire: StructuredAgentSessionAcquireInput
@@ -85,7 +78,7 @@ export async function acquireAcpStructuredSession(input: {
   }
   closedBeforeSpawn()
   const launch: AcpStructuredLaunch = await deps
-    .resolveLaunch({ identity: acquire.identity })
+    .resolveLaunch({ identity: acquire.identity, spawnToken: acquire.spawnToken })
     .catch((error: unknown) => {
       throw new AgentSessionPreSpawnError(error)
     })
@@ -96,7 +89,7 @@ export async function acquireAcpStructuredSession(input: {
     lane: null,
     reattaching: false
   }
-  const options = new AcpStructuredOptions()
+  const options = new AcpStructuredOptions(launch.spec.dialect)
   // Only Orca's own prompt may ask the person, as with permissions: a turn the agent began itself
   // has nobody waiting on it. What a settled request carries still shows in that turn.
   const prompts = new AcpStructuredPrompts(
@@ -120,11 +113,8 @@ export async function acquireAcpStructuredSession(input: {
       command: launch.command,
       args: launch.args,
       cwd: launch.cwd,
-      env: {
-        ...structuredSessionChildIdentityEnv(sessionId, launch.env),
-        [PROVIDER_SPAWN_TOKEN_ENV]: acquire.spawnToken
-      },
-      envToDelete: [...ACP_CHILD_ENV_TO_DELETE, ...launch.envToDelete]
+      env: launch.env,
+      envToDelete: launch.envToDelete
     },
     {
       clientInfo: { name: 'orca', version: '1' },
@@ -135,7 +125,8 @@ export async function acquireAcpStructuredSession(input: {
           // is cutting it short: nobody is there to ask.
           return { outcome: { outcome: 'cancelled' } }
         }
-        if (launch.fullAccess) {
+        // A request the dialect claims is a question for the person, which full access never answers.
+        if (launch.fullAccess && !spec.dialect.request?.('session/request_permission', request)) {
           // Full access: Orca answers yes for the person, as the agent's own bypass flag would.
           const allow = request.options.find((option) => option.kind === 'allow_once')
           if (allow) {
@@ -187,6 +178,7 @@ export async function acquireAcpStructuredSession(input: {
     deps.readProcessStartTime
   )
   /** `attaching`: the lane opens inside the attach window, before any frame queued so far. */
+  let childStops = NO_ACP_CHILD_STOPS
   const makeLane = (providerSessionId: string, attaching = false): AcpStructuredLane => {
     const lane = new AcpStructuredLane({
       sink,
@@ -196,6 +188,10 @@ export async function acquireAcpStructuredSession(input: {
       generation,
       providerSessionId,
       dialect: spec.dialect,
+      now,
+      childStops: () => childStops,
+      ...acpLaneChildWorkDelivery(deps, sessionId),
+      logger: deps.logger ?? createStructuredAgentSessionLogger(),
       onInputAccepted: (clientMessageId) => session?.turns.accept(clientMessageId),
       onFailed: () => input.forceClose(sessionId)
     })
@@ -258,7 +254,8 @@ export async function acquireAcpStructuredSession(input: {
       started = await connection.start({ cwd: launch.cwd, mcpServers: [], ...auth })
       liveLane = makeLane(started.sessionId)
     }
-    options.adoptSession(started.response)
+    childStops = await probeAcpChildStops(connection, spec.dialect)
+    options.adoptSession(started.response, started.kind === 'new' ? 'new' : 'loaded')
     liveLane.apply(liveLane.translator.contextModels(started.response.models, now()))
     const restoreSkipped = await restoreAcpSessionOptions(connection, options, acquire.options)
     const process = await identity.read(pid)
@@ -276,6 +273,7 @@ export async function acquireAcpStructuredSession(input: {
       fence: acquire.fence,
       acquisitionGeneration: generation,
       spec,
+      childStops,
       connection,
       lane: liveLane,
       prompts,
@@ -320,11 +318,8 @@ export async function acquireAcpStructuredSession(input: {
   } catch (error) {
     session = null
     slot.lane?.dispose()
-    if (error instanceof AcpAuthRequiredError) {
-      throw new AgentSessionAcquisitionRefusal(
-        `${spec.agent} reported that it is not signed in: ${error.message}`,
-        'notSignedIn'
-      )
+    if (error instanceof AcpAgentError && acpAuthenticationRequired(spec.dialect, error)) {
+      throw acpSignInRequiredRefusal(spec.agent, spec.dialect, error)
     }
     throw error
   }

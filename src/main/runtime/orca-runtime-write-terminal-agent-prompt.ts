@@ -1,5 +1,5 @@
 // @ts-nocheck -- mechanically split from OrcaRuntimeService; behavior is covered by AST equivalence and characterization tests.
-import { OrcaRuntimeWithResolveAuthoritativeTerminalWaitPermission } from './orca-runtime-resolve-authoritative-terminal-wait-permission'
+import { OrcaRuntimeWithResolveAuthoritativeTerminalWaitPermission } from './terminal/wait/terminal-wait-permission'
 import type { RuntimeAgentPromptWriteOptions } from './runtime-terminal-contracts'
 import type { RuntimeTerminalPromptDelivery, RuntimeTerminalSend } from '../../shared/runtime-types'
 import {

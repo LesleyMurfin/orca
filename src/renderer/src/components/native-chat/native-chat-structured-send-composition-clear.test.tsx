@@ -38,9 +38,6 @@ vi.mock('@/runtime/runtime-terminal-inspection', () => ({
   isRemoteRuntimePtyId: () => false,
   sendRuntimePtyInput: vi.fn()
 }))
-vi.mock('@/lib/agent-paste-draft', () => ({
-  getSettingsForAgentTabRuntimeOwner: () => ({})
-}))
 vi.mock('./native-chat-runtime-send', () => ({
   sendNativeChatMessage: vi.fn(),
   sendNativeChatTypedCommand: vi.fn(),
@@ -240,7 +237,7 @@ describe('structured send racing the next IME composition', () => {
     changePrompt(input, '/model')
     await act(async () => pressEnter(input))
 
-    expect(structured.onError).toHaveBeenCalledWith('nope')
+    expect(structured.onError).toHaveBeenCalledWith('nope', undefined)
     expect(structured.send).not.toHaveBeenCalled()
     expect(promptValue(input)).toBe('/model')
   })

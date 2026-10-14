@@ -2,7 +2,10 @@ import { createPortal } from 'react-dom'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import CodexRestartChip from '../CodexRestartChip'
 import { CodexSharedServerBanner } from './CodexSharedServerBanner'
+import { ClaudeOldTerminalBanner } from './ClaudeOldTerminalBanner'
+import { NewerDaemonHoldBanner } from './NewerDaemonHoldBanner'
 import { TerminalSshReconnectOverlay } from './TerminalSshReconnectOverlay'
+import { useWslHostUnavailableReason } from './use-wsl-host-unavailable-reason'
 import { TerminalRemoteRuntimeReconnectBanner } from './TerminalRemoteRuntimeReconnectBanner'
 import { TerminalProcessExitOverlay } from './TerminalProcessExitOverlay'
 import { MobileDriverOverlay } from './MobileDriverOverlay'
@@ -52,6 +55,17 @@ export function TerminalPaneCodexRestartPortals({
             <CodexSharedServerBanner
               key={`codex-shared-server-${pane.id}-${ptyId}`}
               ptyId={ptyId}
+              tabId={tabId}
+              leafId={pane.leafId}
+            />
+            <ClaudeOldTerminalBanner
+              key={`claude-old-terminal-${pane.id}-${ptyId}`}
+              ptyId={ptyId}
+              tabId={tabId}
+              leafId={pane.leafId}
+            />
+            <NewerDaemonHoldBanner
+              key={`newer-daemon-hold-${pane.id}-${ptyId}`}
               tabId={tabId}
               leafId={pane.leafId}
             />
@@ -147,6 +161,7 @@ export function TerminalPaneRecoveryPortals({
 }): React.JSX.Element | null {
   const { managedPanes, paneTransportsRef, ptyRecoveryStatesByPaneId, showSshReconnectOverlay } =
     controller
+  const wslHostUnavailable = useWslHostUnavailableReason(controller.worktreeId)
   if (showSshReconnectOverlay) {
     return null
   }
@@ -162,6 +177,7 @@ export function TerminalPaneRecoveryPortals({
             key={`remote-runtime-reconnect-${pane.id}-${recoveryState.epoch}`}
             phase={recoveryState.phase}
             onReconnect={() => paneTransportsRef.current.get(pane.id)?.retryRecovery?.()}
+            wslHostUnavailable={wslHostUnavailable}
           />,
           pane.container,
           `remote-runtime-reconnect-${pane.id}`

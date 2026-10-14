@@ -1,8 +1,6 @@
 // @ts-nocheck -- mechanically split from OrcaRuntimeService; behavior is covered by AST equivalence and characterization tests.
 import { randomUUID } from 'node:crypto'
 import { preserveTerminalRetirementProofs } from './mobile-session-terminal-retirement-proof'
-import { getStructuredAgentSessionHost } from '../native-chat/agent-session-wire/structured-agent-session-registry'
-import { replaceConversationInSnapshot } from './structured-conversation-tab-replacement'
 import type { TuiAgent } from '../../shared/tui-agent'
 import { isTuiAgent } from '../../shared/tui-agent-config'
 import type { RuntimeStore } from './runtime-store-contract'
@@ -43,10 +41,10 @@ import type { RuntimeLeafRecord } from './runtime-terminal-state-records'
 import type { TerminalHandleRecord } from './runtime-terminal-contracts'
 import type { PtyIncarnationHandleRecord } from './orca-runtime-core'
 import { MailPointerRepointScheduler } from './orchestration/mail-pointer-repoint-scheduler'
-import { RuntimeTerminalWaiterRegistry } from './runtime-terminal-waiter-registry'
+import { RuntimeTerminalWaiterRegistry } from './terminal/wait/terminal-waiter-registry'
 import { RuntimeTerminalWriter } from './runtime-terminal-writer'
 import { writeRefused } from '../../shared/pty-write-settlement'
-import { RuntimeTerminalIdlePolls } from './runtime-terminal-idle-polls'
+import { RuntimeTerminalIdlePolls } from './terminal/wait/terminal-idle-polls'
 import { TerminalIntentionalStops } from './terminal-intentional-stops'
 import { TerminalRunFactsRegister, type TerminalSpawnCommit } from './terminal-run-facts'
 import type { TuiIdleEvidenceSource } from './tui-idle-evidence-source'
@@ -56,7 +54,7 @@ import {
   TUI_IDLE_POLL_INTERVAL_MS,
   TUI_IDLE_QUIESCENCE_MS
 } from './orca-runtime-postlude'
-import { RuntimeTerminalWait as RuntimeTerminalWaitController } from './runtime-terminal-wait'
+import { RuntimeTerminalWait as RuntimeTerminalWaitController } from './terminal/wait/terminal-wait'
 import type { PtyLivenessVerdict } from '../../shared/pty-liveness-verdict'
 
 export class OrcaRuntimeWithRuntimeId {
@@ -107,9 +105,6 @@ export class OrcaRuntimeWithRuntimeId {
     worktreeId: string,
     snapshot: RuntimeMobileSessionTabsSnapshot
   ): RuntimeMobileSessionTabsSnapshot {
-    for (const replacement of getStructuredAgentSessionHost()?.conversationReplacements?.() ?? []) {
-      snapshot = replaceConversationInSnapshot(snapshot, replacement)
-    }
     const existing = this.mobileSessionTabsByWorktree.get(worktreeId)
     snapshot = preserveTerminalRetirementProofs(snapshot, existing)
     const snapshotVersion = existing

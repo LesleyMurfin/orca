@@ -19,6 +19,7 @@ import {
   humanizeTerminalError,
   isPaneOwnerUnverifiedError,
   isExplainedTerminalError,
+  isRemoteTerminalClosedError,
   isSshReconnectOwnedTerminalError,
   shouldOfferDaemonRestart,
   stripSshReconnectOwnedErrorLines
@@ -194,17 +195,6 @@ describe('humanizeTerminalError', () => {
     expect(humanized).toContain('still running')
   })
 
-  it('says a terminal held by the previous Orca version is still running', () => {
-    const raw =
-      "Error invoking remote method 'pty:spawn': SshPtyHeldByPreviousRelayError: SSH_PTY_HELD_BY_PREVIOUS_RELAY: pty2:old-epoch:1"
-    const humanized = humanizeTerminalError(raw)
-    expect(humanized).not.toContain('SSH_PTY_HELD_BY_PREVIOUS_RELAY')
-    expect(humanized).not.toContain('pty2:old-epoch:1')
-    expect(humanized).toContain('previous Orca version')
-    expect(humanized).toContain('still running')
-    expect(isExplainedTerminalError(raw)).toBe(true)
-  })
-
   it('replaces only the unreattachable line in an aggregated error', () => {
     const humanized = humanizeTerminalError('Paste failed.\nSSH_SESSION_EXPIRED: orca:2f1c@@pty-7')
     expect(humanized.startsWith('Paste failed.\n')).toBe(true)
@@ -362,20 +352,6 @@ describe('TerminalErrorToast environment footer', () => {
     )
 
     await waitFor(() => expect(environmentMocks.resolveFooter).not.toHaveBeenCalled())
-  })
-
-  it('omits client details for a terminal the previous Orca version runs on the host', async () => {
-    const view = render(
-      React.createElement(TerminalErrorToast, {
-        error:
-          "Error invoking remote method 'pty:spawn': SshPtyHeldByPreviousRelayError: SSH_PTY_HELD_BY_PREVIOUS_RELAY: pty2:old-epoch:1",
-        onDismiss: vi.fn()
-      })
-    )
-
-    expect(view.container.textContent).toContain('previous Orca version')
-    await waitFor(() => expect(environmentMocks.resolveFooter).not.toHaveBeenCalled())
-    expect(view.container.textContent).not.toContain('OS:')
   })
 
   it('omits client details for a remote pane whose session cannot be reattached', async () => {
@@ -560,4 +536,72 @@ it('uses existing Korean recovery copy and preserves the path', async () => {
   } finally {
     await i18n.changeLanguage('en')
   }
+})
+
+describe('TerminalErrorToast teardown on dismiss (#21342)', () => {
+  it('identifies remote terminal closed error strings', () => {
+    expect(isRemoteTerminalClosedError('Remote terminal was closed.')).toBe(true)
+    expect(isRemoteTerminalClosedError('Paste failed.\nRemote terminal was closed.')).toBe(true)
+    expect(isRemoteTerminalClosedError('Remote terminal was closed.\nSSH connection failed')).toBe(
+      true
+    )
+    expect(isRemoteTerminalClosedError('Paste failed.')).toBe(false)
+    expect(isRemoteTerminalClosedError('Note: Remote terminal was closed. See logs')).toBe(false)
+    expect(isRemoteTerminalClosedError('Remote terminal was closed')).toBe(false)
+    expect(isRemoteTerminalClosedError('')).toBe(false)
+  })
+
+  it('× button dismisses but does not close pane on remote terminal closed error', () => {
+    const onDismiss = vi.fn()
+    const onClosePane = vi.fn()
+    const view = render(
+      React.createElement(TerminalErrorToast, {
+        error: 'Remote terminal was closed.',
+        onDismiss,
+        onClosePane
+      })
+    )
+
+    const dismissButton = view.getByRole('button', { name: '×' })
+    fireEvent.click(dismissButton)
+
+    expect(onDismiss).toHaveBeenCalledTimes(1)
+    expect(onClosePane).not.toHaveBeenCalled()
+  })
+
+  it('explicit Close Pane button closes pane on remote terminal closed error', () => {
+    const onDismiss = vi.fn()
+    const onClosePane = vi.fn()
+    const view = render(
+      React.createElement(TerminalErrorToast, {
+        error: 'Remote terminal was closed.',
+        onDismiss,
+        onClosePane
+      })
+    )
+
+    const closeButton = view.getByRole('button', { name: 'Close Pane' })
+    fireEvent.click(closeButton)
+
+    expect(onDismiss).not.toHaveBeenCalled()
+    expect(onClosePane).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not trigger onClosePane when dismissing other errors', () => {
+    const onDismiss = vi.fn()
+    const onClosePane = vi.fn()
+    const view = render(
+      React.createElement(TerminalErrorToast, {
+        error: 'Paste failed.',
+        onDismiss,
+        onClosePane
+      })
+    )
+
+    const dismissButton = view.getByRole('button', { name: '×' })
+    fireEvent.click(dismissButton)
+
+    expect(onDismiss).toHaveBeenCalledTimes(1)
+    expect(onClosePane).not.toHaveBeenCalled()
+  })
 })

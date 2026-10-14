@@ -1,3 +1,4 @@
+import { isRemoteRuntimePtyId } from '../../../../../shared/remote-runtime-pty-id'
 import { useAppStore } from '@/store'
 import { createIpcPtyTransport } from '../pty-transport'
 import { createRemoteRuntimePtyTransport } from '../remote-runtime-pty-transport'
@@ -19,12 +20,14 @@ import {
   installTerminalCapabilityReplyHandlers
 } from '../terminal-capability-replies'
 
-import { isRemoteRuntimePtyId } from './paired-parked-terminal-restore'
 import { TRANSPORT_CONNECT_SETTLE_GRACE_MS } from './pty-connect-limits'
 import { buildPaneTransportOptions } from './pane-transport-options'
-import { buffersInputOnlyForSshReattach } from './ssh-reattach-input-buffering'
+import { createUnservedSshPaneTransport } from './unserved-ssh-pane-connect'
+import { createLegacyRelayBridgeTransport } from '../legacy-relay-bridge-transport'
+import { legacyRelayBridgePtyIdForPane } from '../legacy-relay-bridge-panes'
 
 import type { ConnectPanePtySession } from './connect-pane-pty-session'
+import type { PtyTransport } from '../pty-transport-types'
 import { resolveTerminalInlineImagesEnabled } from '../../../../../shared/terminal-inline-images-settings'
 
 /** Transport creation, terminal capability replies, viewport claims, and undeliverable-input recovery. */
@@ -38,7 +41,6 @@ export function installPtyInputRecovery(session: ConnectPanePtySession): void {
     ? { foreground: session.terminalTheme.foreground, background: session.terminalTheme.background }
     : undefined
   session.agentLaunchPreferences = toAgentLaunchPreferences(session.paneStartup?.sessionOptions)
-  session.buffersInputOnlyForReattach = buffersInputOnlyForSshReattach(session)
   session.transportOptions = buildPaneTransportOptions(session)
   if (session.connectionOwnerHydrating) {
     // Why: this pane holds an inert transport until its host resolves; register it so
@@ -52,9 +54,17 @@ export function installPtyInputRecovery(session: ConnectPanePtySession): void {
             ? 'Workspace identity is ambiguous across hosts. Refresh projects and try again.'
             : 'Workspace host is still loading. Retry when the project finishes hydrating.'
         )
-      : session.runtimeEnvironmentId
-        ? createRemoteRuntimePtyTransport(session.runtimeEnvironmentId, session.transportOptions)
-        : createIpcPtyTransport(session.transportOptions)
+      : session.unservedSshTargetId
+        ? createUnservedSshPaneTransport()
+        : session.runtimeEnvironmentId
+          ? withLegacyRelayBridge(
+              session,
+              createRemoteRuntimePtyTransport(
+                session.runtimeEnvironmentId,
+                session.transportOptions
+              )
+            )
+          : createIpcPtyTransport(session.transportOptions)
   session.canSendDesktopQueryReply = (): boolean => {
     const ptyId = session.transport.getPtyId()
     return !ptyId || !isPtyLocked(ptyId)
@@ -265,4 +275,21 @@ export function installPtyInputRecovery(session: ConnectPanePtySession): void {
       })
     }
   )
+}
+
+/** COMPAT(legacy-relay-bridge, revisit 2027-01-15): a pane an older Orca's relay still runs. */
+function withLegacyRelayBridge(session: ConnectPanePtySession, inner: PtyTransport): PtyTransport {
+  const leafId = session.deps.restoredLeafId ?? session.pane.leafId
+  const ptyId = legacyRelayBridgePtyIdForPane({
+    tabId: session.deps.tabId,
+    leafId,
+    boundPtyId:
+      (leafId ? session.deps.restoredPtyIdByLeafId?.[leafId] : undefined) ??
+      useAppStore
+        .getState()
+        .tabsByWorktree[session.deps.worktreeId]?.find((tab) => tab.id === session.deps.tabId)
+        ?.ptyId
+  })
+  session.legacyRelayBridgePtyId = ptyId
+  return ptyId ? createLegacyRelayBridgeTransport(ptyId, inner) : inner
 }

@@ -20,6 +20,7 @@ import { omitRecordKeys } from '../slices/worktrees/teardown/record-key-omission
 import { deleteNativeChatComposerDraftsForTab } from '@/components/native-chat/native-chat-composer-draft-store'
 import { dropNativeChatPendingAttachmentsForTab } from '@/components/native-chat/native-chat-pending-attachment-cache'
 import { noteAgentLaunchPaneClosedByUser } from '@/lib/agent-launch-pane-closes'
+import { settleAgentLaunchPaneStart } from '@/lib/agent-launch-pane-start'
 
 export function createTerminalTabCloseActions(
   set: TerminalStoreSet,
@@ -61,13 +62,14 @@ export function createTerminalTabCloseActions(
           const closing = before.find((t) => t.id === tabId)
           if (closing) {
             closingWorktreeId = wId
-            // The user closing a launch tab whose agent is still starting: that close wins.
-            if (
-              closeReason === 'user' &&
-              closing.agentLaunchPane &&
-              !closing.agentLaunchPane.outcome
-            ) {
-              noteAgentLaunchPaneClosedByUser(tabId, closing.agentLaunchPane.leafId)
+            // The user closing a launch tab whose agent is still starting: that close wins. Any
+            // close of it ends the wait for its start, so nothing is pasted into a tab that is gone.
+            if (closing.agentLaunchPane && !closing.agentLaunchPane.outcome) {
+              if (closeReason === 'user') {
+                noteAgentLaunchPaneClosedByUser(tabId, closing.agentLaunchPane.leafId)
+              } else {
+                settleAgentLaunchPaneStart(tabId, closing.agentLaunchPane.leafId, null)
+              }
             }
             // Why: capture the first-matched tab's snapshot for the Cmd+Shift+T reopen stack (see capturedSnapshot below).
             if (!closedTab) {
@@ -121,9 +123,6 @@ export function createTerminalTabCloseActions(
         const nextDeferredSshSessionIdsByTabId = omitByTabId(s.deferredSshSessionIdsByTabId)
         const nextPendingReconnectPtyIdByTabId = omitByTabId(s.pendingReconnectPtyIdByTabId)
         const nextRuntimePaneTitlesByTabId = omitByTabId(s.runtimePaneTitlesByTabId)
-        const nextDirectSshPaneRetryByTabId = omitByTabId(s.directSshPaneRetryByTabId)
-        const nextDirectSshLivePtyBindingByTabId = omitByTabId(s.directSshLivePtyBindingByTabId)
-        const nextDirectSshPaneRetryHistoryByTabId = omitByTabId(s.directSshPaneRetryHistoryByTabId)
         const nextUnverifiedPtyLossTabIds = omitUnverifiedPtyLossTabIds(s.unverifiedPtyLossTabIds, [
           tabId
         ])
@@ -203,9 +202,6 @@ export function createTerminalTabCloseActions(
           deferredSshSessionIdsByTabId: nextDeferredSshSessionIdsByTabId,
           pendingReconnectPtyIdByTabId: nextPendingReconnectPtyIdByTabId,
           runtimePaneTitlesByTabId: nextRuntimePaneTitlesByTabId,
-          directSshPaneRetryByTabId: nextDirectSshPaneRetryByTabId,
-          directSshLivePtyBindingByTabId: nextDirectSshLivePtyBindingByTabId,
-          directSshPaneRetryHistoryByTabId: nextDirectSshPaneRetryHistoryByTabId,
           ...(nextUnverifiedPtyLossTabIds !== s.unverifiedPtyLossTabIds
             ? { unverifiedPtyLossTabIds: nextUnverifiedPtyLossTabIds }
             : {}),
@@ -229,7 +225,6 @@ export function createTerminalTabCloseActions(
           expandedPaneByTabId: nextExpanded,
           canExpandPaneByTabId: nextCanExpand,
           terminalLayoutsByTabId: nextLayouts,
-          pendingDirectSshLayoutEditsByTabId: omitByTabId(s.pendingDirectSshLayoutEditsByTabId),
           localOnlyScrollbackByTabId: nextLocalOnlyScrollback,
           pendingStartupByTabId: nextPendingStartupByTabId,
           automaticAgentResumeClaimsByTabId: nextAutomaticAgentResumeClaimsByTabId,

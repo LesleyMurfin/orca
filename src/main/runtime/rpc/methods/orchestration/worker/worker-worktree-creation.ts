@@ -18,7 +18,10 @@ export async function createWorkerWorktree(args: {
   db: OrchestrationDb
   dispatchId: string
   requestedWorktree: string
-  coordinatorWorktree: Awaited<ReturnType<OrcaRuntimeService['showManagedWorktree']>>
+  coordinatorWorktree: Pick<
+    Awaited<ReturnType<OrcaRuntimeService['showManagedWorktree']>>,
+    'id' | 'repoId'
+  >
   params: {
     repo?: string
     name?: string

@@ -758,6 +758,7 @@ describe('fetchOpenCodeGoRateLimits', () => {
 
     expect(result.status).toBe('error')
     expect(result.error).toBe('Usage fetch failed (404)')
+    expect(result.usageMetadata).toBeUndefined()
   })
 
   it('tells the user to include __Host-console_session when usage fetch returns 401', async () => {
@@ -792,5 +793,15 @@ describe('fetchOpenCodeGoRateLimits', () => {
     expect(result.status).toBe('error')
     expect(result.error).toBe('network timeout')
     expect(result.error).not.toContain('secret123')
+    expect(result.usageMetadata?.failureKind).toBe('network')
+  })
+
+  it('tags a usage request that throws as a network failure', async () => {
+    netFetchMock.mockRejectedValueOnce(new Error('net::ERR_PROXY_CONNECTION_FAILED'))
+
+    const result = await fetchOpenCodeGoRateLimits('auth=mytoken', 'wrk_OVERRIDE123')
+
+    expect(result.error).toBe('net::ERR_PROXY_CONNECTION_FAILED')
+    expect(result.usageMetadata?.failureKind).toBe('network')
   })
 })

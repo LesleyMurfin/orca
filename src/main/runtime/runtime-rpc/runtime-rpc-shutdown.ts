@@ -1,4 +1,5 @@
 import { RuntimeRpcMobilePairing } from './runtime-rpc-mobile-pairing'
+import { publishHostDescriptor } from '../host-descriptor'
 
 export type RuntimeRpcClientActivity = {
   openConnections: number
@@ -37,6 +38,10 @@ export class RuntimeRpcShutdown extends RuntimeRpcMobilePairing {
     this.transports = []
     this.metadataOwnershipWatch?.stop()
     this.metadataOwnershipWatch = null
+    if (this.hostDescriptor) {
+      publishHostDescriptor(this.runtime.getRuntimeId(), null)
+    }
+    this.mobileSocketWiring?.dispose()
     this.mobileSocketWiring = null
     this.detachWebSocketWiring = null
     const stopResults = await Promise.allSettled(

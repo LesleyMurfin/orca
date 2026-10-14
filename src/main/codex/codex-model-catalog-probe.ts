@@ -6,21 +6,16 @@ import { runCodexAppServerSession } from './codex-app-server-session'
 import { fetchCodexModelCatalogListing } from './codex-structured-model-catalog'
 import {
   resolveCodexStructuredInvocation,
-  type CodexStructuredLaunchResolverDeps
+  type CodexStructuredInvocationDeps
 } from './codex-structured-launch-resolution'
+import { requireLegacyAgentSessionAccountHome } from '../../shared/agent-session-account-home'
+import { AGENT_MODEL_CATALOG_PROBE_TIMEOUT_MS } from '../native-chat/agent-model-catalog/agent-model-catalog-probe-runner'
 import type {
   AgentModelCatalogProbe,
   AgentModelCatalogSuccess
 } from '../native-chat/agent-model-catalog/agent-model-catalog-store'
 
-// Why 15s: the whole probe session is stopped at the deadline (on POSIX its supervisor then gets
-// up to PROVIDER_SUPERVISOR_MAX_STOP_MS), and a cold `model/list` may pay one /models fetch.
-const CODEX_MODEL_CATALOG_PROBE_TIMEOUT_MS = 15_000
-
-export type CodexModelCatalogProbeDeps = Pick<
-  CodexStructuredLaunchResolverDeps,
-  'resolveCommand' | 'resolveEnvironment'
-> & {
+export type CodexModelCatalogProbeDeps = CodexStructuredInvocationDeps & {
   resolveAccountKind?: (home: string) => AgentSessionAccountKind | undefined
   /** The sync a launch runs on this home first, so the probe reads the login a launch would. */
   prepareHome?: (home: string) => void
@@ -39,15 +34,17 @@ function definedEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string> 
 }
 
 /**
- * Lists models without a live session: one short-lived read-only app-server
- * under the given account home, spawned through the SAME invocation resolver
- * a structured session launch uses — a probe that resolved a different binary
- * or env could list models the user's sessions cannot see, under their key.
+ * Lists models without a live session: one short-lived read-only app-server under the given
+ * account home and the shared probe budget, spawned through the SAME invocation resolver a
+ * structured session launch uses — a probe that resolved a different binary or env could list
+ * models the user's sessions cannot see, under their key. Its supervised session runner is the
+ * one every Codex app-server RPC consumer shares.
  */
 export function createCodexModelCatalogProbe(
   deps: CodexModelCatalogProbeDeps
 ): AgentModelCatalogProbe {
-  return async (accountHomePath: string): Promise<AgentModelCatalogSuccess> => {
+  return async (accountHome, options): Promise<AgentModelCatalogSuccess> => {
+    const accountHomePath = requireLegacyAgentSessionAccountHome(accountHome).path
     const { command, environment } = await resolveCodexStructuredInvocation(deps)
     deps.prepareHome?.(accountHomePath)
     const run = deps.runSession ?? runCodexAppServerSession
@@ -57,7 +54,8 @@ export function createCodexModelCatalogProbe(
         args: [...CODEX_SHORT_LIVED_PROBE_APP_SERVER_ARGS],
         cliPath: command,
         env: { ...definedEnv(environment), CODEX_HOME: accountHomePath },
-        timeoutMs: CODEX_MODEL_CATALOG_PROBE_TIMEOUT_MS
+        timeoutMs: AGENT_MODEL_CATALOG_PROBE_TIMEOUT_MS,
+        ...(options?.signal ? { signal: options.signal } : {})
       },
       async (rpc) => {
         // Both at once, so the account check adds no latency.
@@ -98,7 +96,6 @@ export function createCodexModelCatalogProbe(
     }
     return {
       models: listing.models,
-      fastModeTierByModel: listing.fastModeTierByModel,
       origin: 'probe',
       ...(unavailable ? { unavailable } : {})
     }

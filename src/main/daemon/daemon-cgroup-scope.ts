@@ -19,7 +19,8 @@
  */
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { runProcessSync, type ProcessResult } from '../../shared/child-process/run-process'
+import { runProcessSync } from '@orca/process-host'
+import type { ProcessResult } from '@orca/process-host/process-spec'
 import { removeChromiumDisabledSessionBus } from '../pty/chromium-session-bus-env'
 import { cgroupPathFromProcLine, userManagerOutlivesCaller } from './daemon-user-manager-lifetime'
 
@@ -163,6 +164,17 @@ export function isDurableDaemonScopeSupported(deps: ScopeProbeDeps = {}): boolea
     // Throws only when the binary could not be started at all.
     return false
   }
+}
+
+/** The environment that reaches this user's systemd manager (see resolveUserRuntimeDir). */
+export function userManagerEnv(
+  env: NodeJS.ProcessEnv,
+  canonicalRuntimeDir: string | null = CANONICAL_USER_RUNTIME_DIR
+): NodeJS.ProcessEnv {
+  const runtimeDir = resolveUserRuntimeDir(env, canonicalRuntimeDir)
+  const next: NodeJS.ProcessEnv = runtimeDir ? { ...env, XDG_RUNTIME_DIR: runtimeDir } : { ...env }
+  removeChromiumDisabledSessionBus(next)
+  return next
 }
 
 export type DurableDaemonScopeCommand = {

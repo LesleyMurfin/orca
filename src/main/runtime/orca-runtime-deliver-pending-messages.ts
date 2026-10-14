@@ -1,5 +1,5 @@
 // @ts-nocheck -- mechanically split from OrcaRuntimeService; behavior is covered by AST equivalence and characterization tests.
-import { OrcaRuntimeWithResolveExitWaiters } from './orca-runtime-resolve-exit-waiters'
+import { OrcaRuntimeWithResolveExitWaiters } from './terminal/wait/terminal-wait-settlements'
 import type { RuntimeLeafRecord } from './runtime-terminal-state-records'
 import { formatMessagePointer } from './orchestration/formatter'
 import { isCursorAgentOrchestrationTarget } from './orca-runtime-core'

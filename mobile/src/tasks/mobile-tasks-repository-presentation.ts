@@ -1,3 +1,8 @@
+import { getRepoExecutionHostId, parseExecutionHostId } from '../../../src/shared/execution-host'
+import {
+  getHostContextLabel,
+  type HostContextLabelSources
+} from '../../../src/shared/worktree/host-context-labels'
 import { colors } from './mobile-tasks-dependencies'
 import { taskTime } from './mobile-tasks-item-mapping'
 import type { TaskItem } from './mobile-tasks-project-workspace-types'
@@ -23,6 +28,22 @@ export function repoColor(name: string): string {
     hash = (hash * 31 + name.charCodeAt(i)) | 0
   }
   return palette[Math.abs(hash) % palette.length]!
+}
+
+/**
+ * A repo picker row's detail: its host, as the desktop's picker names it, then its path. Hosts are
+ * named only in a mixed list (`sources` set); a desktop SSH repo keeps its bare path, as this screen
+ * reads no SSH target labels.
+ */
+export function getTaskRepoDetail(
+  repo: RepoSummary,
+  sources: HostContextLabelSources | null
+): string {
+  const hostId = getRepoExecutionHostId(repo)
+  if (!sources || parseExecutionHostId(hostId)?.kind === 'ssh') {
+    return repo.path
+  }
+  return `${getHostContextLabel(hostId, sources)} · ${repo.path}`
 }
 
 export function getRepoBadgeColor(repo: RepoSummary | undefined, fallbackName: string): string {

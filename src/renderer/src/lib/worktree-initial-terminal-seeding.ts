@@ -3,6 +3,8 @@ import type {
   WorktreeSetupLaunch
 } from '../../../shared/worktree/launch-types'
 import type { ExecutionHostId } from '../../../shared/execution-host'
+import type { FolderWorkspace } from '../../../shared/folder-workspace-types'
+import { folderWorkspaceKey } from '../../../shared/workspace-scope'
 import { shouldAutoCreateInitialTerminal } from '@/components/terminal/initial-terminal'
 import { isTerminalWorkspaceEmptiedOnPurpose } from '../../../shared/closed-terminal-tab-tombstones'
 import { createSequencedSetupAgentCommands } from '../../../shared/setup-agent-sequencing'
@@ -65,6 +67,32 @@ export function reseedGatedEmptyWorkspace(
       ...(seedUserDefaultSurface ? { seedUserDefaultSurface: true } : {})
     }
   )
+}
+
+export function ensureFolderWorkspaceInitialTerminal(
+  folderWorkspace: FolderWorkspace,
+  startup?: WorktreeStartupPayload,
+  providesInitialSurface?: boolean,
+  seedUserDefaultSurface?: boolean
+): string | null {
+  if (providesInitialSurface === true && startup === undefined) {
+    return null
+  }
+  const state = useAppStore.getState()
+  const workspaceKey = folderWorkspaceKey(folderWorkspace.id)
+  const primaryTabId = ensureWorktreeHasInitialTerminal(
+    state,
+    workspaceKey,
+    startup,
+    undefined,
+    undefined,
+    undefined,
+    {
+      reseedEmptiedWorkspace: providesInitialSurface !== true,
+      ...(seedUserDefaultSurface ? { seedUserDefaultSurface: true } : {})
+    }
+  )
+  return primaryTabId
 }
 
 export function ensureWorktreeHasInitialTerminal(

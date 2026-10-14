@@ -404,7 +404,6 @@ describe('connectPanePty', () => {
     expect(createdTransportOptions[0]).toMatchObject({
       worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
       executionHostId: 'local',
-      connectionId: null,
       launchAgent: 'codex'
     })
     expect(createdTransportOptions[0]?.projectRuntime).toBeUndefined()

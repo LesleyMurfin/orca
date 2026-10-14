@@ -1,3 +1,7 @@
+import type {
+  RestoreSpawnIntent,
+  SpawnDeferralReason
+} from '../../../../shared/host-spawn-admission'
 import type { ParsedAgentStatusPayload } from '../../../../shared/agent-status-types'
 import type {
   AgentProviderSessionMetadata,
@@ -16,8 +20,9 @@ import type { TuiAgent } from '../../../../shared/tui-agent'
 import type { TerminalPanePlacement } from '../../../../shared/terminal-pane-placement'
 import type { ExecutionHostId } from '../../../../shared/execution-host'
 import type { PtyDataMeta } from './pty-dispatcher'
-import type { RemoteRuntimeSnapshotOutcome } from '../../runtime/remote-runtime-terminal-multiplexer'
-import type { PtyPreconnectInputEntry } from './pty-preconnect-input-buffer'
+import type { RemoteRuntimeSnapshotOutcome } from '../../runtime/remote-runtime-terminal-multiplexer-types'
+import type { AcceptedInputOptions, PtyPreconnectInputEntry } from './pty-preconnect-input-buffer'
+import type { AgentPaneLaunchRequest } from '../../../../shared/agent-pane-launch-request'
 
 export type PtyBufferSnapshot = {
   data: string
@@ -72,8 +77,8 @@ export type PtyReplayDataMeta = {
   /** An image that starts on the normal buffer and enters alt itself; absent for
    *  raw byte replays such as an SSH relay's ring buffer. */
   carriesNormalBuffer?: boolean
-  /** The image carries no history, so replay clears the screen but keeps scrollback. */
-  keepsLocalScrollback?: boolean
+  /** The image folds host history above its screen; absent for screen-only images. */
+  carriesHistory?: boolean
 }
 
 export type LocalPtySessionMetadata = {
@@ -138,6 +143,8 @@ type PtyCallbacks = {
   onWriteUnavailable?: () => void
   onRecoveryStateChange?: (state: PtyTransportRecoveryState) => void
   onOutputPauseChanged?: (paused: boolean, supported: boolean) => void
+  /** The host kept this restore asleep; no process started and the resume handle is intact. */
+  onSpawnDeferred?: (reason: SpawnDeferralReason) => void
 }
 
 export type PtyTransportRecoveryState = {
@@ -166,6 +173,8 @@ export type PtyTransport = {
      *  first byte and the gate + model responder own spawn-time queries.
      *  Ignored by remote-runtime transports (not gate-markable). */
     initiallyHidden?: boolean
+    /** Sent only when this connect resumes an agent, and only to hosts that accept it. */
+    resumeSpawnIntent?: RestoreSpawnIntent
     command?: string
     commandDelivery?: 'renderer' | 'provider'
     env?: Record<string, string>
@@ -178,8 +187,6 @@ export type PtyTransport = {
     /** Taken only as the spawn request is sent; main stops the returned PTY before resolving the
      *  pane's owner. Never taken on a session reattach, so the caller still holds it. */
     claimReplacedPtyId?: () => string | null
-    /** Reject a stale restored identity before this transport can publish global PTY handlers. */
-    admitPtyId?: (ptyId: string) => boolean
     /** Reject a stale pane after any pre-spawn test gate but before creating a PTY. */
     shouldContinue?: () => boolean
     callbacks: PtyCallbacks
@@ -200,7 +207,11 @@ export type PtyTransport = {
   // this is `sendInput` for them; the remote transport flushes pending input
   // (preserving order) and sends the reply immediately.
   sendInputImmediate: (data: string) => boolean
-  sendInputAccepted?: (data: string, inputKind: TerminalInputKind) => Promise<boolean>
+  sendInputAccepted?: (
+    data: string,
+    inputKind: TerminalInputKind,
+    options?: AcceptedInputOptions
+  ) => Promise<boolean>
   /** Settles retained pre-connect input when a deferred spawn is abandoned before connect. */
   abandonPreconnectInput?: () => void
   claimViewport?: (cols: number, rows: number) => boolean
@@ -223,8 +234,6 @@ export type PtyTransport = {
   retryRecovery?: () => boolean
   /** True while the transport has a retry armed or parked; pane-level remounts must defer to it. */
   ownsRecovery?: () => boolean
-  /** Lets a wrapper retain input when recovery re-enters connect internally. */
-  setConnectForRecovery?: (connect: PtyTransport['connect']) => void
   /** The user dismissed the error surface; the next occurrence of the same message must surface again. */
   notifyErrorSurfaceDismissed?: () => void
   getPtyId: () => string | null
@@ -279,6 +288,7 @@ export type IpcPtyTransportOptions = {
   agentLaunchPreferences?: AgentLaunchPreferences
   launchToken?: string
   launchAgent?: TuiAgent
+  agentLaunch?: AgentPaneLaunchRequest
   startupCommandDelivery?: StartupCommandDelivery
   connectionId?: string | null
   executionHostId?: ExecutionHostId | null

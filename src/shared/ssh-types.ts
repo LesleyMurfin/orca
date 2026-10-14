@@ -6,9 +6,6 @@ import type { OrcadSshProvisioningIntent } from './orcad-ssh-provisioning'
 export const MIN_SSH_RELAY_GRACE_PERIOD_SECONDS = 60
 export const MAX_SSH_RELAY_GRACE_PERIOD_SECONDS = 7 * 24 * 60 * 60
 export const LEGACY_DEFAULT_SSH_RELAY_GRACE_PERIOD_SECONDS = 3 * 60 * 60
-export const DEFAULT_BOUNDED_SSH_RELAY_GRACE_PERIOD_SECONDS = 24 * 60 * 60
-export const DEFAULT_SSH_RELAY_GRACE_PERIOD_SECONDS = 0
-export const SSH_RELAY_CONFIGURE_GRACE_TIME_METHOD = 'relay.configureGraceTime'
 
 /**
  * Which runtime executes the SSH relay. `pinned-node` runs the D6 ladder on Orca's uploaded Node and
@@ -283,7 +280,7 @@ export type SshManagedServerUpdateNote = {
   detail?: string
 }
 
-/** A managed server that is down and could not be started, with why (and orcad.log's tail). */
+/** A managed server that did not answer and was not proven serving, with why (and orcad.log's tail). */
 export type SshManagedServerServingNote = { state: 'unverifiable'; detail: string }
 
 export const SSH_MANAGED_SERVER_RELAY_REASONS = [
@@ -303,7 +300,7 @@ export type SshManagedServerStatus =
       kind: 'managed'
       environmentId: string
       update?: SshManagedServerUpdateNote
-      /** Set when the server was not running and could not be started; never a terminal verdict. */
+      /** Set when the server did not answer and no start brought it up; never a terminal verdict. */
       serving?: SshManagedServerServingNote
     }
   | { kind: 'setting-up'; phase: (typeof SSH_MANAGED_SERVER_PHASES)[number] }
@@ -314,8 +311,6 @@ export type SshManagedServerStatus =
       detail?: string
       /** Relay terminals still running, when that is what keeps the host on the relay. */
       terminals?: number
-      /** Show the one-time offer to move now, restarting those terminals. */
-      offerMove?: boolean
       /** Those terminals belong to another Orca desktop or session, so this one offers no move. */
       terminalsElsewhere?: boolean
     }
@@ -356,6 +351,15 @@ export type SshRemotePtyLease = {
   /** The host listed this ptyId under a different PTY incarnation, so the id no longer routes to
    *  this lease's shell. Written only by the pending-stop replay's `relay-id-recycled` retirement. */
   relayIdRecycled?: true
+}
+
+/**
+ * A lease that still claims a running terminal: a client holds it (`attached`) or let it run
+ * (`detached`). `expired` lost its owner without an exit record and `terminated` ended; neither is
+ * a claim, though only `terminated` is evidence the terminal exited.
+ */
+export function isLiveSshPtyLease(lease: Pick<SshRemotePtyLease, 'state'>): boolean {
+  return lease.state === 'attached' || lease.state === 'detached'
 }
 
 /**
@@ -410,9 +414,7 @@ export type PortForwardEntry = {
   advertisedProtocol?: 'http' | 'https'
 }
 
-/** A listening port detected on the remote host by the relay.
- *  Keep in sync with src/relay/port-scan-handler.ts — DetectedPort.
- *  The relay is deployed as a standalone bundle and cannot import from shared. */
+/** A listening port detected on a remote host. */
 export type DetectedPort = {
   port: number
   host: string

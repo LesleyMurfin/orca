@@ -9,6 +9,12 @@ import { CdpPageNavigationCommands } from './cdp-page-navigation-commands'
 import { CdpDomFocusReplay } from './cdp-dom-focus-replay'
 import { CdpPageCaptureCommands } from './cdp-page-capture-commands'
 import type { CapturePaintHold } from './cdp-screenshot'
+import { isTrustedCdpLoopbackRequest } from './cdp-loopback-request-guard'
+import {
+  dispatchPageKeyEvent,
+  routePageTextInsertion,
+  type GuestCdpSender
+} from './guest-direct-key-input'
 
 export class CdpWsProxy {
   private httpServer: Server | null = null
@@ -23,6 +29,7 @@ export class CdpWsProxy {
   private readonly navigation: CdpPageNavigationCommands
   private readonly domFocusReplay: CdpDomFocusReplay
   private readonly pageCapture: CdpPageCaptureCommands
+  private inputQueue: Promise<void> = Promise.resolve()
 
   constructor(
     private readonly webContents: WebContents,
@@ -54,8 +61,18 @@ export class CdpWsProxy {
   async start(): Promise<string> {
     await this.debuggerChannel.attachDebugger()
     return new Promise<string>((resolve, reject) => {
-      this.httpServer = createServer((req, res) => this.discovery.handleHttpRequest(req, res))
-      this.wss = new WebSocketServer({ server: this.httpServer })
+      this.httpServer = createServer((req, res) => {
+        if (!isTrustedCdpLoopbackRequest(req, this.port)) {
+          res.writeHead(403)
+          res.end()
+          return
+        }
+        this.discovery.handleHttpRequest(req, res)
+      })
+      this.wss = new WebSocketServer({
+        server: this.httpServer,
+        verifyClient: ({ req }, done) => done(isTrustedCdpLoopbackRequest(req, this.port), 403)
+      })
       const failStart = (error: Error): void => {
         this.httpServer?.removeListener('error', onListenError)
         this.wss?.close()
@@ -162,10 +179,9 @@ export class CdpWsProxy {
     }
     const effectiveSessionId = this.sessions.resolveDebuggerSessionId(msg.sessionId)
     this.domFocusReplay.invalidateForMethod(msg.method, effectiveSessionId)
-    if (msg.method === 'Page.bringToFront') {
-      if (!this.webContents.isDestroyed()) {
-        this.webContents.focus()
-      }
+    // Why: an agent raising its page must not take the user's keyboard focus (#20595); the
+    // page needs no native focus to receive input, so these succeed without side effects.
+    if (msg.method === 'Page.bringToFront' || msg.method === 'Target.activateTarget') {
       this.responder.sendResult(clientId, {}, client)
       return
     }
@@ -202,18 +218,51 @@ export class CdpWsProxy {
       this.debuggerChannel.forwardCommand(client, clientId, msg.method, params, msg.sessionId)
       return
     }
-    // Why: Input.insertText can still require native focus in Electron webviews.
-    // Do not auto-focus generic Runtime.evaluate/callFunctionOn traffic: wait
-    // polling and read-only JS probes use those methods heavily, and focusing on
-    // every eval steals the user's foreground window while background automation
-    // is running.
+    // Why: a child frame's own session routes input to that frame without native focus; only
+    // the root session needs guest-direct delivery (docs/reference/agent-browser-focus-isolation.md).
     if (msg.method === 'Input.insertText' && !this.webContents.isDestroyed()) {
-      this.webContents.focus()
-      void this.domFocusReplay.forwardInsertText(
-        client,
-        clientId,
-        msg.params ?? {},
-        effectiveSessionId
+      const params = msg.params ?? {}
+      const pendingFocus = this.domFocusReplay.takePendingFocus(effectiveSessionId)
+      void this.queueInput(() =>
+        this.domFocusReplay.insertText(
+          client,
+          clientId,
+          params,
+          effectiveSessionId,
+          pendingFocus,
+          () =>
+            effectiveSessionId
+              ? Promise.resolve((insertParams: Record<string, unknown>) =>
+                  this.debuggerChannel.sendDebuggerCommand(
+                    'Input.insertText',
+                    insertParams,
+                    effectiveSessionId
+                  )
+                )
+              : routePageTextInsertion(this.webContents, params, this.sendRoot)
+        )
+      )
+      return
+    }
+    if (
+      msg.method === 'Input.dispatchKeyEvent' &&
+      !effectiveSessionId &&
+      !this.webContents.isDestroyed()
+    ) {
+      const params = msg.params ?? {}
+      // Why: a replaced client's queued keys must not still land in the page.
+      this.queueInput(async () =>
+        this.responder.isActiveClient(client)
+          ? await dispatchPageKeyEvent(this.webContents, params, this.sendRoot)
+          : {}
+      ).then(
+        (result) => this.responder.sendResult(clientId, result, client),
+        (err: unknown) =>
+          this.responder.sendError(
+            clientId,
+            err instanceof Error ? err.message : String(err),
+            client
+          )
       )
       return
     }
@@ -237,5 +286,19 @@ export class CdpWsProxy {
       msg.params ?? {},
       msg.sessionId
     )
+  }
+
+  private readonly sendRoot: GuestCdpSender = (method, params) =>
+    this.debuggerChannel.sendDebuggerCommand(method, params)
+
+  // Why: key/text delivery awaits a focus probe first; one queue keeps a pipelined
+  // keyDown/char/keyUp/insertText sequence in order.
+  private queueInput<T>(run: () => Promise<T>): Promise<T> {
+    const result = this.inputQueue.then(run)
+    this.inputQueue = result.then(
+      () => undefined,
+      () => undefined
+    )
+    return result
   }
 }

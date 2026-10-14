@@ -17,6 +17,7 @@ import {
   normalizeLinearFilter,
   repositoryCount,
   getRepoBadgeColor,
+  getTaskRepoDetail,
   issueSourceSlug,
   GITHUB_KIND_OPTIONS
 } from './mobile-tasks-legacy-foundation'
@@ -92,7 +93,8 @@ export function renderMobileTasksRepoPicker(model: ConnectionPresentationModel) 
   const {
     hostedRepos,
     persistRepoSelection,
-    selectedRepoIds,
+    effectiveRepoIds,
+    repoHostLabels,
     setSelectedRepoIds,
     setShowRepoPicker,
     showRepoPicker,
@@ -119,11 +121,11 @@ export function renderMobileTasksRepoPicker(model: ConnectionPresentationModel) 
             <Text style={styles.repoPickerTitle}>All repositories</Text>
             <Text style={styles.repoPickerSubtitle}>{repositoryCount(hostedRepos.length)}</Text>
           </View>
-          {selectedRepoIds.size === 0 ? <Check size={15} color={colors.textPrimary} /> : null}
+          {effectiveRepoIds.size === 0 ? <Check size={15} color={colors.textPrimary} /> : null}
         </Pressable>
 
         {hostedRepos.map((repo) => {
-          const selected = selectedRepoIds.has(repo.id)
+          const selected = effectiveRepoIds.has(repo.id)
           return (
             <View key={repo.id}>
               <View style={styles.actionSeparator} />
@@ -139,7 +141,7 @@ export function renderMobileTasksRepoPicker(model: ConnectionPresentationModel) 
                     {repo.displayName}
                   </Text>
                   <Text style={styles.repoPickerSubtitle} numberOfLines={1}>
-                    {repo.path}
+                    {getTaskRepoDetail(repo, repoHostLabels)}
                   </Text>
                 </View>
                 {selected ? <Check size={15} color={colors.textPrimary} /> : null}

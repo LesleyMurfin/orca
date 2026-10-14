@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import type { CreateWorktreeResult } from '../../shared/worktree/create-types'
-import type { GlobalSettings } from '../../shared/global-settings-types'
 import { buildObservedSetupCommand } from './orchestration/setup-completion-signal'
 import { buildSetupRunnerCommand } from '../../shared/setup-runner-command'
 import type { RuntimeStore } from './runtime-store-contract'
@@ -42,6 +41,7 @@ export type WorktreeTerminalProvisioningArgs = {
   defaultTabs?: CreateWorktreeResult['defaultTabs']
   primaryTerminalHandle?: string | null
   hasStartupTerminal: boolean
+  setupOnly?: boolean
   setupCommandPlatform: 'windows' | 'posix'
   observeSetupCompletion?: boolean
   // Why: setup and startup must use the same wrapper when startup waits for setup.
@@ -118,21 +118,29 @@ export async function provisionWorktreeTerminals(
   const surfacing = args.surfaceOwner === false ? { surfaceOwner: false as const } : {}
   let setupSpawned = false
   let setupTerminalHandle: string | null = null
+  let shellSkippedForSetup = false
   try {
+    const setupLaunchMode = args.setup
+      ? (host.getSettings().setupScriptLaunchMode ?? 'new-tab')
+      : 'new-tab'
+    // A cleared creation choice leaves Setup as the only surface; splits still need a shell.
+    const setupOnly =
+      args.setup !== undefined && setupLaunchMode === 'new-tab' && args.setupOnly === true
     const defaultHandles = await createWorktreeDefaultTabTerminals(
       host,
       args.worktreeSelector,
       args.worktreeId,
-      args.defaultTabs,
+      setupOnly ? undefined : args.defaultTabs,
       surfacing,
       args.hasStartupTerminal ? (args.primaryTerminalHandle ?? undefined) : undefined
     )
     let primaryHandle = args.primaryTerminalHandle ?? defaultHandles[0] ?? null
-    const setupLaunchMode =
-      (host.getSettings() as Partial<Pick<GlobalSettings, 'setupScriptLaunchMode'>>)
-        .setupScriptLaunchMode ?? 'new-tab'
     if (!args.hasStartupTerminal && !primaryHandle) {
-      primaryHandle = (await host.createTerminal(args.worktreeSelector, surfacing)).handle
+      if (setupOnly) {
+        shellSkippedForSetup = true
+      } else {
+        primaryHandle = (await host.createTerminal(args.worktreeSelector, surfacing)).handle
+      }
     }
     if (args.setup) {
       const completionToken =
@@ -183,6 +191,17 @@ export async function provisionWorktreeTerminals(
     console.warn(
       `[worktree-create] Failed to create setup/default terminals for ${args.worktreePath}: ${message}`
     )
+    // A cleared choice still needs a shell if Setup fails to spawn.
+    if (shellSkippedForSetup && !setupSpawned) {
+      await host
+        .createTerminal(args.worktreeSelector, surfacing)
+        .catch((fallbackError: unknown) => {
+          console.warn(
+            `[worktree-create] Failed to open a fallback terminal for ${args.worktreePath}:`,
+            fallbackError
+          )
+        })
+    }
   }
   return { setupSpawned, setupTerminalHandle }
 }

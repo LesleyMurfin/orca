@@ -1,5 +1,5 @@
 // @ts-nocheck -- mechanically split from OrcaRuntimeService; behavior is covered by AST equivalence and characterization tests.
-import { OrcaRuntimeWithMoveHeadlessMobileSessionTab } from './orca-runtime-move-headless-mobile-session-tab'
+import { RuntimeHeadlessTabGroups } from './session-tabs/headless-tab-group-moves'
 import type {
   RuntimeMarkdownReadTabResult,
   RuntimeMarkdownSaveTabResult,
@@ -9,15 +9,15 @@ import type {
 import type { ResolvedWorktree } from './runtime-worktree-path-identity'
 import type { Repo } from '../../shared/repo-types'
 import {
+  getConnectionExecutionHostId,
   LOCAL_EXECUTION_HOST_ID,
-  toSshExecutionHostId,
   type ExecutionHostId
 } from '../../shared/execution-host'
 import { getLocalProjectWorktreeGitOptions } from '../project-runtime-git-options'
 import { resolveWorktreeHostRouting } from './worktree-launch-host-repo'
 import { isFloatingWorkspaceSelector } from '../../shared/floating-workspace-worktree'
 
-export class OrcaRuntimeWithPersistHeadlessTerminalTitle extends OrcaRuntimeWithMoveHeadlessMobileSessionTab {
+export abstract class OrcaRuntimeWithPersistHeadlessTerminalTitle extends RuntimeHeadlessTabGroups {
   // Persist a manual terminal rename so a headless rebuild keeps the title
   // instead of reverting to the generated/default one.
   protected persistHeadlessTerminalTitle(
@@ -214,9 +214,7 @@ export class OrcaRuntimeWithPersistHeadlessTerminalTitle extends OrcaRuntimeWith
       // ambiguous one, and it is never hosted by a runtime environment.
       return {
         worktree: this.folderWorkspaceToResolvedWorktree(folderScope.folderWorkspace),
-        executionHostId: folderScope.connectionId
-          ? toSshExecutionHostId(folderScope.connectionId)
-          : LOCAL_EXECUTION_HOST_ID
+        executionHostId: getConnectionExecutionHostId(folderScope.connectionId)
       }
     }
 

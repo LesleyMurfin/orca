@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   agentSessionLeaseFixture,
   agentSessionRecordFixture
@@ -117,7 +117,7 @@ describe('findCommittedStructuredAgentSessionAdoptionReplay', () => {
   it('returns the record-pinned account and adopted handle for the exact committed operation', () => {
     expect(committedReplay()).toMatchObject({
       record: { accountHome: { path: '/home/dev/.codex-original' } },
-      providerHandle: { kind: 'codex', threadId: 'thread-1' }
+      providerHandle: codexProviderHandle('thread-1')
     })
   })
 
@@ -156,11 +156,7 @@ describe('findCommittedStructuredAgentSessionAdoptionReplay', () => {
         ]
       })
     ).toMatchObject({
-      providerHandle: {
-        kind: 'claude',
-        sessionId: 'provider-session-alpha-1',
-        leafUuid: 'leaf-1'
-      }
+      providerHandle: claudeProviderHandle('provider-session-alpha-1', 'leaf-1')
     })
   })
 })
@@ -185,50 +181,18 @@ describe('structuredAdoptionConflictError', () => {
 })
 
 describe('resolveStructuredAgentSessionAdoption', () => {
-  it('takes the first candidate home that holds the transcript and probes no further', async () => {
-    const resolveTranscript = vi
-      .fn()
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce('/home/dev/.codex/sessions/thread-1.jsonl')
-
-    await expect(
-      resolveStructuredAgentSessionAdoption({
-        agent: 'codex',
-        providerSessionId: 'thread-1',
-        candidateAccountHomes: ['/home/dev/.orca-codex', '/home/dev/.codex', '/never/probed'],
-        resolveTranscript
-      })
-    ).resolves.toEqual({
-      accountHomePath: '/home/dev/.codex',
-      transcriptPath: '/home/dev/.codex/sessions/thread-1.jsonl'
-    })
-    expect(resolveTranscript).toHaveBeenCalledTimes(2)
-  })
-
-  it('skips blank and repeated candidates instead of probing them again', async () => {
-    const resolveTranscript = vi.fn().mockResolvedValue(null)
-
-    await expect(
-      resolveStructuredAgentSessionAdoption({
-        agent: 'claude',
-        providerSessionId: 'session-1',
-        candidateAccountHomes: ['', '   ', '/home/dev/.claude', ' /home/dev/.claude ', ''],
-        resolveTranscript
-      })
-    ).rejects.toThrow('agent_session_identity_required')
-    expect(resolveTranscript.mock.calls.map(([args]) => args.accountHomePath)).toEqual([
-      '/home/dev/.claude'
-    ])
-  })
-
   it('refuses rather than falling back to a home that does not hold the conversation', async () => {
     // A resume under the wrong home lands in a blank chat wearing the old chat's name.
     await expect(
       resolveStructuredAgentSessionAdoption({
-        agent: 'claude',
         providerSessionId: 'session-1',
-        candidateAccountHomes: ['/home/dev/.claude-work', '/home/dev/.claude'],
-        resolveTranscript: async () => null
+        candidateAccountHomes: [
+          { variable: 'CLAUDE_CONFIG_DIR', path: '/home/dev/.claude-work' },
+          { variable: 'CLAUDE_CONFIG_DIR', path: '/home/dev/.claude' }
+        ],
+        resolveTranscript: async () => null,
+        launchEnv: {},
+        workspaceCwd: '/repo'
       })
     ).rejects.toThrow('agent_session_identity_required')
   })

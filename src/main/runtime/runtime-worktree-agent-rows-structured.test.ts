@@ -59,8 +59,6 @@ function attach(summaries: AgentSessionStatusSummary[]): RuntimeWorktreePsSummar
   const summariesById = new Map<string, RuntimeWorktreePsSummary>([[WORKTREE_ID, row]])
   attachRuntimeWorktreeAgentRows({
     summaries: summariesById,
-    pathIndex: { byPath: new Map(), byRealPath: new Map() } as never,
-    missingWorktreeIds: new Set(),
     workingTerminalEvidenceByWorktreeId: new Map(),
     rowSources: collectRuntimeWorktreeAgentSources({
       mirroredWorktreeIdByTabId: new Map(),
@@ -72,7 +70,7 @@ function attach(summaries: AgentSessionStatusSummary[]): RuntimeWorktreePsSummar
       hookSnapshots: store.getStatusSnapshot()
     }),
     orchestrationByPaneKey: null,
-    getSummary: (map, _p, _m, id) => map.get(id) ?? null
+    getSummary: (id) => summariesById.get(id) ?? null
   })
   return row
 }
@@ -137,9 +135,9 @@ describe('worktree ps reports structured sessions', () => {
 describe('terminal listing is deliberately left alone', () => {
   it('never reads the agent-status store that now carries structured rows', async () => {
     const { readFile } = await import('node:fs/promises')
-    // orca-runtime-subscribe-to-terminal-resize.ts owns listTerminals.
+    // terminal/layout/terminal-resize-listeners.ts owns listTerminals.
     const listing = await readFile(
-      new URL('./orca-runtime-subscribe-to-terminal-resize.ts', import.meta.url),
+      new URL('./terminal/layout/terminal-resize-listeners.ts', import.meta.url),
       'utf8'
     )
     // Guard the guard: an empty read would make every assertion below vacuously true.

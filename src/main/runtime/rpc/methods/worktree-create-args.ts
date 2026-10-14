@@ -1,7 +1,7 @@
 import type { z } from 'zod'
 import { resolveRuntimeNavigationTarget } from '../../../../shared/runtime-navigation'
 import type { OrcaRuntimeService } from '../../orca-runtime'
-import type { WorktreeCreate } from './worktree-create-schemas'
+import type { WorktreeCreate } from '../../../../shared/rpc-contract/worktree-create-params'
 
 type WorktreeCreateParams = z.infer<typeof WorktreeCreate>
 type ManagedWorktreeCreateArgs = Parameters<OrcaRuntimeService['createManagedWorktree']>[0]
@@ -65,6 +65,7 @@ export function buildManagedWorktreeCreateArgs(
       defaultTarget: 'host'
     }),
     setupDecision: params.setupDecision,
+    ...(params.setupOnly !== undefined ? { setupOnly: params.setupOnly } : {}),
     createdWithAgent: params.createdWithAgent ?? params.startupAgent,
     ...provenance,
     // Why: a person initiated this create (the phone, CLI text and agent.launch don't surface the

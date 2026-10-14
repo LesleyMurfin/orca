@@ -46,7 +46,8 @@ export function useMobileTasksProviderViewProjection(model: PickerProjectionMode
     selectedLinearTeamIds,
     selectedLinearWorkspaceId,
     setAppliedGithubProjectSearch,
-    setSelectedRepoIds
+    setSelectedRepoIds,
+    effectiveRepoIds
   } = model
   const githubPresetOptions = githubKind === 'prs' ? PR_PRESETS : ISSUE_PRESETS
   const githubPresetPickerOptions = useMemo(
@@ -224,20 +225,19 @@ export function useMobileTasksProviderViewProjection(model: PickerProjectionMode
 
   const toggleRepoSelection = useCallback(
     (repoId: string) => {
-      setSelectedRepoIds((current) => {
-        const next = new Set(current)
-        if (next.has(repoId)) {
-          next.delete(repoId)
-        } else {
-          next.add(repoId)
-        }
-        const normalized =
-          next.size === 0 || next.size === hostedRepos.length ? new Set<string>() : next
-        persistRepoSelection(normalized, hostedRepos)
-        return normalized
-      })
+      // Why: an edit starts from what the user sees, so it rewrites the choice from listed repos.
+      const next = new Set(effectiveRepoIds)
+      if (next.has(repoId)) {
+        next.delete(repoId)
+      } else {
+        next.add(repoId)
+      }
+      const normalized =
+        next.size === 0 || next.size === hostedRepos.length ? new Set<string>() : next
+      setSelectedRepoIds(normalized)
+      persistRepoSelection(normalized, hostedRepos)
     },
-    [hostedRepos, persistRepoSelection]
+    [effectiveRepoIds, hostedRepos, persistRepoSelection]
   )
 
   const applyGitHubProjectSearch = useCallback(() => {

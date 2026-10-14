@@ -8,6 +8,17 @@ import { splitWorktreeId } from '../shared/worktree/id'
 import { worktreeRetentionPathComparisonKey } from './worktree-retention-path-comparison'
 import type { Store } from './persistence'
 
+type WorktreeLineagePruningStore = Pick<Store, 'getRepos' | 'getWorktreeMeta' | 'setWorktreeMeta'> &
+  Partial<
+    Pick<
+      Store,
+      | 'getAllWorktreeLineage'
+      | 'getAllWorkspaceLineage'
+      | 'removeWorktreeLineage'
+      | 'removeWorkspaceLineage'
+    >
+  >
+
 function worktreeIdBelongsToRepo(worktreeId: string, repoPrefix: string): boolean {
   return worktreeId.startsWith(repoPrefix)
 }
@@ -37,7 +48,7 @@ function hasStoredRepoLineage(
 }
 
 export function pruneLineageForMissingRepoWorktrees(
-  store: Store,
+  store: WorktreeLineagePruningStore,
   repo: Repo,
   gitWorktrees: GitWorktreeInfo[],
   options: {

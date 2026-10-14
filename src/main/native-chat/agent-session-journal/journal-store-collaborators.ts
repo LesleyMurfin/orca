@@ -8,15 +8,17 @@ import type {
   AgentSessionJournalIdentity
 } from '../../../shared/agent-session-journal-types'
 import type { JournalHostDatabase } from './journal-host-database'
+import { JournalContextController } from './journal-context-controller'
 import { JournalEpochController } from './journal-epoch-controller'
 import { JournalItemAppender } from './journal-item-appender'
 import { JournalLifecycleBatchAppender } from './journal-lifecycle-batch-appender'
 import type { JournalLoad } from './journal-open'
 import { JournalQueuedMessages } from './journal-queued-messages'
 import { JournalStopMarks } from './journal-stop-marks'
+import { JournalStopAcceptor } from './journal-stop-acceptance'
 import { journalQueuePauseRestatement } from './queued-message-pause'
 import type { JournalReducerState } from './journal-reducer'
-import { JournalRowWriter } from './journal-row-writer'
+import { JournalRowWriter, type JournalOperationReceipt } from './journal-row-writer'
 import { JournalStepWriter } from './journal-step-writer'
 import { restoreJournalStore } from './journal-store-restore'
 import { JournalSubmissionWriter } from './journal-submission-writer'
@@ -40,9 +42,12 @@ export type JournalStoreHost = {
   readOnly: () => boolean
   cursor: () => AgentJournalCursor
   adopt: (loaded: JournalLoad) => void
-  commit: (row: JournalRow) => void
+  commit: (rows: readonly JournalRow[], savedAt: number) => void
   journal: () => AgentSessionJournal
-  enqueue: (build: (seq: number, ts: number) => JournalRow) => Promise<JournalRow>
+  enqueue: (
+    build: (seq: number, ts: number) => JournalRow,
+    receipt?: JournalOperationReceipt
+  ) => Promise<JournalRow>
 }
 
 export type JournalStoreCollaborators = {
@@ -54,6 +59,8 @@ export type JournalStoreCollaborators = {
   stepWriter: JournalStepWriter
   queuedMessages: JournalQueuedMessages
   stopMarks: JournalStopMarks
+  context: JournalContextController
+  stops: JournalStopAcceptor
   /** Restores the store's state from disk. Owned here because it needs the same
    *  collaborators the constructor just built. */
   restore: () => Promise<void>
@@ -114,13 +121,22 @@ export function createJournalStoreCollaborators(host: JournalStoreHost): Journal
   const lifecycleBatchAppender = new JournalLifecycleBatchAppender({
     state: host.state,
     cursor: host.cursor,
-    enqueue: host.enqueue,
     enqueueRows: (plan) => rowWriter.enqueueRows(plan)
   })
   return {
     epochController,
     queuedMessages,
     stopMarks: new JournalStopMarks({ state: host.state }),
+    context: new JournalContextController({
+      state: host.state,
+      writer: rowWriter,
+      cards: queuedMessages
+    }),
+    stops: new JournalStopAcceptor({
+      writer: rowWriter,
+      state: host.state,
+      liveTurnId: () => host.journal().activeTurnId()
+    }),
     // Behind the stored fact: settles drafts whose consumed submission the loaded journal shows
     // refused (a downgrade wrote no hook), then prunes. Bookkeeping, never failing the open.
     restore: () =>

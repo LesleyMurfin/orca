@@ -1,12 +1,14 @@
 'use client'
 
 import * as React from 'react'
-import { XIcon } from 'lucide-react'
+import { cva, type VariantProps } from 'class-variance-authority'
+import { Minus, XIcon } from 'lucide-react'
 import * as DialogPrimitive from 'radix-ui/dialog'
 
 import { cn } from '@/lib/utils'
 import { handleImeOverlayEscape } from '@/lib/ime-overlay-escape'
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { translate } from '@/i18n/i18n'
 
 function Dialog({ ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
@@ -44,16 +46,58 @@ function DialogOverlay({
   )
 }
 
+const dialogContentSurfaceVariants = cva('', {
+  variants: {
+    surface: {
+      default: '',
+      /** The tinted, edge-to-edge panel of the two-column feature tip dialogs. */
+      'feature-tip':
+        'gap-0 bg-[color-mix(in_srgb,var(--foreground)_8%,var(--background))] p-0 dark:bg-[color-mix(in_srgb,var(--foreground)_16%,var(--background))]'
+    }
+  },
+  defaultVariants: { surface: 'default' }
+})
+
+function DialogContentCloseButton({ variant }: { variant: 'close' | 'minimize' }) {
+  const label =
+    variant === 'minimize'
+      ? translate('auto.components.ui.dialog.minimize', 'Minimize')
+      : translate('auto.components.ui.dialog.f26c4baeda', 'Close')
+  const button = (
+    <DialogPrimitive.Close
+      data-slot="dialog-close"
+      className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+    >
+      {variant === 'minimize' ? <Minus className="size-3.5" /> : <XIcon />}
+      <span className="sr-only">{label}</span>
+    </DialogPrimitive.Close>
+  )
+  return variant === 'minimize' ? (
+    <Tooltip>
+      <TooltipTrigger asChild>{button}</TooltipTrigger>
+      <TooltipContent side="top" sideOffset={4}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  ) : (
+    button
+  )
+}
+
 function DialogContent({
   className,
   children,
   overlayClassName,
   showCloseButton = true,
+  closeButtonVariant = 'close',
+  surface,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Content> & {
-  overlayClassName?: string
-  showCloseButton?: boolean
-}) {
+}: React.ComponentProps<typeof DialogPrimitive.Content> &
+  VariantProps<typeof dialogContentSurfaceVariants> & {
+    overlayClassName?: string
+    showCloseButton?: boolean
+    closeButtonVariant?: 'close' | 'minimize'
+  }) {
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay className={overlayClassName} />
@@ -69,23 +113,14 @@ function DialogContent({
         // panel and pushes justify-end footers outside the visible surface.
         className={cn(
           'fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] grid-cols-[minmax(0,1fr)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border border-black/14 bg-background/96 p-6 text-foreground shadow-[0_20px_60px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-2xl duration-200 outline-none dark:border-white/14 dark:bg-[rgba(23,23,23,0.96)] dark:shadow-[0_24px_72px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06)] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg',
+          dialogContentSurfaceVariants({ surface }),
           className
         )}
         {...props}
         onEscapeKeyDown={(event) => handleImeOverlayEscape(event, props.onEscapeKeyDown)}
       >
         {children}
-        {showCloseButton && (
-          <DialogPrimitive.Close
-            data-slot="dialog-close"
-            className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
-          >
-            <XIcon />
-            <span className="sr-only">
-              {translate('auto.components.ui.dialog.f26c4baeda', 'Close')}
-            </span>
-          </DialogPrimitive.Close>
-        )}
+        {showCloseButton && <DialogContentCloseButton variant={closeButtonVariant} />}
       </DialogPrimitive.Content>
     </DialogPortal>
   )
@@ -127,11 +162,22 @@ function DialogFooter({
   )
 }
 
-function DialogTitle({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Title>) {
+function DialogTitle({
+  className,
+  size = 'default',
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Title> & {
+  /** `display` is the large headline of the two-column feature tip dialogs. */
+  size?: 'default' | 'display'
+}) {
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn('text-lg leading-snug font-semibold break-words', className)}
+      data-size={size}
+      className={cn(
+        'text-lg leading-snug font-semibold break-words data-[size=display]:text-2xl data-[size=display]:leading-tight data-[size=display]:tracking-tight md:data-[size=display]:text-[1.75rem]',
+        className
+      )}
       {...props}
     />
   )

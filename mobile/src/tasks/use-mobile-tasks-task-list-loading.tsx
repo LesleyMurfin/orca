@@ -1,5 +1,5 @@
 import type { ProviderLoadActionsModel } from './use-mobile-tasks-provider-load-actions'
-import { isHostedTaskRepo, useCallback } from './mobile-tasks-dependencies'
+import { isHostedTaskRepo, useCallback, useEffect, useRef } from './mobile-tasks-dependencies'
 import {
   GITHUB_REPO_CONCURRENCY,
   GITLAB_PER_PAGE,
@@ -41,7 +41,8 @@ export function useMobileTasksTaskListLoading(model: ProviderLoadActionsModel) {
     resetGitHubItemsState,
     selectedLinearTeamIds,
     selectedLinearWorkspaceId,
-    selectedRepoIds,
+    effectiveRepoIds,
+    serverRepoList,
     setError,
     setGithubCurrentPage,
     setGithubPages,
@@ -96,9 +97,9 @@ export function useMobileTasksTaskListLoading(model: ProviderLoadActionsModel) {
         if (provider === 'github' || provider === 'gitlab') {
           const supportedRepos = currentRepos.filter(isHostedTaskRepo)
           const queriedRepos =
-            selectedRepoIds.size === 0
+            effectiveRepoIds.size === 0
               ? supportedRepos
-              : supportedRepos.filter((repo) => selectedRepoIds.has(repo.id))
+              : supportedRepos.filter((repo) => effectiveRepoIds.has(repo.id))
           if (queriedRepos.length === 0) {
             if (!isCurrent()) {
               return
@@ -121,7 +122,7 @@ export function useMobileTasksTaskListLoading(model: ProviderLoadActionsModel) {
             setGithubPages([page.items])
             setGithubCurrentPage(0)
             setItems(page.items)
-            if (selectedRepoIds.size > 0) {
+            if (effectiveRepoIds.size > 0) {
               void countGitHubItems(requestClient, queriedRepos).then((count) => {
                 if (isCurrent()) {
                   setGithubTotalCount(count)
@@ -267,11 +268,28 @@ export function useMobileTasksTaskListLoading(model: ProviderLoadActionsModel) {
       provider,
       selectedLinearTeamIds,
       selectedLinearWorkspaceId,
-      selectedRepoIds,
+      effectiveRepoIds,
       taskStateHydrated,
       tasksSupported
     ]
   )
+  // Server repos changing reload an unfiltered repo list quietly; when loadTasks changed too (the
+  // filter widened), its own effect already loads, and Linear doesn't read repos.
+  const listedServerReposRef = useRef({ serverRepoList, loadTasks })
+  useEffect(() => {
+    const prev = listedServerReposRef.current
+    listedServerReposRef.current = { serverRepoList, loadTasks }
+    if (
+      prev.serverRepoList !== serverRepoList &&
+      prev.loadTasks === loadTasks &&
+      effectiveRepoIds.size === 0 &&
+      provider !== 'linear' &&
+      connState === 'connected' &&
+      taskStateHydrated
+    ) {
+      void loadTasks({ silent: true })
+    }
+  }, [serverRepoList, loadTasks, effectiveRepoIds.size, provider, connState, taskStateHydrated])
   return Object.assign(model, { loadTasks })
 }
 

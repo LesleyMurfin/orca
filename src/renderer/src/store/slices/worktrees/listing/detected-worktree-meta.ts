@@ -6,8 +6,7 @@ import type { DetectedWorktreeListResult, Worktree } from '../../../../../../sha
 import type { ExecutionHostId } from '../../../../../../shared/execution-host'
 import {
   LOCAL_EXECUTION_HOST_ID,
-  parseExecutionHostId,
-  toSshExecutionHostId
+  getRepoExecutionHostId
 } from '../../../../../../shared/execution-host'
 import { parseWorkspaceKey } from '../../../../../../shared/workspace-scope'
 import { folderWorkspaceToWorktree } from '../../../../../../shared/folder-workspace-worktree'
@@ -70,12 +69,18 @@ export function folderWorkspaceMatchesHost(
   workspace: Pick<FolderWorkspace, 'connectionId' | 'executionHostId'>,
   executionHostId: ExecutionHostId
 ): boolean {
-  return (
-    (parseExecutionHostId(workspace.executionHostId)?.id ??
-      (workspace.connectionId?.trim()
-        ? toSshExecutionHostId(workspace.connectionId)
-        : LOCAL_EXECUTION_HOST_ID)) === executionHostId
-  )
+  return getRepoExecutionHostId(workspace) === executionHostId
+}
+
+/** Stable synthetic row per folder workspace object, so selectors keep referential equality. */
+export function getFolderWorkspaceWorktree(folderWorkspace: FolderWorkspace): Worktree {
+  const cached = folderWorkspaceWorktreeCache.get(folderWorkspace)
+  if (cached) {
+    return cached
+  }
+  const worktree = folderWorkspaceToWorktree(folderWorkspace)
+  folderWorkspaceWorktreeCache.set(folderWorkspace, worktree)
+  return worktree
 }
 
 export function findKnownWorktreeById(
@@ -105,16 +110,7 @@ export function findKnownWorktreeById(
         workspace.id === workspaceScope.folderWorkspaceId &&
         (!executionHostId || folderWorkspaceMatchesHost(workspace, executionHostId))
     )
-    if (!folderWorkspace) {
-      return undefined
-    }
-    const cached = folderWorkspaceWorktreeCache.get(folderWorkspace)
-    if (cached) {
-      return cached
-    }
-    const worktree = folderWorkspaceToWorktree(folderWorkspace)
-    folderWorkspaceWorktreeCache.set(folderWorkspace, worktree)
-    return worktree
+    return folderWorkspace ? getFolderWorkspaceWorktree(folderWorkspace) : undefined
   }
   const visible = executionHostId
     ? (findIndexedWorktreeOwnerForHost(

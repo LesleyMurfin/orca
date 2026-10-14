@@ -1,5 +1,5 @@
 // @ts-nocheck -- mechanically split from OrcaRuntimeService; behavior is covered by AST equivalence and characterization tests.
-import { OrcaRuntimeWithOnClientDisconnected } from './orca-runtime-on-client-disconnected'
+import { OrcaRuntimeWithOnClientDisconnected } from './terminal/layout/terminal-client-disconnect'
 import type { PtyIncarnationId } from '../../shared/pty-incarnation'
 import type { TerminalExitCause } from '../../shared/terminal-exit-cause'
 import {

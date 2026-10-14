@@ -1,7 +1,5 @@
 import type { AgentSessionSendResult } from '../../../src/shared/agent-session-wire'
 import { agentSessionRefusalOperationState } from '../../../src/shared/agent-session-refusal-retry'
-import { structuredAgentSessionRejectionNotice } from '../../../src/shared/structured-agent-session-rejection-words'
-import { dispatchWasWithdrawn } from '../../../src/shared/structured-agent-session-dispatch-rejection'
 import type { MobileNativeChatSendOutcome } from './mobile-native-chat-send'
 import type { StructuredAgentSessionMutationCallResult } from './mobile-structured-agent-session-rpc'
 
@@ -36,18 +34,10 @@ export function mobileStructuredSendDelivery(
   if (submission.queuedMessageId === result.value.clientMessageId) {
     return { outcome: 'unknown', error: null }
   }
-  if (submission.dispatchState === 'rejected') {
-    if (submission.keptAsQueuedMessageId !== undefined) {
-      return { outcome: 'queued', error: null }
-    }
-    if (submission.queuedMessageId === undefined && dispatchWasWithdrawn(submission)) {
-      // The host transcript already owns this send's stopped row.
-      return { outcome: 'accepted', error: null }
-    }
-    return {
-      outcome: 'rejected',
-      error: structuredAgentSessionRejectionNotice(submission.reason, 'composer-send')
-    }
+  // Recorded, so the host's row holds it, as on desktop: a rejection draws in place, never back in
+  // the composer. One kept as a card is that card.
+  if (submission.dispatchState === 'rejected' && submission.keptAsQueuedMessageId !== undefined) {
+    return { outcome: 'queued', error: null }
   }
   return { outcome: 'accepted', error: null }
 }

@@ -45,6 +45,26 @@ describe('Electron runtime package contract', () => {
     }
   })
 
+  // Without it the secure-file writes report unrestricted and orcad's privacy check fails closed.
+  it('ships the native Windows ACL addon on Windows only, built by the Windows rebuild', () => {
+    expect(packageJson.optionalDependencies['@orca/windows-security']).toBe('workspace:*')
+    expect(pnpmWorkspace.allowBuilds['@orca/windows-security']).toBe(false)
+    if (windowsAddonsInstalled) {
+      expect(packageTargets.win32).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ to: join('node_modules', '@orca', 'windows-security') })
+        ])
+      )
+    }
+    for (const platform of ['darwin', 'linux']) {
+      expect(packageTargets[platform]).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ to: join('node_modules', '@orca', 'windows-security') })
+        ])
+      )
+    }
+  })
+
   it('keeps the native Windows process-table addon optional and platform-gated', () => {
     expect(packageJson.optionalDependencies['@vscode/windows-process-tree']).toBe('0.8.0')
     // Why: same rule as the registry addon -- allowBuilds stops pnpm running node-gyp at

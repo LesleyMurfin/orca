@@ -15,7 +15,6 @@ import {
   remoteRepo,
   reposAdd,
   reposClone,
-  reposCloneRemote,
   reposList,
   reposPickFolder,
   reposRemoveForHost,
@@ -37,13 +36,15 @@ vi.mock('sonner', () => ({
 installReposRuntimeRoutingHarness()
 
 const ownerOf = (repo: Repo) => ({ hostId: getRepoExecutionHostId(repo) })
+// Ingest stamps every server row; an unstamped row is this app's own.
+const serverRepo: Repo = { ...remoteRepo, executionHostId: 'runtime:env-1' }
 
 describe('repo slice runtime routing', () => {
   it('fetches repos from local IPC when no remote environment is active', async () => {
     reposList.mockResolvedValue([localRepo])
     const store = createTestStore()
 
-    await store.getState().fetchRepos()
+    await store.getState().fetchRepos({ runtimeEnvironmentId: null })
 
     expect(store.getState().repos).toEqual([{ ...localRepo, executionHostId: 'local' }])
     expect(store.getState().projects).toEqual([
@@ -73,10 +74,10 @@ describe('repo slice runtime routing', () => {
     })
     reposList.mockImplementation(async () => [hydrated()])
     const store = createTestStore()
-    await store.getState().fetchRepos()
+    await store.getState().fetchRepos({ runtimeEnvironmentId: null })
     const reposRef = store.getState().repos
 
-    await store.getState().fetchRepos()
+    await store.getState().fetchRepos({ runtimeEnvironmentId: null })
 
     // Why: identity-keyed renderer memos (repo lookup index, selectors) rebuild on a new array.
     expect(store.getState().repos).toBe(reposRef)
@@ -86,11 +87,11 @@ describe('repo slice runtime routing', () => {
   it('replaces the repos array identity when a refetch adds a repo', async () => {
     reposList.mockResolvedValue([localRepo])
     const store = createTestStore()
-    await store.getState().fetchRepos()
+    await store.getState().fetchRepos({ runtimeEnvironmentId: null })
     const reposRef = store.getState().repos
     reposList.mockResolvedValue([localRepo, { ...localRepo, id: 'second', path: '/second' }])
 
-    await store.getState().fetchRepos()
+    await store.getState().fetchRepos({ runtimeEnvironmentId: null })
 
     expect(store.getState().repos).not.toBe(reposRef)
     expect(store.getState().repos).toHaveLength(2)
@@ -110,7 +111,7 @@ describe('repo slice runtime routing', () => {
       filterRepoIds: ['remote-repo', 'stale-repo']
     })
 
-    await store.getState().fetchRepos()
+    await store.getState().fetchRepos({ runtimeEnvironmentId: 'env-1' })
 
     expect(store.getState().repos).toEqual([{ ...remoteRepo, executionHostId: 'runtime:env-1' }])
     expect(store.getState().projects).toEqual([
@@ -140,14 +141,14 @@ describe('repo slice runtime routing', () => {
     const store = createTestStore()
     store.setState({ settings: { activeRuntimeEnvironmentId: 'env-1' } as never })
 
-    await store.getState().fetchRepos()
+    await store.getState().fetchRepos({ runtimeEnvironmentId: 'env-1' })
 
     expect(store.getState().repos).toEqual([
       { ...remoteRepo, connectionId: 'ssh-1', executionHostId: 'runtime:env-1' }
     ])
   })
 
-  it('updates repos through the active remote runtime environment', async () => {
+  it('updates repos through their owning runtime environment', async () => {
     runtimeEnvironmentCall.mockResolvedValue({
       id: 'rpc-2',
       ok: true,
@@ -157,7 +158,7 @@ describe('repo slice runtime routing', () => {
     const store = createTestStore()
     store.setState({
       settings: { activeRuntimeEnvironmentId: 'env-1' } as never,
-      repos: [remoteRepo]
+      repos: [serverRepo]
     })
 
     await store.getState().updateRepo(remoteRepo.id, { displayName: 'Renamed' })
@@ -553,58 +554,24 @@ describe('repo slice runtime routing', () => {
     })
   })
 
-  it('clones a project on an SSH host before aligning it as a host setup', async () => {
-    const project: Project = {
-      id: 'project-1',
-      displayName: 'Project',
-      badgeColor: '#000',
-      sourceRepoIds: ['ssh-repo'],
-      createdAt: 1,
-      updatedAt: 1
-    }
-    const clonedRepo = { ...sshRepo, path: '/srv/project' }
-    const setup: ProjectHostSetup = {
-      id: clonedRepo.id,
-      projectId: project.id,
-      hostId: 'ssh:ssh-1',
-      repoId: clonedRepo.id,
-      path: clonedRepo.path,
-      displayName: clonedRepo.displayName,
-      setupState: 'ready',
-      setupMethod: 'cloned',
-      createdAt: 1,
-      updatedAt: 1
-    }
-    reposCloneRemote.mockResolvedValue(clonedRepo)
-    projectsSetupExistingFolder.mockResolvedValue({ project, setup, repo: clonedRepo })
+  it('refuses to clone on an SSH host instead of cloning onto this computer', async () => {
     const store = createTestStore()
 
     await expect(
       store.getState().setupProjectClone({
-        projectId: project.id,
+        projectId: 'project-1',
         hostId: 'ssh:ssh-1',
         url: 'https://github.com/stablyai/orca.git',
         destination: '/srv',
         displayName: 'Project'
       })
-    ).resolves.toEqual({
-      project,
-      setup,
-      repo: { ...clonedRepo, executionHostId: 'ssh:ssh-1' }
-    })
+    ).resolves.toBeNull()
 
-    expect(reposCloneRemote).toHaveBeenCalledWith({
-      connectionId: 'ssh-1',
-      url: 'https://github.com/stablyai/orca.git',
-      destination: '/srv'
-    })
-    expect(projectsSetupExistingFolder).toHaveBeenCalledWith({
-      projectId: project.id,
-      hostId: 'ssh:ssh-1',
-      path: clonedRepo.path,
-      kind: 'git',
-      displayName: 'Project',
-      setupMethod: 'cloned'
+    expect(reposClone).not.toHaveBeenCalled()
+    expect(projectsSetupExistingFolder).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledWith('Failed to add project', {
+      description: 'SSH connection "ssh-1" not found or not connected',
+      duration: expect.any(Number)
     })
   })
 
@@ -647,7 +614,7 @@ describe('repo slice runtime routing', () => {
     expect(runtimeEnvironmentCall).not.toHaveBeenCalled()
   })
 
-  it('removes repos through the active remote runtime environment', async () => {
+  it('removes repos through their owning runtime environment', async () => {
     runtimeEnvironmentCall.mockResolvedValue({
       id: 'rpc-3',
       ok: true,
@@ -657,11 +624,11 @@ describe('repo slice runtime routing', () => {
     const store = createTestStore()
     store.setState({
       settings: { activeRuntimeEnvironmentId: 'env-1' } as never,
-      repos: [remoteRepo],
+      repos: [serverRepo],
       activeRepoId: remoteRepo.id
     })
 
-    await store.getState().removeProject(remoteRepo.id, ownerOf(remoteRepo))
+    await store.getState().removeProject(remoteRepo.id, ownerOf(serverRepo))
 
     expect(store.getState().repos).toEqual([])
     expect(store.getState().activeRepoId).toBeNull()
@@ -726,7 +693,7 @@ describe('repo slice runtime routing', () => {
     const localWorktreeId = `${localRepo.id}::/local/wt`
     store.setState({
       settings: { activeRuntimeEnvironmentId: 'env-1' } as never,
-      repos: [remoteRepo, localRepo],
+      repos: [serverRepo, localRepo],
       activeRepoId: remoteRepo.id,
       lastVisitedAtByWorktreeId: {
         [remoteWorktreeId]: 100,
@@ -734,7 +701,7 @@ describe('repo slice runtime routing', () => {
       }
     })
 
-    await store.getState().removeProject(remoteRepo.id, ownerOf(remoteRepo))
+    await store.getState().removeProject(remoteRepo.id, ownerOf(serverRepo))
 
     expect(store.getState().repos).toEqual([localRepo])
     expect(store.getState().lastVisitedAtByWorktreeId).toEqual({ [localWorktreeId]: 200 })
@@ -784,9 +751,11 @@ describe('repo slice runtime routing', () => {
     const worktreeId = `${remoteRepo.id}::/remote/wt`
     store.setState({
       settings: { activeRuntimeEnvironmentId: 'env-1' } as never,
-      repos: [remoteRepo],
+      repos: [serverRepo],
       worktreesByRepo: {
-        [remoteRepo.id]: [makeWorktree({ id: worktreeId, repoId: remoteRepo.id })]
+        [remoteRepo.id]: [
+          makeWorktree({ id: worktreeId, repoId: remoteRepo.id, hostId: 'runtime:env-1' })
+        ]
       },
       tabsByWorktree: {
         [worktreeId]: [{ id: 'tab-1', worktreeId } as never]
@@ -796,7 +765,7 @@ describe('repo slice runtime routing', () => {
       }
     })
 
-    await store.getState().removeProject(remoteRepo.id, ownerOf(remoteRepo))
+    await store.getState().removeProject(remoteRepo.id, ownerOf(serverRepo))
 
     expect(runtimeEnvironmentCall).toHaveBeenCalledWith({
       selector: 'env-1',

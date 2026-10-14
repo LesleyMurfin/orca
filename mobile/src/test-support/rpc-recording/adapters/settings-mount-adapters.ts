@@ -152,8 +152,6 @@ export function settingsMountAdapters(
         client: context.client,
         connState: 'connected',
         defaultLinearTeamSelectionRef: { current: null },
-        defaultRepoSelectionRef: { current: null },
-        repoSelectionHydratedRef: { current: false },
         taskResumeRef: { current: {} },
         runtimeTaskSettings: {},
         taskStateHydrated: false,

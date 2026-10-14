@@ -2,7 +2,6 @@ import React, { useMemo } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '@/store'
 import { getLocalPreflightContext, localPreflightContextKey } from '@/lib/local-preflight-context'
-import { getRepoOwnerRoutedSettings } from '@/lib/repo-runtime-owner'
 import { buildTaskSourceContextFromRepo } from '../../../../shared/task-source-context'
 import type {
   NormalizedWorkItemSourceSearchProps,
@@ -41,8 +40,7 @@ export function useWorkItemSourceFoundation(props: NormalizedWorkItemSourceSearc
     expectedPreflightContextKey,
     refreshPreflightStatus,
     searchJiraIssues,
-    searchLinearIssues,
-    settings
+    searchLinearIssues
   } = useAppStore(
     useShallow((s) => ({
       checkLinearConnection: s.checkLinearConnection,
@@ -59,17 +57,12 @@ export function useWorkItemSourceFoundation(props: NormalizedWorkItemSourceSearc
       expectedPreflightContextKey: localPreflightContextKey(getLocalPreflightContext(s)),
       refreshPreflightStatus: s.refreshPreflightStatus,
       searchJiraIssues: s.searchJiraIssues,
-      searchLinearIssues: s.searchLinearIssues,
-      settings: s.settings
+      searchLinearIssues: s.searchLinearIssues
     }))
   )
   const selectedRepo = useMemo(
     () => repos.find((repo) => repo.id === repoId) ?? null,
     [repoId, repos]
-  )
-  const selectedRepoOwnerSettings = useMemo(
-    () => getRepoOwnerRoutedSettings(settings, selectedRepo),
-    [selectedRepo, settings]
   )
   const githubSourceContext = useMemo(() => {
     if (githubSourceContextOverride?.provider === 'github') {
@@ -202,7 +195,6 @@ export function useWorkItemSourceFoundation(props: NormalizedWorkItemSourceSearc
     searchJiraIssues,
     searchLinearIssues,
     selectedRepo,
-    selectedRepoOwnerSettings,
     githubSourceContext,
     gitlabSourceContext,
     repoBackedSearchTargets,

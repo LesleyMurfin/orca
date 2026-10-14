@@ -13,13 +13,38 @@ type AvailabilityCopyId = Extract<
   | 'claudeManagedNotSignedIn'
   | 'codexSystemNotSignedIn'
   | 'codexManagedNotSignedIn'
+  | 'agentCommandNotSignedIn'
+  | 'interactiveAgentNotSignedIn'
+  | 'agentNotSignedIn'
+  | 'thenSendAgain'
   | 'cliMissing'
+  | 'codexCliTooOld'
 >
 
 export const AVAILABILITY_PIECES: Record<
   AvailabilityCopyId,
   (values: AgentSessionFailureCopyValues) => string
 > = {
+  agentCommandNotSignedIn: (values) =>
+    translate(
+      'components.native-chat.failureWords.agentCommandNotSignedIn',
+      COPY.agentCommandNotSignedIn,
+      values
+    ),
+  interactiveAgentNotSignedIn: (values) =>
+    translate(
+      'components.native-chat.failureWords.interactiveAgentNotSignedIn',
+      COPY.interactiveAgentNotSignedIn,
+      values
+    ),
+  agentNotSignedIn: (values) =>
+    translate(
+      'components.native-chat.failureWords.agentNotSignedIn',
+      COPY.agentNotSignedIn,
+      values
+    ),
+  thenSendAgain: () =>
+    translate('components.native-chat.failureWords.thenSendAgain', COPY.thenSendAgain),
   claudeSystemNotSignedIn: (values) =>
     translate(
       'components.native-chat.failureWords.claudeSystemNotSignedIn',
@@ -45,5 +70,7 @@ export const AVAILABILITY_PIECES: Record<
       values
     ),
   cliMissing: (values) =>
-    translate('components.native-chat.failureWords.cliMissing', COPY.cliMissing, values)
+    translate('components.native-chat.failureWords.cliMissing', COPY.cliMissing, values),
+  codexCliTooOld: (values) =>
+    translate('components.native-chat.failureWords.codexCliTooOld', COPY.codexCliTooOld, values)
 }

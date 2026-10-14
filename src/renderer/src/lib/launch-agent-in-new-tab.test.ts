@@ -52,8 +52,13 @@ const store = {
       | { kind: 'wsl'; distro: string | null }
   }[],
   repos: [{ id: 'repo-1', connectionId: null as string | null, path: '/repo' }],
-  sshConnectionStates: new Map([['ssh-a', { status: 'connected' }]]),
+  sshConnectionStates: new Map([
+    ['ssh-a', { status: 'connected', remotePlatform: 'linux' }],
+    ['ssh-target-1', { status: 'connected', remotePlatform: 'linux' }]
+  ]),
   transientClearedAgentStatusConnectionIds: {} as Record<string, true>,
+  sshStateByEnvironment: new Map(),
+  runtimeStatusByEnvironmentId: new Map([['web-runtime', { status: { hostPlatform: 'linux' } }]]),
   worktreesByRepo: {
     'repo-1': [
       {
@@ -135,11 +140,15 @@ const mockCreateWebRuntimeSessionTerminal = vi.fn()
 const mockCreateWebRuntimeAgentSessionTerminalWithLaunchDraft = vi.fn()
 const mockIsWebRuntimeSessionActive = vi.fn(() => false)
 
-vi.mock('@/runtime/web-runtime-session', () => ({
+vi.mock('@/runtime/web-runtime-terminal-creation', () => ({
   createWebRuntimeSessionTerminal: mockCreateWebRuntimeSessionTerminal,
   createWebRuntimeAgentSessionTerminalWithLaunchDraft:
-    mockCreateWebRuntimeAgentSessionTerminalWithLaunchDraft,
-  isWebRuntimeSessionActive: mockIsWebRuntimeSessionActive,
+    mockCreateWebRuntimeAgentSessionTerminalWithLaunchDraft
+}))
+vi.mock('@/runtime/web-runtime-session-environment', () => ({
+  isWebRuntimeSessionActive: mockIsWebRuntimeSessionActive
+}))
+vi.mock('../../../shared/terminal-surface-id', () => ({
   isWebTerminalSurfaceTabId: vi.fn(() => false)
 }))
 
@@ -173,7 +182,10 @@ describe('launchAgentInNewTab', () => {
       }
     ]
     store.repos = [{ id: 'repo-1', connectionId: null, path: '/repo' }]
-    store.sshConnectionStates = new Map([['ssh-a', { status: 'connected' }]])
+    store.sshConnectionStates = new Map([
+      ['ssh-a', { status: 'connected', remotePlatform: 'linux' }],
+      ['ssh-target-1', { status: 'connected', remotePlatform: 'linux' }]
+    ])
     store.transientClearedAgentStatusConnectionIds = {}
     store.worktreesByRepo = {
       'repo-1': [

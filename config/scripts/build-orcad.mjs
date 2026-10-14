@@ -4,10 +4,12 @@ import { fork, spawnSync } from 'node:child_process'
 import { build } from 'esbuild'
 import {
   buildOrcadEntry,
+  buildOrcadCli,
   buildOrcadLauncher,
   externalNativeAddons,
   ORCAD_EXTERNAL_MODULES,
   ORCAD_CHILD_ENTRY_POINTS,
+  ORCAD_COMMONJS_MODULE_OPTIONS,
   orcadChildOutputFilename
 } from './orcad-entry-build.mjs'
 import { createRequire } from 'node:module'
@@ -18,6 +20,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync
 } from 'node:fs'
@@ -29,8 +32,12 @@ import { smokeForeignSqliteReaderWorker } from './foreign-sqlite-reader-worker-s
 import { smokeSessionScannerService } from './session-scanner-service-smoke.mjs'
 import { materializeWatcherPackage } from './orcad-watcher-package.mjs'
 import { stageOrcadWindowsProcessTree } from './orcad-windows-process-tree.mjs'
+import { stageOrcadWindowsCliLauncher } from './orcad-windows-cli-launcher.mjs'
+import { stageOrcadWindowsSecurity } from './orcad-windows-security.mjs'
 import {
   ORCAD_EMOJI_SHORTCODE_DATASET,
+  ORCAD_CLI_ENTRY_FILENAME,
+  ORCAD_CLI_PACKAGE_FILENAME,
   ORCAD_LAUNCHER_FILENAME,
   ORCAD_SERVER_ENTRY_FILENAME,
   ORCAD_NODE_PTY_DIR,
@@ -47,6 +54,9 @@ import { computeOrcadFullVersion } from './orcad-artifact-version.mjs'
 import { NODE_RUNTIME_ASSETS, NODE_RUNTIME_PIN } from '../../src/shared/node-runtime-pin.ts'
 import { findSlotProblems, readManifest } from './orcad-prebuild-slot-contents.mjs'
 import { orcadAgentBrowserNativeName } from '../../src/shared/orcad-agent-browser-name.ts'
+import { runProcessSync } from '@orca/process-host'
+import { describeProcessFailure } from './process-failure-message.mjs'
+import { resolveBuildSourceCommit } from './build-source-commit.mjs'
 
 const ROOT = join(import.meta.dirname, '..', '..')
 const OUT_DIR = process.env.ORCAD_OUT_DIR
@@ -94,6 +104,7 @@ async function stageParcelWatcher(target) {
   const wrapperSource = requireFromWatcher.resolve('@parcel/watcher/wrapper.js')
   mkdirSync(WATCHER_MODULE_DIR, { recursive: true })
   await build({
+    ...ORCAD_COMMONJS_MODULE_OPTIONS,
     stdin: {
       contents:
         `const {createWrapper}=require(${JSON.stringify(wrapperSource)});` +
@@ -153,6 +164,8 @@ writeFileSync(
 stageNodePty(BUILD_TARGET)
 await stageParcelWatcher(BUILD_TARGET)
 stageOrcadWindowsProcessTree(ROOT, OUT_DIR, BUILD_TARGET)
+stageOrcadWindowsCliLauncher(ROOT, OUT_DIR, BUILD_TARGET)
+stageOrcadWindowsSecurity(ROOT, OUT_DIR, BUILD_TARGET)
 const emojiDatasetOutput = join(OUT_DIR, ORCAD_EMOJI_SHORTCODE_DATASET)
 mkdirSync(dirname(emojiDatasetOutput), { recursive: true })
 copyFileSync(
@@ -191,6 +204,7 @@ cpSync(join(ROOT, 'resources', 'native-chat-visuals'), join(OUT_DIR, 'native-cha
  *  their runtime resolvers look for them. */
 function buildForkedChild(entryPoint, outfile) {
   return build({
+    ...ORCAD_COMMONJS_MODULE_OPTIONS,
     entryPoints: [entryPoint],
     bundle: true,
     platform: 'node',
@@ -203,6 +217,7 @@ function buildForkedChild(entryPoint, outfile) {
     minify: true,
     sourcemap: false,
     define: {
+      ...ORCAD_COMMONJS_MODULE_OPTIONS.define,
       'process.env.NODE_ENV': '"production"'
     },
     logLevel: 'error'
@@ -216,6 +231,16 @@ const childResults = await Promise.all(
 )
 
 const result = await buildOrcadEntry(SERVER_OUT_FILE)
+const cliResult = await buildOrcadCli(join(OUT_DIR, ORCAD_CLI_ENTRY_FILENAME))
+const { version: cliVersion } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+// Why commit: `orca skills install|update` pins official skills to it, as the desktop CLI does.
+const cliPackage = {
+  type: 'commonjs',
+  private: true,
+  version: cliVersion,
+  commit: resolveBuildSourceCommit()
+}
+writeFileSync(join(OUT_DIR, ORCAD_CLI_PACKAGE_FILENAME), `${JSON.stringify(cliPackage)}\n`)
 const launcherResult = await buildOrcadLauncher(OUT_FILE)
 
 const output = Object.values(result.metafile.outputs).find(
@@ -244,6 +269,7 @@ function collectImporters(metafiles, matches) {
 const metafiles = [
   launcherResult.metafile,
   result.metafile,
+  cliResult.metafile,
   ...childResults.map((child) => child.metafile)
 ]
 const electronImporters = collectImporters(
@@ -296,6 +322,17 @@ if (graphErrors.length > 0) {
         `Expected a clean load-check exit, got status=${smoke.status ?? 'none'} ` +
         `signal=${smoke.signal ?? 'none'} ` +
         `error=${smoke.error?.message ?? 'none'}\n${smokeOutput.slice(0, 2000)}`
+    )
+    process.exitCode = 1
+  }
+  const providerSmoke = runProcessSync({
+    program: process.execPath,
+    args: [SERVER_OUT_FILE, '--orcad-structured-provider-load-check'],
+    timeoutMs: 60_000
+  })
+  if (providerSmoke.code !== 0 || providerSmoke.timedOut || providerSmoke.outputTruncated) {
+    console.error(
+      `[build-orcad] the packaged structured provider failed to load.\n${describeProcessFailure(providerSmoke)}`
     )
     process.exitCode = 1
   }

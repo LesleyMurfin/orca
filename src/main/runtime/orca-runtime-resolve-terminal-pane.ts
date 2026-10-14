@@ -1,5 +1,6 @@
 // @ts-nocheck -- mechanically split from OrcaRuntimeService; behavior is covered by AST equivalence and characterization tests.
-import { OrcaRuntimeWithGetTerminalInteractiveWait } from './orca-runtime-get-terminal-interactive-wait'
+import type { OrcaRuntimeWithCreateTerminal } from './orca-runtime-create-terminal'
+import { OrcaRuntimeWithGetTerminalInteractiveWait } from './terminal/wait/terminal-interactive-wait'
 import type {
   RuntimeTerminalRead,
   RuntimeTerminalResolvePane,
@@ -15,7 +16,12 @@ import {
 import { getTerminalState } from './terminal-wait-results'
 import { readStructuredWorkerTerminal } from './structured-worker-terminal-read'
 
-export class OrcaRuntimeWithResolveTerminalPane extends OrcaRuntimeWithGetTerminalInteractiveWait {
+export abstract class OrcaRuntimeWithResolveTerminalPane extends OrcaRuntimeWithGetTerminalInteractiveWait {
+  protected abstract assertLiveTerminalHandleTargetsPty(handle: string, expectedPtyId: string): void
+  abstract createTerminal(
+    ...args: Parameters<OrcaRuntimeWithCreateTerminal['createTerminal']>
+  ): ReturnType<OrcaRuntimeWithCreateTerminal['createTerminal']>
+
   resolveTerminalPane(paneKey: string, expectedWorktreeId?: string): RuntimeTerminalResolvePane {
     // Why: the renderer context menu only knows the stable pane key; main owns
     // the runtime terminal handle that agents and CLI commands can address.
@@ -238,6 +244,12 @@ export class OrcaRuntimeWithResolveTerminalPane extends OrcaRuntimeWithGetTermin
     if (projection.lines.length === 0) {
       return { ...read, source: 'screen-unavailable' }
     }
-    return buildVisibleSnapshotReadFallback(read, projection.lines, opts.limit, projection.draft)
+    return buildVisibleSnapshotReadFallback(
+      read,
+      projection.lines,
+      opts.limit,
+      projection.draft,
+      projection.tailRows
+    )
   }
 }

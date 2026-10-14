@@ -108,12 +108,11 @@ export function useNativeChatComposerPaste({
         setNotice(nativeChatWorktreeNotReadyNotice())
         return
       }
-      const connectionId = originalOwner.kind === 'ssh' ? originalOwner.connectionId : null
       if (pendingId) {
         lifetime.pending.delete(pendingId)
-        resolvePendingImageAttachment(pendingId, path, connectionId)
+        resolvePendingImageAttachment(pendingId, path, null)
       } else {
-        attachResolvedPaths([path], connectionId)
+        attachResolvedPaths([path], null)
       }
     },
     [
@@ -249,7 +248,7 @@ export function useNativeChatComposerPaste({
           insertText(read.text)
         } else if (canPaste()) {
           setNotice(
-            owner.kind === 'runtime'
+            owner.kind === 'remote'
               ? nativeChatLocalAttachmentUnsupportedNotice()
               : nativeChatWorktreeNotReadyNotice()
           )

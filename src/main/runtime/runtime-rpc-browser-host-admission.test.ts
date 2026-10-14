@@ -55,7 +55,9 @@ describe('runtime RPC browser-host admission', () => {
     })
     server['deviceRegistry'] = new DeviceRegistry(userDataPath)
     const device = server['deviceRegistry'].addDevice('runtime-test', 'runtime')
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the server reads only these wiring members in this test.
     server['mobileSocketWiring'] = {
+      dispose: () => {},
       getConnectionId: () => 'connection-a'
     } as unknown as NonNullable<(typeof server)['mobileSocketWiring']>
     const socket = new FakeWebSocket()
@@ -125,7 +127,9 @@ describe('runtime RPC browser-host admission', () => {
       [socketB, 'connection-b'],
       [socketAReplacement, 'connection-a-replacement']
     ])
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the server reads only these wiring members in this test.
     server['mobileSocketWiring'] = {
+      dispose: () => {},
       getConnectionId: (socket) => connectionIds.get(socket as unknown as FakeWebSocket)
     } as unknown as NonNullable<(typeof server)['mobileSocketWiring']>
     const repliesA: Record<string, unknown>[] = []

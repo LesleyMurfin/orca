@@ -1,11 +1,11 @@
 // @ts-nocheck -- mechanically split from OrcaRuntimeService; behavior is covered by AST equivalence and characterization tests.
+import type { RuntimeTerminalAgentStatus } from '../../shared/runtime-terminal-contracts'
 import { OrcaRuntimeWithPreservedBranchCleanup } from './orca-runtime-preserved-branch-cleanup'
 import { RuntimeFileCommands } from './orca-runtime-files'
 import { nativeChatTranscriptIncludesPath } from '../native-chat/native-chat-file-provenance'
 import { createRuntimeFileWatcherRemoval } from './runtime-file-watcher-removal'
 import { RuntimeGitCommands } from './orca-runtime-git'
 import type { GlobalSettings } from '../../shared/global-settings-types'
-import type { RuntimeTerminalAgentStatus } from '../../shared/runtime-types'
 import { RuntimeHostedReviewCommands } from './runtime-hosted-review-commands'
 import { RuntimeGitHubRepositoryQueryCommands } from './runtime-github-repository-query-commands'
 import { RuntimeGitLabQueryCommands } from './runtime-gitlab-query-commands'
@@ -22,7 +22,17 @@ import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
 import { getBrowserHostLeaseRegistry } from './browser-host-lease-registry-instance'
 import type { RuntimeLeafRecord } from './runtime-terminal-state-records'
 
-export class OrcaRuntimeWithFileCommands extends OrcaRuntimeWithPreservedBranchCleanup {
+import type { RuntimeStore } from './runtime-store-contract'
+import type { ResolvedWorktree } from './runtime-worktree-path-identity'
+import type { Repo } from '../../shared/repo-types'
+
+export abstract class OrcaRuntimeWithFileCommands extends OrcaRuntimeWithPreservedBranchCleanup {
+  protected abstract requireStore(): RuntimeStore
+
+  protected abstract resolveWorktreeSelector(selector: string): Promise<ResolvedWorktree>
+
+  protected abstract resolveRepoSelector(selector: string): Promise<Repo>
+
   protected readonly fileCommands = new RuntimeFileCommands({
     getRuntimeId: () => this.runtimeId,
     requireStore: () => this.requireStore(),
@@ -44,11 +54,18 @@ export class OrcaRuntimeWithFileCommands extends OrcaRuntimeWithPreservedBranchC
         absolutePath
       }),
     resolveRuntimeGitTarget: (selector) => this.resolveRuntimeGitTarget(selector),
-    openFile: (worktreeId, filePath, relativePath, runtimeEnvironmentId, navigation) => {
+    openFile: (worktreeId, filePath, relativePath, runtimeEnvironmentId, navigation, position) => {
       if (!this.notifier?.openFile) {
         throw new Error('renderer_unavailable')
       }
-      this.notifier.openFile(worktreeId, filePath, relativePath, runtimeEnvironmentId, navigation)
+      this.notifier.openFile(
+        worktreeId,
+        filePath,
+        relativePath,
+        runtimeEnvironmentId,
+        navigation,
+        ...(position ? [position] : [])
+      )
     },
     openDiff: (worktreeId, filePath, relativePath, staged, runtimeEnvironmentId, navigation) => {
       if (!this.notifier?.openDiff) {

@@ -16,8 +16,8 @@ import {
   TerminalStop,
   TerminalStopExact,
   TerminalWait
-} from './unary-schemas'
-import { TerminalResizeForClient } from './stream-schemas'
+} from '../../../../../shared/rpc-contract/terminal-unary-params'
+import { TerminalResizeForClient } from '../../../../../shared/rpc-contract/terminal-stream-params'
 
 export const TERMINAL_LIFECYCLE_METHODS = [
   defineMethod({
@@ -73,11 +73,11 @@ export const TERMINAL_LIFECYCLE_METHODS = [
                 : {}),
               title: params.title,
               focus,
-              rendererBacked: params.rendererBacked === true,
               activate,
               presentation,
               tabId: params.tabId,
               leafId: params.leafId,
+              ...(params.spawnIntent ? { spawnIntent: params.spawnIntent } : {}),
               ...(preAllocatedHandle ? { preAllocatedHandle } : {})
             })
         )

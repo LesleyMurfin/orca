@@ -28,7 +28,7 @@ vi.mock('@/lib/connection-context', () => ({ getConnectionIdFromState: () => nul
 vi.mock('@/lib/native-chat-transcript-readability', () => ({
   isNativeChatTranscriptLocalReadable: () => true
 }))
-vi.mock('@/runtime/web-runtime-session', () => ({
+vi.mock('@/runtime/web-runtime-session-environment', () => ({
   isWebRuntimeSessionActive: mockIsWebRuntimeSessionActive
 }))
 vi.mock('@/lib/worktree-runtime-owner', () => ({
@@ -72,7 +72,7 @@ vi.mock('@/runtime/local-runtime-capabilities', () => ({
 function serverReports(capabilities: readonly string[] | null): void {
   Object.assign(store, {
     runtimeStatusByEnvironmentId: new Map(
-      capabilities ? [['web-runtime', { status: { capabilities } }]] : []
+      capabilities ? [['web-runtime', { status: { capabilities, hostPlatform: 'linux' } }]] : []
     )
   })
 }
