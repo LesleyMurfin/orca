@@ -15,6 +15,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setAppEnvironment, type AppEnvironment } from '../../shared/app-environment'
 import type { Repo } from '../../shared/repo-types'
 import type {
   RemoteWorkspaceSession,
@@ -88,9 +89,22 @@ function sshTarget(id: string, host: string): SshTarget {
 const target = sshTarget(TARGET_ID, 'one.example.com')
 const otherTarget = sshTarget(OTHER_TARGET_ID, 'two.example.com')
 
-function remoteRepo(id: string, path: string, connectionId: string): Repo {
+function remoteRepo(
+  id: string,
+  path: string,
+  connectionId: string,
+  executionHostId?: string
+): Repo {
   // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the literal names every Repo field this export suite reads.
-  return { id, path, displayName: id, badgeColor: 'blue', addedAt: 1, connectionId } as Repo
+  return {
+    id,
+    path,
+    displayName: id,
+    badgeColor: 'blue',
+    addedAt: 1,
+    connectionId,
+    ...(executionHostId !== undefined ? { executionHostId } : {})
+  } as Repo
 }
 
 function runtimeAuthoredTab(): TerminalTab {
@@ -118,6 +132,15 @@ afterEach(async () => {
 })
 
 beforeEach(() => {
+  setAppEnvironment({
+    getPath: () => tmpdir(),
+    getAppPath: () => tmpdir(),
+    getVersion: () => '0.0.0-test',
+    isPackaged: () => false,
+    onWillQuit: () => {},
+    exit: () => {},
+    getAppMetrics: () => []
+  } as AppEnvironment)
   _resetRemoteWorkspaceCachesForTests()
   ipcHandlers.clear()
   hostSnapshot = {
@@ -234,5 +257,56 @@ describe('remoteWorkspace:setForConnectedTargets session fallback', () => {
     await publishToConnectedTarget(store)
 
     expect(hostSnapshot.session.tabsByWorktreePath[WORKTREE_PATH]).not.toEqual([])
+  })
+})
+
+describe('remoteWorkspace:setForConnectedTargets GAP-03 offline fallback', () => {
+  it('does not re-publish stale ssh-partition tabs after a genuine offline gap when session is omitted', async () => {
+    // Renderer hydration declines these; the shipping debounced writer used to omit `session` and
+    // let main re-adopt the parked ssh mirror into the replace-session payload.
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'orca-ssh-partition-gap03-')))
+    const store = new Store({ dataFile: join(dir, 'orca-data.json') })
+    stores.push(store)
+    store.addRepo(remoteRepo(REPO_ID, '/remote/checkout', TARGET_ID, SSH_HOST_ID))
+    store.setWorkspaceSession({
+      ...getDefaultWorkspaceSession(),
+      // Disconnected at last quit — GAP-03 precondition. No base tabsByWorktree row at all.
+      activeConnectionIdsAtShutdown: []
+    })
+    store.setWorkspaceSession(
+      {
+        ...getDefaultWorkspaceSession(),
+        tabsByWorktree: { [WORKTREE_ID]: [runtimeAuthoredTab()] }
+      },
+      SSH_HOST_ID
+    )
+
+    await publishToConnectedTarget(store)
+
+    expect(hostSnapshot.session.tabsByWorktreePath[WORKTREE_PATH] ?? []).toEqual([])
+  })
+
+  it('still publishes ssh-partition tabs when the client quit while connected (ordinary restart)', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'orca-ssh-partition-gap03-connected-')))
+    const store = new Store({ dataFile: join(dir, 'orca-data.json') })
+    stores.push(store)
+    store.addRepo(remoteRepo(REPO_ID, '/remote/checkout', TARGET_ID, SSH_HOST_ID))
+    store.setWorkspaceSession({
+      ...getDefaultWorkspaceSession(),
+      activeConnectionIdsAtShutdown: [TARGET_ID]
+    })
+    store.setWorkspaceSession(
+      {
+        ...getDefaultWorkspaceSession(),
+        tabsByWorktree: { [WORKTREE_ID]: [runtimeAuthoredTab()] }
+      },
+      SSH_HOST_ID
+    )
+
+    await publishToConnectedTarget(store)
+
+    expect(hostSnapshot.session.tabsByWorktreePath[WORKTREE_PATH]?.map((tab) => tab.id)).toEqual([
+      'tab-runtime'
+    ])
   })
 })

@@ -163,6 +163,7 @@ export function useAppSessionPersistence(): void {
                 ])
               )
               const results = await window.api.remoteWorkspace?.setForConnectedTargets({
+                session: buildWorkspaceSessionPayload(currentState),
                 hydratedTargetIds,
                 expectedRevisionsByTargetId,
                 expectedHostObservationTokensByTargetId

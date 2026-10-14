@@ -1,6 +1,6 @@
 import type { Repo } from '../../../shared/repo-types'
 import type { WorkspaceSessionState } from '../../../shared/workspace-session-state-types'
-import { parseAppSshPtyId } from '../../../shared/ssh-pty-id'
+import { wasTargetConnectedAtLastShutdown } from '../../../shared/workspace-session-shutdown-connection'
 import {
   getRepoExecutionHostId,
   getSshTargetIdForExecutionHost,
@@ -158,28 +158,7 @@ export async function fetchWorkspaceSessionFromHosts(
     .session
 }
 
-export function wasTargetConnectedAtLastShutdown(
-  session: WorkspaceSessionState,
-  targetId: string | null
-): boolean {
-  if (!targetId) {
-    return false
-  }
-  if (session.activeConnectionIdsAtShutdown !== undefined) {
-    return session.activeConnectionIdsAtShutdown.includes(targetId)
-  }
-  // When activeConnectionIdsAtShutdown is undefined (older persisted sessions, interrupted
-  // shutdowns), infer connection status from remoteSessionIdsByTabId: if the base session still
-  // holds a remote PTY session for this target, the client was connected to it, so do not decline.
-  // Residual remoteSessionIdsByTabId on the SSH partition mirror itself are NOT inspected:
-  // they are the stale cache GAP-03 exists to decline.
-  for (const sessionId of Object.values(session.remoteSessionIdsByTabId ?? {})) {
-    if (parseAppSshPtyId(sessionId)?.connectionId === targetId) {
-      return true
-    }
-  }
-  return false
-}
+export { wasTargetConnectedAtLastShutdown } from '../../../shared/workspace-session-shutdown-connection'
 
 export async function fetchWorkspaceSessionWithRuntimeHostOwners(
   api: SessionReadApi,

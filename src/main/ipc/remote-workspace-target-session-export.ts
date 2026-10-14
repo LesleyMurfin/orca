@@ -3,11 +3,16 @@ import type { Repo } from '../../shared/repo-types'
 import { exportRemoteWorkspaceSession } from '../../shared/remote-workspace-session-projection'
 import type { RemoteWorkspaceSession } from '../../shared/remote-workspace-types'
 import type { WorkspaceSessionState } from '../../shared/workspace-session-state-types'
-import { toSshExecutionHostId, type ExecutionHostId } from '../../shared/execution-host'
+import {
+  normalizeExecutionHostId,
+  toSshExecutionHostId,
+  type ExecutionHostId
+} from '../../shared/execution-host'
 import {
   adoptStrandedHostPartitionSession,
   workspaceIdsNamedByPartition
 } from '../../shared/workspace-session-stranded-partition-adoption'
+import { wasTargetConnectedAtLastShutdown } from '../../shared/workspace-session-shutdown-connection'
 import { getRepoIdFromWorktreeId } from '../../shared/worktree/id'
 import {
   resolveWorktreeExecutionHost,
@@ -88,8 +93,9 @@ export function exportSessionForTarget(
  * deletion on the host (#12721). Resolved per target so one target's rows can never be published
  * under another's key when both partitions hold the same worktree id.
  *
- * The contested verdict is computed the same way the renderer's read computes it, over the same two
- * partitions. Main reaching a different one would let it publish rows the renderer never displays.
+ * The contested / foreign / confirmed verdicts match the renderer's boot read. Confirmed ids feed
+ * GAP-03 `reconciledWorktreeIds` so a publish with no renderer `session` cannot re-export stale
+ * ssh-partition tabs the hydration path already declined (stablyai/orca#22038).
  */
 export function persistedSessionForTarget(
   store: Store,
@@ -100,15 +106,27 @@ export function persistedSessionForTarget(
   const hostId = toSshExecutionHostId(targetId)
   const local = store.getWorkspaceSession()
   const host = store.getWorkspaceSession(hostId)
+  const attribution = catalogAttributionForPartition(resolveWorktreeOwner, host, hostId)
+  const reconciledWorktreeIds = wasTargetConnectedAtLastShutdown(local, targetId)
+    ? new Set<string>()
+    : attribution.confirmedSessionKeys
   return adoptStrandedHostPartitionSession(local, host, {
-    ...catalogAttributionForPartition(resolveWorktreeOwner, host, hostId)
+    contestedSessionKeys: attribution.contestedSessionKeys,
+    foreignSessionKeys: attribution.foreignSessionKeys,
+    ownedSessionKeys: attribution.ownedSessionKeys,
+    reconciledWorktreeIds
   }).session
 }
 
 /** The same catalog reading the renderer's boot read applies to this partition: a repo id the
  *  catalog registers on more than one host is contested, and one it positively resolves to a
  *  different host is residue this partition does not own. Main reaching a different verdict would
- *  publish to the host rows the renderer never displays. */
+ *  publish to the host rows the renderer never displays.
+ *
+ *  `ownedSessionKeys` — catalog resolves to this host (incl. bare connectionId fallback).
+ *  `confirmedSessionKeys` — catalog resolves to exactly this host via the row's own
+ *  `executionHostId` (not bare `connectionId`). Same narrow GAP-03 signal as renderer
+ *  `sshPartitionCatalogAttribution`. */
 function catalogAttributionForPartition(
   resolveWorktreeOwner: WorktreeOwnerResolver,
   host: WorkspaceSessionState,
@@ -117,10 +135,12 @@ function catalogAttributionForPartition(
   contestedSessionKeys: Set<string>
   foreignSessionKeys: Set<string>
   ownedSessionKeys: Set<string>
+  confirmedSessionKeys: Set<string>
 } {
   const contestedSessionKeys = new Set<string>()
   const foreignSessionKeys = new Set<string>()
   const ownedSessionKeys = new Set<string>()
+  const confirmedSessionKeys = new Set<string>()
   for (const workspaceId of workspaceIdsNamedByPartition(host)) {
     // A folder key names no repo, and `getRepoIdFromWorktreeId` hands back the whole key rather
     // than nothing, so the catalog would be asked about `folder:<uuid>` and answer `unknown`.
@@ -133,11 +153,16 @@ function catalogAttributionForPartition(
       if (resolution.reason === 'ambiguous') {
         contestedSessionKeys.add(workspaceId)
       }
-    } else if (resolution.hostId !== hostId) {
+      continue
+    }
+    if (resolution.hostId !== hostId) {
       foreignSessionKeys.add(workspaceId)
-    } else {
-      ownedSessionKeys.add(workspaceId)
+      continue
+    }
+    ownedSessionKeys.add(workspaceId)
+    if (normalizeExecutionHostId(resolution.owner?.executionHostId ?? null) === hostId) {
+      confirmedSessionKeys.add(workspaceId)
     }
   }
-  return { contestedSessionKeys, foreignSessionKeys, ownedSessionKeys }
+  return { contestedSessionKeys, foreignSessionKeys, ownedSessionKeys, confirmedSessionKeys }
 }
