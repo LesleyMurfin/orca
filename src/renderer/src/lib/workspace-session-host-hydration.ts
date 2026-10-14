@@ -158,8 +158,6 @@ export async function fetchWorkspaceSessionFromHosts(
     .session
 }
 
-export { wasTargetConnectedAtLastShutdown } from '../../../shared/workspace-session-shutdown-connection'
-
 export async function fetchWorkspaceSessionWithRuntimeHostOwners(
   api: SessionReadApi,
   repos: readonly Pick<Repo, 'id' | 'connectionId' | 'executionHostId'>[],
@@ -277,4 +275,3 @@ async function listPersistedSshPartitionHostIds(api: SessionReadApi): Promise<Ex
     return []
   }
 }
-

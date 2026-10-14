@@ -3,7 +3,7 @@ import {
   WORKSPACE_SESSION_FIELD_OWNERSHIP,
   type WorkspaceSessionFieldOwnership
 } from './workspace-session-host-field-ownership'
-import { normalizeWorkspaceSessionKeyToWorkspaceId, worktreeWorkspaceKey } from './workspace-scope'
+import { normalizeWorkspaceSessionKeyToWorkspaceId } from './workspace-scope'
 import { isWorktreeHostIdentity as isHostQualifiedSessionKey } from './worktree/host-qualified-identity'
 import {
   buildWorktreeIdByFileId,
@@ -345,16 +345,12 @@ export function adoptStrandedHostPartitionSession(
   // fully replace. That strip must not rewrite "base held an empty placeholder" into "base never
   // named this worktree" — the latter is the offline-gap signal, the former is the split repair.
   const hostTabsByWorktree = host.tabsByWorktree ?? {}
-  const originalBaseTabs = originalBase.tabsByWorktree ?? {}
-  for (const workspaceId of options.reconciledWorktreeIds ?? []) {
-    const canonicalKey = worktreeWorkspaceKey(workspaceId)
-    const hasBaseKey =
-      Object.hasOwn(originalBaseTabs, workspaceId) ||
-      Object.hasOwn(originalBaseTabs, canonicalKey) ||
-      Object.keys(originalBaseTabs).some(
-        (key) => normalizeWorkspaceSessionKeyToWorkspaceId(key) === workspaceId
-      )
-    if (!adoptable.has(workspaceId) || hasBaseKey) {
+  const originalBaseTabWorkspaceIds = new Set(
+    Object.keys(originalBase.tabsByWorktree ?? {}).map(normalizeWorkspaceSessionKeyToWorkspaceId)
+  )
+  for (const rawWorkspaceId of options.reconciledWorktreeIds ?? []) {
+    const workspaceId = normalizeWorkspaceSessionKeyToWorkspaceId(rawWorkspaceId)
+    if (!adoptable.has(workspaceId) || originalBaseTabWorkspaceIds.has(workspaceId)) {
       continue
     }
     for (const [key, hostTabs] of Object.entries(hostTabsByWorktree)) {
