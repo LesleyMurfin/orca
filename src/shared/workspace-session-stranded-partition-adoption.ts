@@ -190,46 +190,7 @@ function adoptRecord(
   ;(next as KeyedRecord)[field] = merged
 }
 
-/**
- * The worktree-keyed rows a partition holds for workspaces the write will not route back to it.
- *
- * Parked rather than dropped. A partition write replaces each field with exactly what the unified
- * session routed there, so a row this read left out — declined as residue, withheld as contested,
- * or skipped because the base already holds the live copy — is erased the moment any sibling
- * workspace writes the same partition. `attachHostSessionShadow` puts these back into the slice
- * first, which is the protection a contested runtime co-claimant already gets. Declining to show a
- * row must never mean deleting it: docs/reference/ssh-execution-boundary.md makes leak, never kill,
- * the safe direction, and a row no partition holds at all is unrecoverable.
- */
-export function partitionRowsTheWriteWontReturn(
-  host: WorkspaceSessionState,
-  adoptedWorkspaceIds: ReadonlySet<string>
-): WorkspaceSessionState | null {
-  let parked: KeyedRecord | null = null
-  for (const field of SESSION_FIELDS) {
-    if (WORKSPACE_SESSION_FIELD_OWNERSHIP[field] !== 'worktreeKeyed') {
-      continue
-    }
-    const record = asRecord(host[field])
-    if (!record) {
-      continue
-    }
-    let kept: KeyedRecord | null = null
-    for (const [key, entry] of Object.entries(record)) {
-      if (adoptedWorkspaceIds.has(normalizeWorkspaceSessionKeyToWorkspaceId(key))) {
-        continue
-      }
-      kept ??= {}
-      kept[key] = entry
-    }
-    if (kept) {
-      parked ??= {}
-      parked[field] = kept
-    }
-  }
-  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: every key written here is a session field name taken from the ownership table, and every value is that field's own record copied by reference.
-  return parked as WorkspaceSessionState | null
-}
+export { partitionRowsTheWriteWontReturn } from './workspace-session-stranded-partition-parking'
 
 /** Which workspace an entry of a scoped field belongs to; null for global and host-private fields. */
 function entryWorkspaceResolver(
@@ -320,6 +281,23 @@ export type StrandedPartitionAdoptionOptions = {
   foreignSessionKeys?: ReadonlySet<string>
   /** Keys the repo catalog attributes to this host. */
   ownedSessionKeys?: ReadonlySet<string>
+  /**
+   * Worktree ids the repo catalog positively, currently attributes to EXACTLY this host, with no
+   * evidence any OTHER partition ever held residue for the same id (a migration). For one of
+   * these, an empty tab row is not the #12721 shape — the catalog's confirmation means this is a
+   * live, tracked connection, so a base with literally no `tabsByWorktree` entry for it is the
+   * server reporting zero tabs, not an unverifiable gap. A client that went offline while every
+   * tab for the worktree was closed comes back with exactly this shape: base empty/absent, host
+   * partition still naming the closed tabs from its last connected snapshot. Blindly gap-filling
+   * that repaints them into the merged session and the next `persistWorkspaceSessionByHost` call
+   * round-trips them back out to the host partition and every other client — the ghost-tab
+   * resurrection in stablyai/orca#22038 / revive_labs#962 (GAP-03).
+   *
+   * Declining here still never destroys anything: the id drops out of `adoptedWorkspaceIds`, so
+   * `partitionRowsTheWriteWontReturn` parks the row in the write-side shadow instead, the same
+   * "leak, never kill" safety net a contested id already gets.
+   */
+  reconciledWorktreeIds?: ReadonlySet<string>
 }
 
 export type StrandedPartitionAdoption = {
@@ -354,6 +332,35 @@ export function adoptStrandedHostPartitionSession(
   const adoptable = adoptableWorkspaceIds(base, host)
   for (const key of options.foreignSessionKeys ?? []) {
     adoptable.delete(normalizeWorkspaceSessionKeyToWorkspaceId(key))
+  }
+  // GAP-03: a worktree the catalog confirms belongs to exactly this host, with no evidence it
+  // ever lived on another one, does not get the #12721 unverifiable-gap reading when the base
+  // holds no `tabsByWorktree` row for it at all. The base's silence is the server's current
+  // truth (zero tabs), not a blind spot — so a host row that still names real tabs here is this
+  // client's stale pre-disconnect cache, not evidence of anything live. Declining leaves the row
+  // in place for `partitionRowsTheWriteWontReturn` to park rather than deleting it.
+  //
+  // Why originalBase, not the post-supersede `base`: main's ownedSessionKeys path strips base
+  // residue (including empty #12723 placeholders) before adoption so the host's live tabs can
+  // fully replace. That strip must not rewrite "base held an empty placeholder" into "base never
+  // named this worktree" — the latter is the offline-gap signal, the former is the split repair.
+  const hostTabsByWorktree = host.tabsByWorktree ?? {}
+  const originalBaseTabWorkspaceIds = new Set(
+    Object.keys(originalBase.tabsByWorktree ?? {}).map(normalizeWorkspaceSessionKeyToWorkspaceId)
+  )
+  for (const rawWorkspaceId of options.reconciledWorktreeIds ?? []) {
+    const workspaceId = normalizeWorkspaceSessionKeyToWorkspaceId(rawWorkspaceId)
+    if (!adoptable.has(workspaceId) || originalBaseTabWorkspaceIds.has(workspaceId)) {
+      continue
+    }
+    for (const [key, hostTabs] of Object.entries(hostTabsByWorktree)) {
+      if (normalizeWorkspaceSessionKeyToWorkspaceId(key) !== workspaceId) {
+        continue
+      }
+      if (Array.isArray(hostTabs) && hostTabs.length > 0) {
+        adoptable.delete(workspaceId)
+      }
+    }
   }
   if (adoptable.size === 0) {
     return { session: base, adoptedWorkspaceIds: NOTHING_ADOPTED }
