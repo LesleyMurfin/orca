@@ -10,7 +10,10 @@ import type {
   RuntimeServeStatsResult
 } from '../../shared/runtime-types'
 import { getStructuredAgentSessionHost } from '../native-chat/agent-session-wire/structured-agent-session-registry'
-import { collectServeStatsBrowserPages } from './serve-stats-browser-pages'
+import {
+  collectServeStatsBrowserPages,
+  type ServeStatsBrowserPageBridge
+} from './serve-stats-browser-pages'
 import { readServeStatsEventLoopDelayP99Ms } from './serve-stats-event-loop-delay'
 import { collectServeStatsHost } from './serve-stats-host'
 import { selectFreshExplicitAgentStatus } from './runtime-hook-agent-row-selection'
@@ -55,7 +58,7 @@ export type ServeStatsRuntime = {
     { status: AgentStatus | null; workingSequence?: number; updatedAt: number }
   >
   getAgentStatusSnapshotFn?: () => readonly AgentStatusIpcPayload[]
-  agentBrowserBridge?: Parameters<typeof collectServeStatsBrowserPages>[1]
+  agentBrowserBridge?: ServeStatsBrowserPageBridge
   getRuntimeId(): string
   startedAt: number
   servePort: number | null
@@ -157,11 +160,7 @@ export async function collectRuntimeServeStats(
   }
   // Pages of both kinds plus their renderer footprint, from one walk of the bridge's page-id
   // registration map.
-  const browserPages = collectServeStatsBrowserPages(
-    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: ServeStatsRuntime satisfies the subset of OrcaRuntimeService needed for desktop surface.
-    runtime as unknown as Parameters<typeof collectServeStatsBrowserPages>[0],
-    runtime.agentBrowserBridge
-  )
+  const browserPages = collectServeStatsBrowserPages(runtime, runtime.agentBrowserBridge)
   return {
     version: getAppEnvironment().getVersion(),
     runtimeId: runtime.getRuntimeId(),

@@ -1,4 +1,5 @@
 import { RuntimeRpcMobilePairing } from './runtime-rpc-mobile-pairing'
+import { disableServeStatsEventLoopDelayMonitor } from '../serve-stats-event-loop-delay'
 
 export type RuntimeRpcClientActivity = {
   openConnections: number
@@ -52,6 +53,9 @@ export class RuntimeRpcShutdown extends RuntimeRpcMobilePairing {
     // Why with the port: no listener means no admission budget, and reporting the caps of a
     // stopped server would read as capacity a caller can still spend.
     this.runtime.setLongPollStatsProvider?.(null)
+    // Why with the port/provider: the 20ms histogram timer is process-wide; leave it running
+    // only while a serve surface is up so stop does not leak wakeups after the listener is gone.
+    disableServeStatsEventLoopDelayMonitor()
     if (failedStop?.status === 'rejected') {
       throw failedStop.reason
     }

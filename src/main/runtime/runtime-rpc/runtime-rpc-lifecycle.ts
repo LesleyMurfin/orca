@@ -19,7 +19,10 @@ import {
   createRuntimeTransportMetadata,
   sweepOrphanedRuntimeSockets
 } from './runtime-rpc-socket-metadata'
-import { enableServeStatsEventLoopDelayMonitor } from '../serve-stats-event-loop-delay'
+import {
+  disableServeStatsEventLoopDelayMonitor,
+  enableServeStatsEventLoopDelayMonitor
+} from '../serve-stats-event-loop-delay'
 
 export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
   async start(): Promise<void> {
@@ -82,6 +85,7 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
       // Why: no listener is bound, so `serve stats` must not advertise long-poll capacity —
       // the caps belong to a serving runtime, not this one.
       this.runtime.setLongPollStatsProvider?.(null)
+      disableServeStatsEventLoopDelayMonitor()
       throw error
     }
 
@@ -140,6 +144,7 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
       this.runtime.setServePort?.(null)
       // Every transport above was just torn down, so there is no admission budget left to report.
       this.runtime.setLongPollStatsProvider?.(null)
+      disableServeStatsEventLoopDelayMonitor()
       throw error
     }
 

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { collectServeStatsHost, resolveCgroupV2Directories } from './serve-stats-host'
 import {
-  disableServeStatsEventLoopDelayMonitorForTest,
+  disableServeStatsEventLoopDelayMonitor,
   enableServeStatsEventLoopDelayMonitor,
   readServeStatsEventLoopDelayP99Ms
 } from './serve-stats-event-loop-delay'
@@ -204,11 +204,11 @@ describe('collectServeStatsHost', () => {
 
 describe('serve stats event loop delay monitor', () => {
   afterEach(() => {
-    disableServeStatsEventLoopDelayMonitorForTest()
+    disableServeStatsEventLoopDelayMonitor()
   })
 
   it('reads null until the monitor is enabled and has a sample', () => {
-    disableServeStatsEventLoopDelayMonitorForTest()
+    disableServeStatsEventLoopDelayMonitor()
 
     expect(readServeStatsEventLoopDelayP99Ms()).toBeNull()
 
@@ -219,7 +219,7 @@ describe('serve stats event loop delay monitor', () => {
   })
 
   it('reports a number once sampled and resets the window on read', async () => {
-    disableServeStatsEventLoopDelayMonitorForTest()
+    disableServeStatsEventLoopDelayMonitor()
     enableServeStatsEventLoopDelayMonitor()
     // Real elapsed time, deliberately: libuv samples this histogram itself, so a virtual clock
     // advances no ticks and produces no samples at all. Polls the awaited condition (a recorded

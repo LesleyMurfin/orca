@@ -140,8 +140,11 @@ export function structuredWorkerOrcaSessionIdForIncarnation(
 
 /** Structured sessions can only exist local and outside WSL; anything else is not our authority. */
 export function structuredWorkerHostScope(
-  location: AgentSessionExecutionLocation
+  location: AgentSessionExecutionLocation | null | undefined
 ): WorkerTerminalHostScope | null {
+  if (!location?.executionHostId) {
+    return null
+  }
   return location.executionHostId === LOCAL_EXECUTION_HOST_ID && !location.wslDistro
     ? { kind: 'local', hostId: 'local' }
     : null

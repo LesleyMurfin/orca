@@ -25,6 +25,15 @@ export type ServeStatsBrowserPageMemory = {
   maxBytes: number | null
 }
 
+/**
+ * Runtime surface this collector reads: WeakMap key identity for the lease and page
+ * registries, plus `getRuntimeId` when a registry must be created on first touch.
+ * Release-host hooks stay on the lease-registry create path and are never invoked here.
+ */
+export type ServeStatsBrowserPagesRuntime = {
+  getRuntimeId(): string
+}
+
 export type ServeStatsBrowserPageBridge = {
   getRegisteredTabs?: (worktreeId?: string) => ReadonlyMap<string, number>
 }
@@ -51,7 +60,7 @@ export type ServeStatsBrowserPages = {
  * predates this collector.
  */
 export function collectServeStatsBrowserPages(
-  runtime: Parameters<typeof getBrowserHostLeaseRegistry>[0],
+  runtime: ServeStatsBrowserPagesRuntime,
   bridge: ServeStatsBrowserPageBridge | null | undefined,
   sources: ServeStatsBrowserPageMemorySources = {}
 ): ServeStatsBrowserPages {

@@ -38,8 +38,11 @@ export function readServeStatsEventLoopDelayP99Ms(): number | null {
   return Number.isFinite(delayNs) ? Math.round((delayNs / NS_PER_MS) * 100) / 100 : null
 }
 
-/** Test seam: drops the histogram (and its timer) so a case can prove the unmeasured path. */
-export function disableServeStatsEventLoopDelayMonitorForTest(): void {
+/**
+ * Stops the process-wide histogram timer. Idempotent — safe on stop when never enabled,
+ * and after a prior disable so start can recreate the monitor.
+ */
+export function disableServeStatsEventLoopDelayMonitor(): void {
   monitor?.disable()
   monitor = null
 }
